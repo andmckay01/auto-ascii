@@ -15,10 +15,13 @@ use crate::lut::{self, Levels};
 
 /// Cut threshold in thousandths of the maximum possible histogram SAD.
 /// 300 = 0.30: real hard cuts land ~0.5–1.2, in-shot motion ~0.02–0.15.
+/// M2: the effective value comes from params.toml (`shots.sad_threshold_milli`);
+/// this constant is the embedded default and the unit-test anchor.
 pub const SHOT_SAD_THRESHOLD_MILLI: u64 = 300;
 
 /// Minimum shot length in frames: a boundary is honored only once the
 /// current shot is at least this long (debounces flashes/strobes).
+/// M2: params.toml `shots.min_shot_frames` overrides.
 pub const MIN_SHOT_FRAMES: u32 = 8;
 
 /// 256-bin histogram of one luma plane.
@@ -46,6 +49,9 @@ pub struct ShotDetector {
     npx: u64,
     threshold_milli: u64,
     min_shot_frames: u32,
+    /// Percentiles for the pooled per-shot levels (params.toml `[levels]`).
+    lo_pct: u64,
+    hi_pct: u64,
     frames: u32,
     prev_hist: [u64; 256],
     shot_start: u32,
@@ -55,17 +61,25 @@ pub struct ShotDetector {
 }
 
 impl ShotDetector {
-    /// `npx` = pixels per luma plane (normalizes the SAD).
-    pub fn new(npx: u64) -> ShotDetector {
-        ShotDetector::with_params(npx, SHOT_SAD_THRESHOLD_MILLI, MIN_SHOT_FRAMES)
-    }
-
-    fn with_params(npx: u64, threshold_milli: u64, min_shot_frames: u32) -> ShotDetector {
+    /// All tunables explicit — the values come from params.toml `[shots]` +
+    /// `[levels]` (M2 item B; the constants above are the embedded defaults,
+    /// re-exported through `params::Params::default`). `npx` = pixels per
+    /// luma plane (normalizes the SAD).
+    pub fn with_params(
+        npx: u64,
+        threshold_milli: u64,
+        min_shot_frames: u32,
+        lo_pct: u64,
+        hi_pct: u64,
+    ) -> ShotDetector {
         assert!(npx > 0, "empty planes have no shots");
+        assert!(lo_pct < hi_pct && hi_pct <= 100, "params validation upholds this");
         ShotDetector {
             npx,
             threshold_milli,
             min_shot_frames,
+            lo_pct,
+            hi_pct,
             frames: 0,
             prev_hist: [0; 256],
             shot_start: 0,
@@ -108,8 +122,8 @@ impl ShotDetector {
     }
 
     fn close_shot(&mut self) {
-        let levels =
-            lut::percentile_levels(&self.shot_hist).expect("open shot has at least one frame");
+        let levels = lut::percentile_levels_pct(&self.shot_hist, self.lo_pct, self.hi_pct)
+            .expect("open shot has at least one frame");
         self.done.push(Shot { first_frame: self.shot_start, cut: self.shot_cut, levels });
         self.shot_hist = [0; 256];
     }
@@ -121,6 +135,11 @@ mod tests {
 
     const NPX: u64 = 100;
 
+    /// Detector at the embedded defaults (what `params.toml` ships).
+    fn default_detector() -> ShotDetector {
+        ShotDetector::with_params(NPX, SHOT_SAD_THRESHOLD_MILLI, MIN_SHOT_FRAMES, 2, 98)
+    }
+
     /// All 100 pixels in one bin.
     fn solid(bin: usize) -> [u64; 256] {
         let mut h = [0u64; 256];
@@ -130,7 +149,7 @@ mod tests {
 
     #[test]
     fn static_input_is_one_shot_no_cut() {
-        let mut det = ShotDetector::new(NPX);
+        let mut det = default_detector();
         for _ in 0..20 {
             det.push(&solid(10));
         }
@@ -143,12 +162,12 @@ mod tests {
 
     #[test]
     fn no_frames_no_shots() {
-        assert!(ShotDetector::new(NPX).finish().is_empty());
+        assert!(default_detector().finish().is_empty());
     }
 
     #[test]
     fn hard_cut_splits_with_cut_flag_and_per_shot_levels() {
-        let mut det = ShotDetector::new(NPX);
+        let mut det = default_detector();
         for _ in 0..10 {
             det.push(&solid(10));
         }
@@ -167,8 +186,8 @@ mod tests {
 
     #[test]
     fn min_shot_length_debounces_early_cut() {
-        // Cut fires at frame 3 < MIN_SHOT_FRAMES → suppressed, single shot.
-        let mut det = ShotDetector::with_params(NPX, SHOT_SAD_THRESHOLD_MILLI, 8);
+        // Cut fires at frame 3 < min_shot_frames → suppressed, single shot.
+        let mut det = ShotDetector::with_params(NPX, SHOT_SAD_THRESHOLD_MILLI, 8, 2, 98);
         for _ in 0..3 {
             det.push(&solid(10));
         }
@@ -191,7 +210,7 @@ mod tests {
         let mut shifted = solid(10);
         shifted[10] = 90;
         shifted[11] = 10;
-        let mut det = ShotDetector::new(NPX);
+        let mut det = default_detector();
         for i in 0..20 {
             det.push(if i % 2 == 0 { &base } else { &shifted });
         }

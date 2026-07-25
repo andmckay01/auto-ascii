@@ -419,6 +419,12 @@ fn hostile_header_fields_are_clean_errors() {
         (18, &[0, 0], "fps_den = 0"),
         (20, &[0, 0], "base_w = 0 (regression: downstream assert panic)"),
         (22, &[0, 0], "base_h = 0"),
+        // M2 review fix 1: odd/degenerate base dims → zero-dimension C plane
+        // → player Resampler::build panic (main.rs base_w == 1 case).
+        (20, &[1, 0], "base_w = 1 (regression: zero-width C plane panics resampler)"),
+        (22, &[1, 0], "base_h = 1"),
+        (20, &[63, 0], "base_w = 63 (odd)"),
+        (22, &[35, 0], "base_h = 35 (odd)"),
         (32, &[0], "plane_count = 0"),
         (32, &[9], "plane_count = 9"),
         (33, &[0], "codec = raw (unsupported)"),

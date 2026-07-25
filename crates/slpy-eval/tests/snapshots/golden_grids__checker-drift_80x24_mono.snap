@@ -1,0 +1,33 @@
+---
+source: crates/slpy-eval/tests/golden_grids.rs
+expression: s
+---
+checker-drift frame 7
+term: 80x24  viewport: 80x23  pads: L0 R0 T0 B1
+palette: mono  fg: none (glyph-only)
++--------------------------------------------------------------------------------+
+|tt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tt|
+|tt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tt|
+|tt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tt|
+|t1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1t|
+|t1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1t|
+|tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt|
+|tt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tt|
+|tt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tt|
+|tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt|
+|t1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1t|
+|t1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1t|
+|tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt|
+|tt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tt|
+|tt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tt|
+|tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt|
+|t1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1t|
+|t1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1t|
+|tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt|
+|tt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tt|
+|tt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tttt1tt|
+|ttfttttfttttfttttfttttfttttfttttfttttfttttfttttfttttfttttfttttfttttfttttfttttftt|
+|t1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1t|
+|t1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1tt1f1t|
+|                                                                                |
++--------------------------------------------------------------------------------+

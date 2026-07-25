@@ -31,6 +31,7 @@ use slpy_format::{
 
 use crate::extract::Extractor;
 use crate::ffmpeg::{BoxErr, DecodeParams, FrameStream, probe};
+use crate::params::Params;
 use crate::shots::{Shot, ShotDetector, luma_histogram};
 
 pub struct BuildArgs {
@@ -38,8 +39,9 @@ pub struct BuildArgs {
     pub output: PathBuf,
     pub ss: Option<f64>,
     pub t: Option<f64>,
-    pub fps: u16,
-    pub res: (u16, u16),
+    /// Effective tunables (params.toml + CLI overrides, validated) —
+    /// fps/res/encode profile/shot detection/levels all live here (PLAN §5).
+    pub params: Params,
 }
 
 /// Run one full decode pass, feeding every frame to `on_frame`. Returns the
@@ -111,7 +113,9 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
     if !args.input.is_file() {
         return Err(format!("input not found: {}", args.input.display()).into());
     }
-    let (w, h) = args.res;
+    args.params.validate()?;
+    let (w, h) = (args.params.build.base_w, args.params.build.base_h);
+    let fps = args.params.build.fps;
 
     // Stage 1 (PLAN §5): validate via ffprobe before spending a decode pass.
     let info = probe(&args.input)?;
@@ -123,18 +127,23 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
         info.duration_secs.map_or_else(|| "unknown duration".into(), |d| format!("{d:.2}s")),
         w,
         h,
-        args.fps
+        fps
     );
 
-    let params =
-        DecodeParams { input: &args.input, ss: args.ss, t: args.t, fps: args.fps, w, h };
+    let params = DecodeParams { input: &args.input, ss: args.ss, t: args.t, fps, w, h };
     let extractor = Extractor::new(w, h);
 
     // ---- pass 1: shot boundaries + per-shot levels --------------------------
     let pb = spinner("pass 1/2: shot detection + per-shot levels");
     let npx = w as usize * h as usize;
     let mut luma = vec![0u8; npx];
-    let mut detector = ShotDetector::new(npx as u64);
+    let mut detector = ShotDetector::with_params(
+        npx as u64,
+        args.params.shots.sad_threshold_milli,
+        args.params.shots.min_shot_frames,
+        args.params.levels.lo_pct,
+        args.params.levels.hi_pct,
+    );
     let frames = stream_frames(&params, |rgb| {
         extractor.luma(rgb, &mut luma);
         detector.push(&luma_histogram(&luma));
@@ -187,18 +196,24 @@ fn encode_pass(
     expected_frames: u64,
     part: &Path,
 ) -> Result<(), BoxErr> {
-    let (w, h) = args.res;
+    let (w, h) = (args.params.build.base_w, args.params.build.base_h);
     let (aspect_num, aspect_den) = reduced_aspect(w, h);
     let opts = WriterOptions {
-        fps_num: args.fps,
+        fps_num: args.params.build.fps,
         fps_den: 1,
         base_w: w,
         base_h: h,
         aspect_num,
         aspect_den,
         plane_ids: vec![plane_id::Y, plane_id::C],
-        // M1 profile from the writer default: temporal delta, keyframe
-        // interval 60, zstd-19, CRCs on (PLAN §4).
+        // M1 v1 profile, now data-driven (params.toml [build]): temporal
+        // delta with the configured keyframe cadence and zstd level; the
+        // embedded defaults reproduce the M1 profile byte-identically
+        // (keyframe 60, zstd-19, CRCs on — PLAN §4).
+        zstd_level: args.params.build.zstd_level,
+        // Validated to 1..=255 (params.rs); the header field is u8 (PLAN §4).
+        keyframe_ivl: u8::try_from(args.params.build.keyframe_ivl)
+            .expect("keyframe_ivl validated to 1..=255"),
         ..WriterOptions::default()
     };
     let meta = Meta {

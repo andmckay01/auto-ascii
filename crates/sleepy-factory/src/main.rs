@@ -9,14 +9,22 @@
 //! the SLPY v1 writer (temporal delta + keyframes, zstd-19, CRCs).
 //! `ffprobe -print_format json` supplies metadata (`serde_json`).
 //!
-//! CLI shape per PLAN §5; `eval` and `sweep` land at M2 with slpy-eval.
-//! Progress/diagnostics go to stderr; stdout stays clean (inspect's report is
-//! the one stdout product).
+//! CLI shape per PLAN §5. M2 (item B) adds the agent socket: every tunable
+//! lives in params.toml (embedded defaults at the repo root, `--params`
+//! overrides, `params --dump` prints the effective config) and
+//! `sleepy-factory eval` builds corpus assets (cached by input+params sha),
+//! runs the real player pipeline headlessly and emits metrics JSON + an
+//! HTML contact sheet with optional baseline compare (`sweep` remains
+//! future work). Progress/diagnostics go to stderr; stdout stays clean
+//! (inspect's report and `params --dump` are the stdout products).
 
 mod build;
+mod eval;
 mod extract;
 mod ffmpeg;
 mod lut;
+mod params;
+mod sha256;
 mod shots;
 
 use std::path::PathBuf;
@@ -53,15 +61,16 @@ enum Cmd {
         /// Duration limit in seconds (ffmpeg `-t`).
         #[arg(long = "t", value_parser = parse_t)]
         t: Option<f64>,
-        /// Output frame rate (fps filter; header fps_num, fps_den = 1).
-        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=1000))]
-        fps: u16,
-        /// Stored plane resolution as WxH (PLAN §4 base res). Dimensions
-        /// must be even: the chroma plane C is stored at half res.
-        #[arg(long, default_value = "480x270", value_parser = parse_res)]
-        res: (u16, u16),
+        /// Output frame rate override (default: params.toml `build.fps`).
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=1000))]
+        fps: Option<u16>,
+        /// Stored plane resolution override as WxH (default: params.toml
+        /// `build.base_w/base_h`). Dimensions must be even and >= 2: the
+        /// chroma plane C is stored at half res (§4 geometry term).
+        #[arg(long, value_parser = parse_res)]
+        res: Option<(u16, u16)>,
         /// Tunables file (PLAN §5: every tunable lives in params.toml — the
-        /// agent socket). Accepted but unused at M0; defaults are compiled in.
+        /// agent socket). Missing keys keep the embedded defaults.
         #[arg(long)]
         params: Option<PathBuf>,
     },
@@ -69,6 +78,40 @@ enum Cmd {
     Inspect {
         /// Asset to inspect.
         asset: PathBuf,
+    },
+    /// Inspect the effective tunables: `sleepy-factory params --dump`
+    /// prints the merged config (embedded defaults + --params file) as TOML.
+    Params {
+        /// Tunables file to merge over the embedded defaults.
+        #[arg(long)]
+        params: Option<PathBuf>,
+        /// Print the effective config to stdout.
+        #[arg(long)]
+        dump: bool,
+    },
+    /// The agent socket (PLAN §5/§6, M2): build every video in --corpus
+    /// (cached by input+params sha), run the player pipeline headlessly,
+    /// emit metrics JSON (+ HTML contact sheet), optionally compare against
+    /// a baseline (nonzero exit on tolerance breach).
+    Eval {
+        /// Directory of corpus videos (non-recursive; mp4/mov/mkv/webm/avi).
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Tunables file (see `build --params`).
+        #[arg(long)]
+        params: Option<PathBuf>,
+        /// Baseline metrics JSON to compare against (runs/base.json).
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        /// Output metrics JSON path (e.g. runs/X.json).
+        #[arg(long)]
+        out: PathBuf,
+        /// Optional self-contained HTML contact sheet path (runs/X.html).
+        #[arg(long)]
+        html: Option<PathBuf>,
+        /// Asset cache directory, keyed by (input sha, params sha).
+        #[arg(long, default_value = "runs/cache")]
+        cache_dir: PathBuf,
     },
 }
 
@@ -103,19 +146,48 @@ fn parse_res(s: &str) -> Result<(u16, u16), String> {
     Ok((w, h))
 }
 
+/// Effective params: embedded defaults, --params file, then CLI overrides
+/// (the most specific wins); re-validated after the merge.
+fn effective_params(
+    path: Option<&std::path::Path>,
+    fps: Option<u16>,
+    res: Option<(u16, u16)>,
+) -> Result<params::Params, Box<dyn std::error::Error>> {
+    let mut p = params::Params::load(path)?;
+    if let Some(fps) = fps {
+        p.build.fps = fps;
+    }
+    if let Some((w, h)) = res {
+        p.build.base_w = w;
+        p.build.base_h = h;
+    }
+    p.validate()?;
+    Ok(p)
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.cmd {
         Cmd::Build { input, output, ss, t, fps, res, params } => {
-            if let Some(p) = &params {
-                eprintln!(
-                    "note: --params {} is accepted but unused at M1 (tunables land at M2)",
-                    p.display()
-                );
-            }
-            build::run(&build::BuildArgs { input, output, ss, t, fps, res })
+            effective_params(params.as_deref(), fps, res).and_then(|params| {
+                build::run(&build::BuildArgs { input, output, ss, t, params })
+            })
         }
         Cmd::Inspect { asset } => cmd_inspect(&asset),
+        Cmd::Params { params, dump } => effective_params(params.as_deref(), None, None)
+            .and_then(|p| {
+                if dump {
+                    print!("{}", p.dump());
+                    Ok(())
+                } else {
+                    Err("params: nothing to do (use --dump to print the effective config)".into())
+                }
+            }),
+        Cmd::Eval { corpus, params, baseline, out, html, cache_dir } => {
+            effective_params(params.as_deref(), None, None).and_then(|params| {
+                eval::run(&eval::EvalArgs { corpus, params, baseline, out, html, cache_dir })
+            })
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

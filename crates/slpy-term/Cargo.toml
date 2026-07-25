@@ -18,3 +18,10 @@ libc = { workspace = true }
 name = "slpy-term-harness"
 path = "src/bin/harness.rs"
 doc = false
+
+# M2 item C: per-tier escape-stream goldens (tests/tier_goldens.rs) render a
+# deterministic synthetic fixture frame through slpy-eval's fixture module.
+# This is a dev-dependency CYCLE (slpy-eval depends on slpy-term's lib) —
+# legal in cargo: dev-deps are not part of the package's own dep graph.
+[dev-dependencies]
+slpy-eval = { workspace = true }

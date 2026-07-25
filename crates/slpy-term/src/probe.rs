@@ -10,9 +10,21 @@
 //! or silence → conservative default (256-color, ASCII glyphs). Never hangs.
 //!
 //! Results are cached at `$XDG_CACHE_HOME/sleepytime/caps` keyed on
-//! `(TERM, TERM_PROGRAM, tmux?)`. Escape hatches: a forced tier (`--tier`)
-//! overrides the detected color tier, `--no-query` skips the volley
-//! entirely, `no_cache` bypasses the cache (tests).
+//! `(TERM, TERM_PROGRAM, COLORTERM, tmux?)` — COLORTERM is part of the key
+//! (M1 review low 3: a COLORTERM-stripped run, e.g. under a pipe wrapper,
+//! must not poison later runs where COLORTERM proves truecolor), and a
+//! cache hit can only *upgrade* the passive evidence of the current run,
+//! never downgrade it. Escape hatches: a forced tier (`--tier`) overrides
+//! the detected color tier, `--no-query` skips the volley entirely,
+//! `no_cache` bypasses the cache (tests).
+//!
+//! Straggler hygiene (M1 review low 2): replies still in flight at the
+//! deadline are consumed by a bounded quiet-gap grace drain (only when the
+//! terminal was already mid-answer — silent terminals return at the
+//! deadline unchanged), and [`volley_stragglers_possible`] tells the
+//! backend's event decoder to filter any reply fragments that arrive later
+//! still, so probe bytes never surface as key events (digits are seek
+//! bindings!).
 //!
 //! Capability tiers are color depth + glyph repertoire only — no
 //! throughput/latency classification (Scope amendment).
@@ -21,6 +33,7 @@ use std::fs;
 use std::io;
 use std::mem::MaybeUninit;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::ansi::write_all_fd;
@@ -28,6 +41,27 @@ use crate::caps::{Caps, ColorTier, GlyphFlags, GlyphSupportTier};
 
 /// Default reply deadline (PLAN §3.1: 150–250 ms local).
 pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Grace-drain quiet gap: once the deadline passed with a reply already in
+/// flight (some bytes arrived, no DA1 yet), keep consuming until the input
+/// has been quiet this long. Only extends the probe when bytes actually
+/// arrived — a silent terminal still returns at the deadline exactly.
+const STRAGGLER_QUIET: Duration = Duration::from_millis(150);
+/// Hard cap on the grace drain past the deadline (never hangs, PLAN §3.1).
+const STRAGGLER_GRACE_CAP: Duration = Duration::from_millis(1000);
+
+/// True when the last volley this process wrote timed out without its DA1
+/// sentinel — reply bytes may still arrive on stdin *after* [`probe_caps`]
+/// returned. `AnsiBackend` reads this to arm its event-decoder straggler
+/// filter (M1 review low 2: late reply fragments must never surface as key
+/// events). Reset on every probe; cache hits / `--no-query` / `!isatty`
+/// never leave stragglers (no volley was written).
+static VOLLEY_STRAGGLERS: AtomicBool = AtomicBool::new(false);
+
+/// See [`VOLLEY_STRAGGLERS`].
+pub(crate) fn volley_stragglers_possible() -> bool {
+    VOLLEY_STRAGGLERS.load(Ordering::Relaxed)
+}
 
 /// The active volley, sent as ONE write (PLAN §3.1). Order matters: DA1 last
 /// as sentinel.
@@ -383,6 +417,7 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
     caps.can_query = !opts.no_query;
 
     let hints = EnvHints::from_env();
+    VOLLEY_STRAGGLERS.store(false, Ordering::Relaxed);
     if opts.no_query {
         apply_passive(&mut caps, &hints);
     } else {
@@ -390,8 +425,7 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
         let cached = if opts.no_cache { None } else { cache_load(opts, &key) };
         if let Some(hit) = cached {
             apply_passive(&mut caps, &hints);
-            caps.color = hit.color;
-            caps.sync_2026 = hit.sync_2026;
+            apply_cache_hit(&mut caps, hit);
         } else {
             match run_volley(in_fd, out_fd, opts.timeout) {
                 Ok(replies) if replies.da1 => {
@@ -414,8 +448,10 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
                 }
                 // Timeout / silence / error: stay on the conservative
                 // default (PLAN §3.1 "!isatty or silence → dumb tier";
-                // never cache a non-answer).
-                _ => {}
+                // never cache a non-answer). The volley went out but its
+                // sentinel never came back — reply bytes may yet arrive, so
+                // arm the backend's straggler filter.
+                _ => VOLLEY_STRAGGLERS.store(true, Ordering::Relaxed),
             }
         }
     }
@@ -492,6 +528,7 @@ fn run_volley(in_fd: libc::c_int, out_fd: libc::c_int, timeout: Duration) -> io:
     let mut parser = ProbeParser::new();
     let deadline = Instant::now() + timeout;
     let mut buf = [0u8; 512];
+    let mut got_bytes = false;
     loop {
         let now = Instant::now();
         if parser.done() || now >= deadline {
@@ -511,11 +548,49 @@ fn run_volley(in_fd: libc::c_int, out_fd: libc::c_int, timeout: Duration) -> io:
         }
         let n = unsafe { libc::read(in_fd, buf.as_mut_ptr().cast(), buf.len()) };
         if n > 0 {
+            got_bytes = true;
             parser.feed(&buf[..n as usize]);
         } else if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
             continue;
         } else {
             break; // EOF or hard read error
+        }
+    }
+
+    // Grace drain (M1 review low 2): the deadline hit while the terminal was
+    // mid-answer (bytes arrived but no DA1). Those in-flight reply bytes
+    // MUST NOT leak into the app's input stream, where digits would trigger
+    // the 0–9 seek bindings — keep consuming until the input goes quiet for
+    // STRAGGLER_QUIET or the hard cap lapses. A late DA1 inside this window
+    // still upgrades caps (the replies are perfectly valid, just slow).
+    // Silent terminals (`!got_bytes`) skip this entirely: the probe returns
+    // at the deadline exactly as before.
+    if got_bytes && !parser.done() {
+        let cap = deadline + STRAGGLER_GRACE_CAP;
+        while Instant::now() < cap {
+            let mut pfd = libc::pollfd { fd: in_fd, events: libc::POLLIN, revents: 0 };
+            let rc = unsafe {
+                libc::poll(&mut pfd, 1, STRAGGLER_QUIET.as_millis() as i32)
+            };
+            if rc < 0 {
+                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                break;
+            }
+            if rc == 0 {
+                break; // quiet gap: nothing more in flight
+            }
+            let n = unsafe { libc::read(in_fd, buf.as_mut_ptr().cast(), buf.len()) };
+            if n > 0 {
+                if parser.feed(&buf[..n as usize]) {
+                    break; // late DA1: the volley is complete after all
+                }
+            } else if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            } else {
+                break;
+            }
         }
     }
 
@@ -537,11 +612,14 @@ fn run_volley(in_fd: libc::c_int, out_fd: libc::c_int, timeout: Duration) -> io:
 }
 
 // ---------------------------------------------------------------------------
-// Cache: $XDG_CACHE_HOME/sleepytime/caps, keyed on (TERM, TERM_PROGRAM, tmux?)
+// Cache: $XDG_CACHE_HOME/sleepytime/caps, keyed on
+// (TERM, TERM_PROGRAM, COLORTERM, tmux?)
 // ---------------------------------------------------------------------------
 
 const CACHE_FILE: &str = "caps";
-const CACHE_VERSION: &str = "1";
+/// Bumped 1 → 2 when COLORTERM joined the key (M1 review low 3) — v1 lines
+/// are ignored on load and dropped on the next store.
+const CACHE_VERSION: &str = "2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CacheEntry {
@@ -549,9 +627,37 @@ struct CacheEntry {
     sync_2026: bool,
 }
 
+/// Color-tier ordering for the no-downgrade rule (higher = more capable).
+fn tier_rank(t: ColorTier) -> u8 {
+    match t {
+        ColorTier::Mono => 0,
+        ColorTier::C16 => 1,
+        ColorTier::C256 => 2,
+        ColorTier::True => 3,
+    }
+}
+
+/// Merge a cache hit over freshly applied passive hints (M1 review low 3):
+/// the cached tier may only *upgrade* what this run's passive evidence
+/// already proves — a stale entry must never downgrade below COLORTERM/
+/// TERM-derived truth. `sync_2026` is cache-only knowledge (passive hints
+/// can never prove it), so the cached value is taken as-is.
+fn apply_cache_hit(caps: &mut Caps, hit: CacheEntry) {
+    if tier_rank(hit.color) > tier_rank(caps.color) {
+        caps.color = hit.color;
+    }
+    caps.sync_2026 = hit.sync_2026;
+}
+
 fn cache_key(h: &EnvHints) -> String {
     let clean = |s: &str| s.replace(['\t', '\n', '|'], "_");
-    format!("{}|{}|{}", clean(&h.term), clean(&h.term_program), u8::from(h.tmux))
+    format!(
+        "{}|{}|{}|{}",
+        clean(&h.term),
+        clean(&h.term_program),
+        clean(&h.colorterm),
+        u8::from(h.tmux)
+    )
 }
 
 fn cache_dir(opts: &ProbeOptions) -> Option<PathBuf> {
@@ -605,10 +711,15 @@ fn cache_store(opts: &ProbeOptions, key: &str, entry: &CacheEntry) {
         return;
     }
     let path = dir.join(CACHE_FILE);
+    // Keep only current-version lines for other keys (stale-version lines
+    // are unreadable anyway — self-cleaning).
     let mut lines: Vec<String> = fs::read_to_string(&path)
         .map(|t| {
             t.lines()
-                .filter(|l| l.split('\t').nth(1) != Some(key))
+                .filter(|l| {
+                    let mut f = l.split('\t');
+                    f.next() == Some(CACHE_VERSION) && f.next() != Some(key)
+                })
                 .map(str::to_owned)
                 .collect()
         })
@@ -748,6 +859,57 @@ mod tests {
             ..ProbeOptions::default()
         });
         assert_eq!(forced.color, ColorTier::Mono, "--tier overrides everything");
+    }
+
+    /// Regression (M1 review low 3, part 1): COLORTERM is part of the cache
+    /// key — a COLORTERM-stripped run (pipe wrappers, sudo, some multiplexer
+    /// launchers) stores under a *different* key and can never poison a
+    /// later run where COLORTERM proves truecolor.
+    #[test]
+    fn cache_key_includes_colorterm() {
+        let with = cache_key(&hints("xterm-kitty", "", "truecolor", ""));
+        let without = cache_key(&hints("xterm-kitty", "", "", ""));
+        assert_ne!(with, without, "stripped-COLORTERM run must use its own cache slot");
+
+        // And the stripped run's entry is invisible to the truecolor run.
+        let dir = std::env::temp_dir().join(format!("slpy-cache-ct-{}", std::process::id()));
+        let opts = ProbeOptions { cache_dir: Some(dir.clone()), ..ProbeOptions::default() };
+        cache_store(&opts, &without, &CacheEntry { color: ColorTier::C256, sync_2026: false });
+        assert_eq!(cache_load(&opts, &with), None, "poisoned key must not hit");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Regression (M1 review low 3, part 2): a cache hit may only upgrade —
+    /// it must never downgrade below what fresh passive evidence proves in
+    /// THIS run.
+    #[test]
+    fn cache_hit_never_downgrades_fresh_passive_evidence() {
+        // Fresh run proves truecolor via COLORTERM; stale hit says C256.
+        let mut caps = passive(&hints("xterm-256color", "", "truecolor", "en_US.UTF-8"));
+        assert_eq!(caps.color, ColorTier::True);
+        apply_cache_hit(&mut caps, CacheEntry { color: ColorTier::C256, sync_2026: true });
+        assert_eq!(caps.color, ColorTier::True, "cache hit must not downgrade");
+        assert!(caps.sync_2026, "sync_2026 is cache-only knowledge");
+
+        // Passive says C256; the cached volley result proved truecolor →
+        // the upgrade path (the whole point of the cache) still works.
+        let mut caps = passive(&hints("xterm-256color", "", "", "en_US.UTF-8"));
+        assert_eq!(caps.color, ColorTier::C256);
+        apply_cache_hit(&mut caps, CacheEntry { color: ColorTier::True, sync_2026: false });
+        assert_eq!(caps.color, ColorTier::True);
+        assert!(!caps.sync_2026);
+
+        // Equal tiers: unchanged.
+        let mut caps = passive(&hints("linux", "", "", "C"));
+        apply_cache_hit(&mut caps, CacheEntry { color: ColorTier::C16, sync_2026: false });
+        assert_eq!(caps.color, ColorTier::C16);
+    }
+
+    #[test]
+    fn tier_rank_orders_all_tiers() {
+        assert!(tier_rank(ColorTier::True) > tier_rank(ColorTier::C256));
+        assert!(tier_rank(ColorTier::C256) > tier_rank(ColorTier::C16));
+        assert!(tier_rank(ColorTier::C16) > tier_rank(ColorTier::Mono));
     }
 
     #[test]

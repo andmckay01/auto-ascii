@@ -1,0 +1,25 @@
+[package]
+name = "slpy-eval"
+description = "Sleepytime eval harness: ink-coverage rasterizer, downscale-SSIM, flicker score, damage/stage metrics, versioned JSON reports, baseline compare (PLAN §6)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# PLAN §8: metrics library. slpy-core for Grid/Cell/Resampler, slpy-term for
+# FrameStats (the SimBackend damage/bytes source), serde/serde_json for the
+# versioned report schema. slpy-format arrived with M2 item C: the
+# deterministic synthetic fixture builders (`fixtures` module) write SLPY
+# assets through SlpyWriter so committed goldens never depend on the corpus.
+[dependencies]
+slpy-core = { workspace = true }
+slpy-term = { workspace = true }
+slpy-format = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# M2 item C: cell-grid goldens (insta). The resize storm fuzz (item D)
+# lives in sleepy-player since the M2 review fix — the §6 invariants gate
+# the real Player, and tests/pipeline_parity.rs there pins FixtureRenderer
+# to it.
+[dev-dependencies]
+insta = { workspace = true }

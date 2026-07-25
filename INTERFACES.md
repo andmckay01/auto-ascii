@@ -12,11 +12,17 @@ crates/
   slpy-core       lib   deps: (none beyond std)
   slpy-term       lib   deps: slpy-core, crossterm, libc
   slpy-format     lib   deps: zstd, crc32fast, ciborium, serde(derive, META struct only)
-  sleepy-factory  bin   deps: slpy-format, clap, indicatif, serde_json
-  sleepy-player   bin   deps: slpy-core, slpy-term, slpy-format, memmap2, clap, anyhow
+  slpy-eval       lib   deps: slpy-core, slpy-term, slpy-format, serde, serde_json
+                        dev: insta, proptest   (NEW at M2; slpy-format added
+                        at item C for the synthetic fixture builders)
+  sleepy-factory  bin   deps: slpy-format, slpy-core, slpy-term, slpy-eval,
+                        sleepy-player(lib), clap, indicatif, serde, serde_json,
+                        toml, memmap2               (M2 item B additions)
+  sleepy-player   bin+lib  deps: slpy-core, slpy-term, slpy-format, memmap2,
+                        clap, anyhow   (lib target NEW at M2: `pipeline`
+                        module only — see the sleepy-player lib section)
 ```
 
-- `slpy-eval` deferred to M2 (not created).
 - Root workspace: resolver 3, edition 2024, `license = "MIT OR Apache-2.0"`,
   `[profile.release] opt-level = 3`, all versions via `[workspace.dependencies]`.
 - Factory deps `image`/`imageproc`/`ndarray`/`rayon` (PLAN §8) deliberately
@@ -114,9 +120,19 @@ pub fn probe_caps(&ProbeOptions) -> Caps;
 // valid → True; DECRPM 2026 Ps∈1..=4 → sync_2026; CSI 16 t → cell_px);
 // forced_tier overrides color last. Result cached at
 // $XDG_CACHE_HOME/sleepytime/caps (fallback ~/.cache) keyed on
-// (TERM, TERM_PROGRAM, tmux?); silence is never cached. The volley runs
-// under a Drop-guarded termios (echo/canon off) and drains stragglers so no
-// reply bytes leak into the app's input.
+// (TERM, TERM_PROGRAM, COLORTERM, tmux?) — M2 fix (M1 review low 3): key
+// includes COLORTERM, and a cache hit only ever UPGRADES the tier passive
+// evidence proves this run (never downgrades); silence is never cached.
+// The volley runs under a Drop-guarded termios (echo/canon off) and drains
+// stragglers so no reply bytes leak into the app's input. M2 fix (M1
+// review low 2): replies dribbling past the deadline are consumed by a
+// bounded quiet-gap grace drain (a late DA1 still upgrades caps; silent
+// terminals return at the deadline unchanged), and when the volley DID
+// time out sentinel-less, AnsiBackend's event pump arms a crate-private
+// straggler filter (~2 s window) that discards DCS-reply fragments
+// (Alt+P … Alt+'\') so late probe bytes never surface as key events
+// (digits are seek bindings). Both pty-tested (tests/pty_probe.rs:
+// probe-latereply, probe-straggler harness modes).
 pub struct ProbeParser;   // incremental VT reply parser (pure; scripted-byte tests)
 impl ProbeParser { pub fn new(); pub fn feed(&mut self, &[u8]) -> bool /*DA1 seen*/;
                    pub fn done(&self) -> bool; pub fn replies(&self) -> &ProbeReplies }
@@ -206,6 +222,12 @@ pub struct WriterOptions { ... same fields ... }
 // [Y], crc on). INTRA remains valid (M0 profile). new() now also rejects:
 // fps_num/fps_den == 0 (adversarial-review fix), plane ids outside the known
 // registry (writer needs geometry).
+// §4 GEOMETRY TERM (M2, review fix 1): base_w and base_h MUST be even and
+// >= 2 — the C plane lives at (base_w/2, base_h/2), so odd/degenerate base
+// dims imply a zero-dimension chroma plane (base_w == 1 → C width 0, which
+// panicked the player's Resampler::build). Enforced at writer new() AND
+// reader open() (and friendliest-first in factory --res/params validation);
+// no asset violating the rule can be produced or opened.
 impl SlpyWriter<W> {
   pub fn new(w, opts, meta: &Meta) -> Result<Self>;
   pub fn write_norm(&mut self, shots: &[ShotRecord]) -> Result<()>;
@@ -251,11 +273,240 @@ impl SlpyReader<'a> {
 }
 ```
 
+## slpy-eval (PLAN §6; M2 item A — metrics library, no I/O beyond serde)
+
+Library-only measurement primitives + the versioned JSON report schema.
+The driver that builds assets, runs SimBackend and writes `runs/*.json` +
+HTML contact sheets is `sleepy-factory eval` (M2 item B) — not this crate.
+
+```rust
+// coverage.rs — glyph ink-coverage table (§6 "rasterize through the stored
+// glyph-coverage tables"). Built-in conservative table derived from DejaVu
+// Sans Mono via ffmpeg drawtext at 64×128 px/cell (§3.4's raster size),
+// coverage = mean gray / 255 (antialiased ink integral); derivation script
+// committed at crates/slpy-eval/tools/derive_coverage.py, constants are the
+// artifact (no corpus/font dependency at test time). Covers all printable
+// ASCII (⊇ every shipped palette incl. the PLAN §3.4 mono ramp " .:coO8@").
+pub const CONSERVATIVE_COVERAGE: &[(char, f32)];  // 95 entries, sorted
+pub struct CoverageTable;   // sorted entries + max; per-font tables at M5
+impl CoverageTable {
+  pub fn conservative() -> &'static CoverageTable;
+  pub fn from_entries(Vec<(char, f32)>) -> CoverageTable; // panics: empty/dup/!0..=1
+  pub fn coverage(&self, char) -> Option<f32>;
+  pub fn coverage_or_fallback(&self, char) -> f32;  // unknown → 0.5·max (mid-gray)
+  pub fn max_coverage/len/is_empty();
+}
+
+// raster.rs — Grid<Cell> → grayscale. Cell block = constant value
+// g·luma(fg) + (1−g)·luma(bg), g = min(coverage·gain, 1); no sub-cell glyph
+// shape (measures exactly what the compositor controls, at cell granularity).
+pub struct GrayImage;  // u16 dims, row-major u8
+impl GrayImage { pub fn new/from_raw(w, h, Vec<u8>)/w/h/get/as_slice;
+                 pub fn crop(x, y, w, h) -> GrayImage }  // drop letterbox pads
+pub fn luma8(Rgb) -> u8;  // gamma-space Rec.709, integer fixed-point
+pub struct RasterOptions { pub cell_w_px: u16, pub cell_h_px: u16,
+                           pub normalize_ink: bool }
+// Default: 1×2 px/cell (1:2 cell aspect, §3.2) + normalize_ink = true
+// (gain = 1/max_coverage: metric compares in relative ink — raw physical
+// coverage tops out ~0.26 and would drown SSIM's luminance term).
+pub fn rasterize(&Grid<Cell>, &CoverageTable, &RasterOptions) -> GrayImage;
+
+// ssim.rs — mean SSIM per Wang/Bovik/Sheikh/Simoncelli, IEEE TIP 13(4) 2004:
+// 11×11 Gaussian window σ=1.5 (the paper's choice over 8×8 uniform — no
+// blocking artifacts, comparable to every reference impl), K1=.01 K2=.03
+// L=255, valid-mode windows, no variance clamping (keeps ssim(x,x) == 1.0
+// bit-exact). Images < 11 px on a side: single uniform global window.
+pub const SSIM_WINDOW: usize = 11;  pub const SSIM_SIGMA: f64 = 1.5;
+pub fn ssim(&GrayImage, &GrayImage) -> f64;        // panics on dim mismatch
+pub fn downscale_ssim(rendered: &GrayImage, src_luma: &[u8],
+                      src_w: u16, src_h: u16) -> f64;
+// = §6 downscale-SSIM: source resampled to rendered dims through slpy-core's
+// own Resampler (same box-average semantics as the player), then ssim.
+// Pass the viewport-cropped raster (GrayImage::crop) — pads are not scored.
+
+// flicker.rs — §6 flicker score (M3 gate ≤ 2 switches/cell/s). Streaming;
+// compares Cell::ch only (color-only changes aren't flicker); a grid-dim
+// change resets the pair state (resize legitimately reglyphs everything).
+// Static-segment selection is the driver's job (it has the NORM shot table).
+pub struct FlickerAccum;
+impl FlickerAccum { pub fn new(); pub fn push(&mut self, &Grid<Cell>);
+  pub fn switches/cell_pairs() -> u64;
+  pub fn switches_per_cell_frame() -> Option<f64>;
+  pub fn score(&self, fps: f64) -> Option<f64> }   // switches/cell/SECOND
+
+// stats.rs — damage/bytes aggregation from slpy-term FrameStats + stage timers.
+pub struct DamageStats { frames, dropped_frames: u32, bytes_total: u64,
+  avg_bytes_per_frame: f64, max_bytes_per_frame: u32,
+  avg_damage_rate, max_damage_rate: f64 /*fraction of grid, 0..=1*/,
+  avg_write_ms: f64, bytes_per_sec: f64 }          // serde
+pub fn aggregate_frame_stats(&[FrameStats], grid_cells: u32, fps: f64)
+    -> DamageStats;                                // empty slice → zeros
+pub enum Stage { Decode, Resample, Compose, Present }  // §3.6 stages; ALL, as_str
+pub struct StageStat { frames: u32, mean_ms, max_ms: f64 }       // serde
+pub struct StageTimesMs { decode, resample, compose, present: StageStat } // serde
+pub struct StageAccum;  // record(Stage, Duration) → report() -> StageTimesMs
+
+// report.rs — versioned JSON schema (the §5 agent socket's machine half).
+// Deterministic serialization (no timestamps/host info in the body; BTreeMap
+// keys sorted); additive fields don't bump the version (serde defaults).
+pub const SCHEMA_VERSION: u32 = 1;
+pub struct EvalReport { schema_version: u32, generator: String,
+                        clips: Vec<ClipReport> }   // new/to_json/from_json/clip
+pub struct ClipReport { name: String, frames: u32, fps: f64,
+                        grid_cols, grid_rows: u16, metrics: ClipMetrics }
+pub struct ClipMetrics {                            // all-default, additive
+  ssim: Option<f64>, flicker_switches_per_cell_sec: Option<f64>,
+  shot_count: Option<u32>, cut_count: Option<u32>,   // NORM roster (M2 review
+  keyframe_count: Option<u32>, asset_bytes: Option<u64>, // fix 4a: factory-
+                                                     // tunable regressions
+                                                     // must be visible)
+  damage_by_tier: BTreeMap<String, DamageStats>,   // keys = ColorTier canon
+  stage_ms: Option<StageTimesMs> }
+
+// compare.rs — baseline compare (M2 acceptance 4). Direction-aware;
+// improvements always pass; metric/clip/tier present in baseline but missing
+// from current → FAIL (coverage must not silently shrink); new-in-current →
+// ignored. Zero baseline + fractional tolerance: nonzero current fails.
+pub struct Tolerances { ssim_max_drop: f64,            // default 0.02 (abs)
+  flicker_max_increase: f64,                           // 0.5 sw/cell/s (abs)
+  bytes_frac_max_increase: f64,                        // 0.20
+  damage_rate_max_increase: f64,                       // 0.05 (abs)
+  stage_ms_frac_max_increase: f64,                     // 0.50 (wall-clock is
+                                                       // noisy; item E gates
+                                                       // precisely)
+  shot_structure_max_delta: f64,                       // 0.0 (abs, BOTH
+                                                       // directions — shot/
+                                                       // cut_count changes
+                                                       // are deliberate acts)
+  keyframes_frac_max_drop: f64,                        // 0.0 (drop only;
+                                                       // increases pass)
+  asset_bytes_frac_max_increase: f64 }                 // 0.20 (bloat only)
+                                                       // — serde defaults:
+                                                       // params.toml may
+                                                       // override a subset
+pub struct MetricDelta { clip, metric: String, baseline, current, delta: f64,
+                         pass: bool }
+pub struct CompareReport { pass: bool, deltas: Vec<MetricDelta>,
+                           notes: Vec<String> }        // + failures()
+pub fn compare_reports(current, baseline: &EvalReport, &Tolerances)
+    -> CompareReport;
+
+// fixtures.rs — NEW at M2 item C: deterministic synthetic fixtures + golden
+// render support (repo rule: committed goldens reproducible WITHOUT the
+// corpus). Pure integer plane generators → SlpyWriter in memory (no ffmpeg,
+// no files, no floats). Test support: invalid assets PANIC (not Result).
+pub const FIXTURE_BASE_W/H: u16 = 192/108;   // 16:9, C plane 96×54 RGB565
+pub const FIXTURE_FRAMES: u32 = 72;          // 30 fps, keyframes every 24
+pub const FIXTURE_KEYFRAME_IVL: u8 = 24;
+pub const HARD_CUT_FRAME: u32 = 36;          // mid-GOP shot boundary
+pub enum Fixture { GradientMotion, HardCut, CheckerDrift }  // + ALL, name()
+pub fn luma_plane/chroma_plane(Fixture, frame: u32) -> Vec<u8>;  // pure
+pub fn shot_records(Fixture) -> Vec<ShotRecord>;  // HardCut: 2 shots, CUT
+pub fn build_fixture(Fixture) -> Vec<u8>;    // full SLPY v1 (Y+C, delta,
+                                             // zstd-19, CRCs, NORM), byte-
+                                             // deterministic (unit-tested)
+pub enum GoldenPalette { AsciiCoarse, AsciiFine, MonoGlyphOnly }
+    // + ALL, name(), is_glyph_only(). Mono mirrors the player's Mono path:
+    // no chroma decode, width-selected base ramp, glyph-only serialization
+    // (PLAN §3.4 palette 8 arrives at M3).
+pub struct FixtureRenderer<'a>;  // player-pipeline replay on public APIs,
+                                 // pinned cell-for-cell to the REAL Player by
+                                 // sleepy-player/tests/pipeline_parity.rs
+                                 // (M2 review fix 4c — goldens transitively
+                                 // cover the shipping renderer via that pin)
+impl FixtureRenderer<'a> {      // decode(seq roll/FIDX seek)→resample→NORM
+  pub fn new(asset: &'a [u8], GoldenPalette) -> Self;   // LUT→compose
+  pub fn reflow(&mut self, cols, rows);   // viewport@aspect 2.0 + taps + grid
+  pub fn render(&mut self, frame: u32) -> &Grid<Cell>;  // BLANK below 32×9
+  pub fn viewport() -> Option<Viewport>;  pub fn frame_count() -> u32;
+  pub fn resampler_dims() -> Option<((u16,u16),(u16,u16))>;  // fuzz invariant
+  pub fn grid(&self) -> &Grid<Cell>;
+}
+pub fn snapshot(title, term: (u16,u16), GoldenPalette, Option<Viewport>,
+                &Grid<Cell>) -> String;
+    // the committed cell-grid golden serialization: header + glyph grid
+    // framed in |…| + FNV-1a 64 digest of each row's fg (r,g,b) bytes
+    // (glyph-only palettes omit the fg section)
+```
+
+## sleepy-player lib (`sleepy_player::pipeline`) — NEW at M2 (item B)
+
+The binary crate gained a lib target so `sleepy-factory eval` drives the
+EXACT player frame pipeline headlessly (metrics must measure the real
+renderer, not a reimplementation — decision recorded in note 14). The
+binary keeps the CLI/clock/tty; the pipeline is pure w.r.t. both.
+
+```rust
+// pipeline.rs — moved verbatim from main.rs (M0/M1 semantics unchanged)
+pub struct StageNs { pub decode, resample, compose, present: u64 } // ns, Copy
+pub struct Drained { pub quit: bool, pub jump_digit: Option<u8> }
+pub struct Player<'a>;   // decode → resample → NORM LUT → compose → present
+impl<'a> Player<'a> {
+  pub fn new(reader: SlpyReader<'a>, cell_aspect: f64, repaint_full: bool,
+             want_color: bool) -> anyhow::Result<Player<'a>>;
+  pub fn reflow<B: Backend>(&mut self, backend: &mut B, cols, rows);
+  pub fn drain_events<B: Backend>(&mut self, backend: &mut B) -> Drained;
+  pub fn render_present<B: Backend>(&mut self, backend: &mut B, frame_idx: u32)
+      -> anyhow::Result<FrameStats>;
+  // Read-only accessors added for the eval driver (M2):
+  pub fn frame_count() -> u32;        pub fn viewport() -> Option<Viewport>;
+  pub fn grid() -> &Grid<Cell>;       // composed frame incl. letterbox pads
+  pub fn luma_src() -> &[u8];         // decoded source Y (SSIM source side)
+  pub fn levels_lut() -> &[u8; 256];  // active per-shot NORM LUT
+  pub fn stage() -> StageNs;          // cumulative §3.6 stage wall times
+  pub fn resampler_dims() -> Option<((u16,u16),(u16,u16))>;
+      // (src, dst) of the luma resampler — M2 review fix 4c: the resize
+      // fuzz (tests/resize_fuzz.rs, moved here from slpy-eval) asserts the
+      // §6 realloc invariants on THIS player, and needs the tap-table dims
+}
+pub fn build_levels_lut(lut: &mut [u8; 256], levels: Option<PlaneLevels>);
+pub fn unpack_rgb565(src: &[u8], r, g, b: &mut [u8]);
+pub fn compose_cells(luma, chroma: Option<(&[u8],&[u8],&[u8])>, vp, ramp,
+                     out: &mut Grid<Cell>);
+pub fn draw_enlarge_card(grid: &mut Grid<Cell>);
+```
+
+The M4 embeddable API will grow from here; until then nothing else in the
+crate is `pub`.
+
 ## Binaries
 
-- `sleepy-factory` (PLAN §5): subcommands `build <in> -o <out> [--ss T]
-  [--t T] [--fps N] [--res WxH] [--params]`, `inspect <asset>` (`eval`/`sweep`
-  at M2). M1 build = two passes over the identical ffmpeg rgb24 decode:
+- `sleepy-factory` (PLAN §5), CLI as of M2 (item B):
+  `build <in> -o <out> [--ss T] [--t T] [--fps N] [--res WxH] [--params F]`,
+  `inspect <asset>`, `params --dump [--params F]`,
+  `eval --corpus <dir> [--params F] [--baseline B.json] --out X.json
+  [--html X.html] [--cache-dir D]` (`sweep` remains future work).
+  **params.toml contract:** the committed repo-root `params.toml` is
+  embedded via `include_str!` and IS the default config; `--params FILE`
+  overrides any key subset (serde defaults; unknown keys are hard errors);
+  CLI `--fps`/`--res` override last; `params --dump` prints the effective
+  merged TOML. Tables: `[build] fps/base_w/base_h/zstd_level/keyframe_ivl`,
+  `[shots] sad_threshold_milli/min_shot_frames`, `[levels] lo_pct/hi_pct`,
+  `[eval] grid_cols/grid_rows/max_frames/ssim_every/contact_frames` +
+  `[eval.tolerances]` (slpy-eval `Tolerances` subset). `build.keyframe_ivl`
+  is u32 in params with a validate() range of 1..=255 (M2 review fix 4a:
+  the wire field is u8; the acceptance drill value 600 must be a clean
+  range error, not a serde type error). In-code defaults and
+  the committed file are pinned to each other by unit test; the default
+  build output is byte-pinned by tests/m2_params_eval.rs (determinism
+  guard). **eval flow:** per corpus video (sorted, non-recursive) — asset
+  cached under `--cache-dir` keyed `(input sha256, build-params sha256,
+  pipeline source fingerprint)` (eval-only knobs excluded via
+  `Params::build_fingerprint`; the fingerprint is an FNV-1a 64 over all
+  sleepy-factory + slpy-format `src/*.rs`, emitted by build.rs — M2 review
+  fix 4d: factory/format code changes must invalidate cached corpus
+  assets) → three
+  SimBackend passes in pure diff mode (truecolor: SSIM sampled every
+  `ssim_every` frames + cut-segmented flicker + per-stage times + damage;
+  256/mono: damage only; plus per-asset structure metrics
+  shot/cut/keyframe counts + asset bytes) → `--out` JSON (`EvalReport`
+  schema v1) →
+  optional `--baseline` compare (tolerances from params; artifacts still
+  written on breach; nonzero exit) → optional `--html` self-contained
+  contact sheet (base64 PNGs via ffmpeg subprocess: fps-normalized source
+  frame vs viewport-cropped render raster at `contact_frames` timestamps
+  + per-metric deltas vs baseline).
+  M1 build semantics unchanged: two passes over the identical ffmpeg rgb24 decode:
   **pass 1** L\* luma → shot detection (256-bin histogram SAD ≥ 0.30
   normalized, min shot length 8 frames — every honored boundary is a hard
   cut) + per-shot pooled p2/p98; **pass 2** NORM (levels applied at RUNTIME —
@@ -307,9 +558,10 @@ impl SlpyReader<'a> {
    (`" .,:;i1tfLCG08@"`); the glyph string is authoritative → 15 entries.
 3. **`Cell` layout**: 11 payload bytes + 1 tail pad = 12 B (`align 4`),
    compile-time asserted; constructors (`new`/`BLANK`) leave padding zeroed.
-4. **Factory deps trimmed** for M0 (see edges above). **`slpy-eval` absent**
-   (M2). **NORM chunk not written at M0** (tag + registry reserved here so M1
-   is additive, not a format break).
+4. **Factory deps trimmed** for M0 (see edges above). **NORM chunk not
+   written at M0** (tag + registry reserved here so M1 is additive, not a
+   format break). `slpy-eval` was absent M0/M1; created at M2 (item A,
+   note 12).
 5. **Implemented now** (beyond skeletons): viewport math + worked-example
    tests, ramps, Grid/Cell, header/chunk byte codecs + layout-freezing tests,
    EventQueue, SimBackend construction/throttle/capture plumbing,
@@ -397,3 +649,189 @@ impl SlpyReader<'a> {
     `compose_luma` is unchanged. Player integration tests:
     `tests/m1_sim.rs` (tier byte checks via `--sim-dump`,
     seek-vs-sequential byte identity, runtime NORM per shot, probe no-hang).
+12. **slpy-eval created** (M2 item A agent): metrics library per its section
+    above — nothing else in the workspace consumes it yet (the
+    `sleepy-factory eval` wiring is M2 item B). Decisions recorded:
+    (a) built-in coverage constants derived from DejaVu Sans Mono (the
+    conservative default; per-font tables M5) via the committed
+    `crates/slpy-eval/tools/derive_coverage.py` — constants are the
+    committed artifact, the script is the reproducible reference;
+    (b) rasterizer default = 1×2 px/cell with ink normalization
+    (gain = 1/max_coverage) so SSIM compares relative ink, not the ~4×
+    physically-darkened raw coverage; `normalize_ink = false` gives the raw
+    physical model;
+    (c) SSIM = Wang et al. 2004 reference form (11×11 Gaussian σ 1.5,
+    valid-mode, unclamped variances → `ssim(x,x) == 1.0` bit-exact;
+    < 11 px images fall back to one global uniform window);
+    (d) report JSON carries no timestamps/host info — reruns on identical
+    inputs are byte-identical (determinism-guard friendly); provenance
+    lives in run filenames and git;
+    (e) deps: slpy-core + slpy-term (FrameStats is consumed directly, no
+    mirror type) + serde/serde_json. insta/proptest/criterion arrive with
+    M2 items C/D/E, not here.
+13. **M2 items C/D landed** (goldens + resize fuzzing agent). New surface:
+    `slpy_eval::fixtures` (see the slpy-eval section) — three deterministic
+    synthetic fixture assets (gradient-motion / hard-cut / checker-drift,
+    192×108 Y+C, 72 frames, keyframe 24, production delta+zstd-19+CRC
+    profile) and a player-pipeline-parity renderer used by every committed
+    golden and the fuzzer. Committed goldens (all corpus-free):
+    (a) 27 insta cell-grid snapshots at
+    `crates/slpy-eval/tests/snapshots/` — 3 fixtures × 80×24 / 206×58 /
+    320×90 × ascii-coarse / ascii-fine / mono-glyph-only; serialization =
+    glyph grid verbatim + per-row FNV-1a 64 fg digest; re-bless with
+    `INSTA_UPDATE=always cargo test -p slpy-eval --test golden_grids`;
+    (b) per-tier escape-stream byte goldens at
+    `crates/slpy-term/tests/goldens/gradient_f10_48x12_{truecolor,256,16,
+    mono}.ansi` (one fixture frame, 48×12, sync_2026 wrap on, byte-exact;
+    re-bless with `SLPY_UPDATE_GOLDENS=1`); slpy-term gained a
+    DEV-dependency on slpy-eval for this (a legal dev-dep cycle — dev-deps
+    sit outside the package's own dep graph).
+    Resize fuzzing (§6 invariant set as explicit assertions; MOVED to
+    `crates/sleepy-player/tests/resize_fuzz.rs` against the real `Player`
+    by review fix 4c, note 17):
+    originally `crates/slpy-eval/tests/resize_fuzz.rs` — random
+    1×1..=1000×1000 resize
+    storms through `SimBackend::push_event` + player-style coalescing drain,
+    asserting viewport ⊆ terminal, aspect error minimal-among-candidates
+    (spec formula recomputed), pads symmetric ±1, backend/painter/resampler/
+    grid realloc'd consistently, tap rebuild < 1 ms (min-of-3, worst
+    observed 0.038 ms), and full-frame present after every resize; 256 cases
+    under plain `cargo test`, `PROPTEST_CASES=10000` in scripts (measured
+    84 s wall on this box). The same letterbox/aspect invariants also run
+    directly on `compute_viewport` in
+    `crates/slpy-core/tests/viewport_props.rs` (proptest, incl. full-u16
+    dims and degenerate aspects). Workspace: `insta` + `proptest` added to
+    `[workspace.dependencies]`; `[profile.dev.package.*] opt-level = 3` for
+    the four libs + zstd so goldens/fuzz stay fast under `cargo test`
+    (debug-assertions unchanged). No existing `pub` signature changed.
+14. **M2 item B + review fix 1 landed** (params/eval agent). Decisions
+    recorded:
+    (a) **pipeline extraction over binary-shelling**: `sleepy-player` gained
+    a lib target (`pipeline` module, section above) and `sleepy-factory
+    eval` drives `Player` in-process against `SimBackend` — chosen over
+    calling the player binary because the metrics need per-frame
+    `Grid<Cell>` access (rasterize/flicker) and per-frame `FrameStats`,
+    which the `--sim` JSON line cannot carry; `main.rs` is now CLI-only and
+    no pipeline semantics changed (truecolor byte-parity untouched);
+    (b) **params.toml** per the Binaries section — single source of truth
+    enforced three ways: in-code `Default`s reference the shipped constants
+    (`WriterOptions::default`, `BASE_W/H`, shot/level consts), a unit test
+    pins the committed file to `Params::default()`, and the determinism
+    guard byte-pins the default build (synthetic lavfi fixture, committed
+    sha; corpus grass check is the `#[ignore]`d integration half);
+    (c) **§4 geometry term** (M1 review fix 1): base dims even and >= 2,
+    enforced writer + reader + factory (see slpy-format section); player
+    regression test drives the binary on a header-patched asset (base_w ∈
+    {1, 0, odd}) and asserts clean error, no panic;
+    (d) **eval SSIM source side** was the per-shot-NORMALIZED luma (the
+    player's own `levels_lut()` applied to `luma_src()`) — SUPERSEDED by
+    review fix 4a (note 17): that construction self-graded (both sides of
+    SSIM saw the factory's levels damage). The source side is now the raw
+    `luma_src()` normalized by eval-owned per-frame p2/p98 percentiles,
+    independent of the tunables under test; the NORM stretch itself is
+    still not scored;
+    (e) **flicker segmentation**: fresh `FlickerAccum` per NORM cut, counts
+    summed across segments — scene cuts contribute zero pairs (§6 "static
+    segments" without needing per-shot metric plumbing);
+    (f) **damage passes run `repaint_full = false`** (pure diff): damage
+    rate is meaningless under invalidate-every-frame; the player's
+    interactive default (`--repaint full`) is unchanged;
+    (g) eval cache under `runs/cache/` (gitignored via `*.slpy`), key
+    `(input sha256, build-params sha256)` with a hand-rolled tested SHA-256
+    (`sha256.rs`) — no new hashing dependency; PNGs for the contact sheet
+    come from the ffmpeg subprocess (rawvideo→png and
+    scale/fps/select→png), so no image crate either; `toml` is the one new
+    workspace dependency.
+15. **M2 item E + review fixes 2/3 landed** (perf-gate agent). No `pub`
+    signature changed. Perf gates (PLAN §6): criterion benches at
+    `crates/sleepy-player/benches/pipeline.rs` over the REAL pipeline —
+    `decode_delta_roll_480x270` (Y+C sequential delta roll),
+    `resample_480x270_to_300x80`, `compose_300x80` (viewport inside the
+    300×80 grid), `present_truecolor_300x80` / `present_256_300x80`
+    (full-invalidate SimBackend present), `e2e_frame_300x80`
+    (`Player::render_present`) — fed by a deterministic synthetic 480×270
+    Y+C delta asset built in-memory (corpus-free rule). Thresholds are
+    COMMITTED at `perf/thresholds.toml` (median-of-3-runs ×1.30 on the
+    reference box; ids mirror the bench ids); `scripts/perf-gate.sh
+    [--no-run]` compares criterion's `estimates.json` medians and exits
+    nonzero on any breach or missing estimate. The unthrottled end-to-end
+    gate is a plain test, `crates/sleepy-player/tests/perf_fps.rs`
+    (asserts ≥ 24 fps @300×80 truecolor; ~500 fps measured under the dev
+    profile). Verified: 5 consecutive green gate runs (incl. under load
+    ~16) and a deliberate spin in `Resampler::apply` tripping the gate
+    (then reverted byte-clean). Probe fixes (M1 review lows 2/3) per the
+    updated probe.rs section: grace drain + `AnsiBackend` straggler event
+    filter (crate-private; armed via a probe-side atomic only when the
+    volley timed out sentinel-less), COLORTERM in the caps-cache key
+    (CACHE_VERSION 1→2, stale lines self-clean on store) and
+    upgrade-only cache-hit merge. New harness modes `probe-latereply` /
+    `probe-straggler`; regression tests in `tests/pty_probe.rs` (scripted
+    post-deadline reply burst → zero surfaced key events, playback keys
+    still live) plus unit tests for the filter state machine and the
+    cache-merge rule. `criterion` (default-features off +
+    `cargo_bench_support`) added to `[workspace.dependencies]`.
+16. **M2 item F landed** (integrator). `scripts/eval.sh` is the one-command
+    loop (PLAN §6/§7): workspace tests (incl. all goldens, the 256-case
+    fuzz and the ≥24 fps e2e gate) → clippy `-D warnings` → resize fuzz at
+    `FUZZ_CASES` (default 2000; acceptance depth `FUZZ_CASES=10000`) →
+    `scripts/perf-gate.sh` → corpus section. The corpus section runs ONLY
+    when the three canonical clips (corpus/README.md; gitignored,
+    local-only) are present — it assembles `target/eval-corpus/` symlinks
+    (grass-field-windy-mirror + sheep-counting-neroni-clips from
+    corpus/prepared/, silhouette-dance from corpus/) so `eval`'s
+    non-recursive scan never picks up prep-tool variants, runs
+    `sleepy-factory eval` against `runs/base.json` writing
+    `runs/latest.{json,html}`, then the `#[ignore]`d real-corpus
+    determinism guard (grass rebuild byte-identical to assets/). Absent
+    corpus → notice + skip (committed gates stay corpus-free).
+    `runs/base.json` + `runs/base.html` are the committed corpus baseline,
+    generated exactly that way (all three clips, default params,
+    `--cache-dir runs/cache`); stage_ms/write_ms fields are wall-clock and
+    vary run-to-run — the compare tolerances absorb that; every other
+    metric is deterministic (regeneration reproduced ssim/flicker/damage
+    bit-for-bit). No `pub` signature changed.
+17. **M2 adversarial-review fixes landed** (review-fix agent). Four
+    confirmed findings, each with regression tests:
+    (4a) **eval baseline blindness** [high]: `frame_ssim`'s source side no
+    longer runs through the player's `levels_lut()` (self-grading — a
+    params change that killed shot detection barely moved any gated
+    metric); it now normalizes raw `luma_src()` by eval-owned per-frame
+    p2/p98 percentiles (`reference_levels`, nearest-rank, constants in
+    eval.rs). `ClipMetrics` gained `shot_count`/`cut_count`/
+    `keyframe_count`/`asset_bytes` and `Tolerances` gained
+    `shot_structure_max_delta` (0.0, directionless) /
+    `keyframes_frac_max_drop` (0.0, drop-only) /
+    `asset_bytes_frac_max_increase` (0.20, bloat-only) — killed cut
+    detection, inflated keyframe cadence and zstd downgrades now trip the
+    compare on structure alone (verified live on the sheep clip vs
+    runs/base.json, and pinned by m2_params_eval drills on the synthetic
+    corpus). `BuildParams.keyframe_ivl` widened u8→u32 with validate()
+    range 1..=255 so the drill value 600 errors cleanly.
+    runs/base.json + base.html re-baselined (SSIM reference changed:
+    grass 0.6402, sheep 0.4272, silhouette 0.8983 + structure metrics).
+    (4b) **perf thresholds** [medium]: perf/thresholds.toml re-calibrated
+    from ×1.30 to ×1.15 over fresh 3-run medians — PLAN §6 promises
+    failure on >15% regressions, and at ×1.30 the mandated 20% drill was
+    arithmetically impossible. Verified: +20–25% spin in Resampler::apply
+    trips the gate (resample −8.4% headroom → FAIL); reverted; two
+    consecutive clean-gate PASS runs.
+    (4c) **goldens/fuzz exercised a replica** [medium]: the resize fuzz
+    moved to `crates/sleepy-player/tests/resize_fuzz.rs` and now drives
+    the real `Player` through `drain_events`/`reflow`/`render_present`
+    (new read-only accessor `Player::resampler_dims`); new
+    `crates/sleepy-player/tests/pipeline_parity.rs` pins FixtureRenderer
+    to Player cell-for-cell (3 fixtures × grid sweep incl. all golden
+    sizes + 48×12 tier-golden size × color/mono × seq/seek/cut frames ×
+    mid-run reflows), so the 27 insta goldens + 4 tier goldens
+    transitively cover the shipping renderer (mutation-tested: dropping
+    reflow's ramp update fails parity). sleepy-player gained dev-deps
+    slpy-eval + proptest; slpy-eval dropped its proptest dev-dep;
+    scripts/eval.sh fuzz section now targets sleepy-player.
+    (4d) **eval cache staleness** [medium]: the eval asset cache key
+    gained a third component — `SLPY_PIPELINE_FINGERPRINT`, an FNV-1a 64
+    over every `.rs` in sleepy-factory/src + slpy-format/src emitted by
+    the new `crates/sleepy-factory/build.rs` — so pipeline code changes
+    invalidate cached corpus assets (over-invalidation by eval-driver
+    edits is accepted as the safe direction). Existing runs/cache entries
+    were migrated to the new names after the grass byte-identity guard
+    proved output unchanged.

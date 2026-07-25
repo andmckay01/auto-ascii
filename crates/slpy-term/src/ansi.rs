@@ -13,8 +13,84 @@ use slpy_core::{Cell, Grid};
 use crate::backend::Backend;
 use crate::caps::{Caps, ColorTier, FrameStats};
 use crate::event::{Event, EventQueue, Key};
+use crate::probe;
 use crate::render::FramePainter;
 use crate::restore;
+
+/// How long after session start the straggler filter stays armed. Probe
+/// replies from a live local terminal arrive within tens of ms; anything
+/// this late is not coming (and the filter must never tax steady-state
+/// input handling).
+const STRAGGLER_WINDOW: Duration = Duration::from_secs(2);
+/// A reply burst is contiguous; once the input has been quiet this long the
+/// fragment is over and real keys pass again.
+const STRAGGLER_QUIET: Duration = Duration::from_millis(150);
+
+/// Filters late probe-reply fragments out of the interactive event stream
+/// (M1 review low 2). Armed only when [`probe::volley_stragglers_possible`]
+/// says the volley timed out without its DA1 sentinel, and only for
+/// [`STRAGGLER_WINDOW`] after session start.
+///
+/// Why events, not bytes: crossterm owns stdin once the session starts. It
+/// silently absorbs straggling CSI replies (unknown finals error out its
+/// parser; `CSI ? … c` becomes an internal PrimaryDeviceAttributes event),
+/// but a DCS reply — XTVERSION `ESC P > | text ST`, XTGETTCAP
+/// `ESC P 1 + r … ST` — is tokenized as Alt+P, then the payload as PLAIN
+/// CHARACTER KEYS (digits! — the 0–9 seek bindings), then Alt+`\`. This
+/// state machine recognizes exactly that shape: Alt+P opens a discard span
+/// that ends at the ST (`Alt+\`) or after a quiet gap, so a late reply
+/// never surfaces as key events while real typing still works.
+struct StragglerFilter {
+    /// Armed until this instant; `None` = disarmed (fast path).
+    armed_until: Option<Instant>,
+    /// Inside a DCS reply fragment — discard key events until ST/quiet gap.
+    in_reply: bool,
+    last_discard: Instant,
+}
+
+impl StragglerFilter {
+    fn new(armed: bool, now: Instant) -> StragglerFilter {
+        StragglerFilter {
+            armed_until: armed.then(|| now + STRAGGLER_WINDOW),
+            in_reply: false,
+            last_discard: now,
+        }
+    }
+
+    /// True → `ev` is a probe-reply fragment and must be discarded.
+    fn should_discard(&mut self, ev: &CtEvent, now: Instant) -> bool {
+        let Some(until) = self.armed_until else { return false };
+        if now >= until {
+            self.armed_until = None; // window over: disarm permanently
+            return false;
+        }
+        let CtEvent::Key(k) = ev else { return false }; // resize etc. always pass
+        if k.kind == KeyEventKind::Release {
+            return false;
+        }
+        if self.in_reply && now.duration_since(self.last_discard) > STRAGGLER_QUIET {
+            self.in_reply = false; // burst over; what follows is real input
+        }
+        if self.in_reply {
+            self.last_discard = now;
+            // ST (ESC \ → Alt+'\') closes the fragment; lone-ESC-split ST
+            // surfaces as Esc + '\' — both swallowed here, the quiet gap
+            // closes the span either way.
+            if k.modifiers.contains(KeyModifiers::ALT) && k.code == KeyCode::Char('\\') {
+                self.in_reply = false;
+            }
+            return true;
+        }
+        // DCS intro: crossterm tokenizes the reply's `ESC P` as Alt+P.
+        if k.modifiers.contains(KeyModifiers::ALT) && matches!(k.code, KeyCode::Char('P' | 'p'))
+        {
+            self.in_reply = true;
+            self.last_discard = now;
+            return true;
+        }
+        false
+    }
+}
 
 /// ANSI escape-stream backend over stdout (PLAN §3.1).
 ///
@@ -28,6 +104,8 @@ pub struct AnsiBackend {
     events: EventQueue,
     /// Shared diff/assembly pipeline — identical code to `SimBackend`.
     painter: FramePainter,
+    /// Late-probe-reply event filter (M1 review low 2).
+    straggler: StragglerFilter,
     /// Session entered and not yet restored (`shutdown` flips this once).
     active: bool,
 }
@@ -81,6 +159,9 @@ impl AnsiBackend {
             caps,
             events: EventQueue::new(),
             painter: FramePainter::new(cols, rows),
+            // Armed iff the probe volley timed out without its DA1 sentinel
+            // this run — late reply bytes may still hit stdin (review low 2).
+            straggler: StragglerFilter::new(probe::volley_stragglers_possible(), Instant::now()),
             active: true,
         })
     }
@@ -205,11 +286,16 @@ impl Backend for AnsiBackend {
     }
 
     /// Pumps all pending crossterm events (zero-timeout poll) into the queue,
-    /// then hands it to the caller (PLAN §3.6 step 1).
+    /// then hands it to the caller (PLAN §3.6 step 1). Late probe-reply
+    /// fragments are dropped by the straggler filter before mapping — probe
+    /// bytes must never become key events (M1 review low 2).
     fn events(&mut self) -> &mut EventQueue {
         while let Ok(true) = crossterm::event::poll(Duration::ZERO) {
             match crossterm::event::read() {
                 Ok(ev) => {
+                    if self.straggler.should_discard(&ev, Instant::now()) {
+                        continue;
+                    }
                     if let Some(mapped) = map_event(ev) {
                         self.events.push(mapped);
                     }
@@ -381,6 +467,90 @@ mod tests {
             libc::close(rd);
             libc::close(wr);
         }
+    }
+
+    /// Exactly how crossterm tokenizes a straggling DCS reply: `ESC P` →
+    /// Alt(+Shift)+P, payload → plain char keys, `ESC \` → Alt+'\'.
+    fn dcs_fragment_events(payload: &str) -> Vec<CtEvent> {
+        let mut evs = vec![CtEvent::Key(KeyEvent::new(
+            KeyCode::Char('P'),
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ))];
+        evs.extend(payload.chars().map(|c| {
+            let m = if c.is_uppercase() { KeyModifiers::SHIFT } else { KeyModifiers::NONE };
+            CtEvent::Key(KeyEvent::new(KeyCode::Char(c), m))
+        }));
+        evs.push(CtEvent::Key(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::ALT)));
+        evs
+    }
+
+    /// Regression (M1 review low 2): a late XTVERSION/XTGETTCAP reply —
+    /// which crossterm surfaces as Alt+P + plain chars (digits = the 0–9
+    /// seek bindings!) + Alt+'\' — must be discarded wholesale, while a real
+    /// key after a quiet gap still passes.
+    #[test]
+    fn straggler_filter_discards_late_dcs_reply_fragments() {
+        let t0 = std::time::Instant::now();
+        let mut f = StragglerFilter::new(true, t0);
+
+        // Whole burst arrives "at once" (same pump): every event discarded.
+        let mut now = t0 + Duration::from_millis(300);
+        for ev in dcs_fragment_events(">|kitty(0.32.2)") {
+            assert!(f.should_discard(&ev, now), "reply fragment must be discarded: {ev:?}");
+            now += Duration::from_millis(1);
+        }
+
+        // A second fragment (XTGETTCAP reply, digits everywhere) too.
+        for ev in dcs_fragment_events("1+r524742=38") {
+            assert!(f.should_discard(&ev, now), "reply fragment must be discarded: {ev:?}");
+            now += Duration::from_millis(1);
+        }
+
+        // Real playback key AFTER a quiet gap: passes.
+        let x = CtEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(!f.should_discard(&x, now + Duration::from_millis(400)));
+    }
+
+    /// The quiet gap ends an unterminated fragment (reply cut mid-payload —
+    /// e.g. the ST never arrives): user keys must not be eaten forever.
+    #[test]
+    fn straggler_filter_quiet_gap_ends_unterminated_fragment() {
+        let t0 = std::time::Instant::now();
+        let mut f = StragglerFilter::new(true, t0);
+        let alt_p = CtEvent::Key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::ALT));
+        let five = CtEvent::Key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE));
+
+        let now = t0 + Duration::from_millis(100);
+        assert!(f.should_discard(&alt_p, now));
+        assert!(f.should_discard(&five, now + Duration::from_millis(10)), "payload digit eaten");
+        // No ST ever arrives; after the quiet gap the same digit is real input.
+        assert!(!f.should_discard(&five, now + Duration::from_millis(500)));
+    }
+
+    /// Resize events pass even mid-fragment (never drop a SIGWINCH), a
+    /// disarmed filter passes everything (probe saw its DA1 → no stragglers
+    /// possible), and the armed window expires.
+    #[test]
+    fn straggler_filter_scope_is_bounded() {
+        let t0 = std::time::Instant::now();
+        let alt_p = CtEvent::Key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::ALT));
+        let digit = CtEvent::Key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::NONE));
+
+        // Disarmed: nothing is ever discarded.
+        let mut off = StragglerFilter::new(false, t0);
+        assert!(!off.should_discard(&alt_p, t0 + Duration::from_millis(10)));
+
+        // Armed: resize passes mid-fragment.
+        let mut f = StragglerFilter::new(true, t0);
+        let now = t0 + Duration::from_millis(50);
+        assert!(f.should_discard(&alt_p, now));
+        assert!(!f.should_discard(&CtEvent::Resize(100, 40), now + Duration::from_millis(1)));
+
+        // Window expiry disarms permanently — even an Alt+P is real input.
+        let late = t0 + STRAGGLER_WINDOW + Duration::from_millis(1);
+        let mut f = StragglerFilter::new(true, t0);
+        assert!(!f.should_discard(&alt_p, late));
+        assert!(!f.should_discard(&digit, late + Duration::from_millis(1)));
     }
 
     #[test]

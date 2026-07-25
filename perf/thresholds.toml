@@ -1,0 +1,44 @@
+# M2 item E (PLAN §6): committed criterion perf gates.
+#
+# Keys mirror the bench IDs in crates/sleepy-player/benches/pipeline.rs;
+# scripts/perf-gate.sh runs that bench suite and fails (nonzero exit) when
+# any criterion median (target/criterion/<id>/new/estimates.json,
+# median.point_estimate) exceeds its max_median_ns.
+#
+# Calibration (reference box: 4-core Linux, Rust 1.97.1, 2026-07-25):
+# max_median_ns = measured median-of-medians over 3 consecutive runs ×1.15
+# (M2 review fix: PLAN §6 says "CI fails on >15% regression", so the margin
+# must sit BELOW 1.20 or the acceptance drill — a deliberate 20% regression
+# tripping the gate — is arithmetically impossible; the old ×1.30 headroom
+# let real 20–29% regressions land silently). Criterion medians are stable
+# to ~±3% run-to-run on this box (spread checked at calibration), so 15%
+# still clears the noise floor. measured_median_ns is informational;
+# re-calibrate BOTH fields together, deliberately, on the reference box only.
+#
+# Sanity vs the PLAN §3.6 stage budget @300×80: decode < 0.5 ms, resample
+# < 1 ms, composite < 2 ms, present < 1.5 ms — every threshold below sits
+# comfortably inside its budget.
+
+[bench.decode_delta_roll_480x270]
+max_median_ns = 104000
+measured_median_ns = 90817
+
+[bench.resample_480x270_to_300x80]
+max_median_ns = 329000
+measured_median_ns = 286486
+
+[bench.compose_300x80]
+max_median_ns = 58000
+measured_median_ns = 50134
+
+[bench.present_truecolor_300x80]
+max_median_ns = 915000
+measured_median_ns = 795268
+
+[bench.present_256_300x80]
+max_median_ns = 1275000
+measured_median_ns = 1108784
+
+[bench.e2e_frame_300x80]
+max_median_ns = 1844000
+measured_median_ns = 1603269

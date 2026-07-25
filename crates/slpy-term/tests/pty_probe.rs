@@ -177,6 +177,93 @@ fn no_query_sends_no_volley_bytes() {
     assert_eq!(field(&line, "stray"), "0");
 }
 
+fn write_master(master: RawFd, bytes: &[u8]) {
+    let n = unsafe { libc::write(master, bytes.as_ptr().cast(), bytes.len()) };
+    assert_eq!(n as usize, bytes.len(), "failed to type into the pty");
+}
+
+/// Regression (M1 review low 2, grace drain): the terminal answers slowly,
+/// dribbling reply bytes across the deadline. The probe's quiet-gap grace
+/// drain must consume every straggling byte (stray=0 — nothing left for the
+/// app's input stream) and still use the late DA1 to upgrade caps.
+#[test]
+fn probe_grace_drain_consumes_replies_dribbling_past_deadline() {
+    let (pty, mut child) = spawn_harness("probe-latereply");
+    let mut out = Vec::new();
+    // Wait for the full volley (DA1 query is its tail), then answer slowly.
+    wait_until_contains(pty.master, &mut out, b"\x1b[c");
+
+    // XTVERSION promptly (inside the 200 ms window: got_bytes = true)...
+    write_master(pty.master, b"\x1bP>|kitty(0.32.2)\x1b\\");
+    // ...then the DECRPM reply one byte every 40 ms — the deadline passes
+    // mid-reply, but every 40 ms gap is far below the 150 ms quiet gap.
+    for b in b"\x1b[?2026;2$y" {
+        std::thread::sleep(Duration::from_millis(40));
+        write_master(pty.master, &[*b]);
+    }
+    // Finally XTGETTCAP + cell px + the DA1 sentinel, well past the deadline.
+    std::thread::sleep(Duration::from_millis(40));
+    write_master(pty.master, b"\x1bP1+r524742=38\x1b\\\x1b[6;20;10t\x1b[?62;c");
+
+    wait_until_contains(pty.master, &mut out, b"PROBE-DONE");
+    wait_child_success(&mut child);
+
+    let line = probe_done_line(&out);
+    let ms: u64 = field(&line, "ms").parse().unwrap();
+    assert!(ms > 200, "probe must have kept draining past the 200 ms deadline: {line}");
+    assert_eq!(field(&line, "color"), "True", "late replies still upgrade: {line}");
+    assert_eq!(field(&line, "sync"), "true", "{line}");
+    assert_eq!(field(&line, "cellpx"), "10x20", "{line}");
+    assert_eq!(field(&line, "stray"), "0", "no straggler byte may leak to the app: {line}");
+}
+
+/// Regression (M1 review low 2, event filter): the reply burst arrives only
+/// AFTER the probe gave up entirely — the classic straggler. Once the
+/// session is up, the burst reaches crossterm's decoder, which would
+/// surface the DCS payload as plain key events (digits = seek bindings,
+/// 't'/'y' letters, Alt combos). The backend's straggler filter must
+/// discard every one of them, and real playback keys typed after a quiet
+/// gap must still arrive.
+#[test]
+fn late_probe_replies_never_surface_as_key_events() {
+    let (pty, mut child) = spawn_harness("probe-straggler");
+    let mut out = Vec::new();
+
+    // Silence until the probe times out (150 ms harness deadline)...
+    wait_until_contains(pty.master, &mut out, b"PROBE-DONE");
+    // ...and the AnsiBackend session is up (raw mode: no echo loops).
+    wait_until_contains(pty.master, &mut out, b"SESSION-READY");
+
+    // NOW the terminal finally answers: the full kitty-style burst.
+    write_master(
+        pty.master,
+        b"\x1bP>|kitty(0.32.2)\x1b\\\x1b[?2026;2$y\x1bP1+r524742=38\x1b\\\x1b[6;20;10t\x1b[?62;c",
+    );
+
+    // Quiet gap, then a real playback key — it must still work.
+    std::thread::sleep(Duration::from_millis(450));
+    write_master(pty.master, b"x");
+    wait_until_contains(pty.master, &mut out, b"EV=char:x");
+
+    // Quit still works too.
+    write_master(pty.master, b"q");
+    wait_until_contains(pty.master, &mut out, b"EV=quit");
+    wait_until_contains(pty.master, &mut out, b"SESSION-DONE");
+    wait_child_success(&mut child);
+
+    // The ONLY events the app may ever have seen: the 'x' key and the quit.
+    let text = String::from_utf8_lossy(&out);
+    let events: Vec<&str> = text
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("EV="))
+        .collect();
+    assert_eq!(
+        events,
+        vec!["char:x", "quit"],
+        "straggler reply fragments surfaced as events: {events:?}"
+    );
+}
+
 /// Scripted kitty-style replies: caps upgrade to truecolor + sync 2026 +
 /// cell px, the probe returns as soon as DA1 lands, and the replies are
 /// fully consumed (no strays for the app's event loop to choke on).

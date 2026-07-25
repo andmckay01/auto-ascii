@@ -373,3 +373,39 @@ fn probe_flags_never_hang_headless() {
     assert!(ok, "escape hatches failed: {stderr}");
     assert!(stdout.contains("\"tier\":\"16\""), "sim JSON tier: {stdout}");
 }
+
+/// M2 review fix 1 (player main.rs:202 low): an asset whose header claims a
+/// degenerate base width (base_w == 1 → C plane width 0) used to reach the
+/// resampler and PANIC at `Resampler::build`. The rule is now "base dims
+/// even and >= 2", enforced by the SLPY reader (and writer), so the player
+/// must fail with a clean "not a valid SLPY asset" error — never a panic.
+#[test]
+fn degenerate_base_dims_are_a_clean_player_error() {
+    let asset = TmpFile::new("degenerate.slpy");
+    write_chroma_asset(&asset.0, 3);
+
+    // Valid asset plays fine before tampering.
+    let (ok, _, stderr) = run_player(&[asset.0.to_str().unwrap(), "--sim", "80x24:1"]);
+    assert!(ok, "pristine asset must play: {stderr}");
+
+    // Patch header base_w (offset 20, LE u16) — the reported base_w == 1
+    // case, plus odd and zero variants of both dims.
+    let pristine = fs::read(&asset.0).unwrap();
+    for (off, val, what) in [
+        (20usize, 1u16, "base_w = 1 (zero-width C plane)"),
+        (22, 1, "base_h = 1 (zero-height C plane)"),
+        (20, 479, "base_w odd"),
+        (22, 0, "base_h = 0"),
+    ] {
+        let mut bytes = pristine.clone();
+        bytes[off..off + 2].copy_from_slice(&val.to_le_bytes());
+        fs::write(&asset.0, &bytes).unwrap();
+        let (ok, _, stderr) = run_player(&[asset.0.to_str().unwrap(), "--sim", "80x24:1"]);
+        assert!(!ok, "{what}: tampered asset must be rejected");
+        assert!(
+            stderr.contains("not a valid SLPY asset"),
+            "{what}: expected a clean reader error, got: {stderr}"
+        );
+        assert!(!stderr.contains("panicked"), "{what}: player panicked: {stderr}");
+    }
+}

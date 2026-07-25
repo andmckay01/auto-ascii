@@ -1,5 +1,4 @@
 # Sleepytime workspace — PLAN.md §2 (crate layout), §8 (dependencies).
-# slpy-eval is deferred to M2 and intentionally absent (PLAN §6, M0 scope).
 
 [workspace]
 resolver = "3"
@@ -7,6 +6,7 @@ members = [
     "crates/slpy-format",
     "crates/slpy-core",
     "crates/slpy-term",
+    "crates/slpy-eval",
     "crates/sleepy-factory",
     "crates/sleepy-player",
 ]
@@ -21,6 +21,8 @@ license = "MIT OR Apache-2.0"
 slpy-core = { path = "crates/slpy-core" }
 slpy-term = { path = "crates/slpy-term" }
 slpy-format = { path = "crates/slpy-format" }
+slpy-eval = { path = "crates/slpy-eval" }
+sleepy-player = { path = "crates/sleepy-player" } # lib target: pipeline reuse in sleepy-factory eval (M2)
 # slpy-format (PLAN §8): zstd + crc32fast + ciborium (META only; frame payloads hand-rolled)
 zstd = "0.13"
 crc32fast = "1.4"
@@ -31,10 +33,45 @@ crossterm = "0.29"
 libc = "0.2"
 # bins
 clap = { version = "4", features = ["derive"] }
+toml = "0.8"                                     # sleepy-factory params.toml (M2 item B)
 indicatif = "0.18"
 serde_json = "1"
 memmap2 = "0.9"
 anyhow = "1"
+# slpy-eval / dev (PLAN §8): goldens + resize fuzzing (M2 items C/D).
+insta = "1"
+proptest = "1"
+# M2 item E: criterion perf gates (thresholds committed at perf/thresholds.toml,
+# compared by scripts/perf-gate.sh). No plotters/rayon: the gate only reads
+# estimates.json — keeps the bench build lean.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 [profile.release]
+opt-level = 3
+
+# M2 harness speed (PLAN §6): goldens render 320×90 grids and the resize fuzz
+# pushes up to 10k cases × 1000×1000-cell presents through `cargo test` — the
+# per-cell hot loops live in these crates, so optimize them even under dev.
+# debug-assertions stay ON (only codegen opt changes); the zstd crates are
+# included so the fixture builders' zstd-19 encode stays fast at test time.
+[profile.dev.package.slpy-core]
+opt-level = 3
+[profile.dev.package.slpy-term]
+opt-level = 3
+[profile.dev.package.slpy-format]
+opt-level = 3
+[profile.dev.package.slpy-eval]
+opt-level = 3
+[profile.dev.package.zstd]
+opt-level = 3
+[profile.dev.package.zstd-safe]
+opt-level = 3
+[profile.dev.package.zstd-sys]
+opt-level = 3
+# M2 item B: `sleepy-factory eval` runs the player pipeline + the factory
+# extract loops over whole corpus clips under `cargo test`/debug — same
+# rationale as above (hot per-pixel/per-cell loops; debug-assertions stay on).
+[profile.dev.package.sleepy-player]
+opt-level = 3
+[profile.dev.package.sleepy-factory]
 opt-level = 3

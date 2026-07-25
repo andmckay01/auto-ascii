@@ -24,10 +24,12 @@ pub struct Levels {
     pub hi: u8,
 }
 
-/// p2/p98 of a 256-bin histogram (nearest-rank, rank = ⌈N·p/100⌉ clamped to
-/// ≥ 1 — pure integer math, deterministic). Returns `None` for an empty
+/// Percentile levels of a 256-bin histogram (nearest-rank, rank = ⌈N·p/100⌉
+/// clamped to ≥ 1 — pure integer math, deterministic). Percentiles are
+/// explicit since M2 (params.toml `[levels]`; [`LEVELS_LO_PCT`]/
+/// [`LEVELS_HI_PCT`] are the embedded defaults). Returns `None` for an empty
 /// histogram (the zero-frame edge case is rejected before this is reached).
-pub fn percentile_levels(hist: &[u64; 256]) -> Option<Levels> {
+pub fn percentile_levels_pct(hist: &[u64; 256], lo_pct: u64, hi_pct: u64) -> Option<Levels> {
     let total: u64 = hist.iter().sum();
     if total == 0 {
         return None;
@@ -43,7 +45,7 @@ pub fn percentile_levels(hist: &[u64; 256]) -> Option<Levels> {
         }
         255
     };
-    Some(Levels { lo: value_at(rank(LEVELS_LO_PCT)), hi: value_at(rank(LEVELS_HI_PCT)) })
+    Some(Levels { lo: value_at(rank(lo_pct)), hi: value_at(rank(hi_pct)) })
 }
 
 /// rgb24 → L\* byte, as three table lookups + two adds (PLAN §5 stage 3:
@@ -152,17 +154,20 @@ mod tests {
         hist[10] = 2;
         hist[100] = 96;
         hist[200] = 2;
-        let lv = percentile_levels(&hist).unwrap();
+        let lv = percentile_levels_pct(&hist, LEVELS_LO_PCT, LEVELS_HI_PCT).unwrap();
         // rank(p2) = 2 → cum reaches 2 at value 10; rank(p98) = 98 → value 100.
         assert_eq!(lv, Levels { lo: 10, hi: 100 });
+        // Custom percentiles move the ranks (params.toml [levels] socket).
+        let wide = percentile_levels_pct(&hist, 1, 100).unwrap();
+        assert_eq!(wide, Levels { lo: 10, hi: 200 });
     }
 
     #[test]
     fn percentiles_empty_and_degenerate() {
-        assert_eq!(percentile_levels(&[0u64; 256]), None);
+        assert_eq!(percentile_levels_pct(&[0u64; 256], 2, 98), None);
 
         let mut hist = [0u64; 256];
         hist[77] = 12345; // constant input: p2 == p98 (player treats as identity)
-        assert_eq!(percentile_levels(&hist), Some(Levels { lo: 77, hi: 77 }));
+        assert_eq!(percentile_levels_pct(&hist, 2, 98), Some(Levels { lo: 77, hi: 77 }));
     }
 }

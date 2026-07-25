@@ -103,9 +103,16 @@ impl<'a> SlpyReader<'a> {
         }
         // Hostile-input hardening (M1 adversarial-review fixes): zero dims
         // previously hit a downstream assert panic; zero fps hit a
-        // divide-by-zero Duration panic in the player.
-        if header.base_w == 0 || header.base_h == 0 {
-            return Err(SlpyError::Corrupt("base dimensions must be nonzero"));
+        // divide-by-zero Duration panic in the player. Tightened at M2
+        // (review fix 1): base dims must be EVEN and >= 2 — the C plane is
+        // (base_w/2, base_h/2), and e.g. base_w == 1 handed the player a
+        // zero-width chroma plane that panicked Resampler::build.
+        if header.base_w < 2
+            || header.base_h < 2
+            || !header.base_w.is_multiple_of(2)
+            || !header.base_h.is_multiple_of(2)
+        {
+            return Err(SlpyError::Corrupt("base dimensions must be even and >= 2"));
         }
         if header.fps_num == 0 || header.fps_den == 0 {
             return Err(SlpyError::Corrupt("fps_num and fps_den must be nonzero"));

@@ -397,6 +397,13 @@ fn writer_rejects_bad_options() {
         WriterOptions { keyframe_ivl: 0, ..WriterOptions::default() },
         WriterOptions { base_w: 0, ..WriterOptions::default() },
         WriterOptions { base_h: 0, ..WriterOptions::default() },
+        // M2 review fix 1: base dims must be even and >= 2 — odd/degenerate
+        // dims give the C plane a zero dimension (base_w == 1 → C width 0)
+        // and panicked the player's resampler.
+        WriterOptions { base_w: 1, ..WriterOptions::default() },
+        WriterOptions { base_h: 1, ..WriterOptions::default() },
+        WriterOptions { base_w: 479, ..WriterOptions::default() },
+        WriterOptions { base_h: 269, ..WriterOptions::default() },
         // M0 adversarial-review regression: zero fps must be rejected at the
         // source (player Duration::from_secs_f64(1/0.0) panic).
         WriterOptions { fps_num: 0, ..WriterOptions::default() },

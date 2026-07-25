@@ -17,3 +17,18 @@ anyhow = { workspace = true }
 [[bin]]
 name = "sleepy-player"
 path = "src/main.rs"
+
+# M2 item E: criterion perf gates over the real player pipeline (PLAN §6).
+# Thresholds live in perf/thresholds.toml; scripts/perf-gate.sh compares.
+# M2 review fix: slpy-eval (fixture assets) + proptest arrived with the
+# resize fuzz + pipeline-parity tests — the §6 invariants and the committed
+# goldens must exercise THIS crate's Player, not a test-harness replica.
+# (Dev-deps sit outside the package's own dep graph — no cycle.)
+[dev-dependencies]
+criterion = { workspace = true }
+slpy-eval = { workspace = true }
+proptest = { workspace = true }
+
+[[bench]]
+name = "pipeline"
+harness = false

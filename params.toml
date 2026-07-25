@@ -1,0 +1,62 @@
+# params.toml — every factory tunable (PLAN §5: "the agent socket").
+#
+# These are the embedded defaults: `sleepy-factory` compiles this exact file
+# in via include_str! and uses it when --params is not given, so committed
+# edits here change the default build. A --params FILE may override any
+# subset (missing keys keep these values); `sleepy-factory params --dump`
+# prints the effective merged config. A unit test pins this file to the
+# in-code defaults — keep the two in sync deliberately.
+#
+# Determinism guard: building with defaults must stay byte-identical to the
+# committed pipeline output (crates/sleepy-factory/tests/m2_params_eval.rs);
+# editing [build]/[shots]/[levels] is a deliberate re-baselining act.
+
+[build]
+# Output frame rate (ffmpeg fps filter; header fps_num, fps_den = 1).
+fps = 30
+# Stored plane resolution (PLAN §4 base res). Both dims MUST be even and
+# >= 2 — the C chroma plane is stored at half res (INTERFACES §4 terms).
+base_w = 480
+base_h = 270
+# zstd level for FRAM planes (PLAN §4: 19 — decode speed unaffected).
+zstd_level = 19
+# Keyframe cadence for the temporal-delta filter (PLAN §4: 60).
+# Range 1..=255 — the SLPY header stores this as u8.
+keyframe_ivl = 60
+
+[shots]
+# Cut threshold in thousandths of the max possible histogram SAD (PLAN §5
+# stage 2). Real hard cuts land ~500-1200, in-shot motion ~20-150.
+sad_threshold_milli = 300
+# Minimum shot length in frames (debounces flashes/strobes).
+min_shot_frames = 8
+
+[levels]
+# Per-shot percentile levels stored in NORM (PLAN §5 stage 5: p2/p98).
+lo_pct = 2
+hi_pct = 98
+
+[eval]
+# Terminal grid the eval render runs on (PLAN §6 reference scale).
+grid_cols = 300
+grid_rows = 80
+# Frames evaluated per clip per tier (0 = all frames).
+max_frames = 900
+# Downscale-SSIM is sampled every N-th frame (it is the expensive metric).
+ssim_every = 30
+# Contact-sheet snapshots per clip (source vs render, spread over the run).
+contact_frames = 3
+
+[eval.tolerances]
+# Baseline-compare tolerances (slpy-eval Tolerances; any subset overridable).
+ssim_max_drop = 0.02
+flicker_max_increase = 0.5
+bytes_frac_max_increase = 0.20
+damage_rate_max_increase = 0.05
+stage_ms_frac_max_increase = 0.50
+# Asset-structure gates (M2 review fix: factory-tunable regressions —
+# shot/cut roster changes, keyframe-cadence drops, encode bloat — must trip
+# the compare even when render-side metrics stay flat).
+shot_structure_max_delta = 0.0
+keyframes_frac_max_drop = 0.0
+asset_bytes_frac_max_increase = 0.20

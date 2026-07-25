@@ -1,0 +1,33 @@
+---
+source: crates/slpy-eval/tests/golden_grids.rs
+expression: s
+---
+gradient-motion frame 10
+term: 80x24  viewport: 80x23  pads: L0 R0 T0 B1
+palette: mono  fg: none (glyph-only)
++--------------------------------------------------------------------------------+
+|::;;;iii1111tttfffLLLLCCCGGG0000888@@@@@@@@@@888000GGGGCCCLLLffffttt111iiii;;;::|
+|;;iii1111tttfffLLLLCCCGGG0000888@@@@@@@@@@888000GGGGCCCLLLffffttt111iiii;;;:::,,|
+|ii1111tttfffLLLLCCCGGG0000888@@@@@@@@@@888000GGGGCCCLLLffffttt111iiii;;;:::,,,,.|
+|111tttffffLLLCCCGGGG000888@@@@@@@@@@888000GGGGCCCLLLffffttt111iiii;;;:::,,,,... |
+|tttffffLLLCCCGGGG000888@@@@@@@@@@8880000GGGCCCLLLLfffttt1111iii;;;::::,,,...    |
+|ffffLLLCCCGGGG000888@@@@@@@@@@8880000GGGCCCLLLLfffttt1111iii;;;::::,,,...       |
+|fLLLCCCGGGG000888@@@@@@@@@@8880000GGGCCCLLLLfffttt1111iii;;;::::,,,...          |
+|LCCCGGGG000888@@@@@@@@@@8880000GGGCCCLLLLfffttt1111iii;;;::::,,,...           ..|
+|CCGGG0008888@@@@@@@@@8880000GGGCCCLLLLfffttt1111iii;;;::::,,,...           ...,,|
+|GG0008888@@@@@@@@@8888000GGGCCCCLLLffftttt111iii;;;;:::,,,....          ...,,,,:|
+|008888@@@@@@@@@8888000GGGCCCCLLLffftttt111iii;;;;:::,,,....          ...,,,,:::;|
+|888@@@@@@@@@8888000GGGCCCCLLLffftttt111iii;;;;:::,,,....          ...,,,,:::;;;i|
+|@@@@@@@@@8888000GGGCCCCLLLffftttt111iii;;;;:::,,,....          ...,,,,:::;;;iiii|
+|@@@@@@8888000GGGCCCCLLLffftttt111iii;;;;:::,,,....          ...,,,,:::;;;iiii111|
+|@@@8888000GGGCCCCLLLffftttt111iii;;;;:::,,,....          ....,,,:::;;;;iii111ttt|
+|@888000GGGGCCCLLLffffttt111iiii;;;:::,,,,...          ....,,,:::;;;;iii111ttttff|
+|8000GGGGCCCLLLffffttt111iiii;;;:::,,,,...          ....,,,:::;;;;iii111ttttfffLL|
+|0GGGGCCCLLLffffttt111iiii;;;:::,,,,...          ....,,,:::;;;;iii111ttttfffLLLCC|
+|GGCCCLLLffffttt111iiii;;;:::,,,,...          ....,,,:::;;;;iii111ttttfffLLLCCCCG|
+|CCLLLffffttt111iiii;;;:::,,,,...           ...,,,::::;;;iii1111tttfffLLLLCCCGGG0|
+|LLLfffttt1111iii;;;::::,,,...           ...,,,::::;;;iii1111tttfffLLLLCCCGGG0000|
+|fffttt1111iii;;;::::,,,...           ...,,,::::;;;iii1111tttfffLLLLCCCGGG0000888|
+|ttt1111iii;;;::::,,,...           ...,,,::::;;;iii1111tttfffLLLLCCCGGG0000888@@@|
+|                                                                                |
++--------------------------------------------------------------------------------+

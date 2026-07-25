@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "generator": "sleepy-factory 0.1.0",
+  "clips": [
+    {
+      "name": "grass-field-windy-mirror",
+      "frames": 194,
+      "fps": 30.0,
+      "grid_cols": 300,
+      "grid_rows": 80,
+      "metrics": {
+        "ssim": 0.6402461029388631,
+        "flicker_switches_per_cell_sec": 7.626593264248705,
+        "shot_count": 1,
+        "cut_count": 0,
+        "keyframe_count": 4,
+        "asset_bytes": 15664589,
+        "damage_by_tier": {
+          "256": {
+            "frames": 194,
+            "dropped_frames": 0,
+            "bytes_total": 13742962,
+            "avg_bytes_per_frame": 70840.01030927835,
+            "max_bytes_per_frame": 88386,
+            "avg_damage_rate": 0.5326069587628861,
+            "max_damage_rate": 1.0,
+            "avg_write_ms": 0.002147871134020619,
+            "bytes_per_sec": 2125200.309278351
+          },
+          "mono": {
+            "frames": 194,
+            "dropped_frames": 0,
+            "bytes_total": 2717784,
+            "avg_bytes_per_frame": 14009.19587628866,
+            "max_bytes_per_frame": 24551,
+            "avg_damage_rate": 0.41627190721649504,
+            "max_damage_rate": 1.0,
+            "avg_write_ms": 0.0007260515463917526,
+            "bytes_per_sec": 420275.8762886598
+          },
+          "truecolor": {
+            "frames": 194,
+            "dropped_frames": 0,
+            "bytes_total": 56992273,
+            "avg_bytes_per_frame": 293774.6030927835,
+            "max_bytes_per_frame": 356871,
+            "avg_damage_rate": 0.6915504725085908,
+            "max_damage_rate": 1.0,
+            "avg_write_ms": 0.008680974226804125,
+            "bytes_per_sec": 8813238.092783505
+          }
+        },
+        "stage_ms": {
+          "decode": {
+            "frames": 194,
+            "mean_ms": 0.3164034742268041,
+            "max_ms": 1.202436
+          },
+          "resample": {
+            "frames": 194,
+            "mean_ms": 0.9499449587628865,
+            "max_ms": 3.289482
+          },
+          "compose": {
+            "frames": 194,
+            "mean_ms": 0.08535973711340207,
+            "max_ms": 0.257006
+          },
+          "present": {
+            "frames": 194,
+            "mean_ms": 0.7482313917525772,
+            "max_ms": 1.258621
+          }
+        }
+      }
+    },
+    {
+      "name": "sheep-counting-neroni-clips",
+      "frames": 900,
+      "fps": 30.0,
+      "grid_cols": 300,
+      "grid_rows": 80,
+      "metrics": {
+        "ssim": 0.4272048792989493,
+        "flicker_switches_per_cell_sec": 1.8340698324022346,
+        "shot_count": 5,
+        "cut_count": 4,
+        "keyframe_count": 15,
+        "asset_bytes": 11586690,
+        "damage_by_tier": {
+          "256": {
+            "frames": 900,
+            "dropped_frames": 0,
+            "bytes_total": 7975116,
+            "avg_bytes_per_frame": 8861.24,
+            "max_bytes_per_frame": 48185,
+            "avg_damage_rate": 0.09372712962962956,
+            "max_damage_rate": 1.0,
+            "avg_write_ms": 0.0007455377777777778,
+            "bytes_per_sec": 265837.2
+          },
+          "mono": {
+            "frames": 900,
+            "dropped_frames": 0,
+            "bytes_total": 2289292,
+            "avg_bytes_per_frame": 2543.657777777778,
+            "max_bytes_per_frame": 24551,
+            "avg_damage_rate": 0.07358550925925923,
+            "max_damage_rate": 1.0,
+            "avg_write_ms": 0.004717828888888889,
+            "bytes_per_sec": 76309.73333333334
+          },
+          "truecolor": {
+            "frames": 900,
+            "dropped_frames": 0,
+            "bytes_total": 42784184,
+            "avg_bytes_per_frame": 47537.98222222222,
+            "max_bytes_per_frame": 239641,
+            "avg_damage_rate": 0.1921906481481483,
+            "max_damage_rate": 1.0,
+            "avg_write_ms": 0.0015834666666666667,
+            "bytes_per_sec": 1426139.4666666666
+          }
+        },
+        "stage_ms": {
+          "decode": {
+            "frames": 900,
+            "mean_ms": 0.0993071888888889,
+            "max_ms": 2.560636
+          },
+          "resample": {
+            "frames": 900,
+            "mean_ms": 1.0026104011111112,
+            "max_ms": 4.336863
+          },
+          "compose": {
+            "frames": 900,
+            "mean_ms": 0.09314312222222222,
+            "max_ms": 2.711794
+          },
+          "present": {
+            "frames": 900,
+            "mean_ms": 0.21369050222222222,
+            "max_ms": 4.077625
+          }
+        }
+      }
+    },
+    {
+      "name": "silhouette-dance",
+      "frames": 900,
+      "fps": 30.0,
+      "grid_cols": 300,
+      "grid_rows": 80,
+      "metrics": {
+        "ssim": 0.8982702291450361,
+        "flicker_switches_per_cell_sec": 1.350533108866442,
+        "shot_count": 100,
+        "cut_count": 99,
+        "keyframe_count": 69,
+        "asset_bytes": 27066023,
+        "damage_by_tier": {
+          "256": {
+            "frames": 900,
+            "dropped_frames": 0,
+            "bytes_total": 6834139,
+            "avg_bytes_per_frame": 7593.487777777777,
+            "max_bytes_per_frame": 49842,
+            "avg_damage_rate": 0.06273722222222226,
+            "max_damage_rate": 1.0,
+            "avg_write_ms": 0.0005942966666666667,
+            "bytes_per_sec": 227804.63333333333
+          },
+          "mono": {
+            "frames": 900,
+            "dropped_frames": 0,
+            "bytes_total": 1723884,
+            "avg_bytes_per_frame": 1915.4266666666667,
+            "max_bytes_per_frame": 24551,
+            "avg_damage_rate": 0.05141666666666665,
+            "max_damage_rate": 1.0,
+            "avg_write_ms": 0.0003472711111111111,
+            "bytes_per_sec": 57462.8
+          },
+          "truecolor": {
+            "frames": 900,
+            "dropped_frames": 0,
+            "bytes_total": 14643202,
+            "avg_bytes_per_frame": 16270.224444444444,
+            "max_bytes_per_frame": 90347,
+            "avg_damage_rate": 0.07790444444444447,
+            "max_damage_rate": 1.0,
+            "avg_write_ms": 0.0009385411111111112,
+            "bytes_per_sec": 488106.73333333334
+          }
+        },
+        "stage_ms": {
+          "decode": {
+            "frames": 900,
+            "mean_ms": 0.05531623777777778,
+            "max_ms": 4.566208
+          },
+          "resample": {
+            "frames": 900,
+            "mean_ms": 1.02731322,
+            "max_ms": 6.857099
+          },
+          "compose": {
+            "frames": 900,
+            "mean_ms": 0.10174538777777778,
+            "max_ms": 6.109687
+          },
+          "present": {
+            "frames": 900,
+            "mean_ms": 0.11691670333333334,
+            "max_ms": 1.229106
+          }
+        }
+      }
+    }
+  ]
+}

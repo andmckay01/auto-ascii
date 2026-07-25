@@ -1,0 +1,67 @@
+---
+source: crates/slpy-eval/tests/golden_grids.rs
+expression: s
+---
+checker-drift frame 7
+term: 206x58  viewport: 206x58  pads: L0 R0 T0 B0
+palette: mono  fg: none (glyph-only)
++--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+|@. G@i t@L :@8  8@: L@t ;@0  @@. C@1 1@C ,@@  0@; f@f ;@0  @@, C@1 1@C .@@  0@; t@L :@8  8@: L@t i@G .@@. G@i t@L :@8  8@: L@t ;@0  @@. C@1 1@C ,@@  0@; f@f ;@0  @@, C@1 1@C .@@  0@; t@L :@8  8@: L@t i@G .@|
+|.08:.L8t.i8G..88,.C8i.t8L.:88..08;.f8f.;8G..88,.C81.18C.,88..G8;.f8f.;80..88:.L8t.18C.,88..G8i.t8L.:80..08:.L8t.i8G..88,.C8i.t8L.:88..08;.f8f.;8G..88,.C81.18C.,88..G8;.f8f.;80..88:.L8t.18C.,88..G8i.t8L.:80.|
+|0:,C01,t0L,;00,,G0;,f0t,i0C,,00:,L01,10L,:00,,G0i,f0f,i0G,,00:,L01,10L,:00,,C0i,t0f,;0G,,00;,L0t,10C,:00:,C01,t0L,;00,,G0;,f0t,i0C,,00:,L01,10L,:00,,G0i,f0f,i0G,,00:,L01,10L,:00,,C0i,t0f,;0G,,00;,L0t,10C,:0|
+|:CGi:fGt:1GL::GG;:LG1:tGf:;GG::CGi:fGt:iGC::GG;:LG1:1GL:;GG::CGi:tGf:iGC::GG;:fGt:1GL:;GG::LG1:tGf:iGC::CGi:fGt:1GL::GG;:LG1:tGf:;GG::CGi:fGt:iGC::GG;:LG1:1GL:;GG::CGi:tGf:iGC::GG;:fGt:1GL:;GG::LG1:tGf:iGC:|
+|C;;LC1;tCf;iCC;;LCi;fCt;1CL;;CCi;fC1;tCf;iCC;;LC1;tCt;1CL;;CCi;fCt;1Cf;iCC;;LC1;tCf;iCL;;CCi;fCt;1CL;;CC;;LC1;tCf;iCC;;LCi;fCt;1CL;;CCi;fC1;tCf;iCC;;LC1;tCt;1CL;;CCi;fCt;1Cf;iCC;;LC1;tCf;iCL;;CCi;fCt;1CL;;C|
+|iLL1itLti1LfiiLLiifLtitLfi1LLiifL1itLti1LfiiLL1ifLtitLfi1LLiifL1itLti1LfiiLL1ifLtitLfiiLLiifL1itLti1LLiiLL1itLti1LfiiLLiifLtitLfi1LLiifL1itLti1LfiiLL1ifLtitLfi1LLiifL1itLti1LfiiLL1ifLtitLfiiLLiifL1itLti1LLi|
+|f11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11f|
+|tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt|
+|1ff11tft1tff11ff11fft1tft11ff11ff11tft11ff11ff11fft1tff11ff11ff11tft11ff11ff11tft1tff11ff11fft1tft11ff11ff11tft1tff11ff11fft1tft11ff11ff11tft11ff11ff11fft1tff11ff11ff11tft11ff11ff11tft1tff11ff11fft1tft11ff1|
+|LiifL1itLfiiLLiiLL1ifLti1LfiiLLiifLtitLfiiLLiiLL1itLti1LLiiLLiifLtitLfiiLLiifL1itLti1LLiiLLiifLti1LfiiLLiifL1itLfiiLLiiLL1ifLti1LfiiLLiifLtitLfiiLLiiLL1itLti1LLiiLLiifLtitLfiiLLiifL1itLti1LLiiLLiifLti1LfiiL|
+|:CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:fC1:1Cf:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:fC1:1Cf:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:LC1:tCf:iCC:|
+|G:,LG1,tGf,;GG,,GGi,fGt,iGC,:GG:,LG1,tGL,;GG,,CGi,fGf,iGC,,GG;,LG1,1GL,:GG:,CGi,tGf,iGG,,GG;,fGt,1GL,:GG:,LG1,tGf,;GG,,GGi,fGt,iGC,:GG:,LG1,tGL,;GG,,CGi,fGf,iGC,,GG;,LG1,1GL,:GG:,CGi,tGf,iGG,,GG;,fGt,1GL,:G|
+|.08;.f8t.i8C.,88,.C81.t8L.:80..G8;.f8f.i8G..88:.L81.18L.:88..G8i.f8f.;8G..08:.L8t.18C.,88,.C8i.t8f.;80..08;.f8t.i8C.,88,.C81.t8L.:80..G8;.f8f.i8G..88:.L81.18L.:88..G8i.f8f.;8G..08:.L8t.18C.,88,.C8i.t8f.;80.|
+|@. G@i t@L :@8  0@: L@t i@G .@@, C@1 1@C ,@8  0@; f@f ;@0  8@, C@1 1@C ,@@. G@i t@f :@0  8@: L@t i@G .@@. G@i t@L :@8  0@: L@t i@G .@@, C@1 1@C ,@8  0@; f@f ;@0  8@, C@1 1@C ,@@. G@i t@f :@0  8@: L@t i@G .@|
+| 8@: L@t i@G .@@. G@i t@L ,@@  8@: f@f ;@0  @@, C@1 1@C ,@@  0@; f@f :@0  @@, C@t i@G .@@  G@i t@L :@8  8@: L@t i@G .@@. G@i t@L ,@@  8@: f@f ;@0  @@, C@1 1@C ,@@  0@; f@f :@0  @@, C@t i@G .@@  G@i t@L :@8 |
+|@. G@i t@L :@8  0@: L@t i@G .@@, C@1 1@C ,@8  0@; f@f ;@0  @@, C@1 1@C ,@@. G@i t@f :@0  8@: L@t i@G .@@. G@i t@L :@8  0@: L@t i@G .@@, C@1 1@C ,@8  0@; f@f ;@0  @@, C@1 1@C ,@@. G@i t@f :@0  8@: L@t i@G .@|
+|.08;.f8t.i8C.,88,.C81.t8L.:80..G8;.f8f.i8G..88:.L81.18L.:88..G8i.f8f.;8G..08:.L8t.18C.,88,.C8i.t8f.;80..08;.f8t.i8C.,88,.C81.t8L.:80..G8;.f8f.i8G..88:.L81.18L.:88..G8i.f8f.;8G..08:.L8t.18C.,88,.C8i.t8f.;80.|
+|0:,C01,t0f,;0G,,G0i,f0t,i0C,:00:,L01,t0L,;0G,,C0i,f0f,i0C,,G0;,L01,10L,:00:,C0i,t0f,i0G,,G0;,f0t,10C,:00:,C01,t0f,;0G,,G0i,f0t,i0C,:00:,L01,t0L,;0G,,C0i,f0f,i0C,,G0;,L01,10L,:00:,C0i,t0f,i0G,,G0;,f0t,10C,:0|
+|:CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:fC1:1Cf:;CC::LC1:tCf:iCC::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:fC1:1Cf:;CC::LC1:tCf:iCC::CCi:fCt:1CL:;CC;:LC1:tCf:iCC:|
+|Li;fL1;tLf;iLL;;LL1;fLt;1LL;iLLi;fLt;tLf;iLL;;LL1;tLt;1LL;;LLi;fLt;tLf;iLLi;LL1;tLf;1LL;;LLi;fLt;1Lf;iLLi;fL1;tLf;iLL;;LL1;fLt;1LL;iLLi;fLt;tLf;iLL;;LL1;tLt;1LL;;LLi;fLt;tLf;iLLi;LL1;tLf;1LL;;LLi;fLt;1Lf;iL|
+|1ff11tft1tff11ff11fft1tft11ff11ff11tft11ff11ff11fft1tff11ff11ff11tft11ff11ff11tft1tff11ff11fft1tft11ff11ff11tft1tff11ff11fft1tft11ff11ff11tft11ff11ff11fft1tff11ff11ff11tft11ff11ff11tft1tff11ff11fft1tft11ff1|
+|tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt|
+|f11tft1tft11ff11fft1tft1tft11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11tft1tft1tff11ff11tft1tft11ff11tft1tft11ff11fft1tft1tft11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11tft1tft1tff11ff11tft1tft11f|
+|iLL1itLti1LfiiLLiifLtitLfi1LLiifL1itLti1LfiiLL1ifLtitLfi1LLiifL1itLti1LfiiLL1ifLtitLfiiLLiifL1itLti1LLiiLL1itLti1LfiiLLiifLtitLfi1LLiifL1itLti1LfiiLL1ifLtitLfi1LLiifL1itLti1LfiiLL1ifLtitLfiiLLiifL1itLti1LLi|
+|C;;LC1;tCf;iCC;;LCi;fCt;1CL;;CCi;fC1;tCf;iCC;;LC1;tCt;1CL;;CCi;fCt;1Cf;iCC;;LC1;tCf;iCL;;CCi;fCt;1CL;;CC;;LC1;tCf;iCC;;LCi;fCt;1CL;;CCi;fC1;tCf;iCC;;LC1;tCt;1CL;;CCi;fCt;1Cf;iCC;;LC1;tCf;iCL;;CCi;fCt;1CL;;C|
+|:CGi:fGt:1GL::GG;:LG1:tGf:;GG::CGi:fGt:iGC::GG;:LG1:1GL:;GG::CGi:tGf:iGC::GG;:fGt:1GL:;GG::LG1:tGf:iGC::CGi:fGt:1GL::GG;:LG1:tGf:;GG::CGi:fGt:iGC::GG;:LG1:1GL:;GG::CGi:tGf:iGC::GG;:fGt:1GL:;GG::LG1:tGf:iGC:|
+|0:,C01,t0L,;0G,,G0;,f0t,i0C,,00:,L01,10L,:00,,G0i,f0f,i0G,,00:,L01,10L,:00,,C0i,t0f,;0G,,G0;,L0t,10C,:00:,C01,t0L,;0G,,G0;,f0t,i0C,,00:,L01,10L,:00,,G0i,f0f,i0G,,00:,L01,10L,:00,,C0i,t0f,;0G,,G0;,L0t,10C,:0|
+|.08:.L8t.i8G..88,.C8i.t8L.:88..08;.f8f.i8G..88,.C81.18C.,88..G8;.f8f.;80..88:.L8t.18C.,88..G8i.t8L.:80..08:.L8t.i8G..88,.C8i.t8L.:88..08;.f8f.i8G..88,.C81.18C.,88..G8;.f8f.;80..88:.L8t.18C.,88..G8i.t8L.:80.|
+|@. G@i t@L :@8  8@: L@t ;@0  @@. C@1 1@C ,@@  0@; f@f ;@0  @@, C@1 1@C .@@  0@; t@L :@8  8@: L@t i@G .@@. G@i t@L :@8  8@: L@t ;@0  @@. C@1 1@C ,@@  0@; f@f ;@0  @@, C@1 1@C .@@  0@; t@L :@8  8@: L@t i@G .@|
+| 8@: L@t i@G .@@. G@i t@L ,@@  8@: f@f ;@0  @@, C@1 1@C ,@@  0@; f@f :@0  @@, C@t i@G .@@  G@i t@L :@8  8@: L@t i@G .@@. G@i t@L ,@@  8@: f@f ;@0  @@, C@1 1@C ,@@  0@; f@f :@0  @@, C@t i@G .@@  G@i t@L :@8 |
+|8,.C8i.t8L.:80..08;.f8t.i8G..88,.C81.18L.:88..G8;.f8f.;8G..88:.L81.18C.,88..G8i.t8f.;80..88:.L8t.i8C.,88,.C8i.t8L.:80..08;.f8t.i8G..88,.C81.18L.:88..G8;.f8f.;8G..88:.L81.18C.,88..G8i.t8f.;80..88:.L8t.i8C.,8|
+|,G0;,f0t,i0C,,00:,C01,t0L,;00,,G0;,f0t,i0C,,00:,L01,10L,:00,,C0i,f0f,;0G,,00;,L0t,10C,:00,,C0i,t0f,;0G,,G0;,f0t,i0C,,00:,C01,t0L,;00,,G0;,f0t,i0C,,00:,L01,10L,:00,,C0i,f0f,;0G,,00;,L0t,10C,:00,,C0i,t0f,;0G,|
+|G::LG1:tGf:;GG::CGi:fGt:iGC::GG;:LG1:tGL:;GG::CGi:fGf:iGC::GG;:LGt:1GL:;GG::CGi:tGf:iGC::GG;:fGt:1GL::GG::LG1:tGf:;GG::CGi:fGt:iGC::GG;:LG1:tGL:;GG::CGi:fGf:iGC::GG;:LGt:1GL:;GG::CGi:tGf:iGC::GG;:fGt:1GL::G|
+|;CCi;fCt;1CL;;CC;;LC1;tCf;iCC;;LCi;fCt;1CL;;CCi;fCt;tCf;iCC;;LC1;tCf;iCL;;CCi;fCt;1Cf;;CC;;LC1;tCf;iCL;;CCi;fCt;1CL;;CC;;LC1;tCf;iCC;;LCi;fCt;1CL;;CCi;fCt;tCf;iCC;;LC1;tCf;iCL;;CCi;fCt;1Cf;;CC;;LC1;tCf;iCL;|
+|LiifL1itLfi1LLiiLL1itLti1LfiiLLiifLtitLfi1LLiifL1itLti1LfiiLL1ifLtitLfiiLLiifL1itLti1LLiiLL1ifLti1LfiiLLiifL1itLfi1LLiiLL1itLti1LfiiLLiifLtitLfi1LLiifL1itLti1LfiiLL1ifLtitLfiiLLiifL1itLti1LLiiLL1ifLti1LfiiL|
+|1ff11tft1tft11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11tft1tft11ff11ff11tft1tft11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11tft1tft11ff1|
+|tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt|
+|f11fft1tft11ff11ff11tft1tff11ff11fft1tft11ff11ff11tft11ff11ff11tft1tff11ff11fft1tft11ff11ff11tft1tff11ff11fft1tft11ff11ff11tft1tff11ff11fft1tft11ff11ff11tft11ff11ff11tft1tff11ff11fft1tft11ff11ff11tft1tff11f|
+|iLL1ifLti1LfiiLLiifL1itLfiiLLiiLL1itLti1LLiiLLiifLtitLfiiLLiiLL1itLti1LLiiLLiifLti1LfiiLLiifL1itLfi1LLiiLL1ifLti1LfiiLLiifL1itLfiiLLiiLL1itLti1LLiiLLiifLtitLfiiLLiiLL1itLti1LLiiLLiifLti1LfiiLLiifL1itLfi1LLi|
+|C;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::LCi:tCt:iCL::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::LCi:tCt:iCL::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;C|
+|,GG;,fGt,1GC,:GG:,LG1,tGL,;GG,,CGi,fGt,iGC,:GG;,LG1,1GL,;GG,,CGi,tGf,iGC,,GG;,LGt,1GL,:GG:,CG1,tGf,;GG,,GG;,fGt,1GC,:GG:,LG1,tGL,;GG,,CGi,fGt,iGC,:GG;,LG1,1GL,;GG,,CGi,tGf,iGC,,GG;,LGt,1GL,:GG:,CG1,tGf,;GG,|
+|8,.C8i.t8L.;80..G8;.f8t.i8G.,88:.C81.18L.:80..G8;.f8f.;8G..08:.L81.18C.:88,.G8i.t8f.;8G..08;.L8t.i8C.,88,.C8i.t8L.;80..G8;.f8t.i8G.,88:.C81.18L.:80..G8;.f8f.;8G..08:.L81.18C.:88,.G8i.t8f.;8G..08;.L8t.i8C.,8|
+| 8@: L@t i@G .@@, C@i t@L :@8  0@; f@f ;@0  @@, C@1 1@C ,@@  0@; f@f ;@0  8@: L@t i@C ,@@. G@i t@L :@8  8@: L@t i@G .@@, C@i t@L :@8  0@; f@f ;@0  @@, C@1 1@C ,@@  0@; f@f ;@0  8@: L@t i@C ,@@. G@i t@L :@8 |
+|@. G@i t@L :@8  8@: L@t ;@0  @@. C@1 1@C ,@@  0@; f@f ;@0  @@, C@1 1@C .@@  0@; t@L :@8  8@: L@t i@G .@@. G@i t@L :@8  8@: L@t ;@0  @@. C@1 1@C ,@@  0@; f@f ;@0  @@, C@1 1@C .@@  0@; t@L :@8  8@: L@t i@G .@|
+| 8@: L@t i@G .@@. C@i t@L :@8  0@; f@f ;@0  @@, C@1 1@C ,@@  0@; f@f ;@0  8@: L@t i@C .@@. G@i t@L :@8  8@: L@t i@G .@@. C@i t@L :@8  0@; f@f ;@0  @@, C@1 1@C ,@@  0@; f@f ;@0  8@: L@t i@C .@@. G@i t@L :@8 |
+|8,.C8i.t8L.;80..08;.f8t.i8G.,88:.C81.18L.:80..G8;.f8f.;8G..08:.L81.18C.:88,.G8i.t8f.;80..08:.L8t.i8C.,88,.C8i.t8L.;80..08;.f8t.i8G.,88:.C81.18L.:80..G8;.f8f.;8G..08:.L81.18C.:88,.G8i.t8f.;80..08:.L8t.i8C.,8|
+|,G0;,f0t,i0C,:00:,L01,t0L,;0G,,C0i,f0t,i0C,,00;,L01,10L,;00,,C0i,t0f,i0C,,G0;,L0t,10L,:00:,C0i,t0f,;0G,,G0;,f0t,i0C,:00:,L01,t0L,;0G,,C0i,f0t,i0C,,00;,L01,10L,;00,,C0i,t0f,i0C,,G0;,L0t,10L,:00:,C0i,t0f,;0G,|
+|C;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:tCt:iCL::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:tCt:iCL::CCi:fCt:1CL:;CC;:LC1:tCf:iCC::CCi:fCt:1CL:;C|
+|;LL1;fLt;1Lf;iLLi;fL1;tLf;iLL;;LL1;tLt;1LL;iLLi;fLt;tLf;iLLi;LL1;tLt;1LL;;LLi;fLt;1Lf;iLLi;fL1;tLf;1LL;;LL1;fLt;1Lf;iLLi;fL1;tLf;iLL;;LL1;tLt;1LL;iLLi;fLt;tLf;iLLi;LL1;tLt;1LL;;LLi;fLt;1Lf;iLLi;fL1;tLf;1LL;|
+|f11fft1tft11ff11ff11tft11ff11ff11fft1tft11ff11ff11tft11ff11ff11fft1tff11ff11ff11tft11ff11ff11tft1tff11ff11fft1tft11ff11ff11tft11ff11ff11fft1tft11ff11ff11tft11ff11ff11fft1tff11ff11ff11tft11ff11ff11tft1tff11f|
+|tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt|
+|1fft1tft1tft11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11tft1tft1tff11fft1tft1tft11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11fft1tft1tff11ff11tft1tft11ff11tft1tft1tff1|
+|LiifL1itLfi1LLiifL1itLti1LfiiLLiifLtitLfi1LLiifL1itLti1LfiiLL1ifLtitLfiiLLiifL1itLti1LfiiLL1ifLti1LfiiLLiifL1itLfi1LLiifL1itLti1LfiiLLiifLtitLfi1LLiifL1itLti1LfiiLL1ifLtitLfiiLLiifL1itLti1LfiiLL1ifLti1LfiiL|
+|;LCi;fCt;1CL;;CCi;fC1;tCf;iCC;;LCi;fCt;1CL;;CCi;fCt;tCf;iCC;;LC1;tCf;1CL;;CCi;fCt;1Cf;iCC;;LC1;tCf;iCL;;LCi;fCt;1CL;;CCi;fC1;tCf;iCC;;LCi;fCt;1CL;;CCi;fCt;tCf;iCC;;LC1;tCf;1CL;;CCi;fCt;1Cf;iCC;;LC1;tCf;iCL;|
+|G::LG1:tGf:iGG::CGi:fGt:1GC::GG;:LG1:tGL:;GG::CGi:fGf:iGC::GG;:LGt:1GL:;GG::CGi:tGf:iGC::GG;:fGt:1GL:;GG::LG1:tGf:iGG::CGi:fGt:1GC::GG;:LG1:tGL:;GG::CGi:fGf:iGC::GG;:LGt:1GL:;GG::CGi:tGf:iGC::GG;:fGt:1GL:;G|
+|,G0;,f0t,i0C,,00:,C01,t0L,;00,,G0;,f0t,i0C,,00:,L01,10L,:00,,C0i,f0f,;0G,,00;,L0t,10C,:00,,C0i,t0f,;0G,,G0;,f0t,i0C,,00:,C01,t0L,;00,,G0;,f0t,i0C,,00:,L01,10L,:00,,C0i,f0f,;0G,,00;,L0t,10C,:00,,C0i,t0f,;0G,|
+|8,.C8i.t8L.:80..08;.f8t.i8G..88,.C81.18L.:88..G8;.f8f.;8G..88:.L81.18C.,88..G8i.t8f.;80..08:.L8t.i8C.,88,.C8i.t8L.:80..08;.f8t.i8G..88,.C81.18L.:88..G8;.f8f.;8G..88:.L81.18C.,88..G8i.t8f.;80..08:.L8t.i8C.,8|
+| 8@: L@t i@G .@@. G@i t@L ,@@  8@: f@f ;@0  @@, C@1 1@C ,@@  0@; f@f :@0  @@, C@t i@G .@@  G@i t@L :@8  8@: L@t i@G .@@. G@i t@L ,@@  8@: f@f ;@0  @@, C@1 1@C ,@@  0@; f@f :@0  @@, C@t i@G .@@  G@i t@L :@8 |
++--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+

@@ -177,8 +177,17 @@ impl<W: Write + Seek> SlpyWriter<W> {
         if opts.keyframe_ivl == 0 {
             return Err(SlpyError::Corrupt("writer: keyframe_ivl must be >= 1"));
         }
-        if opts.base_w == 0 || opts.base_h == 0 {
-            return Err(SlpyError::Corrupt("writer: base dimensions must be nonzero"));
+        // §4 geometry term (M1-review fix 1): base dims must be EVEN and
+        // >= 2. The C plane lives at (base_w/2, base_h/2) — odd or
+        // degenerate dims yield a zero-dimension chroma plane that panicked
+        // the player's Resampler::build (base_w == 1 → C width 0). Enforced
+        // by writer AND reader so no such asset can exist or be read.
+        if opts.base_w < 2
+            || opts.base_h < 2
+            || !opts.base_w.is_multiple_of(2)
+            || !opts.base_h.is_multiple_of(2)
+        {
+            return Err(SlpyError::Corrupt("writer: base dimensions must be even and >= 2"));
         }
         // M0 adversarial-review fix: fps_num == 0 reached a divide-by-zero
         // Duration panic in the player; reject at the source (both ends).

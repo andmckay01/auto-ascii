@@ -16,6 +16,12 @@
 //!   replies (kitty-style) through the pty master.
 //! - `probe-noquery` — `--no-query` escape hatch: passive hints only, no
 //!   volley bytes may reach the terminal.
+//! - `probe-latereply` — replies dribble in around/past the deadline: the
+//!   grace drain must consume them (no strays) and still use a late DA1.
+//! - `probe-straggler` — M1 review low 2 regression: probe times out silent,
+//!   THEN the test scripts the full reply burst, then real keys. The
+//!   harness enters a real `AnsiBackend` session and logs every event it
+//!   dequeues (`EV=` lines) — reply fragments must never surface as keys.
 //!
 //! Not part of the shipped product; it exists so a hosed terminal is a red
 //! test, not a bug report (PLAN §3.1).
@@ -23,7 +29,9 @@
 use std::time::{Duration, Instant};
 
 use slpy_core::{Cell, Grid, Rgb};
-use slpy_term::{AnsiBackend, Backend, Caps, Event, ProbeOptions, install_restore_hooks, probe_caps};
+use slpy_term::{
+    AnsiBackend, Backend, Caps, Event, Key, ProbeOptions, install_restore_hooks, probe_caps,
+};
 
 /// Count bytes still pending on stdin (raw, non-blocking) — the probe must
 /// leave NO stray reply bytes behind (M1 acceptance 4).
@@ -74,6 +82,45 @@ fn run_probe(timeout: Duration, no_query: bool) {
     );
 }
 
+/// M1 review low 2 regression: silent probe (stragglers now possible), then
+/// a real `AnsiBackend` session whose event pump must filter the scripted
+/// late reply burst while real keys still work. Logs one `EV=` line per
+/// dequeued event; exits on Quit.
+fn run_straggler_session() {
+    let opts = ProbeOptions {
+        no_cache: true,
+        timeout: Duration::from_millis(150),
+        ..ProbeOptions::default()
+    };
+    let caps = probe_caps(&opts);
+    println!("PROBE-DONE color={:?}", caps.color);
+
+    install_restore_hooks();
+    let mut backend = AnsiBackend::new(caps).expect("harness requires a tty");
+    // The test scripts the straggler burst only after this marker, so the
+    // bytes land in the established raw-mode session (no cooked-mode echo).
+    println!("SESSION-READY");
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    'run: while Instant::now() < deadline {
+        while let Some(ev) = backend.events().pop() {
+            match ev {
+                Event::Quit => {
+                    println!("EV=quit");
+                    break 'run;
+                }
+                Event::Key(Key::Char(c)) => println!("EV=char:{c}"),
+                Event::Key(Key::Ctrl(c)) => println!("EV=ctrl:{c}"),
+                Event::Key(Key::Esc) => println!("EV=esc"),
+                Event::Resize(c, r) => println!("EV=resize:{c}x{r}"),
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    backend.shutdown();
+    println!("SESSION-DONE");
+}
+
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "drop".to_string());
 
@@ -85,6 +132,10 @@ fn main() {
         "probe-reply" => return run_probe(Duration::from_secs(2), false),
         // --no-query escape hatch: passive hints only, zero volley bytes.
         "probe-noquery" => return run_probe(slpy_term::DEFAULT_PROBE_TIMEOUT, true),
+        // Replies dribbling past the deadline: grace drain must eat them.
+        "probe-latereply" => return run_probe(slpy_term::DEFAULT_PROBE_TIMEOUT, false),
+        // Full straggler regression: probe timeout, then session + events.
+        "probe-straggler" => return run_straggler_session(),
         _ => {}
     }
 

@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# M2 item F (PLAN §6/§7): the one-command loop — workspace tests + goldens +
+# resize-fuzz fast mode + perf gate + corpus eval, fail-fast, < 5 min wall.
+#
+#   scripts/eval.sh
+#
+# Sections (each timed; the script aborts on the first failure):
+#   1 tests    cargo test --workspace — includes the 27 insta cell-grid
+#              goldens, the 4 per-tier escape-stream byte goldens, the
+#              Player/FixtureRenderer parity pin, the 256-case resize fuzz
+#              (real Player, M2 review fix), the >= 24 fps unthrottled
+#              SimBackend e2e gate, and the synthetic determinism byte-pin.
+#   2 clippy   cargo clippy --workspace --all-targets -- -D warnings.
+#   3 fuzz     resize fuzz at FUZZ_CASES (default 2000) proptest cases.
+#              Full M2 acceptance depth: FUZZ_CASES=10000 scripts/eval.sh
+#              (~85 s extra on the reference box).
+#   4 perf     scripts/perf-gate.sh — criterion medians vs the committed
+#              perf/thresholds.toml.
+#   5 corpus   only when the canonical 3-clip corpus (gitignored, local) is
+#              present: assemble target/eval-corpus symlinks, run
+#              `sleepy-factory eval` against runs/base.json (when present)
+#              writing runs/latest.{json,html}, then the real-corpus
+#              determinism guard (grass rebuild byte-identical to assets/).
+#              Skipped with a notice otherwise — committed gates never
+#              depend on the corpus (repo reproducibility rule).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if ! command -v cargo >/dev/null 2>&1; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
+FUZZ_CASES="${FUZZ_CASES:-2000}"
+
+# Canonical eval corpus (corpus/README.md): the three locked clips.
+CORPUS_CLIPS=(
+    "corpus/prepared/grass-field-windy-mirror.mp4"
+    "corpus/prepared/sheep-counting-neroni-clips.mp4"
+    "corpus/silhouette-dance.mp4"
+)
+
+TOTAL_START=$SECONDS
+declare -a TIMES=()
+
+section() { # section <name> — prints the header, starts the clock
+    echo
+    echo "==================== [$1] ===================="
+    SECTION_NAME="$1"
+    SECTION_START=$SECONDS
+}
+section_done() {
+    local dt=$((SECONDS - SECTION_START))
+    TIMES+=("$(printf '%-22s %4ds' "$SECTION_NAME" "$dt")")
+    echo "-------------------- [$SECTION_NAME] OK (${dt}s)"
+}
+
+section "workspace tests"
+cargo test --workspace --quiet
+section_done
+
+section "clippy -D warnings"
+cargo clippy --workspace --all-targets --quiet -- -D warnings
+section_done
+
+section "resize fuzz x$FUZZ_CASES"
+PROPTEST_CASES="$FUZZ_CASES" cargo test --quiet -p sleepy-player --test resize_fuzz
+section_done
+
+section "perf gate"
+scripts/perf-gate.sh
+section_done
+
+have_corpus=true
+for clip in "${CORPUS_CLIPS[@]}"; do
+    [[ -f "$clip" ]] || have_corpus=false
+done
+
+if $have_corpus; then
+    section "corpus eval"
+    # Non-recursive symlink dir: the canonical 3 clips only (corpus/prepared
+    # also holds prep-tool variants that are not part of the baseline).
+    corpus_dir="target/eval-corpus"
+    rm -rf "$corpus_dir" && mkdir -p "$corpus_dir"
+    for clip in "${CORPUS_CLIPS[@]}"; do
+        ln -s "$(pwd)/$clip" "$corpus_dir/$(basename "$clip")"
+    done
+    baseline_args=()
+    if [[ -f runs/base.json ]]; then
+        baseline_args=(--baseline runs/base.json)
+    else
+        echo "NOTICE: runs/base.json missing — running eval without baseline compare"
+    fi
+    cargo run --quiet -p sleepy-factory -- eval \
+        --corpus "$corpus_dir" "${baseline_args[@]}" \
+        --out runs/latest.json --html runs/latest.html --cache-dir runs/cache
+    section_done
+
+    section "corpus determinism guard"
+    cargo test --quiet -p sleepy-factory --test m2_params_eval -- \
+        --ignored grass_rebuild_matches_assets_copy
+    section_done
+else
+    echo
+    echo "==================== [corpus eval] ===================="
+    echo "NOTICE: corpus clips not present (gitignored, local-only) — skipping"
+    echo "corpus eval + real-corpus determinism guard. Synthetic goldens,"
+    echo "fuzz and perf gates above are the corpus-free CI surface."
+    TIMES+=("$(printf '%-22s %4s' 'corpus eval' 'skip')")
+fi
+
+echo
+echo "==================== eval.sh: ALL GREEN ===================="
+for t in "${TIMES[@]}"; do echo "  $t"; done
+printf '  %-22s %4ds\n' "TOTAL" $((SECONDS - TOTAL_START))
