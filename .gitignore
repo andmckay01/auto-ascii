@@ -1,0 +1,5 @@
+/target
+corpus/*.mp4
+corpus/prepared/*.mp4
+corpus/prepared/samples/
+*.slpy
