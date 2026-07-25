@@ -89,8 +89,15 @@ impl ShotDetector {
         }
     }
 
-    /// Feed the next frame's luma histogram.
-    pub fn push(&mut self, hist: &[u64; 256]) {
+    /// Boundary half of a frame push: SAD against the previous frame's RAW
+    /// histogram; closes the running shot when a cut is honored and
+    /// returns true for that frame. M3 split (was one `push`): build pass 1
+    /// detects on raw luma but pools levels on the EMA'd (= stored) luma,
+    /// and needs the cut decision in between to reset its EMA exactly like
+    /// pass 2 does. Call `boundary` then [`pool`](ShotDetector::pool)
+    /// exactly once per frame, in that order.
+    pub fn boundary(&mut self, hist: &[u64; 256]) -> bool {
+        let mut cut = false;
         if self.frames > 0 {
             let sad: u64 = hist.iter().zip(&self.prev_hist).map(|(a, b)| a.abs_diff(*b)).sum();
             let shot_len = self.frames - self.shot_start;
@@ -101,12 +108,20 @@ impl ShotDetector {
                 self.close_shot();
                 self.shot_start = self.frames;
                 self.shot_cut = true;
+                cut = true;
             }
         }
+        self.prev_hist = *hist;
+        cut
+    }
+
+    /// Levels half of a frame push: pool this frame's histogram into the
+    /// running shot's levels (may legitimately differ from the `boundary`
+    /// histogram — see there).
+    pub fn pool(&mut self, hist: &[u64; 256]) {
         for (pooled, &count) in self.shot_hist.iter_mut().zip(hist) {
             *pooled += count;
         }
-        self.prev_hist = *hist;
         self.frames += 1;
     }
 
@@ -138,6 +153,20 @@ mod tests {
     /// Detector at the embedded defaults (what `params.toml` ships).
     fn default_detector() -> ShotDetector {
         ShotDetector::with_params(NPX, SHOT_SAD_THRESHOLD_MILLI, MIN_SHOT_FRAMES, 2, 98)
+    }
+
+    /// One-histogram push (boundary + pool on the same hist — the pre-M3
+    /// shape, still what most tests mean).
+    trait Push {
+        fn push(&mut self, hist: &[u64; 256]) -> bool;
+    }
+
+    impl Push for ShotDetector {
+        fn push(&mut self, hist: &[u64; 256]) -> bool {
+            let cut = self.boundary(hist);
+            self.pool(hist);
+            cut
+        }
     }
 
     /// All 100 pixels in one bin.
@@ -201,6 +230,31 @@ mod tests {
         // Pooled levels span both segments: p2 rank 40 of 2000 lands in bin
         // 10 (300 samples), p98 rank 1960 in bin 200.
         assert_eq!(shots[0].levels, Levels { lo: 10, hi: 200 });
+    }
+
+    #[test]
+    fn push_reports_the_cut_frame_and_split_pooling_matches() {
+        // push's bool marks exactly the frame that opens shot 2 — build
+        // pass 1 keys its EMA reset (M3) off this signal.
+        let mut det = default_detector();
+        for i in 0..20 {
+            let cut = det.push(&solid(if i < 10 { 10 } else { 200 }));
+            assert_eq!(cut, i == 10, "cut flag wrong at frame {i}");
+        }
+
+        // boundary+pool with a DIFFERENT levels histogram: boundaries come
+        // from the detection hist, levels from the pooled one.
+        let mut det = default_detector();
+        for i in 0..20 {
+            let raw = solid(if i < 10 { 10 } else { 200 });
+            let cut = det.boundary(&raw);
+            assert_eq!(cut, i == 10);
+            det.pool(&solid(77)); // pretend the stored plane differs
+        }
+        let shots = det.finish();
+        assert_eq!(shots.len(), 2);
+        assert_eq!(shots[0].levels, Levels { lo: 77, hi: 77 }, "levels follow the pooled hist");
+        assert_eq!(shots[1].levels, Levels { lo: 77, hi: 77 });
     }
 
     #[test]

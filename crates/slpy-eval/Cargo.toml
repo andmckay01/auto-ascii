@@ -16,6 +16,11 @@ slpy-term = { workspace = true }
 slpy-format = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# M3 edge-F1 (PLAN §6): Canny ground truth on the downscaled source frame.
+# Both codec-less — the metric consumes raw luma buffers; file I/O stays out
+# of this crate (ffmpeg subprocess in sleepy-factory).
+image = { workspace = true }
+imageproc = { workspace = true }
 
 # M2 item C: cell-grid goldens (insta). The resize storm fuzz (item D)
 # lives in sleepy-player since the M2 review fix — the §6 invariants gate

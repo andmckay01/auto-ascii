@@ -19,8 +19,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::stats::{DamageStats, StageTimesMs};
 
-/// Current report schema version.
-pub const SCHEMA_VERSION: u32 = 1;
+/// Current report schema version. v2 (M3): the edge-F1 metric family
+/// (`edge_f1`/`edge_precision`/`edge_recall`) joins `ClipMetrics`. The bump
+/// is a deliberate generation marker for the M3 renderer — the fields are
+/// technically additive and v1 reports still deserialize (serde defaults);
+/// [`crate::compare_reports`] accepts an OLDER-versioned baseline with an
+/// informational note and fails only on a NEWER/unknown baseline version.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// One eval run over a corpus (or a single clip).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -86,6 +91,15 @@ pub struct ClipMetrics {
     /// Glyph switches per cell per second on static segments (lower is
     /// better; M3 gate ≤ 2).
     pub flicker_switches_per_cell_sec: Option<f64>,
+    /// Edge F1 vs source Canny at grid resolution (PLAN §6; higher is
+    /// better) — mean over sampled frames, 1-cell tolerance ring
+    /// ([`crate::edge`] documents thresholds + empty-frame conventions).
+    pub edge_f1: Option<f64>,
+    /// Mean cell-level edge precision over the same samples (informational —
+    /// only `edge_f1` is gated by the baseline compare).
+    pub edge_precision: Option<f64>,
+    /// Mean cell-level edge recall over the same samples (informational).
+    pub edge_recall: Option<f64>,
     /// NORM shot records in the asset (factory shot detection output).
     pub shot_count: Option<u32>,
     /// CUT-flagged shots (hard cuts the player resets hysteresis on).
@@ -115,6 +129,9 @@ mod tests {
         let mut metrics = ClipMetrics {
             ssim: Some(0.8125),
             flicker_switches_per_cell_sec: Some(0.25),
+            edge_f1: Some(0.5625),
+            edge_precision: Some(0.75),
+            edge_recall: Some(0.45),
             ..ClipMetrics::default()
         };
         metrics.damage_by_tier.insert("truecolor".into(), aggregate_frame_stats(&stats, 2400, 30.0));
@@ -133,10 +150,31 @@ mod tests {
     fn json_roundtrip_is_lossless() {
         let r = sample_report();
         let json = r.to_json();
-        assert!(json.contains("\"schema_version\": 1"));
+        assert!(json.contains("\"schema_version\": 2"));
+        assert!(json.contains("\"edge_f1\": 0.5625"));
         assert!(json.ends_with('\n'));
         let back = EvalReport::from_json(&json).unwrap();
         assert_eq!(back, r);
+    }
+
+    /// v1 reports (no edge metrics, old version stamp) still deserialize —
+    /// the M2 `runs/base.json` remains readable for the compare path.
+    #[test]
+    fn v1_report_still_deserializes() {
+        let json = r#"{
+            "schema_version": 1,
+            "generator": "sleepy-factory 0.1.0",
+            "clips": [{
+                "name": "grass", "frames": 194, "fps": 30.0,
+                "grid_cols": 300, "grid_rows": 80,
+                "metrics": { "ssim": 0.64 }
+            }]
+        }"#;
+        let r = EvalReport::from_json(json).unwrap();
+        assert_eq!(r.schema_version, 1);
+        let m = &r.clips[0].metrics;
+        assert_eq!(m.ssim, Some(0.64));
+        assert_eq!((m.edge_f1, m.edge_precision, m.edge_recall), (None, None, None));
     }
 
     #[test]

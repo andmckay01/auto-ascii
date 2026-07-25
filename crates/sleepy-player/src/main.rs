@@ -32,10 +32,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use memmap2::Mmap;
-use sleepy_player::pipeline::Player;
+use sleepy_player::pipeline::{Player, color_depth, glyph_tier_from_caps};
+use slpy_core::GlyphTier;
 use slpy_format::SlpyReader;
 use slpy_term::{
-    AnsiBackend, Backend, ColorTier, Event, ProbeOptions, SimBackend, probe_caps,
+    AnsiBackend, Backend, Caps, ColorTier, Event, ProbeOptions, SimBackend, probe_caps,
 };
 
 /// Repaint mode (PLAN §3.1: one render path — "full" is diff with
@@ -46,6 +47,29 @@ enum RepaintMode {
     Full,
     /// Pure diff: only damaged cells are rewritten; invalidate on resize only.
     Diff,
+}
+
+/// Charset-tier override for palette selection (PLAN §3.4). `auto` derives
+/// the tier from the probed `Caps.glyph_support`/`Caps.glyphs`; the explicit
+/// values force it (e.g. `--palette braille` on a terminal whose font is
+/// known-good — braille is never enabled from passive hints alone).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum PaletteArg {
+    Auto,
+    Ascii,
+    Unicode,
+    Braille,
+}
+
+impl PaletteArg {
+    fn resolve(self, caps: &Caps) -> GlyphTier {
+        match self {
+            PaletteArg::Auto => glyph_tier_from_caps(caps),
+            PaletteArg::Ascii => GlyphTier::Ascii,
+            PaletteArg::Unicode => GlyphTier::UnicodeBlocks,
+            PaletteArg::Braille => GlyphTier::BrailleVerified,
+        }
+    }
 }
 
 #[derive(Parser)]
@@ -98,6 +122,12 @@ struct Cli {
     /// Bypass the probe cache (no read, no write).
     #[arg(long)]
     no_cache: bool,
+
+    /// Charset-tier override for palette selection (PLAN §3.4): auto (from
+    /// the probed glyph repertoire), ascii, unicode (blocks/box-drawing) or
+    /// braille (verified fonts only). Applies to interactive and --sim runs.
+    #[arg(long, value_enum, default_value_t = PaletteArg::Auto)]
+    palette: PaletteArg,
 
     /// Headless mode: render NFRAMES frames to SimBackend at COLSxROWS as
     /// fast as possible (no pacing), never touch the tty, print one JSON
@@ -196,6 +226,12 @@ fn run_sim(mut player: Player<'_>, cli: &Cli, tier: ColorTier, start_frame: u32)
         })
         .transpose()?;
 
+    // Winning-layer counts (M3): the §3.4 priority decision, summed over
+    // every rendered cell — headless visibility into which layers actually
+    // fire ("layers" in the JSON line).
+    player.enable_layer_mask();
+    let mut layer_counts = [0u64; 5];
+
     let resize_at = nframes / 2;
     let mut bytes_total: u64 = 0;
     let mut rendered: u64 = 0;
@@ -214,6 +250,13 @@ fn run_sim(mut player: Player<'_>, cli: &Cli, tier: ColorTier, start_frame: u32)
             ((u64::from(start_frame) + i) % u64::from(player.frame_count())) as u32;
         let stats = player.render_present(&mut backend, frame_idx)?;
         bytes_total += u64::from(stats.bytes);
+        if let Some(mask) = player.layer_mask() {
+            for &l in mask.as_slice() {
+                if let Some(c) = layer_counts.get_mut(l as usize) {
+                    *c += 1;
+                }
+            }
+        }
         // Bytes are counted; don't hold 900 frames in RAM.
         let out = backend.take_output();
         if let Some(f) = dump.as_mut() {
@@ -232,12 +275,18 @@ fn run_sim(mut player: Player<'_>, cli: &Cli, tier: ColorTier, start_frame: u32)
         "{{\"fps\":{fps:.2},\"frames\":{rendered},\"bytes_total\":{bytes_total},\
          \"avg_bytes_per_frame\":{avg:.1},\"tier\":\"{}\",\"stage_ms\":{{\"decode\":{:.1},\
          \"resample\":{:.1},\"compose\":{:.1},\"present\":{:.1}}},\
-         \"grid_after\":\"{gc}x{gr}\"}}",
+         \"layers\":{{\"base\":{},\"edge\":{},\"highlight\":{},\"shadow\":{},\
+         \"structure\":{}}},\"grid_after\":\"{gc}x{gr}\"}}",
         tier_tag(tier),
         ms(stage.decode),
         ms(stage.resample),
         ms(stage.compose),
         ms(stage.present),
+        layer_counts[0],
+        layer_counts[1],
+        layer_counts[2],
+        layer_counts[3],
+        layer_counts[4],
     );
     Ok(())
 }
@@ -273,8 +322,12 @@ fn run_interactive(reader: SlpyReader<'_>, cli: &Cli, asset_fps: f64, start_fram
     let mut backend = AnsiBackend::new(caps)
         .context("cannot enter terminal session (headless? use --sim COLSxROWS:NFRAMES)")?;
     let aspect = resolve_cell_aspect(cli.cell_aspect, backend.caps().cell_px);
-    let want_color = backend.caps().color != ColorTier::Mono;
-    let mut player = Player::new(reader, aspect, cli.repaint == RepaintMode::Full, want_color)?;
+    // Palette selection inputs from Caps (PLAN §3.4 key: charset tier ×
+    // color depth; density falls out of the viewport at reflow).
+    let depth = color_depth(backend.caps().color);
+    let glyphs = cli.palette.resolve(backend.caps());
+    let mut player =
+        Player::new(reader, aspect, cli.repaint == RepaintMode::Full, depth, glyphs)?;
     let (cols, rows) = backend.caps().cells;
     player.reflow(&mut backend, cols, rows);
 
@@ -297,7 +350,9 @@ fn run_interactive(reader: SlpyReader<'_>, cli: &Cli, asset_fps: f64, start_fram
         }
         if let Some(d) = drained.jump_digit {
             // 0–9 → jump to d×10% (PLAN §3.6; decode goes through the FIDX
-            // seek path automatically via the loaded-frame tracker).
+            // seek path automatically via the loaded-frame tracker, and
+            // drain_events already reset the hysteresis state — a seek must
+            // not ghost pre-seek edges/indices into the landing frame).
             base_frame = frame_count * u64::from(d) / 10;
             clock = Instant::now();
         }
@@ -369,11 +424,15 @@ fn main() -> Result<()> {
     if cli.sim.is_some() {
         let aspect = cli.cell_aspect.unwrap_or(slpy_core::DEFAULT_CELL_ASPECT);
         let tier = cli.sim_tier.or(cli.tier).unwrap_or(ColorTier::True);
+        // --sim never probes: palette auto derives from the SimBackend's
+        // default Caps (ascii repertoire); --palette overrides.
+        let glyphs = cli.palette.resolve(&Caps::default());
         let player = Player::new(
             reader,
             aspect,
             cli.repaint == RepaintMode::Full,
-            tier != ColorTier::Mono,
+            color_depth(tier),
+            glyphs,
         )?;
         return run_sim(player, &cli, tier, start_frame);
     }

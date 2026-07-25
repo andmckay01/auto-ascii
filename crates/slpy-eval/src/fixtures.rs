@@ -18,9 +18,9 @@
 //!   rather than alias).
 //!
 //! [`FixtureRenderer`] replays the player's frame pipeline (decode →
-//! resample → per-shot NORM LUT → compose) against these assets using only
-//! public slpy-core/slpy-format APIs, mirroring `sleepy-player`'s
-//! `compose_cells`/`build_levels_lut` semantics. It is pinned cell-for-cell
+//! resample at Vc×2Vr → per-shot NORM LUT → the §3.5 three-layer
+//! `compose_frame`) against these assets using only public
+//! slpy-core/slpy-format APIs. It is pinned cell-for-cell
 //! to the REAL `sleepy_player::pipeline::Player` by
 //! `sleepy-player/tests/pipeline_parity.rs` (M2 review fix — the committed
 //! goldens transitively cover the shipping renderer through that pin; a
@@ -31,9 +31,10 @@
 
 use std::io::Cursor;
 
-use slpy_core::ramp::{ASCII_BASE_COARSE, ASCII_BASE_FINE, base_ramp_for_cols, ramp_glyph};
 use slpy_core::{
-    Cell, DEFAULT_CELL_ASPECT, Grid, Resampler, Rgb, Viewport, compute_viewport,
+    Cell, ColorDepth, ComposeParams, DEFAULT_CELL_ASPECT, FramePlanes, GlyphTier, Grid,
+    HysteresisState, PaletteSet, Resampler, Viewport, compose_frame, compute_viewport,
+    select_palettes,
 };
 use slpy_format::header::plane_id;
 use slpy_format::{
@@ -200,27 +201,31 @@ pub fn build_fixture(fixture: Fixture) -> Vec<u8> {
     writer.finish().expect("fixture finish").into_inner()
 }
 
-/// Golden palette configurations (M2 item C: ascii-coarse / ascii-fine /
-/// mono glyph-only). The mono configuration mirrors the player's Mono-tier
-/// path: chroma decode skipped, width-selected base ramp, and the snapshot
-/// serializes glyphs only (the Mono painter emits no color SGR at all —
-/// PLAN §3.4 palette 8 arrives at M3).
+/// Golden palette configurations. M3: keyed exactly like the player —
+/// (charset tier × color depth); the density band and the per-tier ramp
+/// caps fall out of `select_palettes` at reflow, so `ascii` covers both the
+/// coarse and fine ramps across the golden grid sweep. `mono` mirrors the
+/// player's Mono-tier path: chroma decode skipped, palette 8 base, and the
+/// snapshot serializes glyphs only (the Mono painter emits no color SGR).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GoldenPalette {
-    AsciiCoarse,
-    AsciiFine,
+    /// `GlyphTier::Ascii` × truecolor (palettes 1/2 base + subposition).
+    Ascii,
+    /// `GlyphTier::UnicodeBlocks` × truecolor (palette 5 + half-blocks).
+    Unicode,
+    /// `GlyphTier::Ascii` × mono (palette 8, glyph-only serialization).
     MonoGlyphOnly,
 }
 
 impl GoldenPalette {
     pub const ALL: [GoldenPalette; 3] =
-        [GoldenPalette::AsciiCoarse, GoldenPalette::AsciiFine, GoldenPalette::MonoGlyphOnly];
+        [GoldenPalette::Ascii, GoldenPalette::Unicode, GoldenPalette::MonoGlyphOnly];
 
     /// Stable kebab-case name (snapshot titles, file names).
     pub fn name(self) -> &'static str {
         match self {
-            GoldenPalette::AsciiCoarse => "ascii-coarse",
-            GoldenPalette::AsciiFine => "ascii-fine",
+            GoldenPalette::Ascii => "ascii",
+            GoldenPalette::Unicode => "unicode",
             GoldenPalette::MonoGlyphOnly => "mono",
         }
     }
@@ -230,21 +235,24 @@ impl GoldenPalette {
         self == GoldenPalette::MonoGlyphOnly
     }
 
-    fn ramp(self, viewport_cols: u16) -> &'static [char] {
+    /// The player-shaped palette-selection inputs (PLAN §3.4 key).
+    pub fn config(self) -> (GlyphTier, ColorDepth) {
         match self {
-            GoldenPalette::AsciiCoarse => ASCII_BASE_COARSE,
-            GoldenPalette::AsciiFine => ASCII_BASE_FINE,
-            // Player Mono parity: density picks the ramp (PLAN §3.4).
-            GoldenPalette::MonoGlyphOnly => base_ramp_for_cols(viewport_cols),
+            GoldenPalette::Ascii => (GlyphTier::Ascii, ColorDepth::True),
+            GoldenPalette::Unicode => (GlyphTier::UnicodeBlocks, ColorDepth::True),
+            GoldenPalette::MonoGlyphOnly => (GlyphTier::Ascii, ColorDepth::Mono),
         }
     }
 }
 
 /// Replays the player's frame pipeline against a fixture asset using public
 /// APIs only: decode (sequential delta roll / FIDX seek) → shared separable
-/// resample → per-shot NORM LUT → compose (ramp glyph + chroma or gray fg,
-/// BLANK pads). Buffers reallocate only in [`reflow`](FixtureRenderer::reflow)
-/// — render loops are allocation-free, like the player's.
+/// resample (luma at Vc×2Vr, §3.3) → per-shot NORM LUT (with the M3
+/// shot-change hysteresis reset) → the §3.5 three-layer `compose_frame`.
+/// Buffers reallocate only in [`reflow`](FixtureRenderer::reflow) — render
+/// loops are allocation-free, like the player's. Fixture assets carry Y+C
+/// only, so the edge/highlight layers compose auto-disabled — exactly the
+/// PLAN §4 back-compat path the goldens must pin.
 ///
 /// Test support for goldens and fuzzing: invalid fixture assets panic.
 pub struct FixtureRenderer<'a> {
@@ -256,10 +264,13 @@ pub struct FixtureRenderer<'a> {
     chroma_dims: Option<(u16, u16)>,
     use_chroma: bool,
     vp: Option<Viewport>,
+    palette_set: Option<PaletteSet>,
+    state: HysteresisState,
     resampler: Option<Resampler>,
     chroma_resampler: Option<Resampler>,
     luma_src: Vec<u8>,
-    luma_dst: Vec<u8>,
+    /// Resampled luma at Vc × 2Vr (player parity, §3.3).
+    luma2_dst: Vec<u8>,
     chroma_src: Vec<u8>,
     cr_src: Vec<u8>,
     cg_src: Vec<u8>,
@@ -293,10 +304,12 @@ impl<'a> FixtureRenderer<'a> {
             chroma_dims,
             use_chroma,
             vp: None,
+            palette_set: None,
+            state: HysteresisState::new(0, 0),
             resampler: None,
             chroma_resampler: None,
             luma_src: vec![0; src_w as usize * src_h as usize],
-            luma_dst: Vec::new(),
+            luma2_dst: Vec::new(),
             chroma_src: vec![0; if use_chroma { chroma_len * 2 } else { 0 }],
             cr_src: vec![0; if use_chroma { chroma_len } else { 0 }],
             cg_src: vec![0; if use_chroma { chroma_len } else { 0 }],
@@ -314,16 +327,20 @@ impl<'a> FixtureRenderer<'a> {
     }
 
     /// Resize path (player `reflow` parity, PLAN §3.6 step 1): grid realloc,
-    /// viewport recompute at cell aspect 2.0, resampler tap rebuilds. Does
+    /// viewport recompute at cell aspect 2.0, palette reselection, resampler
+    /// tap rebuilds (luma at 2× vertical), hysteresis realloc+reset. Does
     /// NOT touch any backend — callers pair this with `Backend::resize` +
     /// `invalidate` themselves (the fuzz driver asserts that pairing).
     pub fn reflow(&mut self, cols: u16, rows: u16) {
         self.grid.resize(cols, rows);
         self.vp = compute_viewport(cols, rows, DEFAULT_CELL_ASPECT);
         if let Some(vp) = self.vp {
-            self.resampler = Some(Resampler::build(self.src_w, self.src_h, vp.cols, vp.rows));
+            let (tier, depth) = self.palette.config();
+            self.palette_set = Some(select_palettes(tier, depth, vp.cols));
+            self.resampler = Some(Resampler::build(self.src_w, self.src_h, vp.cols, 2 * vp.rows));
+            self.state.resize(vp.cols, vp.rows);
             let cells = vp.cols as usize * vp.rows as usize;
-            self.luma_dst.resize(cells, 0);
+            self.luma2_dst.resize(cells * 2, 0);
             if self.use_chroma {
                 let (cw, ch) = self.chroma_dims.expect("use_chroma implies C dims");
                 self.chroma_resampler = Some(Resampler::build(cw, ch, vp.cols, vp.rows));
@@ -332,8 +349,10 @@ impl<'a> FixtureRenderer<'a> {
                 self.cb_dst.resize(cells, 0);
             }
         } else {
+            self.palette_set = None;
             self.resampler = None;
             self.chroma_resampler = None;
+            self.state.resize(0, 0);
         }
     }
 
@@ -374,10 +393,7 @@ impl<'a> FixtureRenderer<'a> {
         self.update_levels(frame);
 
         let resampler = self.resampler.as_mut().expect("checked above");
-        resampler.apply(&self.luma_src, &mut self.luma_dst);
-        for v in &mut self.luma_dst {
-            *v = self.levels_lut[*v as usize];
-        }
+        resampler.apply(&self.luma_src, &mut self.luma2_dst);
         if self.use_chroma {
             unpack_rgb565(&self.chroma_src, &mut self.cr_src, &mut self.cg_src, &mut self.cb_src);
             let cres = self.chroma_resampler.as_mut().expect("use_chroma implies resampler");
@@ -386,26 +402,29 @@ impl<'a> FixtureRenderer<'a> {
             cres.apply(&self.cb_src, &mut self.cb_dst);
         }
 
-        // Compose (player `compose_cells` parity): ramp glyph from normalized
-        // luma, chroma fg on color palettes / gray fg otherwise, BLANK pads.
-        let ramp = self.palette.ramp(vp.cols);
-        let (vc, vr) = (vp.cols as usize, vp.rows as usize);
-        self.grid.fill(Cell::BLANK);
-        let pad_left = vp.pad_left as usize;
-        for row in 0..vr {
-            let base = row * vc;
-            let src = &self.luma_dst[base..base + vc];
-            let drow =
-                &mut self.grid.row_mut(vp.pad_top + row as u16)[pad_left..pad_left + vc];
-            for (i, (cell, &n)) in drow.iter_mut().zip(src).enumerate() {
-                let fg = if self.use_chroma {
-                    Rgb::new(self.cr_dst[base + i], self.cg_dst[base + i], self.cb_dst[base + i])
-                } else {
-                    Rgb::gray(n)
-                };
-                *cell = Cell::new(ramp_glyph(ramp, n), fg, Rgb::BLACK);
-            }
-        }
+        // Compose (player parity): the §3.5 three-layer path with the NORM
+        // LUT applied per tap inside compose_cell; Y+C fixtures compose
+        // with edge/highlight auto-disabled (E/Ex/Ey/H = None, PLAN §4).
+        let set = self.palette_set.as_ref().expect("viewport implies palette");
+        let planes = FramePlanes {
+            luma2: &self.luma2_dst,
+            e: None,
+            ex: None,
+            ey: None,
+            h: None,
+            chroma: self
+                .use_chroma
+                .then(|| (&self.cr_dst[..], &self.cg_dst[..], &self.cb_dst[..])),
+        };
+        compose_frame(
+            &planes,
+            &vp,
+            &self.levels_lut,
+            set,
+            &ComposeParams::default(),
+            &mut self.state,
+            &mut self.grid,
+        );
         &self.grid
     }
 
@@ -437,12 +456,16 @@ impl<'a> FixtureRenderer<'a> {
         self.loaded = Some(frame);
     }
 
-    /// Player `update_levels` parity: rebuild the LUT only on shot change.
+    /// Player `update_levels` parity: rebuild the LUT only on shot change —
+    /// and (M3) reset ALL hysteresis state with it: a changed LUT makes
+    /// every remembered ramp index stale, and every §3.5 CUT boundary is a
+    /// shot change, so the scene-cut reset is covered exactly.
     fn update_levels(&mut self, frame: u32) {
         let shot = self.reader.shot_for_frame(frame).map(|s| s.first_frame);
         if shot != self.lut_shot {
             build_levels_lut(&mut self.levels_lut, self.reader.norm_levels(frame, plane_id::Y));
             self.lut_shot = shot;
+            self.state.reset();
         }
     }
 }
@@ -599,7 +622,7 @@ mod tests {
     #[test]
     fn renderer_smoke_and_pads() {
         let asset = build_fixture(Fixture::GradientMotion);
-        let mut r = FixtureRenderer::new(&asset, GoldenPalette::AsciiCoarse);
+        let mut r = FixtureRenderer::new(&asset, GoldenPalette::Ascii);
         r.reflow(80, 24);
         let vp = r.viewport().expect("80x24 has a viewport");
         assert_eq!((vp.cols, vp.rows), (80, 23)); // PLAN §3.2 worked example

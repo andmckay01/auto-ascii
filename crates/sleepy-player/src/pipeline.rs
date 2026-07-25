@@ -4,15 +4,65 @@
 //! against `SimBackend` — metrics measure the real renderer, not a
 //! reimplementation. The binary's event loop, pacing and CLI stay in
 //! `main.rs`; nothing here touches a clock or a tty.
+//!
+//! M3: the full §3.5 three-layer path. Luma is resampled at Vc×2Vr (§3.3 —
+//! ONE tap-table build at 2× vertical through the same separable code path);
+//! E/Ex/Ey/H are decoded when the plane registry carries them (absent planes
+//! auto-disable their layers, so M1-era Y+C assets still play — PLAN §4
+//! back-compat) and resampled at Vc×Vr; coherence is computed post-resample
+//! inside `compose_cell` from the resampled doubled-angle field; the
+//! per-shot NORM LUT feeds `compose_frame` directly (taps are normalized
+//! per §3.5 line 2); all temporal state lives in a [`HysteresisState`]
+//! reset on shot change and realloc+reset on resize.
 
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use slpy_core::ramp::{base_ramp_for_cols, ramp_glyph};
-use slpy_core::{Cell, Grid, Resampler, Rgb, Viewport, compute_viewport};
+use slpy_core::{
+    Cell, ColorDepth, ComposeParams, FramePlanes, GlyphTier, Grid, HysteresisState, PaletteSet,
+    Resampler, Rgb, Viewport, compose_frame, compose_frame_masked, compute_viewport,
+    select_palettes,
+};
 use slpy_format::header::plane_id;
 use slpy_format::{PlaneLevels, SlpyReader};
-use slpy_term::{Backend, Event, FrameStats, Key};
+use slpy_term::{Backend, Caps, ColorTier, Event, FrameStats, GlyphFlags, GlyphSupportTier, Key};
+
+/// H-mask box-average thresholds (integrator decision, M3): the H plane is
+/// bitflags, so each bit is expanded to a 0/255 mask at source resolution,
+/// box-averaged through the shared feature resampler, and re-thresholded per
+/// cell. Highlights are sparse accents — a quarter of the cell's ink is
+/// enough to keep a star alive at fine grids without letting single-pixel
+/// noise own a coarse cell; deep shadow is an area feature — half the cell.
+const H_HIGHLIGHT_MIN: u8 = 64;
+const H_SHADOW_MIN: u8 = 128;
+
+/// Map the probed terminal capabilities to the palette-selection charset
+/// tier (PLAN §3.4: `Caps.glyph_support` records the trusted repertoire).
+/// Braille requires *verified* support (never set from passive hints).
+pub fn glyph_tier_from_caps(caps: &Caps) -> GlyphTier {
+    match caps.glyph_support {
+        GlyphSupportTier::AsciiOnly | GlyphSupportTier::Cp437 => GlyphTier::Ascii,
+        GlyphSupportTier::UnicodeCore => GlyphTier::UnicodeBlocks,
+        GlyphSupportTier::UnicodeFull => {
+            if caps.glyphs.contains(GlyphFlags::BRAILLE) {
+                GlyphTier::BrailleVerified
+            } else {
+                GlyphTier::UnicodeBlocks
+            }
+        }
+    }
+}
+
+/// Map a terminal color tier to the palette-selection color depth
+/// (slpy-core mirrors the variants without depending on slpy-term).
+pub fn color_depth(tier: ColorTier) -> ColorDepth {
+    match tier {
+        ColorTier::True => ColorDepth::True,
+        ColorTier::C256 => ColorDepth::C256,
+        ColorTier::C16 => ColorDepth::C16,
+        ColorTier::Mono => ColorDepth::Mono,
+    }
+}
 
 /// Per-stage wall-time accumulators (ns) — the §3.6 stage split reported by
 /// `--sim` JSON and consumed by the eval driver (per-frame deltas).
@@ -28,6 +78,9 @@ pub struct StageNs {
 pub struct Drained {
     pub quit: bool,
     /// Digit key 0–9 → jump to that ×10% of the asset (interactive seek).
+    /// When set, `drain_events` has ALREADY reset all per-cell hysteresis
+    /// state (M3 review fix): a seek is a temporal discontinuity, so the
+    /// caller just repoints its clock and renders the landing frame.
     pub jump_digit: Option<u8>,
 }
 
@@ -44,16 +97,52 @@ pub struct Player<'a> {
     /// Decode + composite chroma (asset has C and the tier shows color;
     /// mono keeps glyph-only and skips the C subblocks entirely, PLAN §4).
     use_chroma: bool,
+    /// Plane-registry detection (PLAN §4 back-compat): the edge layer needs
+    /// all of E/Ex/Ey; H is independent. Absent planes are never decoded and
+    /// their layers compose disabled (M1-era Y+C assets play unchanged).
+    has_edges: bool,
+    has_h: bool,
     cell_aspect: f64,
     repaint_full: bool,
-    ramp: &'static [char],
+    /// Palette-selection inputs derived from Caps by the caller (§3.4 key:
+    /// charset tier × color depth; density comes from the viewport).
+    glyph_tier: GlyphTier,
+    color: ColorDepth,
+    /// The selected §3.4 palette configuration (rebuilt on reflow — density
+    /// band depends on viewport cols).
+    palette: Option<PaletteSet>,
+    /// §3.5 compositor tunables (defaults = the untuned M3 baseline; the
+    /// eval driver overrides from params.toml `[compose]`).
+    compose_params: ComposeParams,
+    /// Per-cell temporal state (§3.5): ramp-index hysteresis, edge on/off
+    /// memory, orientation bin. Reset on shot change, realloc+reset on
+    /// resize.
+    state: HysteresisState,
     vp: Option<Viewport>,
+    /// Luma resampler, built at Vc × 2Vr (§3.3: two vertical taps per cell
+    /// through the ONE separable path — no second luma resampler).
     resampler: Option<Resampler>,
+    /// Feature-plane resampler (E/Ex/Ey + H masks) at Vc × Vr.
+    feat_resampler: Option<Resampler>,
     chroma_resampler: Option<Resampler>,
-    /// Decoded Y plane, `src_w × src_h` — the standing delta double buffer.
+    /// Decoded planes at source res — the standing delta double buffers.
     luma_src: Vec<u8>,
-    /// Resampled luma, `vp.cols × vp.rows`.
-    luma_dst: Vec<u8>,
+    e_src: Vec<u8>,
+    ex_src: Vec<u8>,
+    ey_src: Vec<u8>,
+    h_src: Vec<u8>,
+    /// H bits expanded to 0/255 masks at source res (resampler inputs).
+    hl_mask: Vec<u8>,
+    sh_mask: Vec<u8>,
+    /// Resampled planes at viewport res (`luma2_dst` at Vc × 2Vr).
+    luma2_dst: Vec<u8>,
+    e_dst: Vec<u8>,
+    ex_dst: Vec<u8>,
+    ey_dst: Vec<u8>,
+    hl_dst: Vec<u8>,
+    sh_dst: Vec<u8>,
+    /// Re-thresholded H flags at cell res (see `H_HIGHLIGHT_MIN`).
+    h_dst: Vec<u8>,
     /// Decoded C plane (RGB565 LE) — the chroma delta double buffer.
     chroma_src: Vec<u8>,
     /// C unpacked to 8-bit channels at chroma res (resampler inputs).
@@ -70,11 +159,18 @@ pub struct Player<'a> {
     /// `first_frame` of the shot `levels_lut` was built for (`None` = the
     /// identity LUT for assets without NORM).
     lut_shot: Option<u32>,
-    /// Frame currently decoded in `luma_src`/`chroma_src` — drives the
+    /// Frame currently decoded in the source buffers — drives the
     /// sequential-roll vs FIDX-seek decode policy on delta assets.
     loaded: Option<u32>,
     /// Full terminal grid (viewport + letterbox pads).
     grid: Grid<Cell>,
+    /// Winning-layer render metadata (`slpy_core::compose::layer` ids, same
+    /// dims as `grid`), collected only when the eval driver asks
+    /// ([`enable_layer_mask`](Player::enable_layer_mask)) — `None` keeps the
+    /// interactive hot path untouched. M3: an enabled mask is filled by
+    /// `compose_frame_masked` (byte-identical cells, tags observable) — the
+    /// §6 edge-F1 prediction side.
+    layer_mask: Option<Grid<u8>>,
     stage: StageNs,
 }
 
@@ -83,7 +179,8 @@ impl<'a> Player<'a> {
         reader: SlpyReader<'a>,
         cell_aspect: f64,
         repaint_full: bool,
-        want_color: bool,
+        color: ColorDepth,
+        glyph_tier: GlyphTier,
     ) -> Result<Player<'a>> {
         let (src_w, src_h) = reader
             .plane_dims(plane_id::Y)
@@ -93,8 +190,15 @@ impl<'a> Player<'a> {
             bail!("asset has zero frames");
         }
         let chroma_dims = reader.plane_dims(plane_id::C);
-        let use_chroma = want_color && chroma_dims.is_some();
+        let use_chroma = color != ColorDepth::Mono && chroma_dims.is_some();
         let chroma_len = chroma_dims.map_or(0, |(w, h)| w as usize * h as usize);
+        // Plane-registry detection (PLAN §4): the edge layer runs only when
+        // E, Ex AND Ey all travel; a partial set is auto-disabled too.
+        let has_edges = reader.plane_dims(plane_id::E).is_some()
+            && reader.plane_dims(plane_id::EX).is_some()
+            && reader.plane_dims(plane_id::EY).is_some();
+        let has_h = reader.plane_dims(plane_id::H).is_some();
+        let src_len = src_w as usize * src_h as usize;
         let mut levels_lut = [0u8; 256];
         build_levels_lut(&mut levels_lut, None); // identity until NORM says otherwise
         Ok(Player {
@@ -104,14 +208,33 @@ impl<'a> Player<'a> {
             src_h,
             chroma_dims,
             use_chroma,
+            has_edges,
+            has_h,
             cell_aspect,
             repaint_full,
-            ramp: base_ramp_for_cols(0),
+            glyph_tier,
+            color,
+            palette: None,
+            compose_params: ComposeParams::default(),
+            state: HysteresisState::new(0, 0),
             vp: None,
             resampler: None,
+            feat_resampler: None,
             chroma_resampler: None,
-            luma_src: vec![0; src_w as usize * src_h as usize],
-            luma_dst: Vec::new(),
+            luma_src: vec![0; src_len],
+            e_src: vec![0; if has_edges { src_len } else { 0 }],
+            ex_src: vec![0; if has_edges { src_len } else { 0 }],
+            ey_src: vec![0; if has_edges { src_len } else { 0 }],
+            h_src: vec![0; if has_h { src_len } else { 0 }],
+            hl_mask: vec![0; if has_h { src_len } else { 0 }],
+            sh_mask: vec![0; if has_h { src_len } else { 0 }],
+            luma2_dst: Vec::new(),
+            e_dst: Vec::new(),
+            ex_dst: Vec::new(),
+            ey_dst: Vec::new(),
+            hl_dst: Vec::new(),
+            sh_dst: Vec::new(),
+            h_dst: Vec::new(),
             chroma_src: vec![0; if use_chroma { chroma_len * 2 } else { 0 }],
             cr_src: vec![0; if use_chroma { chroma_len } else { 0 }],
             cg_src: vec![0; if use_chroma { chroma_len } else { 0 }],
@@ -123,8 +246,34 @@ impl<'a> Player<'a> {
             lut_shot: None,
             loaded: None,
             grid: Grid::new(0, 0),
+            layer_mask: None,
             stage: StageNs::default(),
         })
+    }
+
+    /// Override the §3.5 compositor tunables (the eval driver wires
+    /// params.toml `[compose]` here; interactive playback keeps the
+    /// defaults, which are pinned to the committed params.toml by test).
+    pub fn set_compose_params(&mut self, params: ComposeParams) {
+        self.compose_params = params;
+    }
+
+    /// Start collecting the per-cell winning-layer mask (render metadata for
+    /// the eval harness — §6 edge-F1 prediction side). Costs one `Grid<u8>`
+    /// kept in step with the terminal grid; interactive playback never calls
+    /// this.
+    pub fn enable_layer_mask(&mut self) {
+        let mut mask = Grid::new(self.grid.cols(), self.grid.rows());
+        mask.fill(slpy_core::layer::BASE);
+        self.layer_mask = Some(mask);
+    }
+
+    /// The layer mask for the last rendered frame (`None` unless
+    /// [`enable_layer_mask`](Player::enable_layer_mask) was called). Values
+    /// are `slpy_core::compose::layer` ids at full terminal dims; pads are
+    /// `layer::BASE`.
+    pub fn layer_mask(&self) -> Option<&Grid<u8>> {
+        self.layer_mask.as_ref()
     }
 
     /// Frames in the asset (> 0 — enforced at `new`).
@@ -145,12 +294,17 @@ impl<'a> Player<'a> {
         self.vp
     }
 
-    /// `(src_dims, dst_dims)` of the current luma resampler (`None` below
-    /// the viewport minimum) — the §6 resize-fuzz invariant "tap tables
-    /// realloc'd consistently" asserts this against the viewport (M2 review
-    /// fix: the fuzzer drives THIS player, so the accessor lives here).
+    /// `(src_dims, dst_dims)` of the current LUMA resampler (`None` below
+    /// the viewport minimum). M3: dst is `(Vc, 2·Vr)` — the §3.3 two-taps-
+    /// per-cell plane; the resize fuzz asserts exactly that.
     pub fn resampler_dims(&self) -> Option<((u16, u16), (u16, u16))> {
         self.resampler.as_ref().map(|r| (r.src_dims(), r.dst_dims()))
+    }
+
+    /// Dimensions of the per-cell hysteresis state (viewport cells) — the
+    /// §6 fuzz invariant "hysteresis buffers realloc'd to the new grid".
+    pub fn hysteresis_dims(&self) -> (u16, u16) {
+        (self.state.cols(), self.state.rows())
     }
 
     /// Decoded source Y plane (`src_w × src_h` L\* bytes) for the frame last
@@ -173,17 +327,37 @@ impl<'a> Player<'a> {
     }
 
     /// Resize path (PLAN §3.6 step 1): backend + grid realloc, viewport
-    /// recompute, resampler tap rebuilds, invalidate. The next rendered frame
-    /// lands on the new grid (M0 acceptance 2).
+    /// recompute, resampler tap rebuilds, palette reselection (density band
+    /// tracks viewport cols), hysteresis realloc+reset (§3.5 graft from C),
+    /// invalidate. The next rendered frame lands on the new grid.
     pub fn reflow<B: Backend>(&mut self, backend: &mut B, cols: u16, rows: u16) {
         backend.resize(cols, rows);
         self.grid.resize(cols, rows);
+        if let Some(mask) = &mut self.layer_mask {
+            mask.resize(cols, rows); // realloc + reset with the grid (§6 discipline)
+        }
         self.vp = compute_viewport(cols, rows, self.cell_aspect);
         if let Some(vp) = self.vp {
-            self.ramp = base_ramp_for_cols(vp.cols);
-            self.resampler = Some(Resampler::build(self.src_w, self.src_h, vp.cols, vp.rows));
+            self.palette = Some(select_palettes(self.glyph_tier, self.color, vp.cols));
+            // §3.3: luma at Vc × 2Vr — one build with doubled vertical dst.
+            self.resampler = Some(Resampler::build(self.src_w, self.src_h, vp.cols, 2 * vp.rows));
+            self.state.resize(vp.cols, vp.rows);
             let cells = vp.cols as usize * vp.rows as usize;
-            self.luma_dst.resize(cells, 0);
+            self.luma2_dst.resize(cells * 2, 0);
+            if self.has_edges || self.has_h {
+                self.feat_resampler =
+                    Some(Resampler::build(self.src_w, self.src_h, vp.cols, vp.rows));
+            }
+            if self.has_edges {
+                self.e_dst.resize(cells, 0);
+                self.ex_dst.resize(cells, 0);
+                self.ey_dst.resize(cells, 0);
+            }
+            if self.has_h {
+                self.hl_dst.resize(cells, 0);
+                self.sh_dst.resize(cells, 0);
+                self.h_dst.resize(cells, 0);
+            }
             if self.use_chroma {
                 let (cw, ch) = self.chroma_dims.expect("use_chroma implies C dims");
                 self.chroma_resampler = Some(Resampler::build(cw, ch, vp.cols, vp.rows));
@@ -193,14 +367,26 @@ impl<'a> Player<'a> {
             }
         } else {
             // Below 32x9 (PLAN §3.2): "enlarge terminal" card until regrown.
+            self.palette = None;
             self.resampler = None;
+            self.feat_resampler = None;
             self.chroma_resampler = None;
+            self.state.resize(0, 0);
         }
         backend.invalidate();
     }
 
     /// Drain the event queue (PLAN §3.6 step 1): Quit wins, resizes coalesce
     /// to the latest and trigger one reflow, digit keys report a jump.
+    ///
+    /// M3 review fix (seek ghosting): a digit jump is an explicit temporal
+    /// discontinuity — the landing frame has no relation to what is on
+    /// screen — so ALL per-cell hysteresis memory (`was_edge`, held ramp
+    /// idx, orientation bin) is reset HERE, before the caller renders the
+    /// landing frame. Same class as the §3.5 cut and resize resets; the
+    /// shot-change reset in `update_levels` only covers jumps that cross a
+    /// shot boundary — a same-shot jump would otherwise render edge glyphs
+    /// a cold start at that frame would not (m3_layers regression test).
     pub fn drain_events<B: Backend>(&mut self, backend: &mut B) -> Drained {
         let mut resize: Option<(u16, u16)> = None;
         let mut jump_digit = None;
@@ -213,40 +399,56 @@ impl<'a> Player<'a> {
             }
         }
         if let Some((c, r)) = resize {
-            self.reflow(backend, c, r);
+            self.reflow(backend, c, r); // resize path resets state too (realloc)
+        }
+        if jump_digit.is_some() {
+            self.state.reset(); // seek discontinuity: no pre-seek ghosting
         }
         Drained { quit: false, jump_digit }
     }
 
-    /// Bring `luma_src` (+ `chroma_src`) to `frame_idx`. Sequential
-    /// successors roll one delta via `decode_plane_into` (the standing
-    /// double buffer, PLAN §3.6 step 3); anything else — startup, `--seek`,
-    /// digit jumps, latest-frame-wins skips, loop wrap — goes through
-    /// `seek_plane_into` (FIDX keyframe bsearch + delta rolls, PLAN §4).
-    /// Frame-skipping on delta assets MUST NOT use plain decode (INTERFACES).
+    /// Sequential-roll or FIDX-seek one plane into its standing buffer.
+    fn load_plane(
+        reader: &mut SlpyReader<'a>,
+        sequential: bool,
+        frame_idx: u32,
+        id: u8,
+        dst: &mut [u8],
+    ) -> Result<()> {
+        if sequential {
+            reader
+                .decode_plane_into(frame_idx, id, dst)
+                .with_context(|| format!("decoding plane {id} of frame {frame_idx}"))?;
+        } else {
+            reader
+                .seek_plane_into(frame_idx, id, dst)
+                .with_context(|| format!("seeking plane {id} to frame {frame_idx}"))?;
+        }
+        Ok(())
+    }
+
+    /// Bring every decoded plane to `frame_idx`. Sequential successors roll
+    /// one delta via `decode_plane_into` (the standing double buffer, PLAN
+    /// §3.6 step 3); anything else — startup, `--seek`, digit jumps,
+    /// latest-frame-wins skips, loop wrap — goes through `seek_plane_into`
+    /// (FIDX keyframe bsearch + delta rolls, PLAN §4). Frame-skipping on
+    /// delta assets MUST NOT use plain decode (INTERFACES).
     fn load_frame(&mut self, frame_idx: u32) -> Result<()> {
         if self.loaded == Some(frame_idx) {
             return Ok(()); // paced repeat: planes already current
         }
         let sequential = frame_idx > 0 && self.loaded == Some(frame_idx - 1);
-        if sequential {
-            self.reader
-                .decode_plane_into(frame_idx, plane_id::Y, &mut self.luma_src)
-                .with_context(|| format!("decoding frame {frame_idx}"))?;
-            if self.use_chroma {
-                self.reader
-                    .decode_plane_into(frame_idx, plane_id::C, &mut self.chroma_src)
-                    .with_context(|| format!("decoding chroma of frame {frame_idx}"))?;
-            }
-        } else {
-            self.reader
-                .seek_plane_into(frame_idx, plane_id::Y, &mut self.luma_src)
-                .with_context(|| format!("seeking to frame {frame_idx}"))?;
-            if self.use_chroma {
-                self.reader
-                    .seek_plane_into(frame_idx, plane_id::C, &mut self.chroma_src)
-                    .with_context(|| format!("seeking chroma to frame {frame_idx}"))?;
-            }
+        Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::Y, &mut self.luma_src)?;
+        if self.has_edges {
+            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::E, &mut self.e_src)?;
+            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::EX, &mut self.ex_src)?;
+            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::EY, &mut self.ey_src)?;
+        }
+        if self.has_h {
+            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::H, &mut self.h_src)?;
+        }
+        if self.use_chroma {
+            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::C, &mut self.chroma_src)?;
         }
         self.loaded = Some(frame_idx);
         Ok(())
@@ -255,11 +457,18 @@ impl<'a> Player<'a> {
     /// Rebuild the levels LUT iff `frame_idx` entered a different shot
     /// (PLAN §3.5 per-shot auto-levels from NORM — per-frame rebuilds would
     /// pump; per-shot is the contract). Assets without NORM keep identity.
+    ///
+    /// M3: a shot change also resets ALL hysteresis state. This is a
+    /// deliberate superset of the §3.5 "cut flags reset hysteresis" rule:
+    /// when the LUT changes, every remembered ramp index refers to the OLD
+    /// normalization and is stale by construction — and every CUT-flagged
+    /// boundary is a shot change, so the spec case is covered exactly.
     fn update_levels(&mut self, frame_idx: u32) {
         let shot = self.reader.shot_for_frame(frame_idx).map(|s| s.first_frame);
         if shot != self.lut_shot {
             build_levels_lut(&mut self.levels_lut, self.reader.norm_levels(frame_idx, plane_id::Y));
             self.lut_shot = shot;
+            self.state.reset(); // scene-cut / shot-change reset (§3.5)
         }
     }
 
@@ -279,12 +488,28 @@ impl<'a> Player<'a> {
             let t = Instant::now();
             self.update_levels(frame_idx);
             let resampler = self.resampler.as_mut().expect("checked above");
-            resampler.apply(&self.luma_src, &mut self.luma_dst);
-            // Runtime per-shot normalization (M1: replaces M0's baked-in
-            // stretch). Applied post-resample: the map is monotone linear,
-            // so order is equivalent — and 24k lookups beat 130k.
-            for v in &mut self.luma_dst {
-                *v = self.levels_lut[*v as usize];
+            resampler.apply(&self.luma_src, &mut self.luma2_dst);
+            if self.has_edges || self.has_h {
+                let feat = self.feat_resampler.as_mut().expect("features imply resampler");
+                if self.has_edges {
+                    feat.apply(&self.e_src, &mut self.e_dst);
+                    feat.apply(&self.ex_src, &mut self.ex_dst);
+                    feat.apply(&self.ey_src, &mut self.ey_dst);
+                }
+                if self.has_h {
+                    // Bitflags don't box-average: expand each bit to a 0/255
+                    // mask, resample, re-threshold (see H_HIGHLIGHT_MIN).
+                    for (i, &h) in self.h_src.iter().enumerate() {
+                        self.hl_mask[i] = if h & slpy_core::h_flags::HIGHLIGHT != 0 { 255 } else { 0 };
+                        self.sh_mask[i] = if h & slpy_core::h_flags::DEEP_SHADOW != 0 { 255 } else { 0 };
+                    }
+                    feat.apply(&self.hl_mask, &mut self.hl_dst);
+                    feat.apply(&self.sh_mask, &mut self.sh_dst);
+                    for i in 0..self.h_dst.len() {
+                        self.h_dst[i] = u8::from(self.hl_dst[i] >= H_HIGHLIGHT_MIN)
+                            | (u8::from(self.sh_dst[i] >= H_SHADOW_MIN) << 1);
+                    }
+                }
             }
             if self.use_chroma {
                 unpack_rgb565(&self.chroma_src, &mut self.cr_src, &mut self.cg_src, &mut self.cb_src);
@@ -297,13 +522,44 @@ impl<'a> Player<'a> {
 
             let t = Instant::now();
             let vp = self.vp.expect("checked above");
-            let chroma = self
-                .use_chroma
-                .then(|| (&self.cr_dst[..], &self.cg_dst[..], &self.cb_dst[..]));
-            compose_cells(&self.luma_dst, chroma, &vp, self.ramp, &mut self.grid);
+            let set = self.palette.as_ref().expect("viewport implies palette");
+            let planes = FramePlanes {
+                luma2: &self.luma2_dst,
+                e: self.has_edges.then_some(&self.e_dst[..]),
+                ex: self.has_edges.then_some(&self.ex_dst[..]),
+                ey: self.has_edges.then_some(&self.ey_dst[..]),
+                h: self.has_h.then_some(&self.h_dst[..]),
+                chroma: self
+                    .use_chroma
+                    .then(|| (&self.cr_dst[..], &self.cg_dst[..], &self.cb_dst[..])),
+            };
+            match &mut self.layer_mask {
+                Some(mask) => compose_frame_masked(
+                    &planes,
+                    &vp,
+                    &self.levels_lut,
+                    set,
+                    &self.compose_params,
+                    &mut self.state,
+                    &mut self.grid,
+                    mask,
+                ),
+                None => compose_frame(
+                    &planes,
+                    &vp,
+                    &self.levels_lut,
+                    set,
+                    &self.compose_params,
+                    &mut self.state,
+                    &mut self.grid,
+                ),
+            }
             self.stage.compose += t.elapsed().as_nanos() as u64;
         } else {
             draw_enlarge_card(&mut self.grid);
+            if let Some(mask) = &mut self.layer_mask {
+                mask.fill(slpy_core::layer::BASE);
+            }
         }
 
         if self.repaint_full {
@@ -356,44 +612,6 @@ pub fn unpack_rgb565(src: &[u8], r: &mut [u8], g: &mut [u8], b: &mut [u8]) {
         r[i] = (r5 << 3) | (r5 >> 2);
         g[i] = (g6 << 2) | (g6 >> 4);
         b[i] = (b5 << 3) | (b5 >> 2);
-    }
-}
-
-/// Fill `out` from normalized luma + optional resampled chroma channels,
-/// letterboxed per `vp` (PLAN §3.4/§3.5): base ramp glyph from luma, fg
-/// sampled from the chroma plane (area-resampled) on color tiers, gray fg
-/// fallback for luma-only assets / mono. [`Cell::BLANK`] pads. Never
-/// allocates; `out` must already be term-grid-sized (PLAN §6 discipline).
-pub fn compose_cells(
-    luma: &[u8],
-    chroma: Option<(&[u8], &[u8], &[u8])>,
-    vp: &Viewport,
-    ramp: &[char],
-    out: &mut Grid<Cell>,
-) {
-    let vc = vp.cols as usize;
-    let vr = vp.rows as usize;
-    assert_eq!(out.cols(), vp.cols + vp.pad_left + vp.pad_right, "grid cols != viewport + pads");
-    assert_eq!(out.rows(), vp.rows + vp.pad_top + vp.pad_bottom, "grid rows != viewport + pads");
-    assert!(luma.len() >= vc * vr, "luma plane smaller than viewport");
-    if let Some((r, g, b)) = chroma {
-        assert!(r.len() >= vc * vr && g.len() >= vc * vr && b.len() >= vc * vr);
-    }
-    assert!(!ramp.is_empty(), "empty ramp");
-
-    out.fill(Cell::BLANK);
-    let pad_left = vp.pad_left as usize;
-    for row in 0..vr {
-        let base = row * vc;
-        let src = &luma[base..base + vc];
-        let drow = &mut out.row_mut(vp.pad_top + row as u16)[pad_left..pad_left + vc];
-        for (i, (cell, &n)) in drow.iter_mut().zip(src).enumerate() {
-            let fg = match chroma {
-                Some((r, g, b)) => Rgb::new(r[base + i], g[base + i], b[base + i]),
-                None => Rgb::gray(n),
-            };
-            *cell = Cell::new(ramp_glyph(ramp, n), fg, Rgb::BLACK);
-        }
     }
 }
 
@@ -464,27 +682,29 @@ mod tests {
     }
 
     #[test]
-    fn compose_cells_chroma_fg_and_blank_pads() {
-        let vp = compute_viewport(213, 58, 2.0).unwrap(); // 206x58, pads 3/4
-        let cells = vp.cols as usize * vp.rows as usize;
-        let luma = vec![128u8; cells];
-        let (r, g, b) = (vec![200u8; cells], vec![10u8; cells], vec![30u8; cells]);
-        let mut grid: Grid<Cell> = Grid::new(213, 58);
-        compose_cells(
-            &luma,
-            Some((&r, &g, &b)),
-            &vp,
-            base_ramp_for_cols(vp.cols),
-            &mut grid,
+    fn glyph_tier_mapping_from_caps() {
+        let mut caps = Caps::default();
+        assert_eq!(glyph_tier_from_caps(&caps), GlyphTier::Ascii);
+        caps.glyph_support = GlyphSupportTier::Cp437;
+        assert_eq!(glyph_tier_from_caps(&caps), GlyphTier::Ascii, "CP437 stays on the ascii floor");
+        caps.glyph_support = GlyphSupportTier::UnicodeCore;
+        assert_eq!(glyph_tier_from_caps(&caps), GlyphTier::UnicodeBlocks);
+        caps.glyph_support = GlyphSupportTier::UnicodeFull;
+        assert_eq!(
+            glyph_tier_from_caps(&caps),
+            GlyphTier::UnicodeBlocks,
+            "braille needs the verified flag, not just UnicodeFull"
         );
-        assert_eq!(grid.get(0, 0), Cell::BLANK, "left pad blank");
-        let c = grid.get(vp.pad_left, 0);
-        assert_eq!(c.fg, Rgb::new(200, 10, 30), "fg from chroma, not gray");
-        assert_eq!(c.bg, Rgb::BLACK);
-        // Luma-only fallback keeps the M0 gray fg.
-        let mut grid2: Grid<Cell> = Grid::new(213, 58);
-        compose_cells(&luma, None, &vp, base_ramp_for_cols(vp.cols), &mut grid2);
-        assert_eq!(grid2.get(vp.pad_left, 0).fg, Rgb::gray(128));
+        caps.glyphs = caps.glyphs.with(GlyphFlags::BRAILLE);
+        assert_eq!(glyph_tier_from_caps(&caps), GlyphTier::BrailleVerified);
+    }
+
+    #[test]
+    fn color_depth_mapping() {
+        assert_eq!(color_depth(ColorTier::True), ColorDepth::True);
+        assert_eq!(color_depth(ColorTier::C256), ColorDepth::C256);
+        assert_eq!(color_depth(ColorTier::C16), ColorDepth::C16);
+        assert_eq!(color_depth(ColorTier::Mono), ColorDepth::Mono);
     }
 
     #[test]

@@ -243,45 +243,63 @@ fn tier_mono_emits_no_sgr_and_truecolor_uses_chroma_fg() {
     );
 }
 
+/// M1 acceptance 2, restated for M3: the FIDX seek path must land on the
+/// exact same DECODED planes as a sequential delta roll. Until M3 this was
+/// asserted on rendered escape bytes; the §3.5 compositor is now
+/// deliberately history-dependent (ramp-index hysteresis carries per-cell
+/// memory across frames), so rendered output legitimately differs between a
+/// warmed sequential run and a cold seek — the decode contract is what this
+/// test pins, at the plane level through the real `Player`.
 #[test]
-fn seek_lands_byte_identical_to_sequential() {
+fn seek_lands_on_identical_decoded_planes() {
+    use sleepy_player::pipeline::Player;
+    use slpy_core::{ColorDepth, GlyphTier};
+    use slpy_format::SlpyReader;
+    use slpy_term::SimBackend;
+
     let asset = TmpFile::new("seek.slpy");
     write_delta_asset(&asset.0, 23); // keyframes at 0,5,10,15,20
+    let bytes = fs::read(&asset.0).unwrap();
 
-    // Sequential ground truth: frames 0..=17 (17 = keyframe 15 + 2 deltas).
-    let dump_a = TmpFile::new("seq.bin");
-    let (ok, _, stderr) = run_player(&[
-        asset.0.to_str().unwrap(),
-        "--sim",
-        "80x24:18",
-        "--sim-dump",
-        dump_a.0.to_str().unwrap(),
-    ]);
-    assert!(ok, "sequential run failed: {stderr}");
+    let new_player = || {
+        Player::new(
+            SlpyReader::open(&bytes).unwrap(),
+            2.0,
+            true,
+            ColorDepth::True,
+            GlyphTier::Ascii,
+        )
+        .unwrap()
+    };
 
-    // Cold seek straight to frame 17 (17.5/30 s → floor(17.5) = 17).
-    let dump_b = TmpFile::new("seek.bin");
-    let (ok, _, stderr) = run_player(&[
-        asset.0.to_str().unwrap(),
-        "--seek",
-        "0.58333333",
-        "--sim",
-        "80x24:1",
-        "--sim-dump",
-        dump_b.0.to_str().unwrap(),
-    ]);
-    assert!(ok, "seek run failed: {stderr}");
+    // Sequential ground truth: roll frames 0..=17 (17 = keyframe 15 + 2
+    // deltas) through render_present, exactly like paced playback.
+    let mut backend = SimBackend::new(80, 24);
+    let mut seq = new_player();
+    seq.reflow(&mut backend, 80, 24);
+    for f in 0..=17u32 {
+        seq.render_present(&mut backend, f).unwrap();
+        backend.take_output();
+    }
 
-    let frames_a = split_frames(&fs::read(&dump_a.0).unwrap());
-    let frames_b = split_frames(&fs::read(&dump_b.0).unwrap());
-    assert_eq!(frames_a.len(), 18);
-    assert_eq!(frames_b.len(), 1);
-    // Full-repaint frames reset SGR state, so byte equality is exact.
+    // Cold seek straight to frame 17 (FIDX keyframe bsearch + delta rolls).
+    let mut seek = new_player();
+    seek.reflow(&mut backend, 80, 24);
+    seek.render_present(&mut backend, 17).unwrap();
+    backend.take_output();
+
     assert_eq!(
-        frames_a[17], frames_b[0],
-        "seek must land byte-identical to sequential decode (M1 acceptance 2)"
+        seq.luma_src(),
+        seek.luma_src(),
+        "seek must land on planes byte-identical to sequential decode (M1 acceptance 2)"
     );
-    assert_ne!(frames_a[16], frames_b[0], "sanity: neighbor frames differ");
+
+    // Sanity: a neighbor frame decodes differently.
+    let mut other = new_player();
+    other.reflow(&mut backend, 80, 24);
+    other.render_present(&mut backend, 16).unwrap();
+    backend.take_output();
+    assert_ne!(seq.luma_src(), other.luma_src(), "neighbor frames differ");
 }
 
 #[test]

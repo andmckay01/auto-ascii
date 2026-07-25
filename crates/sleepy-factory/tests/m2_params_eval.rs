@@ -140,11 +140,16 @@ fn params_validation_rejects_degenerate_geometry() {
 /// changes testsrc2/encoder bytes fails HERE with a clear message instead of
 /// as a mystery asset-sha mismatch below.
 const FIXTURE_MP4_SHA: &str = "a0a8d8fa401e499fb2ea04d6b00ddbc1d4e79c8dd2a728e035cf6609e69f3454";
-/// Committed pipeline output for the fixture at embedded-default params —
-/// captured from the M1 pipeline immediately BEFORE the params.toml
-/// refactor. Re-baselining this constant is a deliberate act (it means the
-/// default factory output changed for every user).
-const FIXTURE_SLPY_SHA: &str = "b8e83ee8816887028386f04021f1005342040c6ac86ac53584c47b534e4ef13d";
+/// Committed pipeline output for the fixture at embedded-default params.
+/// Re-baselining this constant is a deliberate act (it means the default
+/// factory output changed for every user). History:
+/// - M2 (b8e83ee8…): M1 Y+C pipeline pinned at the params.toml refactor.
+/// - M3 (439e6ac8…): DELIBERATE re-pin — the factory now emits the full
+///   §4 plane set (Y+E+Ex+Ey+H+C) with temporal EMA on Y/E/Ex/Ey/C, so
+///   every default build's bytes changed by design (PLAN §5 stages 3–4;
+///   INTERFACES note 18). Verified: two consecutive builds byte-identical
+///   before pinning; corpus plane dumps eyeballed (edges trace contours).
+const FIXTURE_SLPY_SHA: &str = "439e6ac8933f4fc711480579d3ba416c841ed35770d6cf0b4f0cf26d18e2aab5";
 
 fn synth_fixture(dir: &TempDir) -> PathBuf {
     let input = dir.path("fixture.mp4");
@@ -269,18 +274,19 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     let cache = dir.path("cache");
     let out_json = dir.path("runs/run1.json");
     let out_html = dir.path("runs/run1.html");
+    let out_reel = dir.path("runs/run1-reel.html");
 
-    // --- run 1: builds assets, emits JSON + HTML --------------------------
+    // --- run 1: builds assets, emits JSON + HTML + review reel ------------
     let out = factory(&[
         &"eval", &"--corpus", &corpus, &"--params", &params, &"--out", &out_json,
-        &"--html", &out_html, &"--cache-dir", &cache,
+        &"--html", &out_html, &"--reel", &out_reel, &"--cache-dir", &cache,
     ]);
     assert!(out.status.success(), "eval failed:\n{}", stderr_of(&out));
 
     // JSON: every §6 metric populated for both clips.
     let json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out_json).unwrap()).unwrap();
-    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["schema_version"], 2); // M3 bump: edge-F1 metric family
     let clips = json["clips"].as_array().unwrap();
     assert_eq!(clips.len(), 2, "both corpus clips must be evaluated");
     assert_eq!(clips[0]["name"], "clip-a");
@@ -291,6 +297,13 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
         assert!(ssim > 0.0 && ssim <= 1.0, "ssim in (0,1]: {ssim}");
         let flicker = m["flicker_switches_per_cell_sec"].as_f64().expect("flicker populated");
         assert!(flicker >= 0.0);
+        // M3 edge-F1 family: populated (layer mask observed + source Canny
+        // truth computed) and in range. testsrc2 is edge-rich, so truth is
+        // nonempty; the score itself depends on the renderer's edge layer.
+        for k in ["edge_f1", "edge_precision", "edge_recall"] {
+            let v = m[k].as_f64().unwrap_or_else(|| panic!("{k} unpopulated"));
+            assert!((0.0..=1.0).contains(&v), "{k} out of range: {v}");
+        }
         let tiers = m["damage_by_tier"].as_object().unwrap();
         for tier in ["truecolor", "256", "mono"] {
             let d = tiers.get(tier).unwrap_or_else(|| panic!("tier {tier} missing"));
@@ -332,6 +345,21 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     let pngs = html.matches("data:image/png;base64,iVBOR").count();
     assert!(pngs >= 8, "expected >= 8 embedded PNGs (source+render x snaps x clips), got {pngs}");
     assert!(!html.contains("http://") && !html.contains("https://"), "must be self-contained");
+    assert!(html.contains("edge F1 vs source Canny"), "contact sheet reports edge F1");
+
+    // Review reel (M3 sign-off artifact): self-contained, per-clip animated
+    // GIF + >= 4 source|render timestamp rows with metric strips.
+    let reel = std::fs::read_to_string(&out_reel).unwrap();
+    assert!(reel.contains("<title>sleepytime review reel</title>"));
+    assert!(reel.contains("clip-a") && reel.contains("clip-b"));
+    assert_eq!(reel.matches("data:image/gif;base64,").count(), 2, "one GIF per clip");
+    let reel_pngs = reel.matches("data:image/png;base64,iVBOR").count();
+    assert!(reel_pngs >= 2 * 2 * 4, "expected >= 4 rows x 2 imgs x 2 clips, got {reel_pngs}");
+    assert!(reel.contains("flicker-to-date") && reel.contains("edge F1"));
+    assert!(!reel.contains("http://") && !reel.contains("https://"), "reel must be self-contained");
+    for chunk in reel.split("src=\"").skip(1) {
+        assert!(chunk.starts_with("data:"), "reel has a non-data: src");
+    }
 
     // --- run 2: cached assets + self-baseline PASS, exit 0 ----------------
     let out2_json = dir.path("runs/run2.json");
@@ -440,4 +468,99 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     ]);
     assert!(!out.status.success());
     assert!(stderr_of(&out).contains("1..=255"), "stderr:\n{}", stderr_of(&out));
+}
+
+// ---------------------------------------------------------------------------
+// sweep: ranked combos + leaderboard on the tiny synthetic corpus (M3 Tune)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sweep_ranks_combos_and_reuses_the_asset_cache() {
+    let dir = TempDir::new("sweep");
+    let corpus = synth_corpus(&dir);
+    let params = dir.path("p.toml");
+    std::fs::write(&params, EVAL_PARAMS).unwrap();
+    let cache = dir.path("cache");
+    let out_dir = dir.path("sweeps/edge");
+
+    // One renderer-only axis (2 sane combos + 1 that fails validation) plus
+    // an absurd-T_on combo: [compose] is excluded from the build fingerprint,
+    // so every combo after the first must hit the asset cache.
+    let grid = dir.path("grid.toml");
+    std::fs::write(
+        &grid,
+        "[[axes]]\nname = \"edge-runtime\"\nvalues = [\n\
+         { \"compose.edge_t_on\" = 32, \"compose.edge_t_off\" = 16 },\n\
+         { \"compose.edge_t_on\" = 240, \"compose.edge_t_off\" = 120 },\n\
+         { \"compose.edge_t_on\" = 8, \"compose.edge_t_off\" = 16 },\n]\n",
+    )
+    .unwrap();
+
+    let out = factory(&[
+        &"sweep", &"--corpus", &corpus, &"--params", &params, &"--grid", &grid,
+        &"--out", &out_dir, &"--cache-dir", &cache,
+    ]);
+    assert!(out.status.success(), "sweep failed:\n{}", stderr_of(&out));
+    let err = stderr_of(&out);
+    assert!(err.contains("3 combo(s)"), "stderr:\n{err}");
+    assert!(err.contains("cached asset"), "combos 2+ must reuse the asset cache:\n{err}");
+    assert!(err.contains("SKIPPED"), "t_off > t_on combo must be a recorded skip:\n{err}");
+
+    // sweep.json: ranked, skip sinks to the tail, per-clip rows present.
+    let sweep: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out_dir.join("sweep.json")).unwrap())
+            .unwrap();
+    assert_eq!(sweep["schema_version"], 1);
+    let results = sweep["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    let scores: Vec<Option<f64>> = results.iter().map(|r| r["score"].as_f64()).collect();
+    assert!(scores[0].is_some() && scores[1].is_some(), "two scored combos");
+    assert!(scores[0].unwrap() >= scores[1].unwrap(), "ranked best-first");
+    assert!(scores[2].is_none(), "skipped combo sinks to the tail");
+    assert!(results[2]["skip_reason"].as_str().unwrap().contains("edge_t_off"));
+    // The absurd T_on=240 gate must not beat the sane default (edge layer
+    // dies => edge_f1 term collapses) — the aesthetic-regression mechanism
+    // the drill rides.
+    let sane = results.iter().find(|r| r["combo"].as_str().unwrap().contains("=32")).unwrap();
+    let absurd = results.iter().find(|r| r["combo"].as_str().unwrap().contains("=240")).unwrap();
+    assert!(
+        sane["edge_f1_mean"].as_f64().unwrap() >= absurd["edge_f1_mean"].as_f64().unwrap(),
+        "sane {} vs absurd {}",
+        sane["edge_f1_mean"],
+        absurd["edge_f1_mean"]
+    );
+    // Per-clip rows + per-combo EvalReports on disk.
+    for r in results.iter().take(2) {
+        assert_eq!(r["clips"].as_array().unwrap().len(), 2, "both clips scored");
+        let rep = r["report"].as_str().unwrap();
+        let combo_report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out_dir.join(rep)).unwrap()).unwrap();
+        assert_eq!(combo_report["schema_version"], 2);
+        // Sweep mode is truecolor-only (damage tiers trimmed deliberately).
+        let tiers =
+            combo_report["clips"][0]["metrics"]["damage_by_tier"].as_object().unwrap();
+        assert_eq!(tiers.len(), 1, "sweep runs the truecolor pass only");
+        assert!(tiers.contains_key("truecolor"));
+    }
+
+    // Leaderboard: self-contained, one row per combo, skip labeled.
+    let html = std::fs::read_to_string(out_dir.join("leaderboard.html")).unwrap();
+    assert!(html.contains("<title>sleepytime sweep leaderboard</title>"));
+    assert!(html.contains("skipped:"));
+    assert!(!html.contains("http://") && !html.contains("https://"), "must be self-contained");
+
+    // Typo'd param path: hard error naming the path (agent sweeps must not
+    // silently no-op — the params.toml contract).
+    let bad = dir.path("grid-typo.toml");
+    std::fs::write(
+        &bad,
+        "[[axes]]\nname = \"x\"\nvalues = [ { \"compose.edge_t_onn\" = 32 } ]\n",
+    )
+    .unwrap();
+    let out = factory(&[
+        &"sweep", &"--corpus", &corpus, &"--params", &params, &"--grid", &bad,
+        &"--out", &dir.path("sweeps/typo"), &"--cache-dir", &cache,
+    ]);
+    assert!(!out.status.success(), "typo'd path must fail");
+    assert!(stderr_of(&out).contains("edge_t_onn"), "stderr:\n{}", stderr_of(&out));
 }

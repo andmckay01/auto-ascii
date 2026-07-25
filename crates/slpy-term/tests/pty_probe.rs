@@ -264,6 +264,100 @@ fn late_probe_replies_never_surface_as_key_events() {
     );
 }
 
+/// Extract the `EV=` lines the harness session logged.
+fn session_events(out: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(out)
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("EV=").map(str::to_owned))
+        .collect()
+}
+
+/// Regression (M2 low fix a, part 1): the straggler burst arrives SPLIT
+/// across reads — the lone `ESC` first (crossterm tokenizes it as the Esc
+/// KEY, which maps to Quit and used to kill the session), the `P…` payload
+/// in later writes, the ST split as `ESC` + `\` too. Nothing may surface:
+/// no quit, no payload keys; real keys after the quiet gap still work.
+#[test]
+fn split_esc_p_straggler_burst_never_quits_or_leaks_keys() {
+    let (pty, mut child) = spawn_harness("probe-straggler");
+    let mut out = Vec::new();
+    wait_until_contains(pty.master, &mut out, b"PROBE-DONE");
+    wait_until_contains(pty.master, &mut out, b"SESSION-READY");
+
+    // The reply dribbles in: ESC | payload | ESC | '\' as separate writes.
+    write_master(pty.master, b"\x1b");
+    std::thread::sleep(Duration::from_millis(50));
+    write_master(pty.master, b"P>|kitty(0.32.2)");
+    std::thread::sleep(Duration::from_millis(50));
+    write_master(pty.master, b"\x1b");
+    std::thread::sleep(Duration::from_millis(50));
+    write_master(pty.master, b"\\");
+
+    // Quiet gap, then a real playback key, then quit.
+    std::thread::sleep(Duration::from_millis(450));
+    write_master(pty.master, b"x");
+    wait_until_contains(pty.master, &mut out, b"EV=char:x");
+    write_master(pty.master, b"q");
+    wait_until_contains(pty.master, &mut out, b"EV=quit");
+    wait_until_contains(pty.master, &mut out, b"SESSION-DONE");
+    wait_child_success(&mut child);
+
+    assert_eq!(
+        session_events(&out),
+        vec!["char:x", "quit"],
+        "split straggler burst surfaced as events"
+    );
+}
+
+/// Regression (M2 low fix a, part 2): the reply burst lands LONG after
+/// session start — past the old 2 s disarm window, which used to let the
+/// whole payload (digits = seek bindings) through as key events. The filter
+/// is session-long in armed sessions: still nothing may surface.
+#[test]
+fn straggler_burst_after_two_seconds_still_filtered() {
+    let (pty, mut child) = spawn_harness("probe-straggler");
+    let mut out = Vec::new();
+    wait_until_contains(pty.master, &mut out, b"PROBE-DONE");
+    wait_until_contains(pty.master, &mut out, b"SESSION-READY");
+
+    // Well past the removed 2 s window.
+    std::thread::sleep(Duration::from_millis(2500));
+    write_master(
+        pty.master,
+        b"\x1bP>|kitty(0.32.2)\x1b\\\x1b[?2026;2$y\x1bP1+r524742=38\x1b\\\x1b[6;20;10t\x1b[?62;c",
+    );
+
+    std::thread::sleep(Duration::from_millis(450));
+    write_master(pty.master, b"x");
+    wait_until_contains(pty.master, &mut out, b"EV=char:x");
+    write_master(pty.master, b"q");
+    wait_until_contains(pty.master, &mut out, b"EV=quit");
+    wait_until_contains(pty.master, &mut out, b"SESSION-DONE");
+    wait_child_success(&mut child);
+
+    assert_eq!(
+        session_events(&out),
+        vec!["char:x", "quit"],
+        "late (post-2s) straggler burst surfaced as events"
+    );
+}
+
+/// The cost of the split-intro hold is bounded: a REAL lone Esc keypress in
+/// an armed session still quits (delayed ≤ the hold window, never eaten).
+#[test]
+fn lone_esc_still_quits_in_armed_session() {
+    let (pty, mut child) = spawn_harness("probe-straggler");
+    let mut out = Vec::new();
+    wait_until_contains(pty.master, &mut out, b"PROBE-DONE");
+    wait_until_contains(pty.master, &mut out, b"SESSION-READY");
+
+    write_master(pty.master, b"\x1b");
+    wait_until_contains(pty.master, &mut out, b"EV=quit");
+    wait_until_contains(pty.master, &mut out, b"SESSION-DONE");
+    wait_child_success(&mut child);
+    assert_eq!(session_events(&out), vec!["quit"], "lone Esc must map to exactly one quit");
+}
+
 /// Scripted kitty-style replies: caps upgrade to truecolor + sync 2026 +
 /// cell px, the probe returns as soon as DA1 lands, and the replies are
 /// fully consumed (no strays for the app's event loop to choke on).

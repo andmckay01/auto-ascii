@@ -45,6 +45,15 @@ proptest = "1"
 # compared by scripts/perf-gate.sh). No plotters/rayon: the gate only reads
 # estimates.json — keeps the bench build lean.
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+# M3 edge-F1 (PLAN §6): ground truth is imageproc's Canny on the SOURCE frame
+# downscaled to grid resolution — never the factory's own E plane. image is
+# codec-less (default-features off): buffers only, PNG/GIF I/O stays with the
+# ffmpeg subprocess + the gif crate.
+image = { version = "0.25", default-features = false }
+imageproc = { version = "0.25", default-features = false }
+# M3 review reel: per-clip animated GIF of the rasterized render (PLAN §7 M3
+# human sign-off artifact), embedded base64 in the reel HTML.
+gif = "0.13"
 
 [profile.release]
 opt-level = 3

@@ -1,0 +1,21 @@
+---
+source: crates/slpy-eval/tests/golden_grids.rs
+expression: s
+---
+checker-drift frame 7
+term: 48x12  viewport: 43x12  pads: L2 R3 T0 B0
+palette: mono  fg: none (glyph-only)
++------------------------------------------------+
+|  ooccccoooooccccoooocccccooooccccoooooccccoo   |
+|  ooccccoooooccccoooocccccooooccccoooooccccoo   |
+|  ccoooocccccooooccccoooooccccoooocccccoooocc   |
+|  ccoooocccccooooccccoooooccccoooocccccoooocc   |
+|  ooccccoooooccccoooocccccooooccccoooooccccoo   |
+|  ooccccoooooccccoooocccccooooccccoooooccccoo   |
+|  ccoooocccccooooccccoooooccccoooocccccoooocc   |
+|  ccoooocccccooooccccoooooccccoooocccccoooocc   |
+|  ooccccoooooccccoooocccccooooccccoooooccccoo   |
+|  ooccccoooooccccoooocccccooooccccoooooccccoo   |
+|  ccoooocccccooooccccoooooccccoooocccccoooocc   |
+|  ccoooocccccooooccccoooooccccoooocccccoooocc   |
++------------------------------------------------+

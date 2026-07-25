@@ -11,7 +11,9 @@
 //! 3. aspect error minimal-among-candidates;
 //! 4. letterbox pads symmetric ±1, remainder right/bottom;
 //! 5. prev-grid / tap tables realloc'd consistently (backend cells, player
-//!    grid, resampler dst dims, viewport all agree after every reflow);
+//!    grid, resampler dst dims — luma at Vc×2Vr since M3 — viewport AND the
+//!    hysteresis state all agree after every reflow; state realloc+reset on
+//!    resize is the §3.5 M3 invariant);
 //! 6. tap rebuild < 1 ms (min of 3 builds — scheduler spikes on this shared
 //!    4-core box don't survive a min, a real regression does);
 //! 7. the next present after a resize is a full valid frame (damage ==
@@ -142,9 +144,25 @@ fn drain_and_check(
     match (player.viewport(), player.resampler_dims()) {
         (Some(vp), Some((src, dst))) => {
             prop_assert_eq!(src, (FIXTURE_BASE_W, FIXTURE_BASE_H), "resampler src dims");
-            prop_assert_eq!(dst, (vp.cols, vp.rows), "resampler dst == viewport");
+            // M3 (§3.3): the luma tap tables are built at Vc × 2Vr — two
+            // vertical samples per cell through the one separable path.
+            prop_assert_eq!(dst, (vp.cols, 2 * vp.rows), "luma resampler dst == Vc x 2Vr");
+            // M3 hysteresis invariant (§3.5): state realloc'd to the new
+            // viewport on every resize (reset is guaranteed by
+            // HysteresisState::resize, unit-tested in slpy-core).
+            prop_assert_eq!(
+                player.hysteresis_dims(),
+                (vp.cols, vp.rows),
+                "hysteresis state == viewport cells"
+            );
         }
-        (None, None) => {} // below minimum: no resampler is correct
+        (None, None) => {
+            prop_assert_eq!(
+                player.hysteresis_dims(),
+                (0, 0),
+                "below minimum: hysteresis state must be emptied"
+            );
+        }
         (vp, dims) => {
             return Err(TestCaseError::fail(format!(
                 "viewport {vp:?} but resampler dims {dims:?}"
@@ -210,9 +228,16 @@ fn run_storm(ops: &[Op]) -> Result<(), TestCaseError> {
     let reader = SlpyReader::open(asset()).expect("fixture asset is valid");
     // Diff mode (repaint_full = false) so invariant 7 proves reflow's
     // invalidate, not a blanket every-frame repaint; chroma on (the C-plane
-    // realloc path is part of invariant 5's surface).
-    let mut player = Player::new(reader, slpy_core::DEFAULT_CELL_ASPECT, false, true)
-        .expect("player over the fixture");
+    // realloc path is part of invariant 5's surface); unicode tier so the
+    // M3 half-block/quadrant compose paths run under the storm.
+    let mut player = Player::new(
+        reader,
+        slpy_core::DEFAULT_CELL_ASPECT,
+        false,
+        slpy_core::ColorDepth::True,
+        slpy_core::GlyphTier::UnicodeBlocks,
+    )
+    .expect("player over the fixture");
     let mut backend = SimBackend::new(80, 24);
     let nframes = player.frame_count();
 

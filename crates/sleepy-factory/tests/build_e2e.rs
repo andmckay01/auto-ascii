@@ -1,10 +1,10 @@
-//! End-to-end factory tests (M1): synthesize tiny inputs with
-//! `ffmpeg -f lavfi -i testsrc2=...`, run the real `sleepy-factory build`
-//! binary, then open the output with `slpy_format::SlpyReader` and assert
-//! the SLPY v1 profile (Y+C planes, temporal delta + keyframes, NORM
-//! per-shot levels measured but NOT baked into the planes), CRC pass,
-//! shot/cut detection on a two-scene concat, and byte-determinism.
-//! This box guarantees ffmpeg on PATH.
+//! End-to-end factory tests (M1, extended at M3): synthesize tiny inputs
+//! with `ffmpeg -f lavfi -i testsrc2=...`, run the real `sleepy-factory
+//! build` binary, then open the output with `slpy_format::SlpyReader` and
+//! assert the SLPY v1 profile (the full M3 plane set Y+E+Ex+Ey+H+C,
+//! temporal delta + keyframes, NORM per-shot levels measured but NOT baked
+//! into the planes), CRC pass, shot/cut detection on a two-scene concat,
+//! and byte-determinism. This box guarantees ffmpeg on PATH.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -126,9 +126,12 @@ fn full_build_roundtrip_and_determinism() {
     assert_eq!((h.base_w, h.base_h), (480, 270), "default --res is 480x270");
     assert_eq!((h.aspect_num, h.aspect_den), (16, 9));
     assert_eq!(h.frame_count, 20, "2 s @ 10 fps must yield exactly 20 frames");
-    assert_eq!(h.plane_count, 2, "M1 emits Y + C");
-    assert_eq!(h.plane_ids[0], plane_id::Y);
-    assert_eq!(h.plane_ids[1], plane_id::C);
+    assert_eq!(h.plane_count, 6, "M3 emits the full plane set");
+    assert_eq!(
+        &h.plane_ids[..6],
+        &[plane_id::Y, plane_id::E, plane_id::EX, plane_id::EY, plane_id::H, plane_id::C],
+        "PLAN §4 registry order"
+    );
     assert_eq!(h.codec, codec::ZSTD);
     assert_eq!(h.filter, filter::TEMPORAL_DELTA, "M1 profile is delta+keyframes");
     assert_eq!(h.keyframe_ivl, 60);
@@ -173,6 +176,39 @@ fn full_build_roundtrip_and_determinism() {
         "testsrc2 chroma must not be all zero"
     );
 
+    // M3 feature planes: full res, live signal on a hard-edged test card.
+    let mut e_plane = vec![0u8; 480 * 270];
+    for (id, name) in
+        [(plane_id::E, "E"), (plane_id::EX, "Ex"), (plane_id::EY, "Ey"), (plane_id::H, "H")]
+    {
+        assert_eq!(reader.plane_dims(id).unwrap(), (480, 270), "{name} is full res");
+        let n = reader.seek_plane_into(10, id, &mut e_plane).unwrap();
+        assert_eq!(n, e_plane.len(), "{name} raw size");
+        match id {
+            // testsrc2 is full of hard boxes/text: edges must be sparse
+            // but present (unthinned magnitude, zero off-contour).
+            plane_id::E => {
+                let nonzero = e_plane.iter().filter(|&&v| v != 0).count();
+                let frac = nonzero as f64 / e_plane.len() as f64;
+                assert!(
+                    (0.005..0.5).contains(&frac),
+                    "E should be sparse-but-present on testsrc2, got {frac:.4}"
+                );
+            }
+            // Doubled-angle planes are bias-128: dead pixels sit exactly
+            // on 128, live ones deviate both ways.
+            plane_id::EX | plane_id::EY => {
+                assert!(e_plane.iter().any(|&v| v > 138), "{name} must swing above bias");
+                assert!(e_plane.iter().any(|&v| v < 118), "{name} must swing below bias");
+                assert!(e_plane.iter().filter(|&&v| v == 128).count() > e_plane.len() / 2);
+            }
+            _ => {
+                // H uses only the two defined flag bits.
+                assert!(e_plane.iter().all(|&v| v & !3 == 0), "H carries only bits 0/1");
+            }
+        }
+    }
+
     // Seek lands byte-identical to the sequential roll (delta asset).
     let (w, h_px) = reader.plane_dims(plane_id::Y).unwrap();
     let mut seq = vec![0u8; w as usize * h_px as usize];
@@ -195,11 +231,19 @@ fn full_build_roundtrip_and_determinism() {
     assert!(ins.status.success(), "inspect failed:\n{}", stderr_of(&ins));
     let stdout = String::from_utf8_lossy(&ins.stdout);
     assert!(stdout.contains("frames:       20"), "inspect stdout:\n{stdout}");
-    assert!(stdout.contains("planes:       2 [Y, C]"), "inspect stdout:\n{stdout}");
+    assert!(
+        stdout.contains("planes:       6 [Y, E, Ex, Ey, H, C]"),
+        "inspect stdout:\n{stdout}"
+    );
     assert!(stdout.contains("shots:        1 (0 cut-flagged)"), "inspect stdout:\n{stdout}");
     assert!(stdout.contains("keyframes:    1 of 20 frames"), "inspect stdout:\n{stdout}");
-    assert!(stdout.contains("plane Y"), "inspect stdout:\n{stdout}");
-    assert!(stdout.contains("plane C"), "inspect stdout:\n{stdout}");
+    for plane in ["Y", "E", "Ex", "Ey", "H", "C"] {
+        assert!(stdout.contains(&format!("plane {plane}")), "inspect stdout:\n{stdout}");
+    }
+    // M3 per-plane value stats.
+    assert!(stdout.contains("stats:"), "inspect stdout:\n{stdout}");
+    assert!(stdout.contains("nonzero"), "inspect stdout:\n{stdout}");
+    assert!(stdout.contains("highlight"), "inspect stdout:\n{stdout}");
     assert!(stdout.contains("compression:"), "inspect stdout:\n{stdout}");
     assert!(stdout.contains("integrity:    OK"), "inspect stdout:\n{stdout}");
 }

@@ -1,8 +1,15 @@
-//! Cell-grid goldens (PLAN §6, M2 item C): insta snapshots of the rendered
-//! `Grid<Cell>` for 3 synthetic fixture assets × grids 80×24 / 206×58 /
-//! 320×90 × 3 palettes (ascii-coarse, ascii-fine, mono glyph-only) —
-//! 27 snapshots. Serialization: glyph grid verbatim + FNV-1a 64 fg digest
-//! per row ([`slpy_eval::fixtures::snapshot`]).
+//! Cell-grid goldens (PLAN §6, M2 item C; re-keyed at M3): insta snapshots
+//! of the rendered `Grid<Cell>` for 3 synthetic fixture assets × grids
+//! 48×12 / 80×24 / 206×58 / 320×90 × 3 palette configs (ascii / unicode /
+//! mono glyph-only) — 36 snapshots. Serialization: glyph grid verbatim +
+//! FNV-1a 64 fg digest per row ([`slpy_eval::fixtures::snapshot`]).
+//!
+//! M3 re-key rationale: palette configs are now the player's own selection
+//! key (charset tier × color depth through `select_palettes`) instead of
+//! hand-forced ramps, so the old ascii-coarse/ascii-fine axis collapsed
+//! into `ascii` (density falls out of the viewport) and `unicode` joined
+//! (half-blocks/quadrants are M3 acceptance surface). 48×12 keeps the
+//! coarse density band covered (viewport 42 cols < 70).
 //!
 //! Reproducible without the corpus (repo rule): fixtures are pure integer
 //! generators through `SlpyWriter`. Re-bless deliberately with
@@ -11,8 +18,8 @@
 use slpy_eval::fixtures::{Fixture, FixtureRenderer, GoldenPalette, build_fixture, snapshot};
 
 /// The §6 grid set (PLAN worked examples: 80×24 → 80×23 letterbox,
-/// 206×58 exact, 320×90 exact).
-const GRIDS: [(u16, u16); 3] = [(80, 24), (206, 58), (320, 90)];
+/// 206×58 exact, 320×90 exact) + 48×12 (tier-golden size, coarse density).
+const GRIDS: [(u16, u16); 4] = [(48, 12), (80, 24), (206, 58), (320, 90)];
 
 /// One representative frame per fixture: mid-motion for gradient/checker,
 /// and — the point of the hard-cut fixture — a frame INSIDE scene B, so the
@@ -29,8 +36,11 @@ fn golden_all_grids_and_palettes(fixture: Fixture) {
     let asset = build_fixture(fixture);
     let frame = snapshot_frame(fixture);
     for palette in GoldenPalette::ALL {
-        let mut renderer = FixtureRenderer::new(&asset, palette);
         for (cols, rows) in GRIDS {
+            // Fresh renderer per grid: goldens pin a deterministic render of
+            // `frame` with no cross-grid hysteresis history (each starts
+            // from reset state, like the player right after a reflow).
+            let mut renderer = FixtureRenderer::new(&asset, palette);
             renderer.reflow(cols, rows);
             let vp = renderer.viewport();
             let grid = renderer.render(frame);
@@ -60,9 +70,10 @@ fn golden_checker_drift() {
 }
 
 /// Non-snapshot sanity riders on the same renders: the hard-cut golden frame
-/// really sits in shot 2 (distinct normalization), and the checkerboard is
-/// box-averaged (mid-gray glyphs appear at non-integer scale), not aliased
-/// to only the two extremes.
+/// really sits in shot 2 (distinct normalization), the checkerboard is
+/// box-averaged (interior glyphs, not aliased extremes), and the M3
+/// acceptance surface is demonstrably active — half-blocks on the unicode
+/// tier, `‾`/`_` subposition glyphs on the ascii tier (PLAN §3.3/§3.5).
 #[test]
 fn golden_frames_are_meaningful() {
     // Hard cut: frame 40 is past the CUT boundary.
@@ -73,9 +84,9 @@ fn golden_frames_are_meaningful() {
     assert!(shot.is_cut());
 
     // Checker at 80×24: the 192→80 box average must produce interior ramp
-    // glyphs, not just the ' '/darkest and '@'/brightest extremes.
+    // glyphs, not just the blank/darkest and brightest extremes.
     let asset = build_fixture(Fixture::CheckerDrift);
-    let mut r = FixtureRenderer::new(&asset, GoldenPalette::AsciiCoarse);
+    let mut r = FixtureRenderer::new(&asset, GoldenPalette::Ascii);
     r.reflow(80, 24);
     let grid = r.render(snapshot_frame(Fixture::CheckerDrift));
     let mid_row: Vec<char> = grid.row(10).iter().map(|c| c.glyph()).collect();
@@ -83,4 +94,26 @@ fn golden_frames_are_meaningful() {
         mid_row.iter().any(|&g| g != ' ' && g != '@'),
         "checker must average to interior glyphs, got {mid_row:?}"
     );
+
+    // M3 acceptance 4 (goldens demonstrate sub-cell structure): at 206×58
+    // the checker's vertical taps split 2-px blocks, so the unicode config
+    // must emit half-block pairs and the ascii config `‾`/`_` subposition
+    // glyphs somewhere in the viewport.
+    let mut uni = FixtureRenderer::new(&asset, GoldenPalette::Unicode);
+    uni.reflow(206, 58);
+    let has_halfblock = uni
+        .render(snapshot_frame(Fixture::CheckerDrift))
+        .as_slice()
+        .iter()
+        .any(|c| matches!(c.glyph(), '▀' | '▄'));
+    assert!(has_halfblock, "unicode golden config must exercise half-blocks");
+
+    let mut asc = FixtureRenderer::new(&asset, GoldenPalette::Ascii);
+    asc.reflow(206, 58);
+    let has_subpos = asc
+        .render(snapshot_frame(Fixture::CheckerDrift))
+        .as_slice()
+        .iter()
+        .any(|c| matches!(c.glyph(), '‾' | '_'));
+    assert!(has_subpos, "ascii golden config must exercise subposition glyphs");
 }

@@ -1,0 +1,22 @@
+# M3 Tune, round 1 — axis 1: edge thresholds (PLAN §5 sweep CLI).
+# Factory hysteresis seeds (t_hi/t_lo pairs travel together) crossed with
+# the player's runtime dual-threshold gate (T_on/T_off pairs). The runtime
+# axis is [compose] — excluded from the build fingerprint — so 9 combos
+# cost only 3 factory asset builds through the shared cache.
+# Score: default 0.4*ssim + 0.4*edge_f1 - 0.2*(flicker/2.0).
+
+[[axes]]
+name = "factory-edge-hysteresis"
+values = [
+  { "edges.t_hi" = 20, "edges.t_lo" = 8 },
+  { "edges.t_hi" = 28, "edges.t_lo" = 12 },
+  { "edges.t_hi" = 40, "edges.t_lo" = 18 },
+]
+
+[[axes]]
+name = "runtime-edge-gate"
+values = [
+  { "compose.edge_t_on" = 24, "compose.edge_t_off" = 12 },
+  { "compose.edge_t_on" = 32, "compose.edge_t_off" = 16 },
+  { "compose.edge_t_on" = 40, "compose.edge_t_off" = 20 },
+]

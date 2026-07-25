@@ -5,7 +5,7 @@
 #   scripts/eval.sh
 #
 # Sections (each timed; the script aborts on the first failure):
-#   1 tests    cargo test --workspace — includes the 27 insta cell-grid
+#   1 tests    cargo test --workspace — includes the 36 insta cell-grid
 #              goldens, the 4 per-tier escape-stream byte goldens, the
 #              Player/FixtureRenderer parity pin, the 256-case resize fuzz
 #              (real Player, M2 review fix), the >= 24 fps unthrottled
@@ -19,10 +19,18 @@
 #   5 corpus   only when the canonical 3-clip corpus (gitignored, local) is
 #              present: assemble target/eval-corpus symlinks, run
 #              `sleepy-factory eval` against runs/base.json (when present)
-#              writing runs/latest.{json,html}, then the real-corpus
-#              determinism guard (grass rebuild byte-identical to assets/).
+#              writing runs/latest.{json,html}, with the real-corpus
+#              determinism guard (grass rebuild byte-identical to assets/)
+#              running concurrently — byte-identity is load-invariant, so
+#              the overlap only saves wall time (M3 Tune finish).
 #              Skipped with a notice otherwise — committed gates never
 #              depend on the corpus (repo reproducibility rule).
+#              Both corpus steps run RELEASE builds (M3, wall-clock budget):
+#              debug eval + debug grass rebuild alone ate ~150 s of the
+#              <5 min budget; factory output is byte-identical dev/release
+#              (verified at M3 integration and re-checked by the guard
+#              itself every run) and metric math is IEEE f64 (profile-
+#              independent), so release changes nothing but the wall time.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -76,7 +84,7 @@ for clip in "${CORPUS_CLIPS[@]}"; do
 done
 
 if $have_corpus; then
-    section "corpus eval"
+    section "corpus eval + determinism guard"
     # Non-recursive symlink dir: the canonical 3 clips only (corpus/prepared
     # also holds prep-tool variants that are not part of the baseline).
     corpus_dir="target/eval-corpus"
@@ -84,20 +92,45 @@ if $have_corpus; then
     for clip in "${CORPUS_CLIPS[@]}"; do
         ln -s "$(pwd)/$clip" "$corpus_dir/$(basename "$clip")"
     done
+    # The determinism guard (release grass rebuild, byte-compared against
+    # assets/) runs CONCURRENTLY with the eval pass (M3 Tune finish: the two
+    # serially put the script at 302 s — over the <5 min M2 acceptance).
+    # This overlap is sound: the guard's output is a temp-dir asset compared
+    # by byte-identity — a load-invariant check (unlike the criterion perf
+    # gate above, which stays isolated) — and the two share no artifacts
+    # (guard builds fresh; eval reads runs/cache). cargo's target-dir lock
+    # only serializes their already-warm no-op build steps.
+    guard_log="target/eval-guard.log"
+    cargo test --quiet --release -p sleepy-factory --test m2_params_eval -- \
+        --ignored grass_rebuild_matches_assets_copy >"$guard_log" 2>&1 &
+    guard_pid=$!
+    # EVAL_BASELINE overrides the committed baseline for one run (default
+    # runs/base.json — since the M3 Tune finish that IS the tuned M3
+    # renderer baseline, schema v2 with the edge-F1 family; the M1-era
+    # baseline it replaced is unreproducible by design after the deliberate
+    # M3 renderer change). Keep the override for the next generational
+    # transition; the committed default stays runs/base.json.
+    baseline="${EVAL_BASELINE:-runs/base.json}"
     baseline_args=()
-    if [[ -f runs/base.json ]]; then
-        baseline_args=(--baseline runs/base.json)
+    if [[ -f "$baseline" ]]; then
+        baseline_args=(--baseline "$baseline")
     else
-        echo "NOTICE: runs/base.json missing — running eval without baseline compare"
+        echo "NOTICE: $baseline missing — running eval without baseline compare"
     fi
-    cargo run --quiet -p sleepy-factory -- eval \
+    if ! cargo run --quiet --release -p sleepy-factory -- eval \
         --corpus "$corpus_dir" "${baseline_args[@]}" \
         --out runs/latest.json --html runs/latest.html --cache-dir runs/cache
-    section_done
-
-    section "corpus determinism guard"
-    cargo test --quiet -p sleepy-factory --test m2_params_eval -- \
-        --ignored grass_rebuild_matches_assets_copy
+    then
+        # set -e is suspended inside `if`; keep fail-fast semantics but
+        # never leave the guard orphaned.
+        wait "$guard_pid" || true
+        cat "$guard_log"
+        exit 1
+    fi
+    guard_ok=true
+    wait "$guard_pid" || guard_ok=false
+    cat "$guard_log"
+    $guard_ok || { echo "corpus determinism guard FAILED"; exit 1; }
     section_done
 else
     echo

@@ -23,6 +23,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 memmap2 = { workspace = true }
+# M3 review reel: animated GIF encoder (grayscale palette, rasterized render).
+gif = { workspace = true }
 
 [[bin]]
 name = "sleepy-factory"

@@ -99,7 +99,14 @@ fn build_synth_asset() -> Vec<u8> {
 fn unthrottled_sim_sustains_24fps_at_300x80() {
     let asset = build_synth_asset();
     let reader = SlpyReader::open(&asset).expect("synthetic asset opens");
-    let mut player = Player::new(reader, 2.0, true, true).expect("player");
+    let mut player = Player::new(
+        reader,
+        2.0,
+        true,
+        slpy_core::ColorDepth::True,
+        slpy_core::GlyphTier::UnicodeBlocks,
+    )
+    .expect("player");
     let mut backend = SimBackend::new(300, 80);
     player.reflow(&mut backend, 300, 80);
     assert!(player.viewport().is_some(), "300x80 must yield a viewport");

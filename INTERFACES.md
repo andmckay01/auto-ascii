@@ -85,6 +85,132 @@ pub fn ramp_glyph(ramp: &[char], n: u8) -> char;   // ramp[(n·len)>>8]
 // Cell::BLANK pads. Never allocates; `out` must already be term-grid-sized.
 // Panics on grid/viewport mismatch, short luma, or empty ramp.
 pub fn compose_luma(luma: &[u8], vp: &Viewport, ramp: &[char], out: &mut Grid<Cell>);
+
+// ---- M3 (slpy-core layers agent): §3.4 palettes + §3.5 three-layer
+// compositor. compose_luma and ramp.rs are UNCHANGED (M0/M2 goldens). ----
+
+// palette.rs (§3.4) — all 8 palettes as data + PaletteSet selection.
+// slpy-core stays terminal-free: the player maps Caps → these enums
+// (Caps.glyphs/glyph_support → GlyphTier, Caps.color → ColorDepth).
+pub enum GlyphTier { Ascii, UnicodeBlocks, BrailleVerified }
+pub enum ColorDepth { True, C256, C16, Mono }   // mirrors slpy-term ColorTier
+pub enum DensityBand { Coarse, Fine }           // + from_cols (< 70 = Coarse)
+pub enum LayerRole { Base, Edge, Highlight, Detail }  // doc/selection axis
+pub enum GlyphClass { H, DiagDown, V, DiagUp }  // + from_bin(u8); 8 bins → 4
+    // screen classes; image coords are y-down: θ∈(0°,90°) renders '\'
+pub enum SubPos { Top, Mid, Bottom }  // + subpos(lt, lb, delta)
+pub struct EdgeLut { pub by_class: [[char;3];4],  // [class][SubPos]
+                     pub junction: char, pub junction_strong: char }
+pub const ASCII_EDGE: EdgeLut;    // palette 3: - / | \ _ = + # ('=' fills the
+                                  // H-top slot: ASCII has no overline; '+'
+                                  // junction, '#' strong junction ≥ edge_strong)
+pub const UNICODE_EDGE: EdgeLut;  // palette 6: ─ │ ╱ ╲ ‾ _ ┼ (H row ‾ ─ _)
+pub const ASCII_HIGHLIGHT: &[char];   // palette 4 " .+*" (all tiers)
+pub const UNICODE_BASE: &[char];      // palette 5 " ·░▒▓█"
+pub const UNICODE_QUADRANTS: &[char]; // palette 5 "▖▘▝▗▀▄▌▐" (▌▐ unreachable
+                                      // until 2Vc×2Vr sampling — documented)
+pub const MONO_FALLBACK_BASE: &[char]; // palette 8 " .:coO8@" (CP437-safe)
+pub const SUBPOS_GLYPHS: [char; 3];   // ‾ - _ (§3.3; ascii-tier subposition)
+pub struct BrailleLut { pub by_class: [[u8;3];4], pub junction: u8 }
+pub const BRAILLE_EDGE: BrailleLut;   // palette 7 dot masks, ≤5 dots (never
+pub fn braille_glyph(mask: u8) -> char;               // solid; edge-only)
+pub fn quadrant_for(class: GlyphClass, top_bright: bool) -> Option<char>;
+    // diagonal classes only — vertical-pair + dominant-orientation approx
+pub const RAMP_CAP_TRUE: u8 = 8;  pub const RAMP_CAP_256: u8 = 12;
+pub struct RampView;  // &'static glyphs + effective len (per-tier cap, §1b:
+                      // NOT duplicated data); glyph(idx) spreads 0..len over
+                      // the full ramp with exact endpoints
+pub struct PaletteSet { pub base: RampView, pub highlight: RampView,
+                        pub edge: &'static EdgeLut, pub halfblock: bool,
+                        pub quadrant: bool, pub braille: bool, pub subpos: bool }
+pub fn select_palettes(GlyphTier, ColorDepth, viewport_cols: u16) -> PaletteSet;
+// Key (§1b): C16/Mono → palette 8 base uncapped ("mono longest"); True caps
+// ramps to 8, C256 to 12; Ascii → coarse/fine by density + subpos; unicode
+// tiers → halfblock + quadrant; braille only BrailleVerified × Fine density.
+
+// orient.rs (§3.3) — sign/comparison only, no atan2, no floats.
+// PLANE CONTRACT (matches factory features.rs/edges.rs): Ex/Ey are bias-128
+// HALF-SCALE bytes of the GRADIENT doubled-angle vector in y-down coords
+// (ex = 128 + (m·cos 2θg)/2); coherence = 2·|(Ex−128, Ey−128)| / max(E,1).
+// compose_cell negates on decode (tangent = −gradient in doubled space).
+pub const BIN_UNSET: u8 = 0xFF;
+pub fn debias(v: u8) -> i32;                 // v − 128
+pub fn octant_bin(dx, dy: i32) -> u8;        // 8 bins × 22.5° of tangent θ
+pub fn bin_with_guard(dx, dy: i32, prev: u8) -> u8;  // ±8° θ hysteresis via
+                                             // Q14 boundary-vector cross tests
+pub fn coherence_at_least(dx, dy: i32, e: u8, t_q8: u8) -> bool; // squared, no sqrt
+
+// hysteresis.rs (§3.5) — 3 B/cell state; alloc ONLY in new/resize.
+pub const IDX_UNSET: u8 = 0xFF;
+pub const IDX_HYST_Q8: u32 = 90;             // round(0.35·256) — the spec
+                                             // DEFAULT; live width is
+                                             // ComposeParams::idx_hyst_q8
+                                             // (M3 Tune, note 21)
+pub mod cell_flags { pub const WAS_EDGE: u8 = 1; }
+pub struct CellState { pub idx: u8, pub bin: u8, pub flags: u8 }  // + Default
+pub struct HysteresisState;  // new(cols,rows)/cols/rows/cell/cell_mut +
+                             // reset() = scene cut (no realloc) +
+                             // resize(cols,rows) = realloc + reset (§3.5)
+pub fn hysteresis_idx(n: u8, len: u8, prev: u8, hyst_q8: u32) -> u8;
+    // ±hyst_q8/256-step boundary (SIGNATURE CHANGED at M3 Tune: width was
+    // the IDX_HYST_Q8 constant; hyst_q8 < 256, u8-sourced by contract)
+pub fn edge_gate(e: u8, was_edge: bool, t_on: u8, t_off: u8) -> bool;
+    // e > T_on || (was_edge && e > T_off) — both strict
+
+// compose.rs M3 additions (§3.5 per-cell selection; priority/override, never
+// blended; fg is ALWAYS the chroma sample (gray(n) fallback), bg black except
+// half-block/quadrant (fg,bg) pairs; no dithering).
+pub mod h_flags { HIGHLIGHT = 1, DEEP_SHADOW = 2 }   // §4 H plane bits
+pub struct CellInputs { pub luma_top, luma_bottom, e, ex, ey, h: u8,
+                        pub chroma: Option<Rgb> }
+pub struct ComposeParams { pub edge_t_on/edge_t_off: u8,        // 32/16 (M3
+  // integration re-anchor to the factory E scale — note 20i; was 96/48)
+  pub coh_min_q8/coh_dir_q8: u8,     // 96/160: <min suppress, min..dir
+                                     // junction glyph, ≥dir directional
+  pub hi_cut_q8: u8,                 // 160: highlight iff idx < len·q8/256
+  pub edge_white_cut_q8: u8,         // 240: §3.4 near-white edge suppression
+                                     // ((plain_idx+1)·256/len > cut = top
+                                     // step). Since the Tune finish (note
+                                     // 22) the veto rides the PLAIN
+                                     // quantized index, not the hysteresis-
+                                     // held one — decouples edge F1 from
+                                     // idx_hyst_q8
+  pub halfblock_min_delta: u8,       // 64: |top−bottom| "large"
+  pub edge_strong: u8,               // 96: ascii junction '+' → '#' (note 20i)
+  pub idx_hyst_q8: u8 }              // §3.5 idx hysteresis width in Q8 steps
+                                     // (promoted at M3 Tune, note 21);
+                                     // default 160 since the Tune finish
+                                     // (corpus-swept, note 22; spec nominal
+                                     // 0.35·step = IDX_HYST_Q8 = 90)
+  // + Default (the M3 baseline; all params.toml candidates)
+pub fn compose_cell(&CellInputs, lut: &[u8;256], &PaletteSet, &ComposeParams,
+                    &mut HysteresisState, col: u16, row: u16) -> Cell;
+// Order: per-shot LUT on both taps → idx hysteresis (deep shadow clamps idx
+// to 0) → dual-threshold edge gate (magnitude memory kept even when
+// coherence suppresses drawing) → edge glyph (braille masks replace the LUT
+// on braille sets; junction when bins conflict) → deep-shadow darkest step →
+// highlight (boosted fg +25% toward white; hidx spread over the gate range)
+// → |Δ|≥delta: quadrant (coherent diagonal) / half-block ▀▄ (chroma scaled
+// per tap around the cell mean) / ascii ‾ _ subposition → base ramp.
+pub struct FramePlanes<'a> { pub luma2: &'a [u8],       // Vc × 2Vr
+  pub e, ex, ey, h: Option<&'a [u8]>,                   // Vc × Vr
+  pub chroma: Option<(&'a [u8], &'a [u8], &'a [u8])> }  // r,g,b at Vc × Vr
+pub fn compose_frame(&FramePlanes, &Viewport, lut: &[u8;256], &PaletteSet,
+                     &ComposeParams, &mut HysteresisState, &mut Grid<Cell>);
+// BLANK pads; edge layer runs only when E+Ex+Ey all present (M1 Y+C assets
+// compose pure-base — the §4 back-compat auto-disable); panics on any size
+// mismatch (incl. state ≠ vp dims); never allocates.
+
+// M3 render metadata (edge-F1 agent, note 19) — the LayerMask: which layer
+// won each cell (§3.4 priority is override-only, so it's a single id).
+pub mod layer { BASE=0, EDGE=1, HIGHLIGHT=2, SHADOW=3, STRUCTURE=4 }
+    // STRUCTURE = half-block/quadrant/subposition; pads are BASE
+pub fn compose_cell_layer(...same args as compose_cell) -> (Cell, u8);
+    // compose_cell == compose_cell_layer(...).0 (thin wrapper, same state)
+pub fn compose_frame_masked(...same args, out: &mut Grid<Cell>,
+                            mask: &mut Grid<u8>);
+    // compose_frame + mask fill; mask must match out's full terminal dims;
+    // cells byte-identical to compose_frame (unit-tested)
 ```
 
 ## slpy-term (PLAN §3.1, §3.6) — M1: caps probe + color tiers + ?2026
@@ -129,10 +255,16 @@ pub fn probe_caps(&ProbeOptions) -> Caps;
 // bounded quiet-gap grace drain (a late DA1 still upgrades caps; silent
 // terminals return at the deadline unchanged), and when the volley DID
 // time out sentinel-less, AnsiBackend's event pump arms a crate-private
-// straggler filter (~2 s window) that discards DCS-reply fragments
-// (Alt+P … Alt+'\') so late probe bytes never surface as key events
-// (digits are seek bindings). Both pty-tested (tests/pty_probe.rs:
-// probe-latereply, probe-straggler harness modes).
+// straggler filter that discards DCS-reply fragments (Alt+P … Alt+'\') so
+// late probe bytes never surface as key events (digits are seek bindings).
+// M3 hardening (M2-low fix a, note 22): the filter is SESSION-LONG in armed
+// sessions (the old ~2 s disarm window let post-window bursts through) and
+// handles the SPLIT intro — a lone ESC (which crossterm tokenizes as the
+// Esc key = Quit) is held ≤150 ms and either completed by a following 'P'
+// (reply: swallowed) or flushed as a real Esc (quit still works, just
+// ≤150 ms later, armed sessions only). Pty-tested (tests/pty_probe.rs:
+// probe-latereply, probe-straggler harness modes incl. split-burst,
+// post-2s-burst and lone-Esc-quit regressions).
 pub struct ProbeParser;   // incremental VT reply parser (pure; scripted-byte tests)
 impl ProbeParser { pub fn new(); pub fn feed(&mut self, &[u8]) -> bool /*DA1 seen*/;
                    pub fn done(&self) -> bool; pub fn replies(&self) -> &ProbeReplies }
@@ -324,6 +456,33 @@ pub fn downscale_ssim(rendered: &GrayImage, src_luma: &[u8],
 // own Resampler (same box-average semantics as the player), then ssim.
 // Pass the viewport-cropped raster (GrayImage::crop) — pads are not scored.
 
+// edge.rs — NEW at M3: §6 edge F1 vs SOURCE Canny at grid resolution
+// (ground truth is never the factory's own planes — the driver streams the
+// raw fps-normalized gray source; imageproc canny; slpy-eval gained the
+// codec-less image+imageproc deps). Prediction = cells where the edge layer
+// WON, read from the LayerMask (note 19). NaN-free by construction.
+pub const CANNY_LOW: f32 = 60.0;   pub const CANNY_HIGH: f32 = 140.0;
+    // eval-owned + fixed (like the SSIM reference percentiles): Sobel-
+    // magnitude thresholds on the σ1.4-blurred downscale, chosen on the M3
+    // corpus at 300×80 so truth density lands ~1–10% of cells (sheep
+    // outline/fence/horizon + silhouette limbs traced; grass micro-texture
+    // and dim stars dropped — masks eyeballed at M3)
+pub const EDGE_MATCH_TOLERANCE: u16 = 1;   // Chebyshev tolerance ring (cells)
+pub struct EdgeMask;  // binary cell mask: new(w,h)/w/h/get/set/count
+pub fn canny_edge_truth(src: &[u8], src_w, src_h, grid_w, grid_h) -> EdgeMask;
+    // source luma → slpy-core Resampler box-average downscale to the
+    // viewport grid (same semantics as the player) → imageproc canny.
+    // "grid resolution" = viewport cells (anisotropic ~1:2) — the metric is
+    // cell-level by definition
+pub fn edge_cells_from_layers(&Grid<u8>, &Viewport) -> EdgeMask; // crop pads,
+    // select slpy_core::compose::layer::EDGE
+pub struct EdgeScore { precision, recall, f1: f64,
+                       truth_cells, predicted_cells: u32 }
+pub fn edge_f1(truth, pred: &EdgeMask, tol: u16) -> EdgeScore;
+    // TP(pred) = pred cell with truth within tol; TP(truth) symmetric.
+    // Empty-mask conventions (all finite): none/none → P=R=F1=1;
+    // truth-only → P=1,R=0,F1=0; pred-only → P=0,R=1,F1=0.
+
 // flicker.rs — §6 flicker score (M3 gate ≤ 2 switches/cell/s). Streaming;
 // compares Cell::ch only (color-only changes aren't flicker); a grid-dim
 // change resets the pair state (resize legitimately reglyphs everything).
@@ -349,13 +508,20 @@ pub struct StageAccum;  // record(Stage, Duration) → report() -> StageTimesMs
 // report.rs — versioned JSON schema (the §5 agent socket's machine half).
 // Deterministic serialization (no timestamps/host info in the body; BTreeMap
 // keys sorted); additive fields don't bump the version (serde defaults).
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;  // M3 bump: edge_f1/edge_precision/
+    // edge_recall in ClipMetrics (deliberate generation marker; v1 reports
+    // still deserialize, and compare accepts an OLDER baseline with a note
+    // — only a NEWER/unknown baseline version fails fast)
 pub struct EvalReport { schema_version: u32, generator: String,
                         clips: Vec<ClipReport> }   // new/to_json/from_json/clip
 pub struct ClipReport { name: String, frames: u32, fps: f64,
                         grid_cols, grid_rows: u16, metrics: ClipMetrics }
 pub struct ClipMetrics {                            // all-default, additive
   ssim: Option<f64>, flicker_switches_per_cell_sec: Option<f64>,
+  edge_f1, edge_precision, edge_recall: Option<f64>,  // M3 (schema v2):
+                                                     // means over sampled
+                                                     // frames; only edge_f1
+                                                     // is gated by compare
   shot_count: Option<u32>, cut_count: Option<u32>,   // NORM roster (M2 review
   keyframe_count: Option<u32>, asset_bytes: Option<u64>, // fix 4a: factory-
                                                      // tunable regressions
@@ -369,11 +535,20 @@ pub struct ClipMetrics {                            // all-default, additive
 // ignored. Zero baseline + fractional tolerance: nonzero current fails.
 pub struct Tolerances { ssim_max_drop: f64,            // default 0.02 (abs)
   flicker_max_increase: f64,                           // 0.5 sw/cell/s (abs)
+  edge_f1_max_drop: f64,                               // 0.05 (abs, M3 —
+                                                       // the aesthetic-
+                                                       // regression drill's
+                                                       // gate)
   bytes_frac_max_increase: f64,                        // 0.20
   damage_rate_max_increase: f64,                       // 0.05 (abs)
-  stage_ms_frac_max_increase: f64,                     // 0.50 (wall-clock is
-                                                       // noisy; item E gates
-                                                       // precisely)
+  stage_ms_frac_max_increase: f64,                     // 0.50 — INFORMATIONAL
+                                                       // band only since M3
+                                                       // (M2-low fix b, note
+                                                       // 22): stage deltas
+                                                       // never gate; beyond
+                                                       // the band → `info:`
+                                                       // note. Item E gates
+                                                       // stage time precisely
   shot_structure_max_delta: f64,                       // 0.0 (abs, BOTH
                                                        // directions — shot/
                                                        // cut_count changes
@@ -405,18 +580,29 @@ pub fn shot_records(Fixture) -> Vec<ShotRecord>;  // HardCut: 2 shots, CUT
 pub fn build_fixture(Fixture) -> Vec<u8>;    // full SLPY v1 (Y+C, delta,
                                              // zstd-19, CRCs, NORM), byte-
                                              // deterministic (unit-tested)
-pub enum GoldenPalette { AsciiCoarse, AsciiFine, MonoGlyphOnly }
-    // + ALL, name(), is_glyph_only(). Mono mirrors the player's Mono path:
-    // no chroma decode, width-selected base ramp, glyph-only serialization
-    // (PLAN §3.4 palette 8 arrives at M3).
+pub enum GoldenPalette { Ascii, Unicode, MonoGlyphOnly }
+    // + ALL, name() ("ascii"/"unicode"/"mono"), is_glyph_only(),
+    // config() -> (GlyphTier, ColorDepth). RE-KEYED at M3 (was
+    // AsciiCoarse/AsciiFine/MonoGlyphOnly): configs are now the player's
+    // own select_palettes key — density is no longer a hand-forced axis
+    // (it falls out of the viewport), and the unicode config joined
+    // because half-blocks/quadrants are M3 acceptance surface. Mono =
+    // (Ascii, Mono): palette 8 base, no chroma decode, glyph-only
+    // serialization.
 pub struct FixtureRenderer<'a>;  // player-pipeline replay on public APIs,
                                  // pinned cell-for-cell to the REAL Player by
                                  // sleepy-player/tests/pipeline_parity.rs
                                  // (M2 review fix 4c — goldens transitively
-                                 // cover the shipping renderer via that pin)
-impl FixtureRenderer<'a> {      // decode(seq roll/FIDX seek)→resample→NORM
-  pub fn new(asset: &'a [u8], GoldenPalette) -> Self;   // LUT→compose
-  pub fn reflow(&mut self, cols, rows);   // viewport@aspect 2.0 + taps + grid
+                                 // cover the shipping renderer via that pin;
+                                 // M3: parity covers the temporal state
+                                 // trajectory too — both sides render the
+                                 // same frame sequence)
+impl FixtureRenderer<'a> {      // M3: decode(seq roll/FIDX seek)→resample
+  pub fn new(asset: &'a [u8], GoldenPalette) -> Self;   // (luma Vc×2Vr)→
+  pub fn reflow(&mut self, cols, rows);   // NORM LUT (+ shot-change state
+                                          // reset)→ §3.5 compose_frame
+                                          // (fixtures are Y+C ⇒ edge/
+                                          // highlight auto-disabled)
   pub fn render(&mut self, frame: u32) -> &Grid<Cell>;  // BLANK below 32×9
   pub fn viewport() -> Option<Viewport>;  pub fn frame_count() -> u32;
   pub fn resampler_dims() -> Option<((u16,u16),(u16,u16))>;  // fuzz invariant
@@ -437,33 +623,68 @@ renderer, not a reimplementation — decision recorded in note 14). The
 binary keeps the CLI/clock/tty; the pipeline is pure w.r.t. both.
 
 ```rust
-// pipeline.rs — moved verbatim from main.rs (M0/M1 semantics unchanged)
+// pipeline.rs — M3: the full §3.5 three-layer path (integrator; note 20).
 pub struct StageNs { pub decode, resample, compose, present: u64 } // ns, Copy
 pub struct Drained { pub quit: bool, pub jump_digit: Option<u8> }
+    // M3 review fix (medium, seek ghosting): when jump_digit is Some,
+    // drain_events has ALREADY reset all hysteresis state — a digit seek is
+    // a temporal discontinuity (same class as the §3.5 cut/resize resets;
+    // update_levels only covers jumps that cross a shot boundary, so a
+    // same-shot jump used to ghost pre-seek was_edge/idx into the landing
+    // frame). Callers just repoint their clock and render (regression:
+    // sleepy-player/tests/m3_layers.rs digit_jump_seek_resets_hysteresis_state).
+pub fn glyph_tier_from_caps(&Caps) -> GlyphTier;  // AsciiOnly/Cp437→Ascii,
+      // UnicodeCore→UnicodeBlocks, UnicodeFull→UnicodeBlocks unless
+      // Caps.glyphs has BRAILLE (verified-only) → BrailleVerified
+pub fn color_depth(ColorTier) -> ColorDepth;      // 1:1 variant map
 pub struct Player<'a>;   // decode → resample → NORM LUT → compose → present
 impl<'a> Player<'a> {
   pub fn new(reader: SlpyReader<'a>, cell_aspect: f64, repaint_full: bool,
-             want_color: bool) -> anyhow::Result<Player<'a>>;
+             color: ColorDepth, glyph_tier: GlyphTier)
+      -> anyhow::Result<Player<'a>>;
+      // SIGNATURE CHANGED at M3 (was want_color: bool): the player owns
+      // palette selection, keyed Caps-shaped (charset tier × color depth;
+      // density falls out of the viewport at reflow via select_palettes).
+      // Mono ⇒ chroma subblocks are never decoded (M1 rule, unchanged).
+      // Plane registry detection happens here: E+Ex+Ey all present ⇒ edge
+      // layer on; H present ⇒ highlight/shadow on; absent ⇒ auto-disabled
+      // (M1-era Y+C assets play with pure base+structure — §4 back-compat,
+      // regression-tested in tests/m3_layers.rs).
+  pub fn set_compose_params(&mut self, ComposeParams);  // eval wires
+      // params.toml [compose]; interactive keeps the core defaults (pinned
+      // equal to the committed [compose] by factory unit test)
   pub fn reflow<B: Backend>(&mut self, backend: &mut B, cols, rows);
+      // M3 additions: palette reselection, luma tap tables at Vc×2Vr (ONE
+      // build, §3.3), feature tap tables at Vc×Vr (only when planes exist),
+      // HysteresisState.resize (realloc+reset — §3.5 graft from C)
   pub fn drain_events<B: Backend>(&mut self, backend: &mut B) -> Drained;
   pub fn render_present<B: Backend>(&mut self, backend: &mut B, frame_idx: u32)
       -> anyhow::Result<FrameStats>;
-  // Read-only accessors added for the eval driver (M2):
-  pub fn frame_count() -> u32;        pub fn viewport() -> Option<Viewport>;
-  pub fn grid() -> &Grid<Cell>;       // composed frame incl. letterbox pads
-  pub fn luma_src() -> &[u8];         // decoded source Y (SSIM source side)
-  pub fn levels_lut() -> &[u8; 256];  // active per-shot NORM LUT
-  pub fn stage() -> StageNs;          // cumulative §3.6 stage wall times
+      // M3 frame: decode Y(+E/Ex/Ey/H/C present-planes; sequential roll or
+      // FIDX seek per plane) → update_levels (LUT rebuild on shot change
+      // ALSO resets hysteresis — deliberate superset of the §3.5 CUT rule:
+      // a changed LUT makes every remembered ramp index stale, and every
+      // CUT is a shot change) → resample (luma Vc×2Vr; E/Ex/Ey box-avg at
+      // Vc×Vr; H bits expanded to 0/255 masks, box-avg'd, re-thresholded
+      // at ≥64 highlight / ≥128 shadow — bitflags don't box-average) →
+      // compose_frame (or compose_frame_masked when the LayerMask is
+      // enabled — note 19 contract CONNECTED; eval edge-F1 is live) with
+      // the NORM LUT applied per tap inside compose_cell.
+  // Read-only accessors (M2, unchanged): frame_count/viewport/grid/
+  // luma_src/levels_lut/stage.
+  pub fn enable_layer_mask(&mut self);       // eval + --sim (layer counts)
+  pub fn layer_mask() -> Option<&Grid<u8>>;
   pub fn resampler_dims() -> Option<((u16,u16),(u16,u16))>;
-      // (src, dst) of the luma resampler — M2 review fix 4c: the resize
-      // fuzz (tests/resize_fuzz.rs, moved here from slpy-eval) asserts the
-      // §6 realloc invariants on THIS player, and needs the tap-table dims
+      // LUMA resampler; dst is (Vc, 2·Vr) since M3 — fuzz asserts exactly
+  pub fn hysteresis_dims() -> (u16, u16);    // NEW: §6 fuzz invariant
+      // "hysteresis buffers realloc'd to the new grid" ((0,0) below 32×9)
 }
 pub fn build_levels_lut(lut: &mut [u8; 256], levels: Option<PlaneLevels>);
 pub fn unpack_rgb565(src: &[u8], r, g, b: &mut [u8]);
-pub fn compose_cells(luma, chroma: Option<(&[u8],&[u8],&[u8])>, vp, ramp,
-                     out: &mut Grid<Cell>);
 pub fn draw_enlarge_card(grid: &mut Grid<Cell>);
+// REMOVED at M3: compose_cells (the M1 base-only compositor) — the §3.5
+// path replaced it wholesale; keeping it invited silent drift between the
+// shipping renderer and the golden harness.
 ```
 
 The M4 embeddable API will grow from here; until then nothing else in the
@@ -471,22 +692,52 @@ crate is `pub`.
 
 ## Binaries
 
-- `sleepy-factory` (PLAN §5), CLI as of M2 (item B):
+- `sleepy-factory` (PLAN §5), CLI as of M3:
   `build <in> -o <out> [--ss T] [--t T] [--fps N] [--res WxH] [--params F]`,
-  `inspect <asset>`, `params --dump [--params F]`,
+  `inspect <asset> [--dump-planes DIR] [--frame N]...` (M3: per-plane value
+  stats over sampled frames + optional PGM/PPM plane dumps for eyeballing),
+  `params --dump [--params F]`,
   `eval --corpus <dir> [--params F] [--baseline B.json] --out X.json
-  [--html X.html] [--cache-dir D]` (`sweep` remains future work).
+  [--html X.html] [--reel R.html] [--cache-dir D]`,
+  `sweep --corpus <dir> --grid G.toml --out DIR [--params F]
+  [--cache-dir D]` (M3 Tune, note 21: the PLAN §5 sweep CLI — G.toml
+  declares `[[axes]]` of dotted-param override sets (values within an axis
+  travel together, axes cross) + optional `[score]` weights; default
+  composite score `0.4·mean(ssim) + 0.4·mean(edge_f1) −
+  0.2·mean(flicker/2.0)`; per combo the eval pipeline runs in sweep mode —
+  truecolor pass only, contact_frames forced 0, source-Canny truth memoized
+  across combos — through the SHARED asset cache, so `[compose]`-only
+  combos never rebuild assets; outputs `combo-NN.json` EvalReports +
+  ranked `sweep.json` (schema v1; skipped-on-validation combos recorded
+  with `skip_reason`, never silently dropped) + self-contained
+  `leaderboard.html`; typo'd param paths are hard errors).
+  `--reel` (M3) emits the review-reel sign-off artifact: per clip an
+  animated GIF of the rasterized render (10 s @ 10 fps, 256-gray palette,
+  gif crate) + 6 timestamp rows (source PNG | render raster PNG | metric
+  strip: ssim, edge F1 + P/R + truth/pred cell counts, flicker-to-date),
+  fully self-contained base64 HTML (reel.rs; constants REEL_ROWS/GIF_SECS/
+  GIF_FPS).
   **params.toml contract:** the committed repo-root `params.toml` is
   embedded via `include_str!` and IS the default config; `--params FILE`
   overrides any key subset (serde defaults; unknown keys are hard errors);
   CLI `--fps`/`--res` override last; `params --dump` prints the effective
   merged TOML. Tables: `[build] fps/base_w/base_h/zstd_level/keyframe_ivl`,
   `[shots] sad_threshold_milli/min_shot_frames`, `[levels] lo_pct/hi_pct`,
+  `[edges] scharr_shift/bilateral_passes/bilateral_radius/t_hi/t_lo`,
+  `[highlights] tophat_radius/tophat_thresh/shadow_pct/shadow_max_l`,
+  `[temporal] ema_alpha_{y,e,c}_milli` (M3, note 18),
+  `[compose] edge_t_on/edge_t_off/coh_min_q8/coh_dir_q8/hi_cut_q8/
+  edge_white_cut_q8/halfblock_min_delta/edge_strong` (M3 integrator, note
+  20: RENDERER knobs — mapped onto `slpy_core::ComposeParams` and handed to
+  the Player by the eval driver; deliberately EXCLUDED from
+  `build_fingerprint`, so compose sweeps never rebuild assets; defaults
+  pinned to `ComposeParams::default()` by unit test),
   `[eval] grid_cols/grid_rows/max_frames/ssim_every/contact_frames` +
   `[eval.tolerances]` (slpy-eval `Tolerances` subset). `build.keyframe_ivl`
   is u32 in params with a validate() range of 1..=255 (M2 review fix 4a:
   the wire field is u8; the acceptance drill value 600 must be a clean
-  range error, not a serde type error). In-code defaults and
+  range error, not a serde type error) — every M3 field is deliberately
+  wide (u32) for the same clean-range-error reason. In-code defaults and
   the committed file are pinned to each other by unit test; the default
   build output is byte-pinned by tests/m2_params_eval.rs (determinism
   guard). **eval flow:** per corpus video (sorted, non-recursive) — asset
@@ -495,34 +746,52 @@ crate is `pub`.
   `Params::build_fingerprint`; the fingerprint is an FNV-1a 64 over all
   sleepy-factory + slpy-format `src/*.rs`, emitted by build.rs — M2 review
   fix 4d: factory/format code changes must invalidate cached corpus
-  assets) → three
+  assets) → edge-F1 ground-truth pass (M3: one streaming ffmpeg gray decode
+  of the source through the identical scale/fps chain; Canny masks at the
+  `ssim_every` cadence + reel timestamps, see slpy-eval edge.rs) → three
   SimBackend passes in pure diff mode (truecolor: SSIM sampled every
-  `ssim_every` frames + cut-segmented flicker + per-stage times + damage;
+  `ssim_every` frames + edge F1 against the truth masks from the player's
+  LayerMask + cut-segmented flicker + per-stage times + damage;
   256/mono: damage only; plus per-asset structure metrics
   shot/cut/keyframe counts + asset bytes) → `--out` JSON (`EvalReport`
-  schema v1) →
+  schema v2) →
   optional `--baseline` compare (tolerances from params; artifacts still
   written on breach; nonzero exit) → optional `--html` self-contained
   contact sheet (base64 PNGs via ffmpeg subprocess: fps-normalized source
   frame vs viewport-cropped render raster at `contact_frames` timestamps
   + per-metric deltas vs baseline).
-  M1 build semantics unchanged: two passes over the identical ffmpeg rgb24 decode:
-  **pass 1** L\* luma → shot detection (256-bin histogram SAD ≥ 0.30
-  normalized, min shot length 8 frames — every honored boundary is a hard
-  cut) + per-shot pooled p2/p98; **pass 2** NORM (levels applied at RUNTIME —
-  M0's baked-in global stretch is REMOVED, the LUT folds only
-  sRGB→linear→L\*) + Y (L\*, full res) + C (RGB565 little-endian, half res,
-  2×2 area average) planes through the v1 writer default profile (temporal
-  delta, keyframe interval 60, zstd-19, CRCs). NORM levels: position 0 (Y)
-  = shot p2/p98; position 1 (C) = (0,0), chroma is never stretched. Output
+  Build semantics as of M3 (factory stages 3–4, note 18): two passes over
+  the identical ffmpeg rgb24 decode:
+  **pass 1** L\* luma → shot detection on the RAW histograms (256-bin
+  histogram SAD ≥ 0.30 normalized, min shot length 8 frames — every honored
+  boundary is a hard cut) + per-shot pooled p2/p98 of the EMA'd (= stored)
+  luma, EMA reset at every honored boundary (identical schedule to pass 2,
+  so NORM levels equal stored-plane percentiles exactly); **pass 2** NORM
+  (levels applied at RUNTIME — the LUT folds only sRGB→linear→L\*) + the
+  full M3 plane set per frame (`features.rs`): Y (L\* + EMA), E/Ex/Ey
+  (Scharr on stored Y → rational doubled-angle field → 2× orientation-aware
+  bilateral → |v|≤E cap → hysteresis-thresholded UNTHINNED E → EMA), H
+  (top-hat highlight bit0 + percentile deep-shadow bit1, from stored Y, not
+  EMA'd itself) and C (2×2 area average → per-channel EMA → RGB565 LE),
+  streamed through the v1 writer default profile (temporal delta, keyframe
+  interval 60, zstd-19, CRCs) in registry order [Y, E, Ex, Ey, H, C]. NORM
+  levels: position 0 (Y) = shot p2/p98; all other positions = (0,0). Output
   goes to `<out>.part`, renamed only after `finish()`. `inspect` additionally
   reports shots + cut flags, keyframe count, per-plane compressed/raw sizes,
-  and compression ratio vs raw planes.
-- `sleepy-player` (PLAN §3), CLI as of M1 (see notes 9 and 11):
+  compression ratio vs raw planes, and per-plane value stats over sampled
+  frames (E nonzero %, Ex/Ey bias deviation, H flag rates).
+- `sleepy-player` (PLAN §3), CLI as of M3 (see notes 9, 11 and 20):
   `<asset> [--repaint full|diff] [--loop] [--fps-cap FPS] [--cell-aspect F]
   [--duration-secs N] [--seek TIMESTAMP] [--tier TIER] [--no-query]
-  [--no-cache] [--sim COLSxROWS:NFRAMES] [--sim-tier TIER] [--sim-dump PATH]
+  [--no-cache] [--palette auto|ascii|unicode|braille]
+  [--sim COLSxROWS:NFRAMES] [--sim-tier TIER] [--sim-dump PATH]
   [--sim-resize [COLSxROWS]]`.
+  M3: `--palette` overrides the Caps-derived charset tier for palette
+  selection (`auto` = `glyph_tier_from_caps`; `--sim` derives auto from
+  `Caps::default()` — ascii). The `--sim` JSON line gained
+  `"layers":{"base","edge","highlight","shadow","structure"}` — cumulative
+  winning-layer cell counts over the run (the §3.4 priority decision made
+  observable headlessly; sim always enables the LayerMask).
   Default `--repaint full` = invalidate-every-frame (§3.1/§7 one render path).
   M1: interactive startup runs `probe_caps` (§3.1) — `--tier TIER`
   (truecolor|256|16|mono) and `--no-query` both SKIP the volley (passive
@@ -835,3 +1104,196 @@ crate is `pub`.
     edits is accepted as the safe direction). Existing runs/cache entries
     were migrated to the new names after the grass byte-identity guard
     proved output unchanged.
+18. **M3 factory plane extraction landed** (factory agent; PLAN §5 stages
+    3–4). `sleepy-factory build` now writes all six §4 planes — see the
+    Binaries section for the pipeline. **Wire semantics the player relies
+    on (factory⇄player contract):**
+    (a) **E** (plane 2): u8, unthinned local Scharr magnitude of the
+    stored (EMA'd) Y, `min(255, isqrt(gx²+gy²) >> scharr_shift)` — at the
+    default shift 4 this reads as L\* contrast (sharp step of contrast Δ →
+    E ≈ Δ). Hysteresis-thresholded (default t_hi 28 / t_lo 12,
+    8-connected, Canny-style but never thinned), then temporal EMA
+    (default α 0.5, reset at cuts) — a vanished edge decays geometrically,
+    which the player's `T_on`/`T_off` dual threshold rides.
+    (b) **Ex/Ey** (planes 3/4): bias-128 u8 of the HALVED doubled-angle
+    vector: `byte = 128 + (v >> 1)` where `(vx, vy) = E·(cos 2θg, sin 2θg)`
+    in the **gradient** convention, y-down raster, computed rationally
+    (`vx = E·(gx²−gy²)/(gx²+gy²)`, `vy = E·2gxgy/(gx²+gy²)` — no atan2
+    anywhere). Decode `v ≈ (byte − 128)·2`; §3.3 coherence =
+    `2·|(Ex−128, Ey−128)| / E`; the edge TANGENT doubled vector is
+    `−(vx, vy)` (the player's LUT maps gradient bins → stroke glyphs with
+    one negation). Sign anchors: vertical edge → Ex > 128; horizontal →
+    Ex < 128; "/" contour → Ey > 128; "\" contour → Ey < 128; no-edge
+    pixels store exactly (128, 128). The field is orientation-smoothed
+    (2-pass alignment-gated bilateral) and capped to `|v| ≤ E` per pixel;
+    E itself is never spatially smoothed (localization).
+    (c) **H** (plane 5): u8 flags, bit0 highlight (white top-hat ≥ thresh,
+    box SE), bit1 deep shadow (darkest shadow_pct% capped at
+    shadow_max_l); other bits zero. Computed from the stored Y, so flags
+    are temporally stable without EMA-ing bits.
+    (d) **Y and C are now temporally EMA'd** (α 0.7 default, reset at
+    cuts); C channels are smoothed pre-packing. NORM levels still equal
+    the stored-Y percentiles exactly (pass 1 pools the EMA'd histogram —
+    build_e2e pins this).
+    Params: new tables `[edges]`, `[highlights]`, `[temporal]` (validated,
+    fingerprint-relevant: all three invalidate the eval asset cache).
+    `ShotDetector::push` split into `boundary`/`pool` (pass 1 detects on
+    raw, pools EMA'd). Deliberate re-pins: `FIXTURE_SLPY_SHA` in
+    tests/m2_params_eval.rs (new pipeline = new default-build bytes);
+    `assets/*.slpy` are still M1-era Y+C and must be REBUILT at M3
+    integration (the `#[ignore]`d grass byte-identity guard fails until
+    then, by design). Memory: extraction state is O(plane), ~4 MB fixed
+    (features.rs memory note); planes stream to the writer.
+19. **M3 edge-F1 metric + review reel landed** (edge-F1/reel agent; PLAN
+    §6 "Edge F1 vs source Canny", §7 M3 review-reel gate). Decisions:
+    (a) **ground truth** = imageproc Canny on the RAW source (one streaming
+    ffmpeg gray decode per clip through the identical
+    `scale=W:H:flags=area,fps=N` ingest chain — independent of every
+    factory tunable, same no-self-grading posture as the SSIM reference),
+    downscaled to viewport-cell resolution through slpy-core's own
+    `Resampler` BEFORE Canny ("at grid resolution", literally); fixed
+    eval-owned thresholds `CANNY_LOW/HIGH = 60/140` picked on the corpus at
+    300×80 (truth density ~1–10% of cells; sheep outline/fence/horizon and
+    silhouette limbs traced, grass micro-texture + dim stars dropped —
+    masks visually verified). Scored at the `ssim_every` cadence with a
+    1-cell Chebyshev tolerance ring both ways (glyph quantization +
+    deliberately-unthinned E make off-by-one correct, not lenient);
+    NaN-free empty-frame conventions in edge.rs docs.
+    (b) **prediction side / LayerMask contract**: §3.4 composition is
+    override-only, so per-cell render metadata is a single u8 layer id —
+    additive slpy-core API (`compose::layer`, `compose_cell_layer`,
+    `compose_frame_masked`; masked output byte-identical to unmasked,
+    unit-tested) + opt-in `Player::enable_layer_mask()`/`layer_mask()`
+    (eval-only; interactive playback allocates nothing). **The M1 compose
+    path still active in Player honestly tags every cell BASE, so eval
+    currently reports edge_f1 = 0.0 with real nonzero truth — the M3
+    pipeline integrator MUST switch an enabled mask to
+    `compose_frame_masked` when wiring the three-layer compose (field doc
+    in pipeline.rs); F1 then becomes live with zero eval-side changes.**
+    (c) **schema/compare**: report schema v2 (edge_f1/precision/recall;
+    deliberate M3 generation marker), `Tolerances.edge_f1_max_drop` 0.05
+    (abs, drop-only — the aesthetic-regression drill's gate; only F1 is
+    gated, P/R travel as diagnosis). Compare version policy changed:
+    OLDER baseline → informational note + shared-metric compare (keeps the
+    tuning loop unblocked against the v1 `runs/base.json` until the M3
+    re-baseline); NEWER/unknown baseline → fail fast (the old both-ways
+    fail-fast test was replaced by a both-directions pin, deliberate).
+    (d) **review reel**: `eval --reel R.html` (a flag, not a subcommand —
+    it reuses the same passes/cache; rows and GIF are collected during the
+    truecolor pass). GIF = lossless 256-gray palette of the viewport-
+    cropped ink raster (1×2 px/cell ≈ square pixels, so no aspect
+    correction), 10 s @ 10 fps, infinite loop, `gif` crate; HTML rendering
+    is a pure function (reel.rs) with self-containment unit tests; e2e
+    coverage on the synthetic corpus in m2_params_eval.rs.
+    (e) **deps**: workspace gains `image` (default-features off,
+    codec-less buffers only) + `imageproc` (default-features off) for
+    slpy-eval, `gif` for sleepy-factory — PNG I/O stays with the ffmpeg
+    subprocess.
+20. **M3 pipeline integration landed** (integrator). The player runs the
+    full §3.5 path — see the sleepy-player lib section for the surface.
+    Decisions recorded:
+    (a) **Player::new signature** `want_color: bool` → `(ColorDepth,
+    GlyphTier)`: palette selection is the player's job (Caps mapped via the
+    new `glyph_tier_from_caps`/`color_depth`; `--palette` CLI override);
+    no external crate consumed the old form outside this workspace.
+    (b) **Resampler topology**: ONE luma tap-table build at Vc×2Vr (§3.3);
+    one shared feature resampler at Vc×Vr for E/Ex/Ey + the H masks, built
+    only when those planes exist; chroma unchanged. E/Ex/Ey are
+    box-averaged (not max-pooled, despite the §4 "runtime max-pools"
+    parenthetical): coherence = 2|(Ex,Ey)|/E is only meaningful when all
+    three planes share the same linear resample — max-pooling E would
+    depress coherence on perfectly coherent edges and mis-fire the
+    junction band. Thin-edge survival is instead carried by the factory's
+    UNTHINNED multi-px E ridges + the tunable [compose] edge gate.
+    (c) **H bitflags** expand to per-bit 0/255 masks, box-average, then
+    re-threshold: highlight ≥ 64/255 of the cell (sparse accents survive
+    fine grids, single-px noise cannot own a coarse cell), deep shadow
+    ≥ 128/255 (area feature). Constants in pipeline.rs.
+    (d) **Hysteresis lifecycle**: reset on every levels-LUT rebuild (shot
+    change — deliberate superset of the §3.5 CUT rule: a changed LUT makes
+    remembered ramp indices stale, and every CUT is a shot change; pinned
+    by tests/m3_layers.rs warmed-vs-cold-at-cut equality), realloc+reset on
+    reflow, (0,0) below the viewport minimum. Fuzz invariants extended
+    (`hysteresis_dims`, luma dst == Vc×2Vr).
+    (e) **Rendering is now history-dependent by design**, so the M1
+    "seek lands byte-identical" binary test was restated at the decode
+    level (`m1_sim.rs::seek_lands_on_identical_decoded_planes` compares
+    `luma_src` planes through the real Player) — the decode contract is
+    unchanged; rendered-byte identity across different render histories is
+    exactly what hysteresis intentionally breaks.
+    (f) **Goldens re-keyed + re-pinned** (renderer changed by design):
+    GoldenPalette → ascii/unicode/mono (= select_palettes configs), grids
+    gained 48×12 (keeps the coarse density band covered) → 36 cell-grid
+    snapshots; 4 tier goldens re-blessed. Parity now sweeps all three
+    configs and the temporal state trajectory. compose_cells removed from
+    the pipeline lib (see the section note).
+    (g) **Benches/thresholds**: the synthetic bench asset carries all six
+    §4 planes; compose bench = compose_frame with hysteresis + alternating
+    inputs; perf/thresholds.toml recalibrated (3-run medians ×1.15) for
+    decode (6-plane roll), compose (three-layer), present (busier M3
+    grids) and e2e — resample unchanged.
+    (h) **eval driver**: every pass measures the ASCII charset tier —
+    deliberate: the SSIM ink-coverage table is ASCII-only (unknown glyphs
+    fall back to mid-gray), so a unicode pass would score block fills as
+    noise; the layer/hysteresis decisions under test are charset-
+    independent. Unicode is covered by goldens/parity/fuzz/fps gates;
+    per-font coverage tables are the M5 upgrade. [compose] flows via
+    `Player::set_compose_params`; the enabled LayerMask flows through
+    `compose_frame_masked`, making eval edge-F1 live (note 19 closed).
+    (i) **ComposeParams defaults re-anchored to the factory's E scale**
+    (core agent shipped T_on/T_off = 96/48 against synthetic magnitudes;
+    factory E ≈ L\* contrast, t_hi 28, grass-corpus max ~129, then box-
+    average dilution): edge_t_on/edge_t_off/edge_strong → 32/16/96,
+    measured on the corpus (grass F1 0.72@32 vs 0.52@40 vs 0.00@96 with
+    precision ≈ 0.77 — the coherence gates carry noise suppression).
+    Sweep evidence in the M3 integration report.
+21. **M3 Tune landed** (tune agent): `sleepy-factory sweep` per the Binaries
+    section (PLAN §5 CLI — sweep.rs; ranked `sweep.json` schema v1 +
+    `leaderboard.html`; committed axis grids under `sweeps/`). Decisions:
+    (a) **composite score** = `0.4·mean(ssim) + 0.4·mean(edge_f1) −
+    0.2·mean(flicker/2.0)` (means over clips; `[score]` overridable per
+    grid file; flicker_norm 2.0 = the §6 gate, so a clip at the gate costs
+    its full flicker weight);
+    (b) **sweep mode plumbing**: `EvalArgs.truecolor_only` (sweep skips the
+    256/mono damage passes; plain `eval` keeps full tier coverage) +
+    `eval::TruthCache` (source-Canny masks memoized across combos — they
+    depend on no tunable under test); `eval_clip`/`discover_corpus` are
+    `pub(crate)` for the sweep driver; axes-crossed combos that fail
+    `Params::validate()` are recorded as skipped with the reason;
+    (c) **idx hysteresis width promoted to a tunable** (the §3.5 "0.35·step"
+    constant): `slpy_core::hysteresis_idx` gained a `hyst_q8` parameter,
+    `ComposeParams`/params.toml `[compose]` gained `idx_hyst_q8`
+    (default 90 = the spec value; `IDX_HYST_Q8` remains as the documented
+    default constant) — axis 3 of the mandated sweep plan trades cell
+    stickiness against responsiveness with zero asset rebuilds.
+22. **M3 Tune finish + M2-low fixes** (fix agent). Tuning (renderer-only —
+    zero factory/asset changes; the SLPY byte pins and assets/ stay valid):
+    (a) **`ComposeParams::idx_hyst_q8` default 90 → 160** (params.toml
+    `[compose]` in lockstep; the pin tests still tie file ⇄ ComposeTable ⇄
+    ComposeParams). Corpus sweep (note 21 composite score): 160 scores
+    0.4160 vs 0.3932 @ 90; grass flicker 2.313 → 1.651 (fixes the M3 ≤ 2
+    gate breach; sheep 1.288, silhouette 1.599), edge F1 byte-identical per
+    clip, mean ssim flat. `IDX_HYST_Q8` (= 90) remains the §3.5 spec
+    nominal.
+    (b) **Near-white edge veto rides the PLAIN quantized index** (was: the
+    hysteresis-held idx), so edge recall no longer couples to the width
+    knob — measured F1 exactly invariant across widths 90–160 after the
+    change. Single-frame renders are unaffected (fresh state quantizes
+    plainly), so all 36 grid + 4 tier goldens stand unchanged.
+    (c) **stage_ms informational-only in compare.rs** (M2-low fix b): see
+    the Tolerances entry — deltas always pass, over-band jumps add `info:`
+    notes, metric disappearance still fails. eval.sh can no longer go
+    spuriously red from co-tenant load.
+    (d) **Straggler filter session-long + split-ESC hold** (M2-low fix a):
+    see the slpy-term probe section — the 2 s disarm window and the
+    lone-ESC-kills-session hole are gone; new unit + pty regressions.
+    (e) **perf-gate.sh coverage hardening** (M2-low fix c): thresholds
+    entry with missing estimates → FAIL; entry not refreshed by this run's
+    bench pass → FAIL (stale/renamed); fresh estimates without a
+    thresholds entry → FAIL (silent coverage shrink). `--no-run` checks
+    existence/coverage over whatever estimates exist.
+    (f) **eval.sh corpus stages run release binaries** (<5 min wall budget;
+    dev/release byte-identity is verified by the determinism guard each
+    run) and **runs/base.json is the tuned-M3 baseline** (deliberate
+    re-baseline: schema v2, edge-F1 family + tuned metrics; the M1-era
+    baseline was unreproducible against the M3 renderer by design).

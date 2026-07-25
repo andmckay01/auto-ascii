@@ -1,22 +1,30 @@
-//! `sleepy-factory build` — the M1 two-pass pipeline (PLAN §5 stages
-//! 1 + 2 + 3(luma/chroma) + 5 + 6):
+//! `sleepy-factory build` — the two-pass pipeline (PLAN §5 stages 1–6,
+//! full M3 plane set):
 //!
 //! - **pass 1:** stream rgb24 frames from ffmpeg, extract L\* luma, detect
-//!   shot boundaries (histogram SAD + min shot length, [`crate::shots`])
-//!   while pooling per-shot L\* histograms → per-shot p2/p98 levels.
+//!   shot boundaries on the RAW histograms (histogram SAD + min shot
+//!   length, [`crate::shots`]) while pooling per-shot levels histograms of
+//!   the EMA'd luma — the EMA'd plane is what pass 2 stores, so NORM
+//!   p2/p98 describe the actual stored bytes. The pass-1 Y-EMA resets at
+//!   exactly the honored boundaries, mirroring pass 2 (both passes decode
+//!   identical frames, so the schedules match deterministically).
 //! - **pass 2:** identical ffmpeg invocation; write NORM (per-shot levels +
-//!   cut flags — applied at RUNTIME by the player; M0's baked-in global
-//!   stretch is gone), then per frame extract the Y (L\*, full res) and C
-//!   (RGB565, half res) planes and stream them through [`SlpyWriter`] under
-//!   the M1 default profile (temporal delta + keyframes every 60, zstd-19,
-//!   CRCs on).
+//!   cut flags — applied at RUNTIME by the player), then per frame run
+//!   [`crate::features::FeatureExtractor`] (stages 3–4: L\* + Scharr →
+//!   doubled-angle orientation smoothing → hysteresis-thresholded unthinned
+//!   E → Ex/Ey; top-hat + shadow → H; per-plane temporal EMA reset at
+//!   cuts; RGB565 chroma) and stream all six planes (Y, E, Ex, Ey, H, C —
+//!   PLAN §4 registry) through [`SlpyWriter`] under the v1 default profile
+//!   (temporal delta + keyframes every 60, zstd-19, CRCs on).
 //!
 //! The asset is written to `<out>.part` and renamed into place only after a
 //! successful `finish()` — a killed build never leaves a plausible-looking
 //! truncated `.slpy` behind (PLAN §4: missing TRLR ⇒ factory rerun anyway;
 //! this just makes the common case obvious). Byte-deterministic: no
-//! timestamps, fixed zstd level, LUT-only pixel math, integer-only shot
-//! detection.
+//! timestamps, fixed zstd level, LUT/integer-only pixel math end to end
+//! (see features.rs for the fixed-point EMA and rational orientation math).
+//! Memory: all per-frame state is O(plane) and allocated once — planes
+//! stream to the writer, never accumulate (features.rs memory note).
 
 use std::fs::{self, File};
 use std::io::BufWriter;
@@ -30,9 +38,11 @@ use slpy_format::{
 };
 
 use crate::extract::Extractor;
+use crate::features::FeatureExtractor;
 use crate::ffmpeg::{BoxErr, DecodeParams, FrameStream, probe};
 use crate::params::Params;
 use crate::shots::{Shot, ShotDetector, luma_histogram};
+use crate::temporal::EmaPlane;
 
 pub struct BuildArgs {
     pub input: PathBuf,
@@ -120,7 +130,7 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
     // Stage 1 (PLAN §5): validate via ffprobe before spending a decode pass.
     let info = probe(&args.input)?;
     eprintln!(
-        "input: {} ({}x{}, {}) -> {}x{} @ {} fps, SLPY v1 Y+C (delta+zstd, NORM per-shot levels)",
+        "input: {} ({}x{}, {}) -> {}x{} @ {} fps, SLPY v1 Y+E+Ex+Ey+H+C (delta+zstd, NORM per-shot levels)",
         args.input.display(),
         info.width,
         info.height,
@@ -134,9 +144,14 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
     let extractor = Extractor::new(w, h);
 
     // ---- pass 1: shot boundaries + per-shot levels --------------------------
+    // Boundaries come from the RAW luma histograms; levels pool the EMA'd
+    // luma (the stored plane), with the EMA reset at every honored boundary
+    // — the exact schedule pass 2 will replay (module docs).
     let pb = spinner("pass 1/2: shot detection + per-shot levels");
     let npx = w as usize * h as usize;
     let mut luma = vec![0u8; npx];
+    let mut luma_ema = vec![0u8; npx];
+    let mut ema_y = EmaPlane::new(npx, args.params.temporal.ema_alpha_y_milli);
     let mut detector = ShotDetector::with_params(
         npx as u64,
         args.params.shots.sad_threshold_milli,
@@ -146,7 +161,11 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
     );
     let frames = stream_frames(&params, |rgb| {
         extractor.luma(rgb, &mut luma);
-        detector.push(&luma_histogram(&luma));
+        if detector.boundary(&luma_histogram(&luma)) {
+            ema_y.reset();
+        }
+        ema_y.apply_u8(&luma, &mut luma_ema);
+        detector.pool(&luma_histogram(&luma_ema));
         pb.inc(1);
         Ok(())
     })?;
@@ -170,7 +189,7 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
         os.push(".part");
         PathBuf::from(os)
     };
-    let result = encode_pass(args, &params, &extractor, &shots, frames, &part);
+    let result = encode_pass(args, &params, &shots, frames, &part);
     if result.is_err() {
         let _ = fs::remove_file(&part);
         return result;
@@ -191,7 +210,6 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
 fn encode_pass(
     args: &BuildArgs,
     params: &DecodeParams<'_>,
-    extractor: &Extractor,
     shots: &[Shot],
     expected_frames: u64,
     part: &Path,
@@ -205,11 +223,19 @@ fn encode_pass(
         base_h: h,
         aspect_num,
         aspect_den,
-        plane_ids: vec![plane_id::Y, plane_id::C],
-        // M1 v1 profile, now data-driven (params.toml [build]): temporal
-        // delta with the configured keyframe cadence and zstd level; the
-        // embedded defaults reproduce the M1 profile byte-identically
-        // (keyframe 60, zstd-19, CRCs on — PLAN §4).
+        // The full M3 plane set in PLAN §4 registry order. Y keeps NORM
+        // levels position 0; every other plane's levels stay (0,0).
+        plane_ids: vec![
+            plane_id::Y,
+            plane_id::E,
+            plane_id::EX,
+            plane_id::EY,
+            plane_id::H,
+            plane_id::C,
+        ],
+        // v1 profile, data-driven (params.toml [build]): temporal delta
+        // with the configured keyframe cadence and zstd level (keyframe
+        // 60, zstd-19, CRCs on — PLAN §4).
         zstd_level: args.params.build.zstd_level,
         // Validated to 1..=255 (params.rs); the header field is u8 (PLAN §4).
         keyframe_ivl: u8::try_from(args.params.build.keyframe_ivl)
@@ -241,14 +267,27 @@ fn encode_pass(
         .progress_chars("=> "),
     );
 
-    let mut y_plane = vec![0u8; plane_raw_size(w, h, plane_id::Y).expect("Y is known")];
-    let mut c_plane = vec![0u8; plane_raw_size(w, h, plane_id::C).expect("C is known")];
+    // Stages 3–4 (features.rs): EMAs reset exactly at the cut-flagged shot
+    // starts pass 1 found — the same schedule its levels pooling used.
+    let cut_frames: Vec<u32> =
+        shots.iter().filter(|s| s.cut).map(|s| s.first_frame).collect();
+    let mut features = FeatureExtractor::new(w, h, &args.params);
+    debug_assert_eq!(
+        features.y().len(),
+        plane_raw_size(w, h, plane_id::Y).expect("Y is known"),
+        "feature planes must match the wire geometry"
+    );
+    let mut frame_idx = 0u32;
     let encoded = stream_frames(params, |rgb| {
-        extractor.luma(rgb, &mut y_plane);
-        extractor.chroma(rgb, &mut c_plane);
+        features.process(rgb, cut_frames.binary_search(&frame_idx).is_ok());
+        frame_idx += 1;
         writer.write_frame(&[
-            PlaneRef { id: plane_id::Y, data: &y_plane },
-            PlaneRef { id: plane_id::C, data: &c_plane },
+            PlaneRef { id: plane_id::Y, data: features.y() },
+            PlaneRef { id: plane_id::E, data: features.e() },
+            PlaneRef { id: plane_id::EX, data: features.ex() },
+            PlaneRef { id: plane_id::EY, data: features.ey() },
+            PlaneRef { id: plane_id::H, data: features.h() },
+            PlaneRef { id: plane_id::C, data: features.c() },
         ])?;
         pb.inc(1);
         Ok(())

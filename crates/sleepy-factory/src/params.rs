@@ -32,6 +32,10 @@ pub struct Params {
     pub build: BuildParams,
     pub shots: ShotParams,
     pub levels: LevelParams,
+    pub edges: EdgesParams,
+    pub highlights: HighlightsParams,
+    pub temporal: TemporalParams,
+    pub compose: ComposeTable,
     pub eval: EvalParams,
 }
 
@@ -93,6 +97,159 @@ pub struct LevelParams {
 impl Default for LevelParams {
     fn default() -> LevelParams {
         LevelParams { lo_pct: crate::lut::LEVELS_LO_PCT, hi_pct: crate::lut::LEVELS_HI_PCT }
+    }
+}
+
+/// `[edges]` — Scharr → doubled-angle field → orientation-aware bilateral
+/// smoothing → hysteresis-thresholded unthinned E (PLAN §5 stage 3, M3).
+/// All fields are wider than strictly needed (u32) on purpose: an agent
+/// sweep writing an out-of-range value must get the validate() range error,
+/// not a serde type error (the keyframe_ivl precedent).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EdgesParams {
+    /// Right-shift applied to the raw Scharr magnitude `isqrt(gx²+gy²)`.
+    /// At 4, a sharp step edge of L\* contrast Δ scores E ≈ Δ (the Scharr
+    /// tap sum is 16), so edge thresholds read as L\* contrast.
+    pub scharr_shift: u32,
+    /// Orientation-aware bilateral smoothing passes on the doubled-angle
+    /// field (PLAN §5: two; 0 disables smoothing).
+    pub bilateral_passes: u32,
+    /// Bilateral window radius in pixels (window = 2r+1 square).
+    pub bilateral_radius: u32,
+    /// Hysteresis strong seed threshold on the smoothed magnitude (≈ L\*
+    /// contrast units, see `scharr_shift`).
+    pub t_hi: u32,
+    /// Hysteresis weak-keep threshold: pixels in `t_lo..t_hi` survive only
+    /// when 8-connected to a strong seed (Canny-style, but UNTHINNED).
+    pub t_lo: u32,
+}
+
+impl Default for EdgesParams {
+    fn default() -> EdgesParams {
+        EdgesParams {
+            scharr_shift: 4,
+            bilateral_passes: 2,
+            bilateral_radius: 2,
+            t_hi: 28,
+            t_lo: 12,
+        }
+    }
+}
+
+/// `[highlights]` — top-hat highlight + percentile deep-shadow flags for the
+/// H plane (PLAN §5 stage 3, M3). bit0 = highlight, bit1 = deep shadow.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HighlightsParams {
+    /// Box structuring-element radius for the morphological opening (white
+    /// top-hat = luma − opening). Features wider than ~2r+1 px are not
+    /// highlights — they are just bright areas.
+    pub tophat_radius: u32,
+    /// Minimum top-hat response (L\* units above the local opening) to flag
+    /// bit0.
+    pub tophat_thresh: u32,
+    /// Deep-shadow percentile: the darkest `shadow_pct`% of the frame is
+    /// flag-eligible.
+    pub shadow_pct: u32,
+    /// Absolute L\* ceiling on the deep-shadow threshold, so bright scenes
+    /// never flag midtones as shadow: flagged iff
+    /// `y <= min(percentile(shadow_pct), shadow_max_l)`.
+    pub shadow_max_l: u32,
+}
+
+impl Default for HighlightsParams {
+    fn default() -> HighlightsParams {
+        HighlightsParams { tophat_radius: 3, tophat_thresh: 48, shadow_pct: 8, shadow_max_l: 40 }
+    }
+}
+
+/// `[temporal]` — per-plane EMA strength (PLAN §5 stage 4), reset at shot
+/// cuts. Alpha = weight of the NEW frame in thousandths: 1000 = no
+/// smoothing, smaller = heavier smoothing. H is not EMA'd (it is bitflags);
+/// it inherits stability by being computed from the EMA'd Y plane.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TemporalParams {
+    /// Y plane alpha (milli). Kept light: heavy smoothing ghosts motion.
+    pub ema_alpha_y_milli: u32,
+    /// E/Ex/Ey alpha (milli). Heavier: edge shimmer is the #1 flicker source
+    /// and the player's dual-threshold gate rides the decay.
+    pub ema_alpha_e_milli: u32,
+    /// Chroma alpha (milli), applied per channel before RGB565 packing.
+    pub ema_alpha_c_milli: u32,
+}
+
+impl Default for TemporalParams {
+    fn default() -> TemporalParams {
+        TemporalParams { ema_alpha_y_milli: 700, ema_alpha_e_milli: 500, ema_alpha_c_milli: 700 }
+    }
+}
+
+/// `[compose]` — the player's §3.5 compositor tunables (M3). These are
+/// RENDERER knobs: the eval driver maps them onto
+/// `slpy_core::ComposeParams` and hands them to the `Player`, so an agent
+/// sweep can tune the edge gate / coherence bands WITHOUT rebuilding assets
+/// — deliberately excluded from [`Params::build_fingerprint`]. The in-code
+/// defaults here are pinned to `ComposeParams::default()` by unit test
+/// (single source of truth: interactive playback uses the core defaults).
+/// Fields are u32-wide for the clean-range-error rule.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ComposeTable {
+    /// Edge gate on-threshold (strict `e > T_on`) on the resampled E plane.
+    pub edge_t_on: u32,
+    /// Edge gate hold-threshold (strict `e > T_off` while `was_edge`).
+    pub edge_t_off: u32,
+    /// Coherence below this (Q8) suppresses the edge layer entirely.
+    pub coh_min_q8: u32,
+    /// Coherence at/above this (Q8) draws directional glyphs; the band in
+    /// between draws the junction glyph.
+    pub coh_dir_q8: u32,
+    /// Highlight gate: fires only while `idx < len·hi_cut_q8/256`.
+    pub hi_cut_q8: u32,
+    /// Edge suppression on near-white base cells (Q8 of the ramp top).
+    pub edge_white_cut_q8: u32,
+    /// `|top − bottom|` at/above this is "large" (§3.5 sub-cell structure).
+    pub halfblock_min_delta: u32,
+    /// Edge magnitude at/above this upgrades an ASCII junction `+` to `#`.
+    pub edge_strong: u32,
+    /// Ramp-index hysteresis width in Q8 fractions of one step (§3.5
+    /// "± 0.35·step" = 90). Promoted from a slpy-core constant at M3 Tune.
+    pub idx_hyst_q8: u32,
+}
+
+impl Default for ComposeTable {
+    fn default() -> ComposeTable {
+        // Pinned to slpy_core::ComposeParams::default() by unit test.
+        ComposeTable {
+            edge_t_on: 32,
+            edge_t_off: 16,
+            coh_min_q8: 96,
+            coh_dir_q8: 160,
+            hi_cut_q8: 160,
+            edge_white_cut_q8: 240,
+            halfblock_min_delta: 64,
+            edge_strong: 96,
+            idx_hyst_q8: 160,
+        }
+    }
+}
+
+impl ComposeTable {
+    /// The slpy-core shape (fields are validated to fit u8).
+    pub fn to_core(self) -> slpy_core::ComposeParams {
+        slpy_core::ComposeParams {
+            edge_t_on: self.edge_t_on as u8,
+            edge_t_off: self.edge_t_off as u8,
+            coh_min_q8: self.coh_min_q8 as u8,
+            coh_dir_q8: self.coh_dir_q8 as u8,
+            hi_cut_q8: self.hi_cut_q8 as u8,
+            edge_white_cut_q8: self.edge_white_cut_q8 as u8,
+            halfblock_min_delta: self.halfblock_min_delta as u8,
+            edge_strong: self.edge_strong as u8,
+            idx_hyst_q8: self.idx_hyst_q8 as u8,
+        }
     }
 }
 
@@ -162,11 +319,17 @@ impl Params {
             build: &'a BuildParams,
             shots: &'a ShotParams,
             levels: &'a LevelParams,
+            edges: &'a EdgesParams,
+            highlights: &'a HighlightsParams,
+            temporal: &'a TemporalParams,
         }
         toml::to_string(&Fingerprint {
             build: &self.build,
             shots: &self.shots,
             levels: &self.levels,
+            edges: &self.edges,
+            highlights: &self.highlights,
+            temporal: &self.temporal,
         })
         .expect("fingerprint serializes")
     }
@@ -207,6 +370,69 @@ impl Params {
         let l = &self.levels;
         if l.lo_pct >= l.hi_pct || l.hi_pct > 100 {
             return Err("params: levels must satisfy lo_pct < hi_pct <= 100".into());
+        }
+        let ed = &self.edges;
+        if ed.scharr_shift > 8 {
+            return Err("params: edges.scharr_shift must be in 0..=8".into());
+        }
+        if ed.bilateral_passes > 8 {
+            return Err("params: edges.bilateral_passes must be in 0..=8".into());
+        }
+        if !(1..=4).contains(&ed.bilateral_radius) {
+            return Err("params: edges.bilateral_radius must be in 1..=4".into());
+        }
+        if !(1..=255).contains(&ed.t_hi) {
+            return Err("params: edges.t_hi must be in 1..=255".into());
+        }
+        if ed.t_lo < 1 || ed.t_lo > ed.t_hi {
+            return Err("params: edges must satisfy 1 <= t_lo <= t_hi".into());
+        }
+        let hl = &self.highlights;
+        if !(1..=15).contains(&hl.tophat_radius) {
+            return Err("params: highlights.tophat_radius must be in 1..=15".into());
+        }
+        if !(1..=255).contains(&hl.tophat_thresh) {
+            return Err("params: highlights.tophat_thresh must be in 1..=255".into());
+        }
+        if hl.shadow_pct > 50 {
+            return Err("params: highlights.shadow_pct must be in 0..=50".into());
+        }
+        if hl.shadow_max_l > 255 {
+            return Err("params: highlights.shadow_max_l must be in 0..=255".into());
+        }
+        for (name, v) in [
+            ("ema_alpha_y_milli", self.temporal.ema_alpha_y_milli),
+            ("ema_alpha_e_milli", self.temporal.ema_alpha_e_milli),
+            ("ema_alpha_c_milli", self.temporal.ema_alpha_c_milli),
+        ] {
+            if !(1..=1000).contains(&v) {
+                return Err(format!(
+                    "params: temporal.{name} must be in 1..=1000 (1000 = no smoothing)"
+                )
+                .into());
+            }
+        }
+        let c = &self.compose;
+        for (name, v) in [
+            ("edge_t_on", c.edge_t_on),
+            ("edge_t_off", c.edge_t_off),
+            ("coh_min_q8", c.coh_min_q8),
+            ("coh_dir_q8", c.coh_dir_q8),
+            ("hi_cut_q8", c.hi_cut_q8),
+            ("edge_white_cut_q8", c.edge_white_cut_q8),
+            ("halfblock_min_delta", c.halfblock_min_delta),
+            ("edge_strong", c.edge_strong),
+            ("idx_hyst_q8", c.idx_hyst_q8),
+        ] {
+            if v > 255 {
+                return Err(format!("params: compose.{name} must be in 0..=255").into());
+            }
+        }
+        if c.edge_t_off > c.edge_t_on {
+            return Err("params: compose must satisfy edge_t_off <= edge_t_on".into());
+        }
+        if c.coh_min_q8 > c.coh_dir_q8 {
+            return Err("params: compose must satisfy coh_min_q8 <= coh_dir_q8".into());
         }
         let e = &self.eval;
         if e.grid_cols == 0 || e.grid_rows == 0 {
@@ -295,6 +521,46 @@ mod tests {
     }
 
     #[test]
+    fn validation_rejects_bad_m3_feature_ranges() {
+        // [edges]: t_lo > t_hi, zero t_lo, oversized shift/radius.
+        let mut p = Params::default();
+        p.edges.t_lo = p.edges.t_hi + 1;
+        assert!(p.validate().unwrap_err().to_string().contains("t_lo <= t_hi"));
+        let mut p = Params::default();
+        p.edges.t_lo = 0;
+        assert!(p.validate().is_err());
+        let mut p = Params::default();
+        p.edges.t_hi = 300; // wide type, clean range error (sweep-agent contract)
+        assert!(p.validate().unwrap_err().to_string().contains("1..=255"));
+        let mut p = Params::default();
+        p.edges.scharr_shift = 9;
+        assert!(p.validate().is_err());
+        let mut p = Params::default();
+        p.edges.bilateral_radius = 5;
+        assert!(p.validate().is_err());
+
+        // [highlights].
+        let mut p = Params::default();
+        p.highlights.tophat_radius = 0;
+        assert!(p.validate().is_err());
+        let mut p = Params::default();
+        p.highlights.shadow_pct = 51;
+        assert!(p.validate().is_err());
+        let mut p = Params::default();
+        p.highlights.shadow_max_l = 256;
+        assert!(p.validate().is_err());
+
+        // [temporal]: 0 would freeze the first frame forever; > 1000 is
+        // out of the milli domain.
+        let mut p = Params::default();
+        p.temporal.ema_alpha_e_milli = 0;
+        assert!(p.validate().unwrap_err().to_string().contains("1..=1000"));
+        let mut p = Params::default();
+        p.temporal.ema_alpha_y_milli = 1001;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
     fn build_fingerprint_ignores_eval_knobs() {
         let mut a = Params::default();
         let fp = a.build_fingerprint();
@@ -303,5 +569,52 @@ mod tests {
         assert_eq!(a.build_fingerprint(), fp, "eval knobs must not invalidate the cache");
         a.build.zstd_level = 3;
         assert_ne!(a.build_fingerprint(), fp, "encode knobs must invalidate the cache");
+        // M3 feature tables all change asset bytes → all must invalidate.
+        let mut b = Params::default();
+        b.edges.t_hi = 99;
+        assert_ne!(b.build_fingerprint(), fp, "edge knobs must invalidate the cache");
+        let mut b = Params::default();
+        b.highlights.tophat_radius = 5;
+        assert_ne!(b.build_fingerprint(), fp, "highlight knobs must invalidate the cache");
+        let mut b = Params::default();
+        b.temporal.ema_alpha_y_milli = 999;
+        assert_ne!(b.build_fingerprint(), fp, "temporal knobs must invalidate the cache");
+        // [compose] is a RENDERER knob (M3): tuning it must NOT rebuild
+        // assets — that is the whole point of the player-side socket.
+        let mut b = Params::default();
+        b.compose.edge_t_on = 40;
+        assert_eq!(b.build_fingerprint(), fp, "compose knobs must not invalidate the cache");
+    }
+
+    /// Single source of truth (M3): the `[compose]` defaults ARE
+    /// `slpy_core::ComposeParams::default()` — interactive playback (which
+    /// never reads params.toml) and the eval driver must start from the
+    /// same untuned baseline.
+    #[test]
+    fn compose_table_pins_core_defaults() {
+        let t = ComposeTable::default().to_core();
+        let d = slpy_core::ComposeParams::default();
+        assert_eq!(t.edge_t_on, d.edge_t_on);
+        assert_eq!(t.edge_t_off, d.edge_t_off);
+        assert_eq!(t.coh_min_q8, d.coh_min_q8);
+        assert_eq!(t.coh_dir_q8, d.coh_dir_q8);
+        assert_eq!(t.hi_cut_q8, d.hi_cut_q8);
+        assert_eq!(t.edge_white_cut_q8, d.edge_white_cut_q8);
+        assert_eq!(t.halfblock_min_delta, d.halfblock_min_delta);
+        assert_eq!(t.edge_strong, d.edge_strong);
+        assert_eq!(t.idx_hyst_q8, d.idx_hyst_q8);
+    }
+
+    #[test]
+    fn compose_table_validation() {
+        let mut p = Params::default();
+        p.compose.edge_t_on = 300;
+        assert!(p.validate().unwrap_err().to_string().contains("0..=255"));
+        let mut p = Params::default();
+        p.compose.edge_t_off = p.compose.edge_t_on + 1;
+        assert!(p.validate().unwrap_err().to_string().contains("edge_t_off <= edge_t_on"));
+        let mut p = Params::default();
+        p.compose.coh_min_q8 = 200;
+        assert!(p.validate().unwrap_err().to_string().contains("coh_min_q8 <= coh_dir_q8"));
     }
 }

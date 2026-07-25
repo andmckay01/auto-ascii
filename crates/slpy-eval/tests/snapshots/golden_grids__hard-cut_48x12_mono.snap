@@ -1,0 +1,21 @@
+---
+source: crates/slpy-eval/tests/golden_grids.rs
+expression: s
+---
+hard-cut frame 40
+term: 48x12  viewport: 43x12  pads: L2 R3 T0 B0
+palette: mono  fg: none (glyph-only)
++------------------------------------------------+
+|  @@@@@@88888OOOOOOooooooccccc::::::......      |
+|  @@@@@@88888OOOOOOooooooccccc::::::......      |
+|  @@@@@@88888OOOOOOooooooccccc::::::......      |
+|  @@@@@@88888OOOOOOooooooccccc::::::......      |
+|  @@@@@@88888OOOOOOooooooccccc::::::......      |
+|  @@@@@@88888OOOOOOooooooccccc::::::......      |
+|  @@@@@@88888OOOOOOooooooccccc::::::......      |
+|  @@@@@@88888OOOOOOooooooccccc::::::......      |
+|  @@@@@@88888OOOOOOooooooccccc::::::......      |
+|  @@@@@@88888OOOOOOooooooccccc::::::......      |
+|  @@@@@@88888OOOOOOooooooccccc::::::......      |
+|  @@@@@@88888OOOOOOooooooccccc::::::......      |
++------------------------------------------------+

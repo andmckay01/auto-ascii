@@ -103,6 +103,17 @@ fn sim_renders_all_frames_and_reports_stats() {
             "missing stage {stage}: {line}"
         );
     }
+    // M3: winning-layer counts (the §3.4 priority decision, observable
+    // headlessly). Y-only asset: every rendered cell is base or sub-cell
+    // structure; edge/highlight/shadow must be zero (auto-disabled planes).
+    let mut layer_total = 0u64;
+    for layer in ["base", "edge", "highlight", "shadow", "structure"] {
+        layer_total += json_field(line, layer).parse::<u64>().unwrap();
+    }
+    assert_eq!(layer_total, 30 * 80 * 24, "layer counts must cover every cell");
+    assert_eq!(json_field(line, "edge"), "0", "Y-only asset cannot compose edges");
+    assert_eq!(json_field(line, "highlight"), "0");
+    assert_eq!(json_field(line, "shadow"), "0");
 }
 
 #[test]

@@ -1,11 +1,14 @@
-//! rgb24 → feature planes (PLAN §5 stage 3, M1 subset): full-res L\* luma
-//! (plane Y) and half-res RGB565 chroma (plane C) from ONE decoded stream.
+//! rgb24 → base planes (PLAN §5 stage 3): full-res L\* luma (plane Y) and
+//! half-res per-channel chroma from ONE decoded stream. M3 orchestration
+//! (edges/highlights/EMA/packing) lives in `features.rs`.
 //!
 //! **C plane wire format (factory⇄player contract, PLAN §4):** one
 //! little-endian u16 per pixel at (base_w/2) × (base_h/2), packed
-//! `bits 15..11 = R5 | 10..5 = G6 | 4..0 = B5`, produced by a 2×2
-//! area-average downsample (per-channel sum + 2 >> 2, round-half-up) of the
-//! rgb24 frame. Half res is invisible at cell granularity (PLAN §4).
+//! `bits 15..11 = R5 | 10..5 = G6 | 4..0 = B5` ([`pack_rgb565`]), produced
+//! by a 2×2 area-average downsample (per-channel sum + 2 >> 2,
+//! round-half-up) of the rgb24 frame — since M3 the channels are EMA'd
+//! between averaging and packing. Half res is invisible at cell granularity
+//! (PLAN §4).
 
 use crate::lut::LumaLut;
 
@@ -31,32 +34,49 @@ impl Extractor {
         }
     }
 
-    /// Fill the C plane (`(w/2) × (h/2) × 2` bytes): 2×2 area average per
-    /// channel, RGB565-packed, little-endian (module docs). `build` rejects
-    /// odd `--res`, so every source pixel lands in exactly one 2×2 block.
-    pub fn chroma(&self, rgb: &[u8], out: &mut [u8]) {
+    /// Fill three half-res channel planes (`(w/2) × (h/2)` bytes each): 2×2
+    /// area average per channel (round-half-up). `build` rejects odd
+    /// `--res`, so every source pixel lands in exactly one 2×2 block.
+    /// Split from the RGB565 packing at M3: the chroma EMA (PLAN §5 stage
+    /// 4) must blend full-precision channels — smoothing packed 5/6/5 bits
+    /// would quantize twice.
+    pub fn chroma_channels(&self, rgb: &[u8], r: &mut [u8], g: &mut [u8], b: &mut [u8]) {
         let (cw, ch) = (self.w / 2, self.h / 2);
         debug_assert_eq!(rgb.len(), self.w * self.h * 3);
-        debug_assert_eq!(out.len(), cw * ch * 2);
+        debug_assert_eq!(r.len(), cw * ch);
+        debug_assert_eq!(g.len(), cw * ch);
+        debug_assert_eq!(b.len(), cw * ch);
         let stride = self.w * 3;
         for cy in 0..ch {
             let row0 = &rgb[2 * cy * stride..][..stride];
             let row1 = &rgb[(2 * cy + 1) * stride..][..stride];
-            let out_row = &mut out[cy * cw * 2..][..cw * 2];
             for cx in 0..cw {
                 let o = 2 * cx * 3;
-                let avg = |c: usize| -> u16 {
+                let avg = |c: usize| -> u8 {
                     let sum = u16::from(row0[o + c])
                         + u16::from(row0[o + 3 + c])
                         + u16::from(row1[o + c])
                         + u16::from(row1[o + 3 + c]);
-                    (sum + 2) >> 2
+                    ((sum + 2) >> 2) as u8
                 };
-                let (r, g, b) = (avg(0), avg(1), avg(2));
-                let packed = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
-                out_row[cx * 2..cx * 2 + 2].copy_from_slice(&packed.to_le_bytes());
+                let i = cy * cw + cx;
+                r[i] = avg(0);
+                g[i] = avg(1);
+                b[i] = avg(2);
             }
         }
+    }
+}
+
+/// Pack three channel planes into the C plane wire format (module docs:
+/// RGB565 little-endian, `bits 15..11 = R5 | 10..5 = G6 | 4..0 = B5`).
+pub fn pack_rgb565(r: &[u8], g: &[u8], b: &[u8], out: &mut [u8]) {
+    debug_assert_eq!(out.len(), r.len() * 2);
+    debug_assert_eq!(r.len(), g.len());
+    debug_assert_eq!(r.len(), b.len());
+    for (i, ((&r, &g), &b)) in r.iter().zip(g).zip(b).enumerate() {
+        let packed = ((u16::from(r) & 0xF8) << 8) | ((u16::from(g) & 0xFC) << 3) | (u16::from(b) >> 3);
+        out[i * 2..i * 2 + 2].copy_from_slice(&packed.to_le_bytes());
     }
 }
 
@@ -86,8 +106,11 @@ mod tests {
     fn chroma_packs_solid_color_rgb565_le() {
         let ex = Extractor::new(4, 4);
         let frame = solid_frame(4, 4, [255, 128, 8]);
+        let (mut r, mut g, mut b) = (vec![0u8; 4], vec![0u8; 4], vec![0u8; 4]);
+        ex.chroma_channels(&frame, &mut r, &mut g, &mut b);
+        assert!(r.iter().all(|&v| v == 255) && g.iter().all(|&v| v == 128));
         let mut out = vec![0u8; 2 * 2 * 2];
-        ex.chroma(&frame, &mut out);
+        pack_rgb565(&r, &g, &b, &mut out);
         // r=255→31<<11, g=128→32<<5, b=8→1: 0xF841 little-endian = [0x41, 0xF8].
         let expected = ((255u16 & 0xF8) << 8) | ((128u16 & 0xFC) << 3) | (8u16 >> 3);
         assert_eq!(expected, 0xFC01); // r5=31 g6=32 b5=1
@@ -106,8 +129,11 @@ mod tests {
             px[1] = 100;
             px[2] = 200;
         }
+        let (mut r, mut g, mut b) = (vec![0u8; 1], vec![0u8; 1], vec![0u8; 1]);
+        ex.chroma_channels(&frame, &mut r, &mut g, &mut b);
+        assert_eq!((r[0], g[0], b[0]), (2, 100, 200));
         let mut out = vec![0u8; 2];
-        ex.chroma(&frame, &mut out);
+        pack_rgb565(&r, &g, &b, &mut out);
         let packed = u16::from_le_bytes([out[0], out[1]]);
         assert_eq!(packed >> 11, u16::from(2u8 >> 3)); // r5 from avg red 2
         assert_eq!((packed >> 5) & 0x3F, u16::from(100u8 >> 2)); // g6

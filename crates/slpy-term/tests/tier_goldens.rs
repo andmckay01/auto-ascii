@@ -34,7 +34,7 @@ fn golden_path(name: &str) -> PathBuf {
 /// Render the fixture frame once — the identical grid feeds all four tiers.
 fn fixture_grid() -> Grid<Cell> {
     let asset = build_fixture(Fixture::GradientMotion);
-    let mut renderer = FixtureRenderer::new(&asset, GoldenPalette::AsciiCoarse);
+    let mut renderer = FixtureRenderer::new(&asset, GoldenPalette::Ascii);
     renderer.reflow(COLS, ROWS);
     renderer.render(FRAME).clone()
 }

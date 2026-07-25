@@ -19,13 +19,19 @@
 //! (inspect's report and `params --dump` are the stdout products).
 
 mod build;
+mod edges;
 mod eval;
 mod extract;
+mod features;
 mod ffmpeg;
+mod highlights;
 mod lut;
 mod params;
+mod reel;
 mod sha256;
 mod shots;
+mod sweep;
+mod temporal;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -74,10 +80,20 @@ enum Cmd {
         #[arg(long)]
         params: Option<PathBuf>,
     },
-    /// Print header, chunks, sizes; verify CRCs (PLAN §5 CLI shape).
+    /// Print header, chunks, sizes, per-plane value stats; verify CRCs
+    /// (PLAN §5 CLI shape).
     Inspect {
         /// Asset to inspect.
         asset: PathBuf,
+        /// Dump decoded planes of sampled frames into this directory as
+        /// PGM/PPM images (Y/E as gray, Ex/Ey as bias-128 gray, H as a
+        /// flag map, C as color) — the M3 eyeball loop.
+        #[arg(long)]
+        dump_planes: Option<PathBuf>,
+        /// Frame indices for --dump-planes and the stats sampler
+        /// (repeatable; default: 4 frames spread over the asset).
+        #[arg(long)]
+        frame: Vec<u32>,
     },
     /// Inspect the effective tunables: `sleepy-factory params --dump`
     /// prints the merged config (embedded defaults + --params file) as TOML.
@@ -109,7 +125,35 @@ enum Cmd {
         /// Optional self-contained HTML contact sheet path (runs/X.html).
         #[arg(long)]
         html: Option<PathBuf>,
+        /// Optional review-reel HTML path (M3 human sign-off artifact):
+        /// per clip, >=4 source|render timestamp rows with per-frame
+        /// metrics plus an animated GIF of the rasterized render.
+        #[arg(long)]
+        reel: Option<PathBuf>,
         /// Asset cache directory, keyed by (input sha, params sha).
+        #[arg(long, default_value = "runs/cache")]
+        cache_dir: PathBuf,
+    },
+    /// Parameter sweep (PLAN §5 CLI, M3 Tune): run eval per combo of the
+    /// axes declared in --grid (values within an axis travel together; axes
+    /// cross), score each combo (default 0.4*ssim + 0.4*edgeF1 -
+    /// 0.2*flicker/2.0) and emit ranked results JSON + a leaderboard HTML.
+    /// Combos share the eval asset cache, so factory-identical combos never
+    /// rebuild assets.
+    Sweep {
+        /// Directory of corpus videos (see `eval --corpus`).
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Base tunables file every combo starts from (see `build --params`).
+        #[arg(long)]
+        params: Option<PathBuf>,
+        /// Sweep spec: axes of param overrides + optional [score] weights.
+        #[arg(long)]
+        grid: PathBuf,
+        /// Output directory: combo-NN.json + sweep.json + leaderboard.html.
+        #[arg(long)]
+        out: PathBuf,
+        /// Asset cache directory shared with `eval`.
         #[arg(long, default_value = "runs/cache")]
         cache_dir: PathBuf,
     },
@@ -173,7 +217,9 @@ fn main() -> ExitCode {
                 build::run(&build::BuildArgs { input, output, ss, t, params })
             })
         }
-        Cmd::Inspect { asset } => cmd_inspect(&asset),
+        Cmd::Inspect { asset, dump_planes, frame } => {
+            cmd_inspect(&asset, dump_planes.as_deref(), &frame)
+        }
         Cmd::Params { params, dump } => effective_params(params.as_deref(), None, None)
             .and_then(|p| {
                 if dump {
@@ -183,9 +229,23 @@ fn main() -> ExitCode {
                     Err("params: nothing to do (use --dump to print the effective config)".into())
                 }
             }),
-        Cmd::Eval { corpus, params, baseline, out, html, cache_dir } => {
+        Cmd::Eval { corpus, params, baseline, out, html, reel, cache_dir } => {
             effective_params(params.as_deref(), None, None).and_then(|params| {
-                eval::run(&eval::EvalArgs { corpus, params, baseline, out, html, cache_dir })
+                eval::run(&eval::EvalArgs {
+                    corpus,
+                    params,
+                    baseline,
+                    out,
+                    html,
+                    reel,
+                    cache_dir,
+                    truecolor_only: false,
+                })
+            })
+        }
+        Cmd::Sweep { corpus, params, grid, out, cache_dir } => {
+            effective_params(params.as_deref(), None, None).and_then(|base| {
+                sweep::run(&sweep::SweepArgs { corpus, base, grid, out_dir: out, cache_dir })
             })
         }
     };
@@ -275,9 +335,136 @@ fn mib(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
 }
 
-/// Header + structural walk + full CRC check via `SlpyReader::open`/`verify`
-/// (PLAN §5). M0 has no mmap here — `fs::read` is fine for an offline tool.
-fn cmd_inspect(asset: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+/// Evenly spread sample frames (up to 4, deduped) for stats/dumps.
+fn sample_frames(frame_count: u32) -> Vec<u32> {
+    let n = frame_count;
+    let want = 4u32.min(n);
+    let mut out = Vec::new();
+    for k in 0..want {
+        let f = if want <= 1 { 0 } else { k * (n - 1) / (want - 1) };
+        if out.last() != Some(&f) {
+            out.push(f);
+        }
+    }
+    out
+}
+
+/// Per-plane value stats over the sampled frames (M3: `inspect` must show
+/// whether E/Ex/Ey/H carry sane signal without a picture).
+fn plane_stats(
+    reader: &mut SlpyReader<'_>,
+    frames: &[u32],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let h = reader.header().clone();
+    println!(
+        "  stats:        over {} sampled frame{} {frames:?}",
+        frames.len(),
+        if frames.len() == 1 { "" } else { "s" }
+    );
+    for &id in &h.plane_ids[..h.plane_count as usize] {
+        let Some((pw, ph)) = reader.plane_dims(id) else { continue };
+        let mut buf = vec![0u8; slpy_format::plane_raw_size(h.base_w, h.base_h, id).unwrap()];
+        let n = pw as usize * ph as usize;
+        let (mut min, mut max, mut sum, mut nonzero) = (255u8, 0u8, 0u64, 0u64);
+        let (mut bit0, mut bit1, mut dev_sum, mut dev_max) = (0u64, 0u64, 0u64, 0u8);
+        for &f in frames {
+            reader.seek_plane_into(f, id, &mut buf)?;
+            for &v in &buf[..if id == plane_id::C { buf.len() } else { n }] {
+                min = min.min(v);
+                max = max.max(v);
+                sum += u64::from(v);
+                nonzero += u64::from(v != 0);
+                bit0 += u64::from(v & 1 != 0);
+                bit1 += u64::from(v & 2 != 0);
+                let d = v.abs_diff(128);
+                dev_sum += u64::from(d);
+                dev_max = dev_max.max(d);
+            }
+        }
+        let total = (frames.len() * if id == plane_id::C { buf.len() } else { n }) as u64;
+        let pct = |c: u64| 100.0 * c as f64 / total.max(1) as f64;
+        match id {
+            plane_id::E => println!(
+                "    E   min {min} mean {:.1} max {max}, nonzero {:.2}% (unthinned edge mass)",
+                sum as f64 / total as f64,
+                pct(nonzero)
+            ),
+            plane_id::EX | plane_id::EY => println!(
+                "    {:<3} |v-128| mean {:.2} max {dev_max} (doubled-angle, bias 128)",
+                plane_name(id),
+                dev_sum as f64 / total as f64
+            ),
+            plane_id::H => println!(
+                "    H   highlight {:.2}% deep-shadow {:.2}%",
+                pct(bit0),
+                pct(bit1)
+            ),
+            _ => println!(
+                "    {:<3} min {min} mean {:.1} max {max}",
+                plane_name(id),
+                sum as f64 / total as f64
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// Dump decoded planes as PGM/PPM for eyeballing (M3 review loop; PNG
+/// conversion is one `ffmpeg -i x.pgm x.png` away).
+fn dump_planes(
+    reader: &mut SlpyReader<'_>,
+    dir: &std::path::Path,
+    frames: &[u32],
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(dir)?;
+    let h = reader.header().clone();
+    for &f in frames {
+        for &id in &h.plane_ids[..h.plane_count as usize] {
+            let Some((pw, ph)) = reader.plane_dims(id) else { continue };
+            let mut buf =
+                vec![0u8; slpy_format::plane_raw_size(h.base_w, h.base_h, id).unwrap()];
+            reader.seek_plane_into(f, id, &mut buf)?;
+            let name = plane_name(id).to_ascii_lowercase();
+            if id == plane_id::C {
+                // RGB565 LE → PPM (bit-replicating 8-bit expand).
+                let mut rgb = Vec::with_capacity(pw as usize * ph as usize * 3);
+                for px in buf.chunks_exact(2) {
+                    let v = u16::from_le_bytes([px[0], px[1]]);
+                    let (r, g, b) = ((v >> 11) as u8, ((v >> 5) & 0x3F) as u8, (v & 0x1F) as u8);
+                    rgb.push((r << 3) | (r >> 2));
+                    rgb.push((g << 2) | (g >> 4));
+                    rgb.push((b << 3) | (b >> 2));
+                }
+                let path = dir.join(format!("f{f:05}-{name}.ppm"));
+                std::fs::write(&path, [format!("P6\n{pw} {ph}\n255\n").as_bytes(), &rgb].concat())?;
+            } else {
+                if id == plane_id::H {
+                    // Flag map: highlight → white, shadow → dark gray.
+                    for v in &mut buf {
+                        *v = match *v & 3 {
+                            1 | 3 => 255,
+                            2 => 90,
+                            _ => 0,
+                        };
+                    }
+                }
+                let path = dir.join(format!("f{f:05}-{name}.pgm"));
+                std::fs::write(&path, [format!("P5\n{pw} {ph}\n255\n").as_bytes(), &buf].concat())?;
+            }
+        }
+    }
+    eprintln!("dumped {} frame(s) x {} plane(s) to {}", frames.len(), h.plane_count, dir.display());
+    Ok(())
+}
+
+/// Header + structural walk + per-plane stats + full CRC check via
+/// `SlpyReader::open`/`verify` (PLAN §5). No mmap here — `fs::read` is fine
+/// for an offline tool.
+fn cmd_inspect(
+    asset: &std::path::Path,
+    dump_dir: Option<&std::path::Path>,
+    frames: &[u32],
+) -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read(asset).map_err(|e| format!("read {}: {e}", asset.display()))?;
     let reader = SlpyReader::open(&bytes)?;
     let h = reader.header();
@@ -364,6 +551,29 @@ fn cmd_inspect(asset: &std::path::Path) -> Result<(), Box<dyn std::error::Error>
         mib(bytes.len() as u64),
         raw_total as f64 / bytes.len().max(1) as f64
     );
+
+    // M3: per-plane value stats (+ optional plane dumps) on sampled frames.
+    if h.frame_count > 0 {
+        let sampled = if frames.is_empty() {
+            sample_frames(h.frame_count)
+        } else {
+            for &f in frames {
+                if f >= h.frame_count {
+                    return Err(format!(
+                        "--frame {f} out of range (asset has {} frames)",
+                        h.frame_count
+                    )
+                    .into());
+                }
+            }
+            frames.to_vec()
+        };
+        let mut reader = SlpyReader::open(&bytes)?;
+        plane_stats(&mut reader, &sampled)?;
+        if let Some(dir) = dump_dir {
+            dump_planes(&mut reader, dir, &sampled)?;
+        }
+    }
 
     reader.verify()?;
     println!("  integrity:    OK (all chunk CRCs verified, TRLR present)");
