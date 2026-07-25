@@ -1,0 +1,14 @@
+[package]
+name = "slpy-format"
+description = "SLPY v1 chunked container: deterministic writer, mmap-friendly reader (PLAN §4)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# PLAN §8: zstd + crc32fast + ciborium (META only — frame payloads are
+# hand-rolled fixed layout, not serde). serde only for the META struct.
+[dependencies]
+zstd = { workspace = true }
+crc32fast = { workspace = true }
+ciborium = { workspace = true }
+serde = { workspace = true }

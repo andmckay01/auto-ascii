@@ -1,0 +1,20 @@
+[package]
+name = "slpy-term"
+description = "Sleepytime terminal backends: Backend trait, AnsiBackend, SimBackend, caps, session hygiene (PLAN §3.1, §3.6)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+slpy-core = { workspace = true }
+# PLAN §8: crossterm for raw mode / alt screen / events ONLY — never per-cell commands.
+crossterm = { workspace = true }
+# PLAN §8: ioctl (TIOCGWINSZ), termios, SIGWINCH self-pipe, atexit.
+libc = { workspace = true }
+
+# Test-only pty harness for the M0 acceptance-(3) restore tests
+# (tests/pty_restore.rs spawns it under an openpty pair). Not shipped.
+[[bin]]
+name = "slpy-term-harness"
+path = "src/bin/harness.rs"
+doc = false

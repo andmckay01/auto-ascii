@@ -1,0 +1,9 @@
+[package]
+name = "slpy-core"
+description = "Sleepytime pure engine: viewport/letterbox, separable resampler, ramp palettes, Cell/Grid (PLAN §2, §3.2-3.4)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# PLAN §8: no deps beyond std (pure, golden-testable).
+[dependencies]

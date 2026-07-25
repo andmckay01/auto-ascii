@@ -1,0 +1,40 @@
+# Sleepytime workspace — PLAN.md §2 (crate layout), §8 (dependencies).
+# slpy-eval is deferred to M2 and intentionally absent (PLAN §6, M0 scope).
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/slpy-format",
+    "crates/slpy-core",
+    "crates/slpy-term",
+    "crates/sleepy-factory",
+    "crates/sleepy-player",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# libs (path deps)
+slpy-core = { path = "crates/slpy-core" }
+slpy-term = { path = "crates/slpy-term" }
+slpy-format = { path = "crates/slpy-format" }
+# slpy-format (PLAN §8): zstd + crc32fast + ciborium (META only; frame payloads hand-rolled)
+zstd = "0.13"
+crc32fast = "1.4"
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] } # META struct only (ciborium is serde-based)
+# slpy-term (PLAN §8): crossterm for raw mode/alt screen/events ONLY, libc for ioctl/termios/self-pipe
+crossterm = "0.29"
+libc = "0.2"
+# bins
+clap = { version = "4", features = ["derive"] }
+indicatif = "0.18"
+serde_json = "1"
+memmap2 = "0.9"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3

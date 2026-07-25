@@ -1,0 +1,19 @@
+[package]
+name = "sleepy-factory"
+description = "Sleepytime offline factory: ffmpeg ingest -> feature planes -> SLPY asset (PLAN §5)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# PLAN §8 lists image/imageproc/ndarray/rayon for the factory; M0 is luma-only
+# (grayscale from ffmpeg rawvideo, no gradients, single-threaded encode), so
+# per the M0 dependency guidance they are deferred until a stage needs them.
+[dependencies]
+slpy-format = { workspace = true }
+clap = { workspace = true }
+indicatif = { workspace = true }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "sleepy-factory"
+path = "src/main.rs"

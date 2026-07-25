@@ -1,0 +1,19 @@
+[package]
+name = "sleepy-player"
+description = "Sleepytime terminal player: mmap asset -> viewport -> resample -> composite -> present (PLAN §3)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# PLAN §8: memmap2, clap, anyhow + the three libs.
+[dependencies]
+slpy-core = { workspace = true }
+slpy-term = { workspace = true }
+slpy-format = { workspace = true }
+memmap2 = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+
+[[bin]]
+name = "sleepy-player"
+path = "src/main.rs"
