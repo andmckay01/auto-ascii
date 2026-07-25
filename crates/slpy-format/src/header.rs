@@ -18,7 +18,9 @@ use crate::error::{Result, SlpyError};
 pub const MAGIC: [u8; 4] = *b"SLPY";
 pub const HEADER_SIZE: u32 = 64;
 pub const VERSION_MAJOR: u16 = 1;
-pub const VERSION_MINOR: u16 = 0;
+/// Minor 1 = M1 additions (temporal delta default, NORM chunk). Additive
+/// only (PLAN §4): minor-0 (M0) files remain readable.
+pub const VERSION_MINOR: u16 = 1;
 /// Base analysis resolution (PLAN §4: planes stored at 480×270).
 pub const BASE_W: u16 = 480;
 /// See [`BASE_W`].
@@ -39,6 +41,27 @@ pub mod plane_id {
     pub const H: u8 = 5;
     /// Chroma RGB565 at half res 240×135 (M1+).
     pub const C: u8 = 6;
+
+    /// Whether this build knows the plane's geometry (dims/stride). Unknown
+    /// IDs in a file are skippable data, not errors (PLAN §4 versioning) —
+    /// but this reader cannot claim their dimensions and this writer cannot
+    /// compute their raw size.
+    pub const fn is_known(id: u8) -> bool {
+        matches!(id, Y..=C)
+    }
+}
+
+/// Raw (uncompressed) byte size of a plane at the given base dims (PLAN §4
+/// planes): full-res u8 for Y/E/Ex/Ey/H, half-res RGB565 (2 B/px) for C.
+/// `None` for IDs outside the known registry (their raw size travels in the
+/// FRAM subblock header instead).
+pub fn plane_raw_size(base_w: u16, base_h: u16, id: u8) -> Option<usize> {
+    let (w, h) = (base_w as usize, base_h as usize);
+    match id {
+        plane_id::C => Some((w / 2) * (h / 2) * 2),
+        id if plane_id::is_known(id) => Some(w * h),
+        _ => None,
+    }
 }
 
 /// `codec` field values (PLAN §4).
@@ -206,6 +229,17 @@ mod tests {
     fn roundtrip() {
         let h = sample();
         assert_eq!(SlpyHeader::from_bytes(&h.to_bytes()).unwrap(), h);
+    }
+
+    #[test]
+    fn plane_raw_sizes() {
+        assert_eq!(plane_raw_size(480, 270, plane_id::Y), Some(480 * 270));
+        assert_eq!(plane_raw_size(480, 270, plane_id::H), Some(480 * 270));
+        assert_eq!(plane_raw_size(480, 270, plane_id::C), Some(240 * 135 * 2));
+        assert_eq!(plane_raw_size(480, 270, 0), None);
+        assert_eq!(plane_raw_size(480, 270, 7), None); // future plane: size from wire
+        assert!(plane_id::is_known(plane_id::Y) && plane_id::is_known(plane_id::C));
+        assert!(!plane_id::is_known(0) && !plane_id::is_known(7));
     }
 
     #[test]

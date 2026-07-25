@@ -1,13 +1,32 @@
 //! Capability data and per-frame stats (PLAN §3.1).
 
 /// Color tier the backend quantizes to before diffing (PLAN §3.1
-/// "quantize before diff"). M0 runs `True` only; 256/16/mono land at M1.
+/// "quantize before diff"): truecolor passthrough, xterm-256 cube+gray,
+/// standard 16, or glyph-only mono.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorTier {
     True,
     C256,
     C16,
     Mono,
+}
+
+impl std::str::FromStr for ColorTier {
+    type Err = String;
+
+    /// `--tier` forced-tier parsing (PLAN §3.1 escape hatches). Canonical
+    /// forms: `truecolor` | `256` | `16` | `mono`; common aliases accepted.
+    fn from_str(s: &str) -> Result<ColorTier, String> {
+        match s.to_ascii_lowercase().as_str() {
+            "truecolor" | "true" | "24bit" | "rgb" => Ok(ColorTier::True),
+            "256" | "256color" | "c256" => Ok(ColorTier::C256),
+            "16" | "16color" | "c16" | "ansi" => Ok(ColorTier::C16),
+            "mono" | "none" | "off" => Ok(ColorTier::Mono),
+            other => Err(format!(
+                "unknown color tier {other:?} (expected truecolor|256|16|mono)"
+            )),
+        }
+    }
 }
 
 /// Glyph repertoire bitflags (PLAN §3.1 `GlyphFlags`). Plain `u8` newtype —
@@ -50,17 +69,10 @@ pub enum GlyphSupportTier {
     UnicodeFull,
 }
 
-/// Link throughput class (PLAN §3.1): `Slow` flagged on SSH/tmux/ConPTY
-/// detection; drives the governor's byte budget (§3.6).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Throughput {
-    Fast,
-    Normal,
-    Slow,
-}
-
-/// Terminal capabilities (PLAN §3.1). Produced by the M1 probe
-/// (DA1-sentinel volley + cache); M0 constructs it directly.
+/// Terminal capabilities (PLAN §3.1). Produced by [`crate::probe_caps`]
+/// (DA1-sentinel volley + cache) or constructed directly. Capability tiers
+/// are color depth + glyph repertoire only — no throughput/connectivity
+/// classification (Scope amendment).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Caps {
     pub color: ColorTier,
@@ -74,7 +86,6 @@ pub struct Caps {
     /// Cell size in px `(w, h)` from `CSI 16 t`, if known — drives cell aspect
     /// (PLAN §3.2); `None` → aspect fallback 2.0.
     pub cell_px: Option<(u16, u16)>,
-    pub throughput: Throughput,
     /// False when probing is unsafe/pointless (`--no-query`, `!isatty`).
     pub can_query: bool,
 }
@@ -90,7 +101,6 @@ impl Default for Caps {
             sync_2026: false,
             cells: (80, 24),
             cell_px: None,
-            throughput: Throughput::Fast,
             can_query: false,
         }
     }

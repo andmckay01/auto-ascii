@@ -56,6 +56,15 @@ impl SimBackend {
     pub fn take_output(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.out)
     }
+
+    /// Replace the simulated terminal's capabilities (tier/sync/glyph tests
+    /// — M1 acceptance 5/6). `cells` stays owned by `resize()`: whatever the
+    /// passed caps claim, the current grid size is kept.
+    pub fn set_caps(&mut self, caps: Caps) {
+        let cells = self.caps.cells;
+        self.caps = caps;
+        self.caps.cells = cells;
+    }
 }
 
 impl Backend for SimBackend {
@@ -70,7 +79,7 @@ impl Backend for SimBackend {
     /// Same pipeline as `AnsiBackend::present`, output captured not written
     /// (PLAN §3.1). Throttled drain time reported via `write_ns`.
     fn present(&mut self, grid: &Grid<Cell>) -> FrameStats {
-        let cells_damaged = self.painter.paint(grid, self.caps.color);
+        let cells_damaged = self.painter.paint(grid, self.caps.color, self.caps.sync_2026);
         let frame = &self.painter.buf;
         let start = Instant::now();
         self.out.extend_from_slice(frame);

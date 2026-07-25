@@ -1,18 +1,22 @@
-//! `sleepy-factory build` — the M0 two-pass pipeline (PLAN §5 stages
-//! 1 + 3(luma) + 5(global levels) + 6, approved M0 simplification):
+//! `sleepy-factory build` — the M1 two-pass pipeline (PLAN §5 stages
+//! 1 + 2 + 3(luma/chroma) + 5 + 6):
 //!
-//! - **pass 1:** stream gray frames from ffmpeg, accumulate a global 256-bin
-//!   histogram (transformed to the L\* domain for the percentiles) and learn
-//!   the exact frame count.
-//! - **pass 2:** identical ffmpeg invocation, apply the combined
-//!   sRGB→linear→L\*→p2/p98 LUT per byte, stream Y planes into
-//!   [`SlpyWriter`] (intra, zstd-19, CRCs on).
+//! - **pass 1:** stream rgb24 frames from ffmpeg, extract L\* luma, detect
+//!   shot boundaries (histogram SAD + min shot length, [`crate::shots`])
+//!   while pooling per-shot L\* histograms → per-shot p2/p98 levels.
+//! - **pass 2:** identical ffmpeg invocation; write NORM (per-shot levels +
+//!   cut flags — applied at RUNTIME by the player; M0's baked-in global
+//!   stretch is gone), then per frame extract the Y (L\*, full res) and C
+//!   (RGB565, half res) planes and stream them through [`SlpyWriter`] under
+//!   the M1 default profile (temporal delta + keyframes every 60, zstd-19,
+//!   CRCs on).
 //!
 //! The asset is written to `<out>.part` and renamed into place only after a
 //! successful `finish()` — a killed build never leaves a plausible-looking
 //! truncated `.slpy` behind (PLAN §4: missing TRLR ⇒ factory rerun anyway;
 //! this just makes the common case obvious). Byte-deterministic: no
-//! timestamps, fixed zstd level, LUT-only pixel math.
+//! timestamps, fixed zstd level, LUT-only pixel math, integer-only shot
+//! detection.
 
 use std::fs::{self, File};
 use std::io::BufWriter;
@@ -20,10 +24,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressStyle};
-use slpy_format::{Meta, PlaneRef, SlpyWriter, WriterOptions, plane_id};
+use slpy_format::{
+    Meta, PlaneLevels, PlaneRef, ShotRecord, SlpyWriter, WriterOptions, norm_flags, plane_id,
+    plane_raw_size,
+};
 
+use crate::extract::Extractor;
 use crate::ffmpeg::{BoxErr, DecodeParams, FrameStream, probe};
-use crate::lut;
+use crate::shots::{Shot, ShotDetector, luma_histogram};
 
 pub struct BuildArgs {
     pub input: PathBuf,
@@ -81,6 +89,24 @@ fn reduced_aspect(w: u16, h: u16) -> (u16, u16) {
     (w / g, h / g)
 }
 
+/// Shots → NORM records. Levels are indexed by plane POSITION in the header
+/// registry: position 0 = Y gets the shot's L\* p2/p98; position 1 = C stays
+/// (0, 0) — levels are luma-only, chroma is never stretched (PLAN §5).
+fn shot_records(shots: &[Shot]) -> Vec<ShotRecord> {
+    shots
+        .iter()
+        .map(|s| {
+            let mut levels = [PlaneLevels::default(); 8];
+            levels[0] = PlaneLevels { p2: s.levels.lo, p98: s.levels.hi };
+            ShotRecord {
+                first_frame: s.first_frame,
+                flags: if s.cut { norm_flags::CUT } else { 0 },
+                levels,
+            }
+        })
+        .collect()
+}
+
 pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
     if !args.input.is_file() {
         return Err(format!("input not found: {}", args.input.display()).into());
@@ -90,7 +116,7 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
     // Stage 1 (PLAN §5): validate via ffprobe before spending a decode pass.
     let info = probe(&args.input)?;
     eprintln!(
-        "input: {} ({}x{}, {}) -> {}x{} @ {} fps, luma-only SLPY-lite",
+        "input: {} ({}x{}, {}) -> {}x{} @ {} fps, SLPY v1 Y+C (delta+zstd, NORM per-shot levels)",
         args.input.display(),
         info.width,
         info.height,
@@ -102,14 +128,16 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
 
     let params =
         DecodeParams { input: &args.input, ss: args.ss, t: args.t, fps: args.fps, w, h };
+    let extractor = Extractor::new(w, h);
 
-    // ---- pass 1: global histogram + frame count ----------------------------
-    let pb = spinner("pass 1/2: scanning luma histogram");
-    let mut hist = [0u64; 256];
-    let frames = stream_frames(&params, |frame| {
-        for &b in frame {
-            hist[b as usize] += 1;
-        }
+    // ---- pass 1: shot boundaries + per-shot levels --------------------------
+    let pb = spinner("pass 1/2: shot detection + per-shot levels");
+    let npx = w as usize * h as usize;
+    let mut luma = vec![0u8; npx];
+    let mut detector = ShotDetector::new(npx as u64);
+    let frames = stream_frames(&params, |rgb| {
+        extractor.luma(rgb, &mut luma);
+        detector.push(&luma_histogram(&luma));
         pb.inc(1);
         Ok(())
     })?;
@@ -117,26 +145,23 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
     if frames == 0 {
         return Err("ffmpeg produced zero frames (is --ss/--t outside the input's duration?)".into());
     }
+    let shots = detector.finish();
+    let cuts = shots.iter().filter(|s| s.cut).count();
+    eprintln!(
+        "pass 1/2: {frames} frames, {} shot{} ({cuts} cut{}), Y levels per shot -> NORM",
+        shots.len(),
+        if shots.len() == 1 { "" } else { "s" },
+        if cuts == 1 { "" } else { "s" },
+    );
 
-    // Percentiles live in the L* domain: fold the raw-byte histogram through
-    // the monotone sRGB→L* table, then p2/p98 over that.
-    let lstar = lut::srgb_to_lstar_lut();
-    let mut hist_l = [0u64; 256];
-    for (g, &count) in hist.iter().enumerate() {
-        hist_l[lstar[g] as usize] += count;
-    }
-    let levels = lut::percentile_levels(&hist_l).expect("frames > 0 implies nonempty histogram");
-    let out_lut = lut::build_output_lut(&lstar, levels);
-    eprintln!("pass 1/2: {frames} frames, L* levels p2={} p98={}", levels.lo, levels.hi);
-
-    // ---- pass 2: LUT + encode ----------------------------------------------
+    // ---- pass 2: extract + encode -------------------------------------------
     // Write to `<out>.part`, rename on success.
     let part = {
         let mut os = args.output.as_os_str().to_os_string();
         os.push(".part");
         PathBuf::from(os)
     };
-    let result = encode_pass(args, &params, &out_lut, frames, &part);
+    let result = encode_pass(args, &params, &extractor, &shots, frames, &part);
     if result.is_err() {
         let _ = fs::remove_file(&part);
         return result;
@@ -157,7 +182,8 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
 fn encode_pass(
     args: &BuildArgs,
     params: &DecodeParams<'_>,
-    out_lut: &[u8; 256],
+    extractor: &Extractor,
+    shots: &[Shot],
     expected_frames: u64,
     part: &Path,
 ) -> Result<(), BoxErr> {
@@ -170,8 +196,10 @@ fn encode_pass(
         base_h: h,
         aspect_num,
         aspect_den,
-        plane_ids: vec![plane_id::Y],
-        ..WriterOptions::default() // M0 profile: zstd-19, intra, keyframe_ivl 60, CRCs on
+        plane_ids: vec![plane_id::Y, plane_id::C],
+        // M1 profile from the writer default: temporal delta, keyframe
+        // interval 60, zstd-19, CRCs on (PLAN §4).
+        ..WriterOptions::default()
     };
     let meta = Meta {
         factory_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -187,6 +215,7 @@ fn encode_pass(
 
     let file = File::create(part).map_err(|e| format!("create {}: {e}", part.display()))?;
     let mut writer = SlpyWriter::new(BufWriter::new(file), opts, &meta)?;
+    writer.write_norm(&shot_records(shots))?;
 
     let pb = ProgressBar::new(expected_frames).with_message("pass 2/2: encoding");
     pb.set_style(
@@ -197,12 +226,15 @@ fn encode_pass(
         .progress_chars("=> "),
     );
 
-    let mut plane = vec![0u8; params.frame_size()];
-    let encoded = stream_frames(params, |frame| {
-        for (dst, &src) in plane.iter_mut().zip(frame) {
-            *dst = out_lut[src as usize];
-        }
-        writer.write_frame(&[PlaneRef { id: plane_id::Y, data: &plane }])?;
+    let mut y_plane = vec![0u8; plane_raw_size(w, h, plane_id::Y).expect("Y is known")];
+    let mut c_plane = vec![0u8; plane_raw_size(w, h, plane_id::C).expect("C is known")];
+    let encoded = stream_frames(params, |rgb| {
+        extractor.luma(rgb, &mut y_plane);
+        extractor.chroma(rgb, &mut c_plane);
+        writer.write_frame(&[
+            PlaneRef { id: plane_id::Y, data: &y_plane },
+            PlaneRef { id: plane_id::C, data: &c_plane },
+        ])?;
         pb.inc(1);
         Ok(())
     })?;
@@ -210,7 +242,7 @@ fn encode_pass(
 
     // Both passes run the identical ffmpeg command on the same file; a
     // mismatch means the input changed under us (or ffmpeg is nondeterministic
-    // here) — either way the histogram no longer matches the frames.
+    // here) — either way the shot table no longer matches the frames.
     if encoded != expected_frames {
         return Err(format!(
             "frame count changed between passes (pass 1: {expected_frames}, pass 2: {encoded})"

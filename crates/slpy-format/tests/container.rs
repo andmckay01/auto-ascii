@@ -1,6 +1,8 @@
-//! M0 container acceptance tests (PLAN §4/§6/§7): byte-golden determinism
+//! Container acceptance tests (PLAN §4/§6/§7): byte-golden determinism
 //! with a committed hash, roundtrip, corrupt-CRC detection, truncated-file
-//! detection, forward-compat chunk semantics.
+//! detection, forward-compat chunk semantics. The default profile under
+//! test is the M1 one (temporal delta, keyframe 60); M1-specific behavior
+//! (seek, NORM, chroma, hostile inputs) lives in `tests/m1_format.rs`.
 
 use std::io::Cursor;
 use std::sync::OnceLock;
@@ -169,11 +171,13 @@ fn find_chunk(bytes: &[u8], tag: [u8; 4]) -> (usize, ChunkHeader) {
 // (4) M0 acceptance: byte-golden determinism + committed hash.
 // ---------------------------------------------------------------------------
 
-/// Committed golden (M0 acceptance (4)). Depends on the synthetic input, the
+/// Committed golden (M0 acceptance (4), re-baselined at M1 — deliberate
+/// format change: version_minor 0→1 and the default profile is now temporal
+/// delta with keyframe interval 60). Depends on the synthetic input, the
 /// frozen wire layout, and pinned zstd (0.13.3 / libzstd 1.5.7) at level 19.
 /// If it moves without a deliberate format change, the writer leaked
 /// nondeterminism — do not just re-commit the hash.
-const GOLDEN_SHA256: &str = "5c50bdbf5cde657b1c3978c849ddf80dd36e9efe20630e870280dae0cf745c01";
+const GOLDEN_SHA256: &str = "bdccde1030f5c322c5f334431698bb4a62c61b3664fd8d180468c2dafa399890";
 
 #[test]
 fn golden_encode_twice_is_byte_identical_and_hash_committed() {
@@ -206,7 +210,8 @@ fn roundtrip_header_meta_planes() {
     assert_eq!(h.frame_count, FRAMES);
     assert_eq!(h.plane_count, 1);
     assert_eq!(h.codec, codec::ZSTD);
-    assert_eq!(h.filter, filter::INTRA);
+    assert_eq!(h.filter, filter::TEMPORAL_DELTA); // M1 default profile
+    assert_eq!(h.keyframe_ivl, 60);
     assert_eq!(h.plane_ids, [plane_id::Y, 0, 0, 0, 0, 0, 0, 0]);
     assert_eq!(reader.frame_count(), FRAMES);
 
@@ -385,10 +390,17 @@ fn writer_rejects_bad_options() {
         WriterOptions { plane_ids: vec![], ..WriterOptions::default() },
         WriterOptions { plane_ids: vec![plane_id::Y, plane_id::Y], ..WriterOptions::default() },
         WriterOptions { plane_ids: vec![0], ..WriterOptions::default() },
+        // Unknown plane id: the writer has no geometry for it (M1).
+        WriterOptions { plane_ids: vec![200], ..WriterOptions::default() },
         WriterOptions { codec: codec::LZ4, ..WriterOptions::default() },
-        WriterOptions { filter: filter::TEMPORAL_DELTA, ..WriterOptions::default() },
+        WriterOptions { filter: 2, ..WriterOptions::default() },
         WriterOptions { keyframe_ivl: 0, ..WriterOptions::default() },
         WriterOptions { base_w: 0, ..WriterOptions::default() },
+        WriterOptions { base_h: 0, ..WriterOptions::default() },
+        // M0 adversarial-review regression: zero fps must be rejected at the
+        // source (player Duration::from_secs_f64(1/0.0) panic).
+        WriterOptions { fps_num: 0, ..WriterOptions::default() },
+        WriterOptions { fps_den: 0, ..WriterOptions::default() },
     ];
     for opts in cases {
         assert!(

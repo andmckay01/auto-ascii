@@ -18,12 +18,11 @@ use crate::restore;
 
 /// ANSI escape-stream backend over stdout (PLAN §3.1).
 ///
-/// M0 present path (PLAN §7): truecolor SGRs, per-row diff against the
-/// previous grid with invalidate-every-frame as the default mode, changed
-/// spans with the skip-vs-move heuristic, SGR run-length elision, single
-/// `write(2)` from a reused ≥64 KB buffer (PLAN §3.6 step 6). The 256/mono
-/// quantize tiers and ?2026 wrapping land at M1 — constructing with a
-/// non-truecolor tier is a clean `Unsupported` error.
+/// Present path (PLAN §3.6 step 6): quantize to the caps color tier
+/// (truecolor passthrough / xterm-256 / standard-16 / mono glyph-only),
+/// per-row diff against the previous *quantized* grid, changed spans with
+/// the skip-vs-move heuristic, SGR run-length elision, `?2026h…l` wrap when
+/// `Caps::sync_2026`, single `write(2)` from a reused ≥64 KB buffer.
 pub struct AnsiBackend {
     caps: Caps,
     events: EventQueue,
@@ -44,15 +43,10 @@ impl AnsiBackend {
     /// `caps.cell_px` is filled from `TIOCGWINSZ` when the kernel reports
     /// pixel sizes (PLAN §3.2).
     ///
-    /// Errors if stdout is not a TTY, or if `caps.color != True` (M0 is
-    /// truecolor-only; 256/16/mono land at M1).
+    /// Errors if stdout is not a TTY. All four color tiers are supported
+    /// (M1); the tier lives in `caps.color`, normally from
+    /// [`crate::probe_caps`].
     pub fn new(caps: Caps) -> io::Result<AnsiBackend> {
-        if caps.color != ColorTier::True {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "AnsiBackend M0 is truecolor-only; 256/16/mono tiers land at M1 (PLAN §7)",
-            ));
-        }
         let fd = libc::STDOUT_FILENO;
         if unsafe { libc::isatty(fd) } == 0 {
             return Err(io::Error::other(
@@ -132,9 +126,10 @@ fn present_to_fd(
     painter: &mut FramePainter,
     grid: &Grid<Cell>,
     tier: ColorTier,
+    sync_2026: bool,
     fd: libc::c_int,
 ) -> FrameStats {
-    let cells_damaged = painter.paint(grid, tier);
+    let cells_damaged = painter.paint(grid, tier, sync_2026);
     let frame = &painter.buf;
     let start = Instant::now();
     let ok = frame.is_empty() || write_all_fd(fd, frame).is_ok();
@@ -151,8 +146,9 @@ fn present_to_fd(
 }
 
 /// Loop `write(2)` handling EINTR and partial writes. One logical write per
-/// frame (PLAN §3.6 step 6); the kernel may still split it.
-fn write_all_fd(fd: libc::c_int, mut bytes: &[u8]) -> io::Result<()> {
+/// frame (PLAN §3.6 step 6); the kernel may still split it. Shared with the
+/// probe volley (one-write, PLAN §3.1).
+pub(crate) fn write_all_fd(fd: libc::c_int, mut bytes: &[u8]) -> io::Result<()> {
     while !bytes.is_empty() {
         let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
         if n < 0 {
@@ -228,7 +224,13 @@ impl Backend for AnsiBackend {
     /// failed/partial write the painter is invalidated so the next frame is a
     /// full repaint — a dropped frame must not poison the diff baseline.
     fn present(&mut self, grid: &Grid<Cell>) -> FrameStats {
-        present_to_fd(&mut self.painter, grid, self.caps.color, libc::STDOUT_FILENO)
+        present_to_fd(
+            &mut self.painter,
+            grid,
+            self.caps.color,
+            self.caps.sync_2026,
+            libc::STDOUT_FILENO,
+        )
     }
 
     fn invalidate(&mut self) {
@@ -299,16 +301,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn non_true_tier_rejected_cleanly() {
-        let caps = Caps { color: ColorTier::C256, ..Caps::default() };
-        let err = match AnsiBackend::new(caps) {
-            Err(err) => err,
-            Ok(_) => panic!("non-truecolor tier must be rejected at M0"),
-        };
-        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
-    }
-
     /// Regression (review finding, --repaint diff poisoning): a failed write
     /// in `present` must not leave the diff baseline claiming the frame
     /// reached the screen. `paint` commits `prev` before the write, so a
@@ -344,7 +336,7 @@ mod tests {
 
         // Frame 1: pipe has room — full first paint succeeds.
         let mut painter = FramePainter::new(8, 3);
-        let first = present_to_fd(&mut painter, &grid, ColorTier::True, wr);
+        let first = present_to_fd(&mut painter, &grid, ColorTier::True, false, wr);
         assert!(!first.dropped);
         assert_eq!(first.cells_damaged, 24);
         drain(rd);
@@ -362,7 +354,7 @@ mod tests {
         // Frame 2: one changed cell, write fails → dropped, baseline must
         // not pretend the cell reached the screen.
         grid.set(3, 1, cell('@', 250));
-        let dropped = present_to_fd(&mut painter, &grid, ColorTier::True, wr);
+        let dropped = present_to_fd(&mut painter, &grid, ColorTier::True, false, wr);
         assert!(dropped.dropped, "full pipe must report a dropped frame");
         assert_eq!(dropped.cells_damaged, 1);
 
@@ -370,7 +362,7 @@ mod tests {
         // invalidate-on-drop fix this diffs against the poisoned baseline and
         // emits nothing; with it, the whole frame is re-emitted.
         drain(rd);
-        let heal = present_to_fd(&mut painter, &grid, ColorTier::True, wr);
+        let heal = present_to_fd(&mut painter, &grid, ColorTier::True, false, wr);
         assert!(!heal.dropped);
         assert_eq!(
             heal.cells_damaged, 24,
@@ -380,7 +372,7 @@ mod tests {
 
         // And the baseline is healthy again: an unchanged frame is a no-op.
         drain(rd);
-        let idle = present_to_fd(&mut painter, &grid, ColorTier::True, wr);
+        let idle = present_to_fd(&mut painter, &grid, ColorTier::True, false, wr);
         assert_eq!(idle.cells_damaged, 0);
         assert_eq!(idle.bytes, 0);
         assert!(!idle.dropped);

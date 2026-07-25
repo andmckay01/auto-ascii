@@ -4,10 +4,12 @@
 //! - [`probe`] runs `ffprobe -print_format json` and validates that the input
 //!   has a video stream (+ extracts duration for the info line).
 //! - [`FrameStream`] spawns `ffmpeg -nostdin [-ss/-t] -i input -vf
-//!   scale=W:H:flags=area,fps=N,format=gray -f rawvideo -` and yields whole
-//!   gray frames off the stdout pipe. stderr is drained on a thread (so a
-//!   chatty ffmpeg can never deadlock the pipe) and surfaced verbatim when
-//!   ffmpeg exits nonzero. Short reads mid-frame are a hard error.
+//!   scale=W:H:flags=area,fps=N,format=rgb24 -f rawvideo -` and yields whole
+//!   rgb24 frames off the stdout pipe (M1: ONE decode feeds both the L* luma
+//!   and the RGB565 chroma extraction — PLAN §5 stage 3). stderr is drained
+//!   on a thread (so a chatty ffmpeg can never deadlock the pipe) and
+//!   surfaced verbatim when ffmpeg exits nonzero. Short reads mid-frame are
+//!   a hard error.
 
 use std::io::Read;
 use std::path::Path;
@@ -77,9 +79,9 @@ pub struct DecodeParams<'a> {
 }
 
 impl DecodeParams<'_> {
-    /// Bytes per gray frame on the rawvideo pipe.
+    /// Bytes per rgb24 frame on the rawvideo pipe (3 B/px).
     pub fn frame_size(&self) -> usize {
-        self.w as usize * self.h as usize
+        self.w as usize * self.h as usize * 3
     }
 }
 
@@ -105,7 +107,7 @@ impl FrameStream {
         cmd.arg("-i").arg(p.input);
         cmd.args(["-map", "0:v:0"]);
         cmd.arg("-vf")
-            .arg(format!("scale={}:{}:flags=area,fps={},format=gray", p.w, p.h, p.fps));
+            .arg(format!("scale={}:{}:flags=area,fps={},format=rgb24", p.w, p.h, p.fps));
         cmd.args(["-f", "rawvideo", "-"]);
         cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
 

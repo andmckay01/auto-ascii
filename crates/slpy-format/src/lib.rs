@@ -5,19 +5,20 @@
 //!
 //! Determinism is a contract (PLAN §4): hand-rolled fixed layout everywhere,
 //! CBOR only inside META, per-chunk CRC32, byte-identical writer output for
-//! identical input — enforced by the M0 byte-golden tests.
+//! identical input — enforced by the committed byte-golden tests.
 //!
-//! M0 subset (PLAN §7 + approved simplification): luma-only "SLPY-lite" —
-//! FRAM carries the Y plane only, `codec = zstd`, `filter = intra` (every
-//! frame is a keyframe); global p2/p98 level normalization is baked into the
-//! plane at encode time. NORM, temporal delta, and the remaining planes land
-//! at M1/M3 — the header layout below is the full §4 layout so M1 does not
-//! break the format.
+//! M1 status (PLAN §7 M1): full SLPY v1 — temporal byte-delta filter with
+//! keyframes every `keyframe_ivl` frames (default 60, FRAM/FIDX flags bit0),
+//! 64-B-aligned plane subblocks, FIDX seek (keyframe binary search + delta
+//! rolls, [`SlpyReader::seek_plane_into`]), NORM per-shot runtime levels +
+//! cut flags ([`ShotRecord`]), chroma plane C (RGB565, half res). Version
+//! minor bumped to 1 (additive); M0 minor-0 intra assets remain readable.
 
 pub mod chunk;
 pub mod error;
 pub mod header;
 pub mod meta;
+pub mod norm;
 pub mod read;
 pub mod write;
 
@@ -28,8 +29,9 @@ pub use chunk::{
 pub use error::{Result, SlpyError};
 pub use header::{
     BASE_H, BASE_W, HEADER_SIZE, MAGIC, SlpyHeader, VERSION_MAJOR, VERSION_MINOR, codec, filter,
-    header_flags, plane_id,
+    header_flags, plane_id, plane_raw_size,
 };
 pub use meta::Meta;
+pub use norm::{NORM_RECORD_SIZE, PlaneLevels, ShotRecord, norm_flags};
 pub use read::SlpyReader;
 pub use write::{PlaneRef, SlpyWriter, WriterOptions};

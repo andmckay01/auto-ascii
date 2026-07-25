@@ -3,28 +3,42 @@
 //! files (no I/O policy, PLAN §2).
 //!
 //! Playback contract (PLAN §3.6 step 3 / §4): decoding a frame is one zstd
-//! block decode (+ one memadd once temporal delta lands at M1) into caller
-//! buffers — zero allocation per frame after `open`.
+//! block decode plus (for delta frames) one memadd into the caller's standing
+//! double buffer — zero allocation per frame after `open`.
 //!
-//! Validation split: [`SlpyReader::open`] does the cheap structural walk
-//! (header, chunk framing, FIDX↔FRAM cross-check, TRLR presence) without
-//! touching payload bytes; [`SlpyReader::verify`] is the full CRC32 walk for
-//! `sleepy-factory inspect`.
+//! Validation split (M1): [`SlpyReader::open`] validates the header, the
+//! TRLR tail anchor, the pre-frame chunk roll (META/NORM) and the whole FIDX
+//! — it never touches frame payloads, keeping cold open + seek inside the
+//! <50 ms budget on multi-GB assets (PLAN §7 M1). Per-frame structure is
+//! (re)validated on every decode; [`SlpyReader::verify`] is the full
+//! chunk-walk + CRC32 pass for `sleepy-factory inspect`.
+//!
+//! Seek (PLAN §4): binary-search the keyframe roster to the nearest keyframe
+//! at or before the target, then ≤ `keyframe_ivl − 1` delta rolls —
+//! [`SlpyReader::seek_plane_into`].
 
 use crate::chunk::{
     CHUNK_HEADER_SIZE, ChunkHeader, FIDX_ENTRY_SIZE, FrameIndexEntry, TAG_FIDX, TAG_FRAM,
-    TAG_META, TAG_NORM, TAG_TRLR, TRLR_PAYLOAD, align64,
+    TAG_META, TAG_NORM, TAG_TRLR, TRLR_PAYLOAD, align64, frame_flags,
 };
 use crate::error::{Result, SlpyError};
-use crate::header::{HEADER_SIZE, SlpyHeader, codec, filter, header_flags};
+use crate::header::{HEADER_SIZE, SlpyHeader, codec, filter, header_flags, plane_raw_size};
 use crate::meta::Meta;
+use crate::norm::{NORM_RECORD_SIZE, PlaneLevels, ShotRecord};
 
 /// Random-access reader over a complete SLPY byte image.
 pub struct SlpyReader<'a> {
     bytes: &'a [u8],
     header: SlpyHeader,
-    /// Decoded FIDX (16 B/frame — kept owned; ~14 KB for a 30 s asset).
+    /// Decoded FIDX (16 B/frame — kept owned; ~400 KB for a 14 min asset).
     index: Vec<FrameIndexEntry>,
+    /// Frame indices with the KEYFRAME flag, ascending (seek binary search).
+    keyframes: Vec<u32>,
+    /// NORM shot records (empty when the asset carries no NORM chunk).
+    shots: Vec<ShotRecord>,
+    /// Delta scratch: the decompressed delta lands here before the memadd
+    /// into the caller's buffer (sized at open for all known planes).
+    scratch: Vec<u8>,
     /// Reusable zstd decode context (zero alloc per frame).
     dctx: zstd::bulk::Decompressor<'static>,
 }
@@ -32,7 +46,8 @@ pub struct SlpyReader<'a> {
 /// Walk all chunks from the end of the header to EOF. Calls `f(offset,
 /// header, payload, stored_crc)` per chunk; `stored_crc` is `Some` when the
 /// file carries CRCs. Enforces framing only (bounds, TRLR-is-last) — tag
-/// semantics and CRC checking are the callers' business.
+/// semantics and CRC checking are the callers' business. Used by
+/// [`SlpyReader::verify`]; `open` deliberately does not walk frames.
 fn walk_chunks(
     bytes: &[u8],
     with_crc: bool,
@@ -69,68 +84,120 @@ fn walk_chunks(
 }
 
 impl<'a> SlpyReader<'a> {
-    /// Parse header, verify the TRLR is present (absence ⇒ [`crate::SlpyError::Truncated`]
-    /// ⇒ factory rerun, PLAN §4), and load FIDX via `index_offset`. Skips
-    /// unknown non-required chunks by size; unknown required chunks are a
-    /// hard error (PLAN §4 forward compat).
+    /// Parse + validate the header, check the TRLR tail anchor (absence ⇒
+    /// [`crate::SlpyError::Truncated`] ⇒ factory rerun, PLAN §4), roll the
+    /// pre-frame chunks (META / NORM / unknowns — skipped by size unless
+    /// required, PLAN §4 forward compat), then load FIDX via `index_offset`
+    /// and build the keyframe roster. Frame payloads are never touched here.
     pub fn open(bytes: &'a [u8]) -> Result<SlpyReader<'a>> {
         if bytes.len() < HEADER_SIZE as usize {
             return Err(SlpyError::Truncated);
         }
         let header = SlpyHeader::from_bytes(bytes[..HEADER_SIZE as usize].try_into().unwrap())?;
 
-        // M0 reader supports the M0 writer profile; delta/lz4 land at M1.
         if header.codec != codec::ZSTD {
-            return Err(SlpyError::Corrupt("unsupported codec (M0 reader: zstd only)"));
+            return Err(SlpyError::Corrupt("unsupported codec (reader: zstd only)"));
         }
-        if header.filter != filter::INTRA {
-            return Err(SlpyError::Corrupt("unsupported filter (M0 reader: intra only)"));
+        if header.filter != filter::INTRA && header.filter != filter::TEMPORAL_DELTA {
+            return Err(SlpyError::Corrupt("unsupported filter"));
+        }
+        // Hostile-input hardening (M1 adversarial-review fixes): zero dims
+        // previously hit a downstream assert panic; zero fps hit a
+        // divide-by-zero Duration panic in the player.
+        if header.base_w == 0 || header.base_h == 0 {
+            return Err(SlpyError::Corrupt("base dimensions must be nonzero"));
+        }
+        if header.fps_num == 0 || header.fps_den == 0 {
+            return Err(SlpyError::Corrupt("fps_num and fps_den must be nonzero"));
+        }
+        if header.keyframe_ivl == 0 {
+            return Err(SlpyError::Corrupt("keyframe_ivl must be >= 1"));
         }
         let plane_count = header.plane_count as usize;
         if plane_count == 0 || plane_count > 8 {
             return Err(SlpyError::Corrupt("plane_count out of range"));
         }
-        if header.plane_ids[..plane_count].contains(&0) {
+        let registry = &header.plane_ids[..plane_count];
+        if registry.contains(&0) {
             return Err(SlpyError::Corrupt("plane id 0 in registry"));
         }
+        for (i, id) in registry.iter().enumerate() {
+            if registry[..i].contains(id) {
+                return Err(SlpyError::Corrupt("duplicate plane id in registry"));
+            }
+        }
         if header.flags & header_flags::INDEX_PRESENT == 0 {
-            return Err(SlpyError::Corrupt("M0 reader requires a frame index (flags bit0)"));
+            return Err(SlpyError::Corrupt("reader requires a frame index (flags bit0)"));
         }
 
         let with_crc = header.flags & header_flags::CRCS_PRESENT != 0;
-        let mut fram_offsets: Vec<u64> = Vec::new();
-        let mut fidx: Option<(u64, Vec<FrameIndexEntry>)> = None;
-        let mut meta_offset_seen: Option<u64> = None;
-        let mut trlr_seen = false;
+        let crc_len = if with_crc { 4usize } else { 0 };
 
-        walk_chunks(bytes, with_crc, |offset, ch, payload, _crc| {
+        // TRLR tail anchor (PLAN §4: absence ⇒ truncated ⇒ factory rerun).
+        let tail = CHUNK_HEADER_SIZE + TRLR_PAYLOAD.len() + crc_len;
+        let Some(trlr_off) = bytes.len().checked_sub(tail) else {
+            return Err(SlpyError::Truncated);
+        };
+        if trlr_off < HEADER_SIZE as usize {
+            return Err(SlpyError::Truncated);
+        }
+        let tch = ChunkHeader::from_bytes(
+            bytes[trlr_off..trlr_off + CHUNK_HEADER_SIZE].try_into().unwrap(),
+        );
+        if tch.tag != TAG_TRLR
+            || tch.size != TRLR_PAYLOAD.len() as u64
+            || &bytes[trlr_off + CHUNK_HEADER_SIZE..trlr_off + CHUNK_HEADER_SIZE + TRLR_PAYLOAD.len()]
+                != TRLR_PAYLOAD
+        {
+            return Err(SlpyError::Truncated);
+        }
+
+        // Pre-frame chunk roll: everything between the header and the first
+        // FRAM/FIDX. Unknown non-required chunks are skipped by size;
+        // unknown required chunks are a hard error (PLAN §4).
+        let mut shots: Vec<ShotRecord> = Vec::new();
+        let mut norm_seen = false;
+        let mut meta_offset_seen: Option<u64> = None;
+        let mut pos = HEADER_SIZE as usize;
+        while pos < trlr_off {
+            if trlr_off - pos < CHUNK_HEADER_SIZE {
+                return Err(SlpyError::Truncated);
+            }
+            let ch =
+                ChunkHeader::from_bytes(bytes[pos..pos + CHUNK_HEADER_SIZE].try_into().unwrap());
+            if ch.tag == TAG_FRAM || ch.tag == TAG_FIDX {
+                break; // frame stream starts; FIDX is reached via index_offset
+            }
+            let size =
+                usize::try_from(ch.size).map_err(|_| SlpyError::Corrupt("chunk size overflow"))?;
+            let payload_start = pos + CHUNK_HEADER_SIZE;
+            let end = payload_start
+                .checked_add(size)
+                .and_then(|e| e.checked_add(crc_len))
+                .ok_or(SlpyError::Corrupt("chunk size overflow"))?;
+            if end > trlr_off {
+                return Err(SlpyError::Truncated);
+            }
+            let payload = &bytes[payload_start..payload_start + size];
             match ch.tag {
                 TAG_META => {
                     if meta_offset_seen.is_some() {
                         return Err(SlpyError::Corrupt("duplicate META chunk"));
                     }
-                    meta_offset_seen = Some(offset);
+                    meta_offset_seen = Some(pos as u64);
                 }
-                TAG_NORM => {} // known; consumed at M1+
-                TAG_FRAM => fram_offsets.push(offset),
-                TAG_FIDX => {
-                    if fidx.is_some() {
-                        return Err(SlpyError::Corrupt("duplicate FIDX chunk"));
+                TAG_NORM => {
+                    if norm_seen {
+                        return Err(SlpyError::Corrupt("duplicate NORM chunk"));
                     }
-                    if payload.len() % FIDX_ENTRY_SIZE != 0 {
-                        return Err(SlpyError::Corrupt("FIDX size not a multiple of 16"));
+                    if !payload.len().is_multiple_of(NORM_RECORD_SIZE) {
+                        return Err(SlpyError::Corrupt("NORM size not a multiple of 24"));
                     }
-                    let mut entries = Vec::with_capacity(payload.len() / FIDX_ENTRY_SIZE);
-                    for row in payload.chunks_exact(FIDX_ENTRY_SIZE) {
-                        entries.push(FrameIndexEntry::from_bytes(row.try_into().unwrap()));
-                    }
-                    fidx = Some((offset, entries));
-                }
-                TAG_TRLR => {
-                    if payload != TRLR_PAYLOAD {
-                        return Err(SlpyError::Corrupt("bad TRLR payload"));
-                    }
-                    trlr_seen = true;
+                    shots = payload
+                        .chunks_exact(NORM_RECORD_SIZE)
+                        .map(|row| ShotRecord::from_bytes(row.try_into().unwrap()))
+                        .collect();
+                    norm_seen = true;
                 }
                 tag => {
                     if ch.is_required() {
@@ -139,24 +206,7 @@ impl<'a> SlpyReader<'a> {
                     // unknown non-required: skipped by size (PLAN §4)
                 }
             }
-            Ok(())
-        })?;
-
-        if !trlr_seen {
-            return Err(SlpyError::Truncated);
-        }
-        let (fidx_offset, index) = fidx.ok_or(SlpyError::Corrupt("missing FIDX chunk"))?;
-        if header.index_offset != fidx_offset {
-            return Err(SlpyError::Corrupt("header index_offset does not match FIDX chunk"));
-        }
-        if index.len() != header.frame_count as usize {
-            return Err(SlpyError::Corrupt("FIDX entry count != header frame_count"));
-        }
-        if fram_offsets.len() != index.len() {
-            return Err(SlpyError::Corrupt("FRAM chunk count != header frame_count"));
-        }
-        if index.iter().zip(&fram_offsets).any(|(e, &o)| e.offset != o) {
-            return Err(SlpyError::Corrupt("FIDX offset does not match FRAM chunk"));
+            pos = end;
         }
         if let Some(m) = meta_offset_seen
             && header.meta_offset != m
@@ -164,8 +214,90 @@ impl<'a> SlpyReader<'a> {
             return Err(SlpyError::Corrupt("header meta_offset does not match META chunk"));
         }
 
+        // NORM semantic checks (PLAN §4: flat per-shot rows from frame 0).
+        if let Some(first) = shots.first()
+            && first.first_frame != 0
+        {
+            return Err(SlpyError::Corrupt("NORM: first shot must start at frame 0"));
+        }
+        if shots.windows(2).any(|w| w[1].first_frame <= w[0].first_frame) {
+            return Err(SlpyError::Corrupt("NORM: shot first_frame not strictly increasing"));
+        }
+        if shots.last().is_some_and(|s| s.first_frame >= header.frame_count) {
+            return Err(SlpyError::Corrupt("NORM: shot first_frame out of range"));
+        }
+
+        // FIDX via index_offset (patched at close, PLAN §4) — the O(1) seek
+        // path; FRAM chunks are validated lazily per decode.
+        let io = usize::try_from(header.index_offset)
+            .map_err(|_| SlpyError::Corrupt("index_offset overflow"))?;
+        if io < HEADER_SIZE as usize
+            || io.checked_add(CHUNK_HEADER_SIZE).is_none_or(|end| end > trlr_off)
+        {
+            return Err(SlpyError::Corrupt("index_offset out of range"));
+        }
+        let fch = ChunkHeader::from_bytes(bytes[io..io + CHUNK_HEADER_SIZE].try_into().unwrap());
+        if fch.tag != TAG_FIDX {
+            return Err(SlpyError::Corrupt("index_offset does not point at a FIDX chunk"));
+        }
+        let fsize =
+            usize::try_from(fch.size).map_err(|_| SlpyError::Corrupt("chunk size overflow"))?;
+        if !fsize.is_multiple_of(FIDX_ENTRY_SIZE) {
+            return Err(SlpyError::Corrupt("FIDX size not a multiple of 16"));
+        }
+        let fidx_start = io + CHUNK_HEADER_SIZE;
+        let fidx_end = fidx_start
+            .checked_add(fsize)
+            .ok_or(SlpyError::Corrupt("chunk size overflow"))?;
+        if fidx_end > trlr_off {
+            return Err(SlpyError::Truncated);
+        }
+        if fsize / FIDX_ENTRY_SIZE != header.frame_count as usize {
+            return Err(SlpyError::Corrupt("FIDX entry count != header frame_count"));
+        }
+        let mut index = Vec::with_capacity(header.frame_count as usize);
+        let mut keyframes: Vec<u32> = Vec::new();
+        let mut prev_offset = 0u64;
+        for (i, row) in bytes[fidx_start..fidx_end].chunks_exact(FIDX_ENTRY_SIZE).enumerate() {
+            let e = FrameIndexEntry::from_bytes(row.try_into().unwrap());
+            if e.offset < u64::from(HEADER_SIZE)
+                || e.offset
+                    .checked_add(CHUNK_HEADER_SIZE as u64)
+                    .is_none_or(|end| end > trlr_off as u64)
+            {
+                return Err(SlpyError::Corrupt("FIDX offset out of range"));
+            }
+            if i > 0 && e.offset <= prev_offset {
+                return Err(SlpyError::Corrupt("FIDX offsets not strictly increasing"));
+            }
+            prev_offset = e.offset;
+            if e.flags & frame_flags::KEYFRAME != 0 {
+                keyframes.push(i as u32);
+            }
+            index.push(e);
+        }
+        if header.filter == filter::TEMPORAL_DELTA
+            && header.frame_count > 0
+            && keyframes.first() != Some(&0)
+        {
+            return Err(SlpyError::Corrupt("first frame of a delta asset must be a keyframe"));
+        }
+
+        // Delta scratch sized for every known plane in the registry; unknown
+        // (future) planes grow it on demand in decode.
+        let scratch = if header.filter == filter::TEMPORAL_DELTA {
+            let max_raw = registry
+                .iter()
+                .filter_map(|&id| plane_raw_size(header.base_w, header.base_h, id))
+                .max()
+                .unwrap_or(0);
+            vec![0u8; max_raw]
+        } else {
+            Vec::new()
+        };
+
         let dctx = zstd::bulk::Decompressor::new()?;
-        Ok(SlpyReader { bytes, header, index, dctx })
+        Ok(SlpyReader { bytes, header, index, keyframes, shots, scratch, dctx })
     }
 
     #[inline]
@@ -182,7 +314,11 @@ impl<'a> SlpyReader<'a> {
     pub fn meta(&self) -> Result<Meta> {
         let offset = usize::try_from(self.header.meta_offset)
             .map_err(|_| SlpyError::Corrupt("meta_offset overflow"))?;
-        if offset < HEADER_SIZE as usize || offset + CHUNK_HEADER_SIZE > self.bytes.len() {
+        if offset < HEADER_SIZE as usize
+            || offset
+                .checked_add(CHUNK_HEADER_SIZE)
+                .is_none_or(|end| end > self.bytes.len())
+        {
             return Err(SlpyError::Corrupt("meta_offset out of range"));
         }
         let ch = ChunkHeader::from_bytes(
@@ -193,34 +329,94 @@ impl<'a> SlpyReader<'a> {
         }
         let size = usize::try_from(ch.size).map_err(|_| SlpyError::Corrupt("chunk size overflow"))?;
         let start = offset + CHUNK_HEADER_SIZE;
-        let payload = self
-            .bytes
-            .get(start..start + size)
+        let payload = start
+            .checked_add(size)
+            .and_then(|end| self.bytes.get(start..end))
             .ok_or(SlpyError::Truncated)?;
         ciborium::de::from_reader(payload).map_err(|_| SlpyError::BadMeta)
     }
 
-    /// Stored dimensions of a plane in this asset, or `None` if the plane id
-    /// is not in the header registry. Y/E/Ex/Ey/H are `base_w × base_h`;
-    /// C is half res (PLAN §4 planes).
-    pub fn plane_dims(&self, plane_id: u8) -> Option<(u16, u16)> {
+    /// NORM shot records in `first_frame` order (empty slice when the asset
+    /// has no NORM chunk).
+    #[inline]
+    pub fn shots(&self) -> &[ShotRecord] {
+        &self.shots
+    }
+
+    /// The shot containing `frame_idx` (binary search over `first_frame`),
+    /// or `None` when the asset has no NORM chunk.
+    pub fn shot_for_frame(&self, frame_idx: u32) -> Option<&ShotRecord> {
+        let p = self.shots.partition_point(|s| s.first_frame <= frame_idx);
+        if p == 0 { None } else { Some(&self.shots[p - 1]) }
+    }
+
+    /// Position of `plane_id` in the header registry (the index into
+    /// [`ShotRecord::levels`]), or `None` if the plane is not in this asset.
+    pub fn plane_index(&self, plane_id: u8) -> Option<usize> {
         let n = (self.header.plane_count as usize).min(8);
-        if !self.header.plane_ids[..n].contains(&plane_id) {
-            return None;
+        self.header.plane_ids[..n].iter().position(|&id| id == plane_id)
+    }
+
+    /// Runtime p2/p98 levels for one plane at one frame (PLAN §3.5 per-shot
+    /// auto-levels). `None` when the asset has no NORM chunk or the plane is
+    /// not in this asset.
+    pub fn norm_levels(&self, frame_idx: u32, plane_id: u8) -> Option<PlaneLevels> {
+        let pi = self.plane_index(plane_id)?;
+        self.shot_for_frame(frame_idx).map(|s| s.levels[pi])
+    }
+
+    /// Whether `frame_idx` carries the KEYFRAME flag (FIDX bit0).
+    pub fn is_keyframe(&self, frame_idx: u32) -> Result<bool> {
+        self.index
+            .get(frame_idx as usize)
+            .map(|e| e.flags & frame_flags::KEYFRAME != 0)
+            .ok_or(SlpyError::BadFrameIndex(frame_idx))
+    }
+
+    /// Nearest keyframe at or before `frame_idx` (binary search over the
+    /// keyframe roster built from FIDX flags, PLAN §4 seek). For INTRA
+    /// assets every frame stands alone, so this is `frame_idx` itself.
+    pub fn nearest_keyframe_at_or_before(&self, frame_idx: u32) -> Result<u32> {
+        if frame_idx >= self.header.frame_count {
+            return Err(SlpyError::BadFrameIndex(frame_idx));
         }
+        if self.header.filter == filter::INTRA {
+            return Ok(frame_idx);
+        }
+        let p = self.keyframes.partition_point(|&k| k <= frame_idx);
+        if p == 0 {
+            // Unreachable for files that passed open() (frame 0 keyframe).
+            return Err(SlpyError::Corrupt("no keyframe at or before frame"));
+        }
+        Ok(self.keyframes[p - 1])
+    }
+
+    /// Stored dimensions of a plane in this asset: `base_w × base_h` for
+    /// Y/E/Ex/Ey/H, half res for C (PLAN §4 planes). `None` if the plane is
+    /// not in the header registry — or is an unknown (future) ID whose
+    /// geometry this reader cannot claim (its raw size travels in the FRAM
+    /// subblock header instead).
+    pub fn plane_dims(&self, plane_id: u8) -> Option<(u16, u16)> {
+        self.plane_index(plane_id)?;
         let (w, h) = (self.header.base_w, self.header.base_h);
         if plane_id == crate::header::plane_id::C {
             Some((w / 2, h / 2))
-        } else {
+        } else if crate::header::plane_id::is_known(plane_id) {
             Some((w, h))
+        } else {
+            None
         }
     }
 
     /// Decode one plane of one frame into `dst` (len ≥ the plane's raw size;
-    /// `&mut self` for the reused zstd context). M0 assets are intra-only, so
-    /// this is exactly one zstd block decode — no keyframe rolling (that
-    /// arrives with temporal delta at M1). Per-plane subblocks let low tiers
-    /// skip planes they don't need (PLAN §4). Returns the raw byte count.
+    /// `&mut self` for the reused zstd context). Keyframes (and every frame
+    /// of INTRA assets) decode standalone: one zstd block into `dst`. Delta
+    /// frames REQUIRE `dst` to already hold the fully decoded previous frame
+    /// of the same plane (the standing double buffer, PLAN §3.6): the delta
+    /// is decoded to scratch and memadded in place. For random access use
+    /// [`seek_plane_into`](SlpyReader::seek_plane_into). Per-plane subblocks
+    /// let low tiers skip planes they don't need (PLAN §4). Returns the raw
+    /// byte count.
     pub fn decode_plane_into(&mut self, frame_idx: u32, plane_id: u8, dst: &mut [u8]) -> Result<usize> {
         let n = (self.header.plane_count as usize).min(8);
         if !self.header.plane_ids[..n].contains(&plane_id) {
@@ -231,7 +427,7 @@ impl<'a> SlpyReader<'a> {
             .get(frame_idx as usize)
             .ok_or(SlpyError::BadFrameIndex(frame_idx))?;
 
-        // Bounds were validated by the open() walk; re-check defensively.
+        // Per-frame structural validation (open() never touches FRAM data).
         let offset = usize::try_from(entry.offset)
             .map_err(|_| SlpyError::Corrupt("FRAM offset overflow"))?;
         if offset + CHUNK_HEADER_SIZE > self.bytes.len() {
@@ -245,9 +441,9 @@ impl<'a> SlpyReader<'a> {
         }
         let size = usize::try_from(ch.size).map_err(|_| SlpyError::Corrupt("chunk size overflow"))?;
         let start = offset + CHUNK_HEADER_SIZE;
-        let payload = self
-            .bytes
-            .get(start..start + size)
+        let payload = start
+            .checked_add(size)
+            .and_then(|end| self.bytes.get(start..end))
             .ok_or(SlpyError::Truncated)?;
 
         if payload.len() < 5 {
@@ -257,6 +453,11 @@ impl<'a> SlpyReader<'a> {
         if stored_idx != frame_idx {
             return Err(SlpyError::Corrupt("FRAM frame_idx does not match FIDX position"));
         }
+        if payload[4] != entry.flags {
+            return Err(SlpyError::Corrupt("FRAM flags do not match FIDX entry"));
+        }
+        let is_delta = self.header.filter == filter::TEMPORAL_DELTA
+            && entry.flags & frame_flags::KEYFRAME == 0;
 
         // Scan plane subblocks: plane_id u8 | comp_size u32 | raw_size u32 |
         // zstd bytes, each subblock occupying align64(9 + comp_size) bytes.
@@ -279,11 +480,29 @@ impl<'a> SlpyReader<'a> {
                 if dst.len() < raw_size {
                     return Err(SlpyError::Corrupt("dst buffer smaller than plane raw size"));
                 }
-                let written = self
-                    .dctx
-                    .decompress_to_buffer(&payload[data_start..data_end], &mut dst[..raw_size])?;
-                if written != raw_size {
-                    return Err(SlpyError::Corrupt("decoded size != raw_size"));
+                let src = &payload[data_start..data_end];
+                if is_delta {
+                    // Grows only for unknown (future) planes — known planes
+                    // were sized at open (zero alloc on the play path).
+                    if self.scratch.len() < raw_size {
+                        self.scratch.resize(raw_size, 0);
+                    }
+                    let written = self
+                        .dctx
+                        .decompress_to_buffer(src, &mut self.scratch[..raw_size])?;
+                    if written != raw_size {
+                        return Err(SlpyError::Corrupt("decoded size != raw_size"));
+                    }
+                    // Temporal delta add (PLAN §4): dst = prev + delta mod 256.
+                    for (d, &s) in dst[..raw_size].iter_mut().zip(&self.scratch[..raw_size]) {
+                        *d = d.wrapping_add(s);
+                    }
+                } else {
+                    let written =
+                        self.dctx.decompress_to_buffer(src, &mut dst[..raw_size])?;
+                    if written != raw_size {
+                        return Err(SlpyError::Corrupt("decoded size != raw_size"));
+                    }
                 }
                 return Ok(raw_size);
             }
@@ -296,8 +515,21 @@ impl<'a> SlpyReader<'a> {
         Err(SlpyError::BadPlaneId(plane_id))
     }
 
+    /// Random-access decode (PLAN §4 seek): binary-search to the nearest
+    /// keyframe at or before `frame_idx`, decode it intra into `dst`, then
+    /// roll ≤ `keyframe_ivl − 1` deltas forward. `dst` contents on entry are
+    /// irrelevant. Returns the raw byte count.
+    pub fn seek_plane_into(&mut self, frame_idx: u32, plane_id: u8, dst: &mut [u8]) -> Result<usize> {
+        let key = self.nearest_keyframe_at_or_before(frame_idx)?;
+        let mut written = self.decode_plane_into(key, plane_id, dst)?;
+        for f in key + 1..=frame_idx {
+            written = self.decode_plane_into(f, plane_id, dst)?;
+        }
+        Ok(written)
+    }
+
     /// Full-file integrity walk for `sleepy-factory inspect` (PLAN §5 CLI):
-    /// re-walk all chunks, verify every CRC32 and the TRLR.
+    /// walk all chunks, verify framing, every CRC32 and the TRLR.
     pub fn verify(&self) -> Result<()> {
         let with_crc = self.header.flags & header_flags::CRCS_PRESENT != 0;
         let mut trlr_ok = false;
