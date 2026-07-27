@@ -313,6 +313,9 @@ pub fn run(args: &SweepArgs) -> Result<(), BoxErr> {
             reel: None,
             cache_dir: args.cache_dir.clone(),
             truecolor_only: true,
+            // Sweeps score with the same conservative table as the baseline;
+            // per-font scoring (--font-table) is an eval-only mode.
+            font_table: None,
         };
 
         let mut report =

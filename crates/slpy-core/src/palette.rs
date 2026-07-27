@@ -245,6 +245,61 @@ pub fn quadrant_for(class: GlyphClass, top_bright: bool) -> Option<char> {
     }
 }
 
+/// Every distinct glyph the compositor can emit at charset tier `tier`,
+/// enumerated **from the palette data itself** (never hardcoded lists):
+/// [`select_palettes`] is walked over all four color depths × both density
+/// bands, collecting the full backing ramps, the edge LUT (both junctions),
+/// the subposition triplet, the quadrant/half-block set and the reachable
+/// braille masks. Sorted by codepoint, deduplicated.
+///
+/// This is the repertoire a font must cover for the tier to render without
+/// missing-glyph boxes — the M5 font-coverage-table generator and the
+/// `--font-table` repertoire veto both consume it (PLAN §3.4).
+pub fn tier_glyphs(tier: GlyphTier) -> Vec<char> {
+    let mut out: Vec<char> = Vec::new();
+    for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
+        // One viewport width per density band (the band, not the width, is
+        // the selection input — FINE_MIN_COLS is the boundary).
+        for cols in [FINE_MIN_COLS - 1, FINE_MIN_COLS] {
+            let set = select_palettes(tier, color, cols);
+            out.extend_from_slice(set.base.glyphs());
+            out.extend_from_slice(set.highlight.glyphs());
+            out.extend(set.edge.by_class.iter().flatten().copied());
+            out.push(set.edge.junction);
+            out.push(set.edge.junction_strong);
+            if set.subpos {
+                out.extend_from_slice(&SUBPOS_GLYPHS);
+            }
+            if set.quadrant || set.halfblock {
+                // Palette 5's quadrant half: quadrant_for picks corners and
+                // the half-block path emits ▀/▄ — all members of the §3.4
+                // table row (▌▐ included: table exactness, see the const).
+                out.extend_from_slice(UNICODE_QUADRANTS);
+            }
+            if set.braille {
+                let masks =
+                    BRAILLE_EDGE.by_class.iter().flatten().copied().chain([BRAILLE_EDGE.junction]);
+                out.extend(masks.map(braille_glyph));
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Union of [`tier_glyphs`] over every charset tier — every glyph any of the
+/// 8 shipped palettes (PLAN §3.4) can put on screen. Sorted, deduplicated.
+pub fn all_palette_glyphs() -> Vec<char> {
+    let mut out: Vec<char> = Vec::new();
+    for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
+        out.extend(tier_glyphs(tier));
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// Effective ramp-length cap on truecolor tiers (PLAN §1b: color carries
 /// luminance, so ramps stay short and smooth).
 pub const RAMP_CAP_TRUE: u8 = 8;
@@ -518,6 +573,85 @@ mod tests {
         assert!(p.braille);
         let p = select_palettes(GlyphTier::BrailleVerified, ColorDepth::C256, 60);
         assert!(!p.braille, "coarse density must not enable braille");
+    }
+
+    /// The enumeration is data-driven: every glyph of every §3.4 palette
+    /// const must be reported, nothing outside the palette data may appear,
+    /// and the ASCII tier's set must be pure ASCII (the M4 floor guarantee,
+    /// restated over the enumeration the font-table generator consumes).
+    #[test]
+    fn glyph_enumeration_covers_all_palette_data() {
+        let all = all_palette_glyphs();
+        assert!(all.windows(2).all(|w| w[0] < w[1]), "sorted + deduped");
+        let expect = |chars: &[char]| {
+            for &ch in chars {
+                assert!(all.contains(&ch), "{ch:?} missing from all_palette_glyphs");
+            }
+        };
+        expect(ASCII_BASE_COARSE); // palette 1
+        expect(ASCII_BASE_FINE); // palette 2
+        let e: Vec<char> = ASCII_EDGE
+            .by_class
+            .iter()
+            .flatten()
+            .copied()
+            .chain([ASCII_EDGE.junction, ASCII_EDGE.junction_strong])
+            .collect();
+        expect(&e); // palette 3
+        expect(ASCII_HIGHLIGHT); // palette 4
+        expect(UNICODE_BASE); // palette 5 base
+        expect(UNICODE_QUADRANTS); // palette 5 quadrants (incl. ▀▄ half-blocks)
+        let e: Vec<char> = UNICODE_EDGE
+            .by_class
+            .iter()
+            .flatten()
+            .copied()
+            .chain([UNICODE_EDGE.junction, UNICODE_EDGE.junction_strong])
+            .collect();
+        expect(&e); // palette 6
+        let b: Vec<char> = BRAILLE_EDGE
+            .by_class
+            .iter()
+            .flatten()
+            .copied()
+            .chain([BRAILLE_EDGE.junction])
+            .map(braille_glyph)
+            .collect();
+        expect(&b); // palette 7 (reachable masks)
+        expect(MONO_FALLBACK_BASE); // palette 8
+        expect(&SUBPOS_GLYPHS); // §3.3 subposition triplet
+
+        // Nothing else: the union of the constants IS the enumeration.
+        let mut union: Vec<char> = ASCII_BASE_COARSE
+            .iter()
+            .chain(ASCII_BASE_FINE)
+            .chain(ASCII_HIGHLIGHT)
+            .chain(UNICODE_BASE)
+            .chain(UNICODE_QUADRANTS)
+            .chain(MONO_FALLBACK_BASE)
+            .chain(&SUBPOS_GLYPHS)
+            .copied()
+            .chain(ASCII_EDGE.by_class.iter().flatten().copied())
+            .chain([ASCII_EDGE.junction, ASCII_EDGE.junction_strong])
+            .chain(UNICODE_EDGE.by_class.iter().flatten().copied())
+            .chain([UNICODE_EDGE.junction, UNICODE_EDGE.junction_strong])
+            .chain(b)
+            .collect();
+        union.sort_unstable();
+        union.dedup();
+        assert_eq!(all, union);
+
+        // Tier subsets: ascii tier is pure ASCII; braille ⊇ unicode ⊇ ∅.
+        for ch in tier_glyphs(GlyphTier::Ascii) {
+            assert!(ch == ' ' || ch.is_ascii_graphic(), "{ch:?} not ASCII");
+        }
+        let uni = tier_glyphs(GlyphTier::UnicodeBlocks);
+        let braille = tier_glyphs(GlyphTier::BrailleVerified);
+        for ch in &uni {
+            assert!(braille.contains(ch), "braille tier must be a superset");
+        }
+        assert!(braille.iter().any(|c| ('\u{2800}'..='\u{28FF}').contains(c)));
+        assert!(!uni.iter().any(|c| ('\u{2800}'..='\u{28FF}').contains(c)));
     }
 
     #[test]

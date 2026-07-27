@@ -9,11 +9,31 @@
 use std::path::Path;
 
 use memmap2::Mmap;
-use slpy_core::{Cell, ColorDepth, Grid};
+use slpy_core::{Cell, ColorDepth, FontTable, Grid};
 use slpy_format::SlpyReader;
 
 use crate::error::Error;
 use crate::{PaletteChoice, pipeline};
+
+/// Resolve a `--font-table NAME|PATH` spec (PLAN §3.4, M5): a committed
+/// built-in table by name, else a path to a `sleepy-factory font-table`
+/// TOML. Shared by [`RenderSession::set_font_table`] and
+/// `PlayerBuilder::font_table`.
+pub(crate) fn load_font_table(spec: &str) -> Result<FontTable, Error> {
+    if let Some(t) = FontTable::builtin(spec) {
+        return Ok(t.clone());
+    }
+    let path = Path::new(spec);
+    if !path.is_file() {
+        return Err(Error::Config(format!(
+            "font table {spec:?} is neither a built-in table ({}) nor a file",
+            slpy_core::BUILTIN_FONT_TABLES.join(", ")
+        )));
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| Error::Config(format!("font table {spec}: {e}")))?;
+    FontTable::parse(&text).map_err(|e| Error::Config(format!("font table {spec}: {e}")))
+}
 
 /// A terminal-free render session over one SLPY asset.
 ///
@@ -71,6 +91,10 @@ pub struct RenderSession {
     dims: Option<(u16, u16)>,
     /// Frame index of the last successful render (backward-jump detection).
     last_frame: Option<u32>,
+    /// The chosen repertoire, kept so the font-table veto can re-resolve it.
+    palette: PaletteChoice,
+    /// Optional §3.4 font coverage table: its repertoire vetoes `palette`.
+    font_table: Option<FontTable>,
 }
 
 impl std::fmt::Debug for RenderSession {
@@ -120,7 +144,10 @@ impl RenderSession {
             return Err(Error::Asset("corrupt header: fps_num or fps_den == 0"));
         }
         let fps = f64::from(header.fps_num) / f64::from(header.fps_den);
-        let aspect = if header.aspect_den == 0 {
+        // Degenerate (zero) header aspect fields fall back to 16:9 — the
+        // same normalization pipeline::Player::new applies for the viewport,
+        // so aspect() always reports the ratio render() letterboxes to.
+        let aspect = if header.aspect_num == 0 || header.aspect_den == 0 {
             16.0 / 9.0
         } else {
             f64::from(header.aspect_num) / f64::from(header.aspect_den)
@@ -135,7 +162,29 @@ impl RenderSession {
             ColorDepth::True,
             PaletteChoice::Auto.resolve_headless(),
         )?;
-        Ok(RenderSession { inner, _map: map, fps, aspect, dims: None, last_frame: None })
+        Ok(RenderSession {
+            inner,
+            _map: map,
+            fps,
+            aspect,
+            dims: None,
+            last_frame: None,
+            palette: PaletteChoice::Auto,
+            font_table: None,
+        })
+    }
+
+    /// Re-resolve the glyph tier from `palette` through the font-table veto
+    /// and reset the temporal state (a repertoire change makes every
+    /// remembered ramp index stale, same as [`set_palette`](Self::set_palette)).
+    fn apply_glyph_tier(&mut self) {
+        let mut tier = self.palette.resolve_headless();
+        if let Some(t) = &self.font_table {
+            tier = t.veto_tier(tier);
+        }
+        self.inner.set_glyph_tier(tier);
+        self.inner.reset_temporal_state();
+        self.dims = None; // palettes are rebuilt at reflow (density-keyed)
     }
 
     /// Compose asset frame `frame_idx` into a `cols × rows` cell grid and
@@ -180,10 +229,12 @@ impl RenderSession {
         self.inner.frame_count()
     }
 
-    /// The asset's intended picture aspect ratio, width / height (16:9
-    /// assets return ≈1.778). Letterboxing inside [`render`](Self::render)
-    /// already accounts for this; it is exposed for embedders sizing their
-    /// own viewport.
+    /// The asset's intended picture aspect ratio, width / height, from the
+    /// SLPY header's `aspect_num/den` (16:9 assets return ≈1.778; degenerate
+    /// zero fields fall back to 16:9). This is the exact ratio the letterbox
+    /// inside [`render`](Self::render) targets (M5 fix 2: the viewport
+    /// tracks the asset's aspect, not a hard-coded 16:9); it is exposed for
+    /// embedders sizing their own viewport.
     pub fn aspect(&self) -> f64 {
         self.aspect
     }
@@ -193,9 +244,31 @@ impl RenderSession {
     /// palette resets temporal state — remembered ramp indices are stale
     /// under a different ramp.
     pub fn set_palette(&mut self, palette: PaletteChoice) {
-        self.inner.set_glyph_tier(palette.resolve_headless());
-        self.inner.reset_temporal_state();
-        self.dims = None; // palettes are rebuilt at reflow (density-keyed)
+        self.palette = palette;
+        self.apply_glyph_tier();
+    }
+
+    /// Assert which font the output medium renders with, by ink-coverage
+    /// table (PLAN §3.4 `--font-table`): a built-in name — `conservative`,
+    /// `dejavu-sans-mono`, `liberation-mono`, `ubuntu-mono`,
+    /// `noto-sans-mono` — or a path to a `sleepy-factory font-table` TOML.
+    /// `None` clears it.
+    ///
+    /// The table's recorded repertoire then *vetoes* the palette choice:
+    /// a tier whose glyphs the font is missing degrades (braille →
+    /// unicode → ascii) instead of rendering missing-glyph boxes. Like
+    /// [`set_palette`](Self::set_palette), this resets temporal state.
+    ///
+    /// # Errors
+    /// [`Error::Config`] when the spec is neither a built-in name nor a
+    /// readable, parseable table file.
+    pub fn set_font_table(&mut self, name_or_path: Option<&str>) -> Result<(), Error> {
+        self.font_table = match name_or_path {
+            None => None,
+            Some(spec) => Some(load_font_table(spec)?),
+        };
+        self.apply_glyph_tier();
+        Ok(())
     }
 
     /// Set the cell aspect ratio `cell_h / cell_w` used by the letterbox

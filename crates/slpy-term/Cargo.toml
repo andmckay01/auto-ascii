@@ -9,7 +9,12 @@ license.workspace = true
 slpy-core = { workspace = true }
 # PLAN §8: crossterm for raw mode / alt screen / events ONLY — never per-cell commands.
 crossterm = { workspace = true, optional = true }
-# PLAN §8: ioctl (TIOCGWINSZ), termios, SIGWINCH self-pipe, atexit.
+
+# PLAN §8: ioctl (TIOCGWINSZ), termios, SIGWINCH self-pipe, atexit — all
+# unix-only, so the dep is target-scoped (M5 item E: the windows-gnu cross
+# build of the player links crossterm's WinAPI layer instead; `dep:libc` in
+# the `session` feature activates it only where it is declared).
+[target.'cfg(unix)'.dependencies]
 libc = { workspace = true, optional = true }
 
 # M4 (item B): the real-terminal session layer (AnsiBackend, probe volley,

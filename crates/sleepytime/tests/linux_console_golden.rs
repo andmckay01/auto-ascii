@@ -162,15 +162,22 @@ fn every_glyph_is_console_printable() {
                         g as u32,
                         fixture.name()
                     );
-                    saw_subpos |= g == '"' || g == '_';
+                    // M5 fix 6: the witness must be '"' SPECIFICALLY — the
+                    // Top slot of `slpy_core::palette::SUBPOS_GLYPHS`, which
+                    // ONLY the subposition branch emits. '_' is ambiguous:
+                    // the ASCII edge LUT emits it too (PLAN §3.4 palette 3),
+                    // so a '_' witness could come entirely from edge cells
+                    // while the subposition branch never ran.
+                    saw_subpos |= g == '"';
                 }
             }
         }
     }
     assert!(
         saw_subpos,
-        "vacuous test: no frame reached the sub-cell subposition branch, so \
-         the repertoire assertion proved nothing about it"
+        "vacuous test: no frame emitted the '\"' top-subposition glyph, so the \
+         repertoire assertion proved nothing about the subposition branch \
+         (a '_' witness would not do — the edge LUT emits '_' as well)"
     );
 }
 

@@ -14,9 +14,19 @@
 //! (M1 review low 3: a COLORTERM-stripped run, e.g. under a pipe wrapper,
 //! must not poison later runs where COLORTERM proves truecolor), and a
 //! cache hit can only *upgrade* the passive evidence of the current run,
-//! never downgrade it. Escape hatches: a forced tier (`--tier`) overrides
-//! the detected color tier, `--no-query` skips the volley entirely,
-//! `no_cache` bypasses the cache (tests).
+//! never downgrade it — with ONE recorded exception (M5 review high 1): an
+//! entry whose store-time volley had an identity-keyed quirk clamp the tier
+//! *below* the passive evidence carries a `quirk_clamped` marker, and a hit
+//! on such an entry re-applies the clamp. The key pins the passive inputs,
+//! so the hit run's passive evidence is the store run's; without the marker
+//! the downgrade-direction quirk (`xterm-no-direct-color`) would only ever
+//! work on the first, cold-cache run. Escape hatches: a forced tier
+//! (`--tier`) overrides the detected color tier, `--no-query` skips the
+//! volley entirely, `--no-quirks` skips the identity-keyed quirk table
+//! ([`crate::quirks`], M5 item C — applied post-volley, before the forced
+//! tier) *and* bypasses the cache in both directions (cached entries embed
+//! quirk adjustments — M5 review medium 2), and `no_cache` bypasses the
+//! cache (tests).
 //!
 //! Straggler hygiene (M1 review low 2): replies still in flight at the
 //! deadline are consumed by a bounded quiet-gap grace drain (only when the
@@ -36,13 +46,19 @@
 //! by value, because xterm replies `1+r524742=` "-1" — a *valid* reply
 //! meaning "no direct color".
 
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::io;
+#[cfg(unix)]
 use std::mem::MaybeUninit;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
+#[cfg(unix)]
 use crate::ansi::write_all_fd;
 use crate::caps::{Caps, ColorTier, GlyphFlags, GlyphSupportTier};
 
@@ -53,8 +69,10 @@ pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 /// flight (some bytes arrived, no DA1 yet), keep consuming until the input
 /// has been quiet this long. Only extends the probe when bytes actually
 /// arrived — a silent terminal still returns at the deadline exactly.
+#[cfg(unix)]
 const STRAGGLER_QUIET: Duration = Duration::from_millis(150);
 /// Hard cap on the grace drain past the deadline (never hangs, PLAN §3.1).
+#[cfg(unix)]
 const STRAGGLER_GRACE_CAP: Duration = Duration::from_millis(1000);
 
 /// True when the last volley this process wrote timed out without its DA1
@@ -82,6 +100,16 @@ pub struct ProbeOptions {
     pub forced_tier: Option<ColorTier>,
     /// `--no-query`: never write the volley; passive env hints only.
     pub no_query: bool,
+    /// `--no-quirks`: skip the identity-keyed quirk table (M5 item C — see
+    /// [`crate::quirks`]) that normally adjusts caps after the volley, and
+    /// bypass the cache in BOTH directions. Never stored: cached entries
+    /// must be the fully adjusted truth, because cache hits skip the volley
+    /// and can never re-apply an identity-keyed quirk. Never *read* either
+    /// (M5 review medium 2): a cached entry may embed a quirk adjustment, so
+    /// honoring it would silently serve the quirked result the flag promises
+    /// to disable — `--no-quirks` always runs the volley and takes the
+    /// replies at face value.
+    pub no_quirks: bool,
     /// Bypass the cache entirely (no read, no write).
     pub no_cache: bool,
     /// Reply deadline for the volley.
@@ -96,6 +124,7 @@ impl Default for ProbeOptions {
         ProbeOptions {
             forced_tier: None,
             no_query: false,
+            no_quirks: false,
             no_cache: false,
             timeout: DEFAULT_PROBE_TIMEOUT,
             cache_dir: None,
@@ -386,6 +415,10 @@ pub(crate) struct EnvHints {
     pub colorterm: String,
     /// Effective locale charset source (LC_ALL > LC_CTYPE > LANG).
     pub locale: String,
+    /// Consumed only by the unix cache key (no capability ever depends on
+    /// it — pinned by `multiplexer_flag_only_partitions_the_cache`); the
+    /// windows build has no cache, hence the allow.
+    #[cfg_attr(windows, allow(dead_code))]
     pub tmux: bool,
 }
 
@@ -457,6 +490,7 @@ fn apply_passive(caps: &mut Caps, h: &EnvHints) {
 /// longer than `opts.timeout` (+ a non-blocking drain): `!isatty` on
 /// stdin/stdout or a silent terminal (no DA1) → conservative default
 /// (256-color, ASCII glyphs). See module docs for the full flow.
+#[cfg(unix)]
 pub fn probe_caps(opts: &ProbeOptions) -> Caps {
     let in_fd = libc::STDIN_FILENO;
     let out_fd = libc::STDOUT_FILENO;
@@ -493,7 +527,12 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
         apply_passive(&mut caps, &hints);
     } else {
         let key = cache_key(&hints);
-        let cached = if opts.no_cache { None } else { cache_load(opts, &key) };
+        // `--no-quirks` bypasses cache READS too (M5 review medium 2): a
+        // cached entry may embed a quirk adjustment, and serving it would
+        // make the escape hatch a silent no-op — face value means a fresh
+        // volley.
+        let cached =
+            if opts.no_cache || opts.no_quirks { None } else { cache_load(opts, &key) };
         if let Some(hit) = cached {
             apply_passive(&mut caps, &hints);
             apply_cache_hit(&mut caps, hit);
@@ -509,11 +548,33 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
                     if replies.cell_px.is_some() {
                         caps.cell_px = replies.cell_px;
                     }
-                    if !opts.no_cache {
+                    // Identity-keyed quirk table (M5 item C, PLAN §3.1):
+                    // applied post-probe, only here — this is the one path
+                    // that HAS a queried identity. `--tier` (below) still
+                    // overrides whatever a quirk decided.
+                    let pre_quirk_color = caps.color;
+                    if !opts.no_quirks {
+                        let _ = crate::quirks::apply_quirks(&mut caps, &replies);
+                    }
+                    // A --no-quirks result is never cached: cache hits skip
+                    // the volley, so entries must be the fully adjusted
+                    // truth (see ProbeOptions::no_quirks). A quirk that
+                    // clamped the tier BELOW this run's passive+reply
+                    // evidence is recorded in the entry, so a later cache
+                    // hit can re-apply the downgrade over the same passive
+                    // evidence (M5 review high 1 — the key pins COLORTERM,
+                    // so the hit run sees the exact passive lie stored
+                    // against).
+                    if !opts.no_cache && !opts.no_quirks {
                         cache_store(
                             opts,
                             &key,
-                            &CacheEntry { color: caps.color, sync_2026: caps.sync_2026 },
+                            &CacheEntry {
+                                color: caps.color,
+                                sync_2026: caps.sync_2026,
+                                quirk_clamped: tier_rank(caps.color)
+                                    < tier_rank(pre_quirk_color),
+                            },
                         );
                     }
                 }
@@ -533,7 +594,45 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
     caps
 }
 
+/// Windows probe (M5 item E — compiled for the windows-gnu cross build,
+/// untested-cross; see scripts/release.sh): passive-only, exactly the
+/// `--no-query` flow. No volley is ever written (the reply plumbing is
+/// POSIX termios/poll; conhost historically swallows or mangles DCS
+/// queries), so `can_query` is false, the quirk table never fires (no
+/// queried identity) and nothing is cached. `--tier` remains the escape
+/// hatch for e.g. Windows Terminal, which is truecolor but exports no
+/// COLORTERM.
+#[cfg(windows)]
+pub fn probe_caps(opts: &ProbeOptions) -> Caps {
+    use crossterm::tty::IsTty as _;
+
+    // Conservative base (PLAN §9.4): 256-color, ASCII glyphs.
+    let mut caps = Caps {
+        color: ColorTier::C256,
+        glyphs: GlyphFlags::ASCII,
+        glyph_support: GlyphSupportTier::AsciiOnly,
+        sync_2026: false,
+        cells: (80, 24),
+        cell_px: None,
+        can_query: false,
+    };
+    VOLLEY_STRAGGLERS.store(false, Ordering::Relaxed);
+    let tty = std::io::stdin().is_tty() && std::io::stdout().is_tty();
+    if tty {
+        if let Ok((cols, rows)) = crossterm::terminal::size() {
+            caps.cells = (cols, rows);
+        }
+        let hints = EnvHints::from_env();
+        apply_passive(&mut caps, &hints);
+    }
+    if let Some(t) = opts.forced_tier {
+        caps.color = t;
+    }
+    caps
+}
+
 /// Terminal size in cells from `TIOCGWINSZ`.
+#[cfg(unix)]
 fn term_cells(fd: libc::c_int) -> Option<(u16, u16)> {
     let ws = winsize(fd)?;
     if ws.ws_col == 0 || ws.ws_row == 0 {
@@ -543,6 +642,7 @@ fn term_cells(fd: libc::c_int) -> Option<(u16, u16)> {
 }
 
 /// Cell pixel size from `TIOCGWINSZ` pixel fields, when reported.
+#[cfg(unix)]
 fn winsize_cell_px(fd: libc::c_int) -> Option<(u16, u16)> {
     let ws = winsize(fd)?;
     if ws.ws_col == 0 || ws.ws_row == 0 || ws.ws_xpixel == 0 || ws.ws_ypixel == 0 {
@@ -551,6 +651,7 @@ fn winsize_cell_px(fd: libc::c_int) -> Option<(u16, u16)> {
     Some((ws.ws_xpixel / ws.ws_col, ws.ws_ypixel / ws.ws_row))
 }
 
+#[cfg(unix)]
 fn winsize(fd: libc::c_int) -> Option<libc::winsize> {
     let mut ws = MaybeUninit::<libc::winsize>::uninit();
     if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, ws.as_mut_ptr()) } != 0 {
@@ -561,11 +662,13 @@ fn winsize(fd: libc::c_int) -> Option<libc::winsize> {
 
 /// Restores the saved termios on drop — the volley can never leave the
 /// terminal in raw mode, whatever path returns.
+#[cfg(unix)]
 struct TermiosGuard {
     fd: libc::c_int,
     saved: libc::termios,
 }
 
+#[cfg(unix)]
 impl Drop for TermiosGuard {
     fn drop(&mut self) {
         unsafe {
@@ -576,6 +679,7 @@ impl Drop for TermiosGuard {
 
 /// One write out, poll-read replies until DA1 or deadline, then a final
 /// non-blocking drain so no stray reply bytes are left on stdin.
+#[cfg(unix)]
 fn run_volley(in_fd: libc::c_int, out_fd: libc::c_int, timeout: Duration) -> io::Result<ProbeReplies> {
     // Reply-readable termios: no echo, no canonical buffering; VMIN=0/VTIME=0
     // with poll() doing the waiting. Restored by the guard on every path.
@@ -687,18 +791,29 @@ fn run_volley(in_fd: libc::c_int, out_fd: libc::c_int, timeout: Duration) -> io:
 // (TERM, TERM_PROGRAM, COLORTERM, tmux?)
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 const CACHE_FILE: &str = "caps";
-/// Bumped 1 → 2 when COLORTERM joined the key (M1 review low 3) — v1 lines
+/// Bumped 1 → 2 when COLORTERM joined the key (M1 review low 3), 2 → 3 when
+/// `quirk_clamped` joined the entry (M5 review high 1) — old-version lines
 /// are ignored on load and dropped on the next store.
-const CACHE_VERSION: &str = "2";
+#[cfg(unix)]
+const CACHE_VERSION: &str = "3";
 
+#[cfg(unix)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CacheEntry {
     color: ColorTier,
     sync_2026: bool,
+    /// The store-time volley's identity-keyed quirk clamped `color` BELOW
+    /// that run's passive+reply evidence (e.g. `xterm-no-direct-color`
+    /// against a `.bashrc` COLORTERM lie). A hit re-applies the downgrade —
+    /// the only sanctioned exception to the upgrade-only merge (M5 review
+    /// high 1).
+    quirk_clamped: bool,
 }
 
 /// Color-tier ordering for the no-downgrade rule (higher = more capable).
+#[cfg(unix)]
 fn tier_rank(t: ColorTier) -> u8 {
     match t {
         ColorTier::Mono => 0,
@@ -711,15 +826,25 @@ fn tier_rank(t: ColorTier) -> u8 {
 /// Merge a cache hit over freshly applied passive hints (M1 review low 3):
 /// the cached tier may only *upgrade* what this run's passive evidence
 /// already proves — a stale entry must never downgrade below COLORTERM/
-/// TERM-derived truth. `sync_2026` is cache-only knowledge (passive hints
-/// can never prove it), so the cached value is taken as-is.
+/// TERM-derived truth. One exception (M5 review high 1): an entry marked
+/// `quirk_clamped` re-applies its store-time downgrade — the queried
+/// identity disproved this exact passive evidence (the key pins TERM /
+/// TERM_PROGRAM / COLORTERM, so "fresh" evidence here is the same lie the
+/// quirk already out-voted), and without this the `xterm-no-direct-color`
+/// clamp would work only on cold-cache runs. `sync_2026` is cache-only
+/// knowledge (passive hints can never prove it), so the cached value is
+/// taken as-is.
+#[cfg(unix)]
 fn apply_cache_hit(caps: &mut Caps, hit: CacheEntry) {
-    if tier_rank(hit.color) > tier_rank(caps.color) {
+    if tier_rank(hit.color) > tier_rank(caps.color)
+        || (hit.quirk_clamped && tier_rank(hit.color) < tier_rank(caps.color))
+    {
         caps.color = hit.color;
     }
     caps.sync_2026 = hit.sync_2026;
 }
 
+#[cfg(unix)]
 fn cache_key(h: &EnvHints) -> String {
     let clean = |s: &str| s.replace(['\t', '\n', '|'], "_");
     format!(
@@ -731,6 +856,7 @@ fn cache_key(h: &EnvHints) -> String {
     )
 }
 
+#[cfg(unix)]
 fn cache_dir(opts: &ProbeOptions) -> Option<PathBuf> {
     if let Some(dir) = &opts.cache_dir {
         return Some(dir.clone());
@@ -746,6 +872,7 @@ fn cache_dir(opts: &ProbeOptions) -> Option<PathBuf> {
     Some(base.join("sleepytime"))
 }
 
+#[cfg(unix)]
 fn tier_tag(t: ColorTier) -> &'static str {
     match t {
         ColorTier::True => "truecolor",
@@ -755,6 +882,7 @@ fn tier_tag(t: ColorTier) -> &'static str {
     }
 }
 
+#[cfg(unix)]
 fn cache_load(opts: &ProbeOptions, key: &str) -> Option<CacheEntry> {
     let path = cache_dir(opts)?.join(CACHE_FILE);
     let text = fs::read_to_string(path).ok()?;
@@ -764,18 +892,21 @@ fn cache_load(opts: &ProbeOptions, key: &str) -> Option<CacheEntry> {
             continue;
         }
         let color = f.next()?.parse::<ColorTier>().ok()?;
-        let sync_2026 = match f.next()? {
-            "1" => true,
-            "0" => false,
-            _ => return None,
+        let flag = |v: &str| match v {
+            "1" => Some(true),
+            "0" => Some(false),
+            _ => None,
         };
-        return Some(CacheEntry { color, sync_2026 });
+        let sync_2026 = flag(f.next()?)?;
+        let quirk_clamped = flag(f.next()?)?;
+        return Some(CacheEntry { color, sync_2026, quirk_clamped });
     }
     None
 }
 
 /// Best-effort write (cache failures are never user-visible): rewrite the
 /// file with this key's line replaced.
+#[cfg(unix)]
 fn cache_store(opts: &ProbeOptions, key: &str, entry: &CacheEntry) {
     let Some(dir) = cache_dir(opts) else { return };
     if fs::create_dir_all(&dir).is_err() {
@@ -796,16 +927,17 @@ fn cache_store(opts: &ProbeOptions, key: &str, entry: &CacheEntry) {
         })
         .unwrap_or_default();
     lines.push(format!(
-        "{CACHE_VERSION}\t{key}\t{}\t{}",
+        "{CACHE_VERSION}\t{key}\t{}\t{}\t{}",
         tier_tag(entry.color),
-        u8::from(entry.sync_2026)
+        u8::from(entry.sync_2026),
+        u8::from(entry.quirk_clamped)
     ));
     let mut text = lines.join("\n");
     text.push('\n');
     let _ = fs::write(path, text);
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -872,24 +1004,16 @@ mod tests {
         let tmux_key = cache_key(&EnvHints { tmux: true, ..hints("tmux-256color", "", "", "") });
         assert_ne!(kitty, tmux_key);
 
+        let entry = |color, sync_2026, quirk_clamped| CacheEntry { color, sync_2026, quirk_clamped };
         assert_eq!(cache_load(&opts, &kitty), None);
-        cache_store(&opts, &kitty, &CacheEntry { color: ColorTier::True, sync_2026: true });
-        cache_store(&opts, &tmux_key, &CacheEntry { color: ColorTier::C256, sync_2026: false });
-        assert_eq!(
-            cache_load(&opts, &kitty),
-            Some(CacheEntry { color: ColorTier::True, sync_2026: true })
-        );
-        assert_eq!(
-            cache_load(&opts, &tmux_key),
-            Some(CacheEntry { color: ColorTier::C256, sync_2026: false })
-        );
+        cache_store(&opts, &kitty, &entry(ColorTier::True, true, false));
+        cache_store(&opts, &tmux_key, &entry(ColorTier::C256, false, true));
+        assert_eq!(cache_load(&opts, &kitty), Some(entry(ColorTier::True, true, false)));
+        assert_eq!(cache_load(&opts, &tmux_key), Some(entry(ColorTier::C256, false, true)));
 
         // Overwrite in place: same key, new value, no duplicate lines.
-        cache_store(&opts, &kitty, &CacheEntry { color: ColorTier::C16, sync_2026: false });
-        assert_eq!(
-            cache_load(&opts, &kitty),
-            Some(CacheEntry { color: ColorTier::C16, sync_2026: false })
-        );
+        cache_store(&opts, &kitty, &entry(ColorTier::C16, false, false));
+        assert_eq!(cache_load(&opts, &kitty), Some(entry(ColorTier::C16, false, false)));
         let text = fs::read_to_string(dir.join(CACHE_FILE)).unwrap();
         assert_eq!(text.lines().count(), 2);
 
@@ -900,8 +1024,13 @@ mod tests {
     fn cache_ignores_garbage_lines() {
         let dir = std::env::temp_dir().join(format!("slpy-cache-garbage-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(CACHE_FILE), "junk\n1\tkey\tnot-a-tier\t1\n9\tkey\ttruecolor\t1\n")
-            .unwrap();
+        fs::write(
+            dir.join(CACHE_FILE),
+            // Garbage, wrong-tier, future-version, stale v2 (no quirk_clamped
+            // field — must not load as a v3 entry) and v3-missing-field lines.
+            "junk\n1\tkey\tnot-a-tier\t1\n9\tkey\ttruecolor\t1\t0\n2\tkey\ttruecolor\t1\n3\tkey\ttruecolor\t1\n",
+        )
+        .unwrap();
         let opts = ProbeOptions { cache_dir: Some(dir.clone()), ..ProbeOptions::default() };
         assert_eq!(cache_load(&opts, "key"), None);
         let _ = fs::remove_dir_all(dir);
@@ -945,20 +1074,28 @@ mod tests {
         // And the stripped run's entry is invisible to the truecolor run.
         let dir = std::env::temp_dir().join(format!("slpy-cache-ct-{}", std::process::id()));
         let opts = ProbeOptions { cache_dir: Some(dir.clone()), ..ProbeOptions::default() };
-        cache_store(&opts, &without, &CacheEntry { color: ColorTier::C256, sync_2026: false });
+        cache_store(
+            &opts,
+            &without,
+            &CacheEntry { color: ColorTier::C256, sync_2026: false, quirk_clamped: false },
+        );
         assert_eq!(cache_load(&opts, &with), None, "poisoned key must not hit");
         let _ = fs::remove_dir_all(dir);
     }
 
     /// Regression (M1 review low 3, part 2): a cache hit may only upgrade —
     /// it must never downgrade below what fresh passive evidence proves in
-    /// THIS run.
+    /// THIS run (unless the entry recorded a quirk clamp; see
+    /// [`quirk_clamped_hit_reapplies_the_downgrade`]).
     #[test]
     fn cache_hit_never_downgrades_fresh_passive_evidence() {
         // Fresh run proves truecolor via COLORTERM; stale hit says C256.
         let mut caps = passive(&hints("xterm-256color", "", "truecolor", "en_US.UTF-8"));
         assert_eq!(caps.color, ColorTier::True);
-        apply_cache_hit(&mut caps, CacheEntry { color: ColorTier::C256, sync_2026: true });
+        apply_cache_hit(
+            &mut caps,
+            CacheEntry { color: ColorTier::C256, sync_2026: true, quirk_clamped: false },
+        );
         assert_eq!(caps.color, ColorTier::True, "cache hit must not downgrade");
         assert!(caps.sync_2026, "sync_2026 is cache-only knowledge");
 
@@ -966,14 +1103,49 @@ mod tests {
         // the upgrade path (the whole point of the cache) still works.
         let mut caps = passive(&hints("xterm-256color", "", "", "en_US.UTF-8"));
         assert_eq!(caps.color, ColorTier::C256);
-        apply_cache_hit(&mut caps, CacheEntry { color: ColorTier::True, sync_2026: false });
+        apply_cache_hit(
+            &mut caps,
+            CacheEntry { color: ColorTier::True, sync_2026: false, quirk_clamped: false },
+        );
         assert_eq!(caps.color, ColorTier::True);
         assert!(!caps.sync_2026);
 
         // Equal tiers: unchanged.
         let mut caps = passive(&hints("linux", "", "", "C"));
-        apply_cache_hit(&mut caps, CacheEntry { color: ColorTier::C16, sync_2026: false });
+        apply_cache_hit(
+            &mut caps,
+            CacheEntry { color: ColorTier::C16, sync_2026: false, quirk_clamped: false },
+        );
         assert_eq!(caps.color, ColorTier::C16);
+    }
+
+    /// Regression (M5 review high 1): an entry whose store-time volley had a
+    /// quirk clamp the tier below the passive evidence re-applies that
+    /// downgrade on a hit — the xterm-behind-a-COLORTERM-lie correction must
+    /// survive warm-cache runs, not just the first cold one. The end-to-end
+    /// pty version is `terminal_identity.rs::
+    /// xterm_colorterm_lie_quirk_survives_the_cache`.
+    #[test]
+    fn quirk_clamped_hit_reapplies_the_downgrade() {
+        // Same passive evidence as at store time (the key pins COLORTERM):
+        // .bashrc lie says True, the queried xterm said no-direct-color.
+        let mut caps = passive(&hints("xterm-256color", "", "truecolor", "en_US.UTF-8"));
+        assert_eq!(caps.color, ColorTier::True);
+        apply_cache_hit(
+            &mut caps,
+            CacheEntry { color: ColorTier::C256, sync_2026: false, quirk_clamped: true },
+        );
+        assert_eq!(caps.color, ColorTier::C256, "quirk clamp must survive a cache hit");
+
+        // A clamped entry at or above the passive tier changes nothing
+        // downward-specific (upgrade rule handles above, equal is a no-op).
+        let mut caps = passive(&hints("xterm-256color", "", "", "en_US.UTF-8"));
+        assert_eq!(caps.color, ColorTier::C256);
+        apply_cache_hit(
+            &mut caps,
+            CacheEntry { color: ColorTier::C256, sync_2026: false, quirk_clamped: true },
+        );
+        assert_eq!(caps.color, ColorTier::C256);
     }
 
     /// M4 (item D): only a *settable* mode 2026 counts as supported —

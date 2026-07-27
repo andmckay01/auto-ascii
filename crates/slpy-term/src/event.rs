@@ -11,6 +11,10 @@ pub enum Key {
     /// Ctrl-modified letter, lowercase (`Ctrl('c')`).
     Ctrl(char),
     Esc,
+    /// Left arrow — scrub back 5 s (M5 scrub UX, PLAN §7 M5).
+    Left,
+    /// Right arrow — scrub forward 5 s.
+    Right,
 }
 
 /// Backend event (PLAN §3.1). Resize carries the new `(cols, rows)`; the

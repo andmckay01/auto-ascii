@@ -10,7 +10,9 @@
 //!
 //! [`RenderSession`]: sleepytime::RenderSession
 
-use sleepytime::{PaletteChoice, RenderSession};
+use std::io::Write;
+
+use sleepytime::{Cell, Grid, PaletteChoice, RenderSession};
 
 const USAGE: &str = "usage: headless-dump <asset.slpy> [FRAMES] [COLSxROWS]";
 
@@ -18,6 +20,24 @@ const USAGE: &str = "usage: headless-dump <asset.slpy> [FRAMES] [COLSxROWS]";
 fn parse_dims(s: &str) -> (u16, u16) {
     let (c, r) = s.split_once('x').expect(USAGE);
     (c.parse().expect(USAGE), r.parse().expect(USAGE))
+}
+
+/// Write one frame as text. Returns the underlying `io::Error` instead of
+/// panicking (M5 fix 7): Rust ignores SIGPIPE, so when the reader goes away
+/// (`headless-dump a.slpy | head`) every write fails with `BrokenPipe` —
+/// `println!` would panic on it; `main` treats it as a normal early exit.
+fn dump_frame(
+    out: &mut impl Write,
+    grid: &Grid<Cell>,
+    frame: u32,
+    total: u32,
+) -> std::io::Result<()> {
+    writeln!(out, "--- frame {frame}/{total} at {}x{} ---", grid.cols(), grid.rows())?;
+    for row in 0..grid.rows() {
+        let line: String = grid.row(row).iter().map(|cell| cell.glyph()).collect();
+        writeln!(out, "{}", line.trim_end())?;
+    }
+    Ok(())
 }
 
 fn main() -> Result<(), sleepytime::Error> {
@@ -30,17 +50,21 @@ fn main() -> Result<(), sleepytime::Error> {
     // ASCII survives any pipe, pager or log file; drop this line for blocks.
     session.set_palette(PaletteChoice::Ascii);
 
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
     let count = frames.clamp(1, session.frame_count());
     let stride = (session.frame_count() / count).max(1);
     for n in 0..count {
         // Frame indices only ever advance here, so hysteresis stays warm and
         // the dump is exactly what playback would show at those frames.
         let frame = n * stride;
-        println!("--- frame {frame}/{} at {cols}x{rows} ---", session.frame_count());
+        let total = session.frame_count();
         let grid = session.render(frame, cols, rows)?;
-        for row in 0..grid.rows() {
-            let line: String = grid.row(row).iter().map(|cell| cell.glyph()).collect();
-            println!("{}", line.trim_end());
+        match dump_frame(&mut out, grid, frame, total) {
+            // Reader closed the pipe (head, a quit pager): a normal way for
+            // a dump to end, not an error — exit 0 without a panic message.
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
+            other => other.expect("write to stdout"),
         }
     }
     Ok(())

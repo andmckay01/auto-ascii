@@ -29,7 +29,7 @@ use std::time::Instant;
 
 use slpy_core::{
     Cell, ColorDepth, ComposeParams, FramePlanes, GlyphTier, Grid, HysteresisState, PaletteSet,
-    Resampler, Rgb, Viewport, compose_frame, compose_frame_masked, compute_viewport,
+    Resampler, Rgb, Viewport, compose_frame, compose_frame_masked, compute_viewport_for,
     select_palettes,
 };
 use slpy_format::header::plane_id;
@@ -97,6 +97,12 @@ pub struct Drained {
     /// state (M3 review fix): a seek is a temporal discontinuity, so the
     /// caller just repoints its clock and renders the landing frame.
     pub jump_digit: Option<u8>,
+    /// Net arrow-key scrub steps this drain (M5 scrub UX): each `Right` is
+    /// +1, each `Left` −1; the caller converts steps to ±5 s
+    /// (`sleepytime::SCRUB_STEP_SECS`) of asset time and repoints its clock.
+    /// When nonzero, hysteresis state has ALREADY been reset (same temporal-
+    /// discontinuity rule as `jump_digit`).
+    pub seek_steps: i32,
 }
 
 /// The frame pipeline: decode → resample → NORM levels → compose into a
@@ -117,6 +123,12 @@ pub struct Player<'a> {
     /// their layers compose disabled (M1-era Y+C assets play unchanged).
     has_edges: bool,
     has_h: bool,
+    /// The asset's picture aspect from the header (`aspect_num/den`, PLAN
+    /// §4) — the viewport's target ratio (M5 fix 2: the letterbox targets
+    /// the ASSET's aspect, not a hard-coded 16:9). Degenerate (zero) header
+    /// fields are normalized to 16:9 at `new`.
+    aspect_num: u16,
+    aspect_den: u16,
     cell_aspect: f64,
     repaint_full: bool,
     /// Palette-selection inputs derived from Caps by the caller (§3.4 key:
@@ -187,6 +199,18 @@ pub struct Player<'a> {
     /// §6 edge-F1 prediction side.
     layer_mask: Option<Grid<u8>>,
     stage: StageNs,
+    /// M5 scrub UX: the transient 1-line progress overlay (bottom terminal
+    /// row). Drawn OVER the composed grid in `render_grid` when visible; it
+    /// never touches hysteresis or the layer mask — presentation only.
+    overlay_visible: bool,
+    /// Set on the visible→hidden transition; consumed by `render_present`,
+    /// which invalidates the backend so the row under the overlay is
+    /// repainted from a clean baseline (the diff state can never be left
+    /// describing overlay cells that are no longer drawn).
+    overlay_hide_pending: bool,
+    /// Asset fps from the header (`fps_num/fps_den`) — the overlay's
+    /// frame→seconds conversion. The reader rejects zero fps at open.
+    fps: f64,
 }
 
 impl<'a> Player<'a> {
@@ -213,7 +237,19 @@ impl<'a> Player<'a> {
             && reader.plane_dims(plane_id::EX).is_some()
             && reader.plane_dims(plane_id::EY).is_some();
         let has_h = reader.plane_dims(plane_id::H).is_some();
+        // Viewport target ratio = the asset's header aspect; zero fields
+        // (degenerate headers) fall back to 16:9, matching RenderSession's
+        // documented `aspect()` fallback.
+        let header = reader.header();
+        let (aspect_num, aspect_den) = if header.aspect_num == 0 || header.aspect_den == 0 {
+            (16, 9)
+        } else {
+            (header.aspect_num, header.aspect_den)
+        };
         let src_len = src_w as usize * src_h as usize;
+        // Overlay timekeeping (M5 scrub UX). Zero fps is rejected by
+        // SlpyReader::open since M1; the max(ε) is belt-and-braces only.
+        let fps = (f64::from(header.fps_num) / f64::from(header.fps_den.max(1))).max(1e-9);
         let mut levels_lut = [0u8; 256];
         build_levels_lut(&mut levels_lut, None); // identity until NORM says otherwise
         Ok(Player {
@@ -225,6 +261,8 @@ impl<'a> Player<'a> {
             use_chroma,
             has_edges,
             has_h,
+            aspect_num,
+            aspect_den,
             cell_aspect,
             repaint_full,
             glyph_tier,
@@ -263,6 +301,9 @@ impl<'a> Player<'a> {
             grid: Grid::new(0, 0),
             layer_mask: None,
             stage: StageNs::default(),
+            overlay_visible: false,
+            overlay_hide_pending: false,
+            fps,
         })
     }
 
@@ -360,7 +401,10 @@ impl<'a> Player<'a> {
         if let Some(mask) = &mut self.layer_mask {
             mask.resize(cols, rows); // realloc + reset with the grid (§6 discipline)
         }
-        self.vp = compute_viewport(cols, rows, self.cell_aspect);
+        // Letterbox to the ASSET's header aspect (M5 fix 2) — 16:9 assets
+        // take the exact pre-M5 code path bit-for-bit.
+        self.vp =
+            compute_viewport_for(cols, rows, self.cell_aspect, self.aspect_num, self.aspect_den);
         if let Some(vp) = self.vp {
             self.palette = Some(select_palettes(self.glyph_tier, self.color, vp.cols));
             // §3.3: luma at Vc × 2Vr — one build with doubled vertical dst.
@@ -413,21 +457,26 @@ impl<'a> Player<'a> {
     pub fn drain_events<B: Backend>(&mut self, backend: &mut B) -> Drained {
         let mut resize: Option<(u16, u16)> = None;
         let mut jump_digit = None;
+        let mut seek_steps: i32 = 0;
         while let Some(ev) = backend.events().pop() {
             match ev {
-                Event::Quit => return Drained { quit: true, jump_digit: None },
+                Event::Quit => return Drained { quit: true, jump_digit: None, seek_steps: 0 },
                 Event::Resize(c, r) => resize = Some((c, r)),
                 Event::Key(Key::Char(c @ '0'..='9')) => jump_digit = Some(c as u8 - b'0'),
+                // M5 scrub UX: ±5 s per arrow press, coalesced per drain
+                // (holding the key nets one bigger jump, not N renders).
+                Event::Key(Key::Left) => seek_steps = seek_steps.saturating_sub(1),
+                Event::Key(Key::Right) => seek_steps = seek_steps.saturating_add(1),
                 Event::Key(_) => {}
             }
         }
         if let Some((c, r)) = resize {
             self.reflow(backend, c, r); // resize path resets state too (realloc)
         }
-        if jump_digit.is_some() {
+        if jump_digit.is_some() || seek_steps != 0 {
             self.state.reset(); // seek discontinuity: no pre-seek ghosting
         }
-        Drained { quit: false, jump_digit }
+        Drained { quit: false, jump_digit, seek_steps }
     }
 
     /// Sequential-roll or FIDX-seek one plane into its standing buffer.
@@ -492,6 +541,20 @@ impl<'a> Player<'a> {
         }
     }
 
+    /// Show/hide the transient bottom-row progress overlay (M5 scrub UX).
+    /// The overlay is drawn over the composed grid by `render_grid`; hiding
+    /// it schedules a one-shot backend invalidate consumed by the next
+    /// [`render_present`](Player::render_present), so the diff baseline is
+    /// rebuilt from a full repaint and can never keep describing overlay
+    /// cells that are no longer drawn. Presentation-only: temporal state,
+    /// the layer mask and the composed viewport are untouched.
+    pub fn set_progress_overlay(&mut self, visible: bool) {
+        if self.overlay_visible && !visible {
+            self.overlay_hide_pending = true;
+        }
+        self.overlay_visible = visible;
+    }
+
     /// Decode → resample → NORM levels → compose → present one asset frame
     /// (PLAN §3.6 steps 3–6). Renders the "enlarge terminal" card when the
     /// terminal is below the 32x9 minimum.
@@ -501,7 +564,9 @@ impl<'a> Player<'a> {
         frame_idx: u32,
     ) -> Result<FrameStats> {
         self.render_grid(frame_idx)?;
-        if self.repaint_full {
+        // Full-repaint mode, or the overlay just hid (M5 scrub UX): the diff
+        // baseline must not survive an overlay transition.
+        if self.repaint_full || std::mem::take(&mut self.overlay_hide_pending) {
             backend.invalidate();
         }
         let t = Instant::now();
@@ -597,6 +662,12 @@ impl<'a> Player<'a> {
                 mask.fill(slpy_core::layer::BASE);
             }
         }
+        if self.overlay_visible {
+            // Drawn last, over pads/viewport alike (bottom row only); the
+            // layer mask is deliberately NOT updated — the overlay is
+            // presentation, not composition (eval never enables it).
+            draw_progress_overlay(&mut self.grid, frame_idx, self.frame_count, self.fps);
+        }
         Ok(())
     }
 
@@ -688,6 +759,72 @@ pub fn draw_enlarge_card(grid: &mut Grid<Cell>) {
     }
 }
 
+/// The transient 1-line progress overlay (M5 scrub UX): bottom terminal row,
+/// `_MM:SS_/_MM:SS_[====>....]_NN%_` in pure ASCII (palette/tier-agnostic —
+/// mono quantizes the colors away and the glyphs still carry everything).
+/// Pure function of `(frame, frame_count, fps, cols)` — byte-deterministic,
+/// so diff-mode presents of an unchanged overlay row cost zero damage.
+pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32, frame_count: u32, fps: f64) {
+    let (cols, rows) = (grid.cols(), grid.rows());
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    let row = rows - 1;
+    let fg = Rgb::gray(235);
+    let bg = Rgb::new(24, 24, 40);
+
+    let mmss = |secs: u64| -> String {
+        if secs >= 3600 {
+            format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
+        } else {
+            format!("{}:{:02}", secs / 60, secs % 60)
+        }
+    };
+    let pos = f64::from(frame) / fps;
+    let total = f64::from(frame_count) / fps;
+    // frame_count > 0 is enforced at Player::new; percent of the LAST frame
+    // reads 100 (frame_count−1 maps to the full bar).
+    let pct = if frame_count > 1 {
+        (u64::from(frame) * 100) / u64::from(frame_count - 1)
+    } else {
+        100
+    };
+    let left = format!(" {} / {} ", mmss(pos as u64), mmss(total as u64));
+    let right = format!(" {pct:>3}% ");
+
+    // Bar fills whatever remains between the text blocks; on absurdly small
+    // grids the texts alone are truncated to the row.
+    let mut line = String::with_capacity(cols as usize);
+    line.push_str(&left);
+    let fixed = left.chars().count() + right.chars().count() + 2; // "[" + "]"
+    if (cols as usize) > fixed {
+        let span = cols as usize - fixed;
+        let filled = if frame_count > 1 {
+            (u64::from(frame) * span as u64) / u64::from(frame_count - 1)
+        } else {
+            span as u64
+        } as usize;
+        line.push('[');
+        for i in 0..span {
+            line.push(if i < filled {
+                '='
+            } else if i == filled {
+                '>'
+            } else {
+                '.'
+            });
+        }
+        line.push(']');
+    }
+    line.push_str(&right);
+
+    let mut chars = line.chars();
+    for col in 0..cols {
+        let ch = chars.next().unwrap_or(' ');
+        grid.set(col, row, Cell::new(ch, fg, bg));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -756,6 +893,42 @@ mod tests {
         assert_eq!(color_depth(ColorTier::C256), ColorDepth::C256);
         assert_eq!(color_depth(ColorTier::C16), ColorDepth::C16);
         assert_eq!(color_depth(ColorTier::Mono), ColorDepth::Mono);
+    }
+
+    /// M5 scrub UX: the overlay is a deterministic pure function of
+    /// (frame, count, fps, cols) — full-width, ASCII-only, endpoints exact.
+    #[test]
+    fn progress_overlay_is_deterministic_ascii_and_full_width() {
+        let mut g: Grid<Cell> = Grid::new(80, 24);
+        draw_progress_overlay(&mut g, 900, 5400, 30.0); // 30 s of 180 s
+        let bottom: String = (0..80).map(|c| g.get(c, 23).glyph()).collect();
+        assert!(bottom.contains("0:30 / 3:00"), "time text: {bottom:?}");
+        assert!(bottom.contains('[') && bottom.contains(']') && bottom.contains('>'));
+        assert!(bottom.is_ascii(), "overlay must render on every tier: {bottom:?}");
+        // Rows above the overlay are untouched (BLANK from Grid::new).
+        assert!((0..80).all(|c| g.get(c, 22) == Cell::BLANK));
+
+        // Endpoints: frame 0 → 0%, empty bar; last frame → 100%, full bar.
+        draw_progress_overlay(&mut g, 0, 5400, 30.0);
+        let s: String = (0..80).map(|c| g.get(c, 23).glyph()).collect();
+        assert!(s.contains("  0%"), "{s:?}");
+        assert!(!s.contains('='), "{s:?}");
+        draw_progress_overlay(&mut g, 5399, 5400, 30.0);
+        let s: String = (0..80).map(|c| g.get(c, 23).glyph()).collect();
+        assert!(s.contains("100%"), "{s:?}");
+        assert!(!s.contains('.') || !s.contains('>'), "bar full at the end: {s:?}");
+
+        // Determinism: same inputs → byte-identical row (diff-mode presents
+        // of an unchanged overlay row must cost zero damage).
+        let mut g2: Grid<Cell> = Grid::new(80, 24);
+        draw_progress_overlay(&mut g2, 5399, 5400, 30.0);
+        assert_eq!(g.row(23), g2.row(23));
+
+        // Never panics on degenerate grids.
+        for (c, r) in [(1u16, 1u16), (7, 2), (12, 1), (31, 8)] {
+            let mut t: Grid<Cell> = Grid::new(c, r);
+            draw_progress_overlay(&mut t, 10, 20, 30.0);
+        }
     }
 
     #[test]

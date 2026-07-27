@@ -13,6 +13,10 @@ use slpy_format::SlpyError;
 /// Layering: container-level failures carry the underlying [`SlpyError`]
 /// (reachable through [`std::error::Error::source`] for `anyhow`-style chain
 /// printing); OS failures carry the `std::io::Error`.
+///
+/// `Display` states only this layer's failure; the cause is exposed through
+/// `source()` alone (M5 fix 1) — chain printers (`anyhow`, `{:#}`) render
+/// each layer exactly once instead of repeating the cause.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
@@ -52,20 +56,24 @@ pub enum Error {
 }
 
 impl fmt::Display for Error {
+    // Display never embeds `source` — variants whose cause is returned by
+    // `source()` describe only their own layer, so `anyhow`-style chain
+    // printers ("error: X\ncaused by: Y") show the cause once, not twice
+    // (M5 fix 1; regression-tested below).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Io { path, source } => write!(f, "cannot open {}: {source}", path.display()),
-            Error::Format { path, source } => {
-                write!(f, "{} is not a valid SLPY asset: {source}", path.display())
+            Error::Io { path, .. } => write!(f, "cannot open {}", path.display()),
+            Error::Format { path, .. } => {
+                write!(f, "{} is not a valid SLPY asset", path.display())
             }
             Error::Asset(msg) => write!(f, "unplayable asset: {msg}"),
-            Error::Decode { frame, plane, source } => {
-                write!(f, "decoding plane {plane} of frame {frame}: {source}")
+            Error::Decode { frame, plane, .. } => {
+                write!(f, "decoding plane {plane} of frame {frame}")
             }
             Error::Config(msg) => write!(f, "invalid configuration: {msg}"),
-            Error::Terminal(e) => write!(
+            Error::Terminal(_) => write!(
                 f,
-                "cannot enter terminal session (headless? use RenderSession or --sim): {e}"
+                "cannot enter terminal session (headless? use RenderSession or --sim)"
             ),
         }
     }
@@ -91,10 +99,36 @@ mod tests {
     #[test]
     fn display_and_source_chain() {
         let e = Error::Decode { frame: 7, plane: 2, source: SlpyError::BadFrameIndex(7) };
-        assert_eq!(e.to_string(), "decoding plane 2 of frame 7: frame index 7 out of range");
-        assert!(e.source().is_some(), "SlpyError must be reachable via source()");
+        assert_eq!(e.to_string(), "decoding plane 2 of frame 7");
+        let src = e.source().expect("SlpyError must be reachable via source()");
+        assert_eq!(src.to_string(), "frame index 7 out of range");
         let e = Error::Asset("asset has zero frames");
         assert!(e.source().is_none());
         assert_eq!(e.to_string(), "unplayable asset: asset has zero frames");
+    }
+
+    /// M5 fix 1 regression: `Display` must not embed what `source()` already
+    /// returns — a chain printer (`anyhow`: "error: X\ncaused by: Y") would
+    /// otherwise show the cause twice on every layered variant.
+    #[test]
+    fn display_never_repeats_the_source() {
+        let errors = [
+            Error::Io {
+                path: "/tmp/x.slpy".into(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
+            },
+            Error::Format { path: "/tmp/x.slpy".into(), source: SlpyError::BadFrameIndex(3) },
+            Error::Decode { frame: 7, plane: 2, source: SlpyError::BadFrameIndex(7) },
+            Error::Terminal(std::io::Error::other("not a tty")),
+        ];
+        for e in &errors {
+            let display = e.to_string();
+            let cause = e.source().expect("layered variant").to_string();
+            assert!(
+                !display.contains(&cause),
+                "Display {display:?} embeds its source {cause:?} — chain printers \
+                 would show the cause twice"
+            );
+        }
     }
 }

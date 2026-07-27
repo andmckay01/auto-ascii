@@ -3,6 +3,7 @@
 //! / event polling ONLY, never per-cell commands (PLAN §8).
 
 use std::io;
+#[cfg(unix)]
 use std::mem::MaybeUninit;
 use std::time::{Duration, Instant};
 
@@ -185,6 +186,7 @@ impl AnsiBackend {
     /// Errors if stdout is not a TTY. All four color tiers are supported
     /// (M1); the tier lives in `caps.color`, normally from
     /// [`crate::probe_caps`].
+    #[cfg(unix)]
     pub fn new(caps: Caps) -> io::Result<AnsiBackend> {
         let fd = libc::STDOUT_FILENO;
         if unsafe { libc::isatty(fd) } == 0 {
@@ -227,8 +229,55 @@ impl AnsiBackend {
         })
     }
 
+    /// Windows session entry (M5 item E — compiled for the windows-gnu
+    /// cross build, untested-cross; see scripts/release.sh). Same hygiene,
+    /// different plumbing: crossterm owns raw mode and executes the
+    /// enter-session commands through its ANSI-or-WinAPI layer (which also
+    /// enables VT output processing on conhost), the restore path is the
+    /// panic hook + orderly shutdown/Drop ([`crate::restore`], windows
+    /// half), and frame bytes go to stdout via `std::io::Write`.
+    ///
+    /// Never probed: the caller's `caps` arrive passive-only
+    /// ([`crate::probe_caps`] writes no volley on Windows), so `cell_px`
+    /// stays `None` (aspect falls back to 2.0, PLAN §3.2).
+    #[cfg(windows)]
+    pub fn new(caps: Caps) -> io::Result<AnsiBackend> {
+        use crossterm::tty::IsTty as _;
+        if !io::stdout().is_tty() {
+            return Err(io::Error::other(
+                "stdout is not a TTY (AnsiBackend needs a terminal; use SimBackend headless)",
+            ));
+        }
+        restore::install_restore_hooks();
+        terminal::enable_raw_mode()?;
+        restore::arm();
+        if let Err(err) = crossterm::execute!(
+            io::stdout(),
+            terminal::EnterAlternateScreen,
+            cursor::Hide,
+            terminal::DisableLineWrap
+        ) {
+            restore::restore_now();
+            return Err(err);
+        }
+
+        let (cols, rows) = terminal::size().unwrap_or(caps.cells);
+        let mut caps = caps;
+        caps.cells = (cols, rows);
+
+        Ok(AnsiBackend {
+            caps,
+            events: EventQueue::new(),
+            painter: FramePainter::new(cols, rows),
+            // No volley is ever written on Windows → no stragglers possible.
+            straggler: StragglerFilter::new(probe::volley_stragglers_possible(), Instant::now()),
+            active: true,
+        })
+    }
+
     /// Raw mode via crossterm, then alt screen + hide cursor + autowrap off
     /// queued through crossterm's Commands and flushed as one write.
+    #[cfg(unix)]
     fn enter(fd: libc::c_int) -> io::Result<()> {
         terminal::enable_raw_mode()?;
         let mut seq: Vec<u8> = Vec::with_capacity(32);
@@ -244,6 +293,7 @@ impl AnsiBackend {
 
 /// Cell pixel size from `TIOCGWINSZ`, when the terminal reports pixel fields
 /// (PLAN §3.2: drives cell aspect; fallback 2.0 handled by the caller).
+#[cfg(unix)]
 fn query_cell_px(fd: libc::c_int) -> Option<(u16, u16)> {
     let mut ws = MaybeUninit::<libc::winsize>::uninit();
     if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, ws.as_mut_ptr()) } != 0 {
@@ -264,6 +314,7 @@ fn query_cell_px(fd: libc::c_int) -> Option<(u16, u16)> {
 /// stale/garbled until the next resize. Invalidate-on-failure makes the next
 /// `present` self-healing in every mode; the drop is still reported via
 /// `FrameStats::dropped`.
+#[cfg(unix)]
 fn present_to_fd(
     painter: &mut FramePainter,
     grid: &Grid<Cell>,
@@ -287,9 +338,38 @@ fn present_to_fd(
     stats
 }
 
+/// Windows analogue of `present_to_fd`: paint, then one `write_all` + flush
+/// to stdout. Same invalidate-on-failure self-healing (M5 item E,
+/// untested-cross).
+#[cfg(windows)]
+fn present_to_stdout(
+    painter: &mut FramePainter,
+    grid: &Grid<Cell>,
+    tier: ColorTier,
+    sync_2026: bool,
+) -> FrameStats {
+    use std::io::Write as _;
+    let cells_damaged = painter.paint(grid, tier, sync_2026);
+    let frame = &painter.buf;
+    let start = Instant::now();
+    let mut out = io::stdout().lock();
+    let ok = frame.is_empty() || out.write_all(frame).and_then(|()| out.flush()).is_ok();
+    let stats = FrameStats {
+        bytes: frame.len() as u32,
+        cells_damaged,
+        write_ns: start.elapsed().as_nanos() as u64,
+        dropped: !ok,
+    };
+    if !ok {
+        painter.invalidate();
+    }
+    stats
+}
+
 /// Loop `write(2)` handling EINTR and partial writes. One logical write per
 /// frame (PLAN §3.6 step 6); the kernel may still split it. Shared with the
 /// probe volley (one-write, PLAN §3.1).
+#[cfg(unix)]
 pub(crate) fn write_all_fd(fd: libc::c_int, mut bytes: &[u8]) -> io::Result<()> {
     while !bytes.is_empty() {
         let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
@@ -320,6 +400,8 @@ fn map_event(ev: CtEvent) -> Option<Event> {
             }
             match k.code {
                 KeyCode::Esc => Some(Event::Quit),
+                KeyCode::Left => Some(Event::Key(Key::Left)),
+                KeyCode::Right => Some(Event::Key(Key::Right)),
                 KeyCode::Char(c) => {
                     let lower = c.to_ascii_lowercase();
                     if k.modifiers.contains(KeyModifiers::CONTROL) {
@@ -382,6 +464,7 @@ impl Backend for AnsiBackend {
     /// Diff → spans → SGR elide → ONE write (PLAN §3.1, §3.6 step 6). On a
     /// failed/partial write the painter is invalidated so the next frame is a
     /// full repaint — a dropped frame must not poison the diff baseline.
+    #[cfg(unix)]
     fn present(&mut self, grid: &Grid<Cell>) -> FrameStats {
         present_to_fd(
             &mut self.painter,
@@ -390,6 +473,13 @@ impl Backend for AnsiBackend {
             self.caps.sync_2026,
             libc::STDOUT_FILENO,
         )
+    }
+
+    /// Windows present: same painter, frame bytes through `std::io::Write`
+    /// on stdout (VT processing was enabled by crossterm at session entry).
+    #[cfg(windows)]
+    fn present(&mut self, grid: &Grid<Cell>) -> FrameStats {
+        present_to_stdout(&mut self.painter, grid, self.caps.color, self.caps.sync_2026)
     }
 
     fn invalidate(&mut self) {
@@ -449,6 +539,15 @@ mod tests {
             Some(Event::Key(Key::Ctrl('z')))
         );
         assert_eq!(map_event(CtEvent::Resize(213, 58)), Some(Event::Resize(213, 58)));
+        // M5 scrub UX: arrow keys surface as Left/Right (±5 s seeks).
+        assert_eq!(
+            map_event(CtEvent::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))),
+            Some(Event::Key(Key::Left))
+        );
+        assert_eq!(
+            map_event(CtEvent::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE))),
+            Some(Event::Key(Key::Right))
+        );
         assert_eq!(map_event(CtEvent::FocusGained), None);
         assert_eq!(
             map_event(CtEvent::Key(KeyEvent::new_with_kind(

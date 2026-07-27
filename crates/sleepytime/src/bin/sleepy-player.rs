@@ -83,7 +83,7 @@ struct Cli {
 
     /// Cap the presentation rate below the asset fps (frames are still
     /// selected by wall clock, so capping skips asset frames — it never
-    /// slows the video down).
+    /// slows the video down). Minimum 1 fps.
     #[arg(long, value_name = "FPS")]
     fps_cap: Option<f64>,
 
@@ -118,11 +118,28 @@ struct Cli {
     #[arg(long)]
     no_cache: bool,
 
+    /// Skip the identity-keyed quirk table (M5, PLAN §3.1): take the probe
+    /// replies at face value instead of applying the known per-terminal
+    /// corrections (keyed on the XTVERSION reply, never on TERM). Implies
+    /// the probe cache is not written.
+    #[arg(long)]
+    no_quirks: bool,
+
     /// Charset-tier override for palette selection (PLAN §3.4): auto (from
     /// the probed glyph repertoire), ascii, unicode (blocks/box-drawing) or
     /// braille (verified fonts only). Applies to interactive and --sim runs.
     #[arg(long, value_enum, default_value_t = PaletteArg::Auto)]
     palette: PaletteArg,
+
+    /// Assert the terminal's font by ink-coverage table (PLAN §3.4, M5): a
+    /// built-in name (conservative, dejavu-sans-mono, liberation-mono,
+    /// ubuntu-mono, noto-sans-mono) or a path to a `sleepy-factory
+    /// font-table` TOML. The table's recorded repertoire vetoes the palette
+    /// tier (braille -> unicode -> ascii) so a font missing e.g. box-drawing
+    /// diagonals degrades instead of drawing missing-glyph boxes. Applies to
+    /// interactive and --sim runs.
+    #[arg(long, value_name = "NAME|PATH")]
+    font_table: Option<String>,
 
     /// Headless mode: render NFRAMES frames to SimBackend at COLSxROWS as
     /// fast as possible (no pacing), never touch the tty, print one JSON
@@ -146,6 +163,15 @@ struct Cli {
     #[arg(long, value_name = "COLSxROWS", requires = "sim",
           num_args = 0..=1, default_missing_value = "100x40")]
     sim_resize: Option<String>,
+
+    /// Headless scrub-latency benchmark (M5 acceptance: seek < 50 ms on the
+    /// full asset): perform N random seeks — each one a hysteresis reset +
+    /// FIDX keyframe seek + delta rolls + resample + compose + present to a
+    /// 300x80 SimBackend, exactly the interactive scrub path — and print one
+    /// JSON line with p50/p95/max latency in ms. Deterministic seek
+    /// sequence (seeded LCG); never touches the tty.
+    #[arg(long, value_name = "N", conflicts_with = "sim")]
+    bench_seek: Option<u32>,
 }
 
 /// Parse "COLSxROWS" (e.g. "213x58").
@@ -286,6 +312,51 @@ fn run_sim(mut player: Player<'_>, cli: &Cli, tier: ColorTier, start_frame: u32)
     Ok(())
 }
 
+/// M5 scrub-latency benchmark: N deterministic random seeks through the
+/// EXACT interactive scrub machinery — hysteresis reset (the drain_events
+/// discontinuity rule) + FIDX keyframe bsearch + ≤ keyframe_ivl−1 delta
+/// rolls + resample + compose + present — timed end to end per seek.
+/// Acceptance (PLAN §7 M5): p50/p95 < 50 ms on the full 856 MB asset.
+fn run_bench_seek(mut player: Player<'_>, seeks: u32) -> Result<()> {
+    const COLS: u16 = 300;
+    const ROWS: u16 = 80; // the PLAN §3.6 reference grid
+    if seeks == 0 {
+        bail!("--bench-seek needs N >= 1");
+    }
+    let mut backend = SimBackend::new(COLS, ROWS);
+    player.reflow(&mut backend, COLS, ROWS);
+    // One warmup render: builds tap tables' caches and pages in the header/
+    // FIDX region; every timed seek below still decodes cold frame data.
+    player.render_present(&mut backend, 0)?;
+    backend.take_output();
+
+    let frames = u64::from(player.frame_count());
+    let mut lat_ms: Vec<f64> = Vec::with_capacity(seeks as usize);
+    let mut rng: u64 = 0x5EED_F00D_D15C_0B01; // fixed seed: reproducible run
+    for _ in 0..seeks {
+        // xorshift64* — deterministic frame sequence, no dependency.
+        rng ^= rng >> 12;
+        rng ^= rng << 25;
+        rng ^= rng >> 27;
+        let frame = ((rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) % frames) as u32;
+        let t = Instant::now();
+        player.reset_temporal_state(); // scrub = temporal discontinuity
+        player.render_present(&mut backend, frame)?;
+        lat_ms.push(t.elapsed().as_secs_f64() * 1e3);
+        backend.take_output();
+    }
+    lat_ms.sort_by(|a, b| a.partial_cmp(b).expect("latencies are finite"));
+    let pick = |q: f64| lat_ms[((lat_ms.len() - 1) as f64 * q).round() as usize];
+    println!(
+        "{{\"seeks\":{seeks},\"grid\":\"{COLS}x{ROWS}\",\"frames\":{frames},\
+         \"p50_ms\":{:.2},\"p95_ms\":{:.2},\"max_ms\":{:.2}}}",
+        pick(0.50),
+        pick(0.95),
+        lat_ms[lat_ms.len() - 1],
+    );
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -295,8 +366,8 @@ fn main() -> Result<()> {
         .map(|ts| parse_timestamp(ts).with_context(|| format!("--seek {ts:?}")))
         .transpose()?;
 
-    if cli.sim.is_some() {
-        // Headless harness path: drive the pipeline directly (the facade
+    if cli.sim.is_some() || cli.bench_seek.is_some() {
+        // Headless harness paths: drive the pipeline directly (the facade
         // Player is a terminal session by definition).
         let file = std::fs::File::open(&cli.asset)
             .with_context(|| format!("opening {}", cli.asset.display()))?;
@@ -331,8 +402,12 @@ fn main() -> Result<()> {
         let aspect = cli.cell_aspect.unwrap_or(slpy_core::DEFAULT_CELL_ASPECT);
         let tier = cli.sim_tier.or(cli.tier).unwrap_or(ColorTier::True);
         // --sim never probes: palette auto derives from the SimBackend's
-        // default Caps (ascii repertoire); --palette overrides.
-        let glyphs = PaletteChoice::from(cli.palette).resolve_for_caps(&Caps::default());
+        // default Caps (ascii repertoire); --palette overrides; the
+        // --font-table repertoire veto applies exactly as interactively.
+        let mut glyphs = PaletteChoice::from(cli.palette).resolve_for_caps(&Caps::default());
+        if let Some(spec) = &cli.font_table {
+            glyphs = sleepytime::load_font_table(spec)?.veto_tier(glyphs);
+        }
         let player = Player::new(
             reader,
             aspect,
@@ -340,6 +415,9 @@ fn main() -> Result<()> {
             color_depth(tier),
             glyphs,
         )?;
+        if let Some(n) = cli.bench_seek {
+            return run_bench_seek(player, n);
+        }
         return run_sim(player, &cli, tier, start_frame);
     }
 
@@ -352,6 +430,7 @@ fn main() -> Result<()> {
         .repaint(cli.repaint.into())
         .looping(cli.loop_playback)
         .no_query(cli.no_query)
+        .no_quirks(cli.no_quirks)
         .no_cache(cli.no_cache);
     if let Some(cap) = cli.fps_cap {
         builder = builder.fps_cap(cap);
@@ -364,6 +443,9 @@ fn main() -> Result<()> {
     }
     if let Some(dur) = cli.duration_secs {
         builder = builder.duration_secs(dur);
+    }
+    if let Some(spec) = &cli.font_table {
+        builder = builder.font_table(spec.as_str());
     }
     builder.build()?.run()?;
     Ok(())

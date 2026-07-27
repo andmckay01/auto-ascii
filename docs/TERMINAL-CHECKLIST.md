@@ -24,7 +24,8 @@ ASSET=assets/sheep-counting-neroni-clips.slpy # any .slpy you have
 PLAY="./target/release/sleepy-player $ASSET"
 ```
 
-Keys during playback: `q`/`Esc` quit · `0`–`9` seek to 0–90 % · resize the
+Keys during playback: `q`/`Esc` quit · `0`–`9` seek to 0–90 % · `←`/`→`
+scrub ±5 s (a bottom-row progress bar flashes for ~1 s) · resize the
 window at any time.
 
 **Read the probe's mind** on the terminal you are sitting in (prints one line
@@ -75,9 +76,11 @@ letterbox pads that stay exactly centered while you drag the window edge.
 *Quirks worth knowing:*
 - kitty answers our `XTGETTCAP RGB` query with `0+r` — it simply has no `RGB`
   entry in its capability tables (it advertises `Tc` instead). Truecolor there
-  is concluded from `COLORTERM=truecolor`, which kitty exports. If you ever run
-  kitty through something that strips `COLORTERM`, expect a 256-color session;
-  `--tier truecolor` forces it back.
+  is concluded from `COLORTERM=truecolor`, which kitty exports — and since M5
+  also from kitty's own XTVERSION reply: the identity-keyed quirk table
+  (`slpy-term/src/quirks.rs`, entry `kitty-rgbless-xtgettcap`) restores
+  truecolor even when a launcher strips `COLORTERM`. `--no-quirks` shows the
+  raw conclusion; `--tier truecolor` still forces everything.
 - kitty's `CSI 16 t` answer wins over the kernel's winsize pixels, so font-size
   changes (`ctrl+shift+=`) re-derive the cell aspect on the next resize.
 
@@ -140,7 +143,10 @@ xterm -class UXTerm -u8 -fa Monospace -fs 11 -e "$PLAY"   # if your default xter
 *Expect:* **256-color** output — visible banding on smooth gradients is the
 correct result, not a regression. xterm answers our `RGB` query with the value
 `-1` ("no direct color") unless it is running in direct-color mode, and
-plain xterm approximates `38;2` into its 256 palette anyway.
+plain xterm approximates `38;2` into its 256 palette anyway. Since M5 that
+answer also *clamps* a stale `export COLORTERM=truecolor` from your shell
+profile back to 256 (quirk `xterm-no-direct-color` — the queried terminal
+beats the passive lie; `--no-quirks` to disable).
 
 To see the truecolor path on xterm, start it in direct-color mode:
 
@@ -186,6 +192,7 @@ skips even that.
 | Boxes / question marks instead of glyphs | `--palette ascii` (font lacks the block or box-drawing repertoire) |
 | Picture too tall or too wide | `--cell-aspect 2.0` (or measure: `cellpx=WxH` → aspect = H/W) |
 | Terminal hangs on start, or garbage keys | `--no-query` (never writes the volley) |
+| A quirk-table correction looks wrong for your terminal | `--no-quirks` (re-runs the volley, bypassing the probe cache, and takes the replies at face value; the table is `slpy-term/src/quirks.rs`, keyed on the XTVERSION reply) |
 | Stale caps after changing terminal config | `--no-cache` (the probe cache lives at `$XDG_CACHE_HOME/sleepytime/caps`) |
 
 ---

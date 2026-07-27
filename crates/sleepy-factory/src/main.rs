@@ -24,6 +24,7 @@ mod eval;
 mod extract;
 mod features;
 mod ffmpeg;
+mod font_table;
 mod highlights;
 mod lut;
 mod params;
@@ -133,6 +134,32 @@ enum Cmd {
         /// Asset cache directory, keyed by (input sha, params sha).
         #[arg(long, default_value = "runs/cache")]
         cache_dir: PathBuf,
+        /// Ink-coverage table for the SSIM rasterizer (M5 §3.4): a built-in
+        /// name (conservative, dejavu-sans-mono, liberation-mono,
+        /// ubuntu-mono, noto-sans-mono) or a path to a `sleepy-factory
+        /// font-table` TOML. Default: conservative (the committed baseline's
+        /// table — absolute SSIM is only comparable within one table).
+        #[arg(long)]
+        font_table: Option<String>,
+    },
+    /// Rasterize every glyph the 8 shipped palettes can emit through a
+    /// monospace font at 64x128 px (PLAN §3.4) and write a deterministic
+    /// ink-coverage table (TOML). The committed tables under fonts/ are
+    /// generated this way (see fonts/README.md); `--font-table NAME|PATH`
+    /// consumes them in the player and in `eval`.
+    FontTable {
+        /// Monospace font file (.ttf/.otf). Omit with --conservative.
+        font: Option<PathBuf>,
+        /// Output table path (e.g. fonts/dejavu-sans-mono.toml).
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Table name recorded in the file (default: the font file stem).
+        #[arg(long)]
+        name: Option<String>,
+        /// Emit the built-in conservative (ASCII-repertoire) table in the
+        /// same format instead of rasterizing a font.
+        #[arg(long)]
+        conservative: bool,
     },
     /// Parameter sweep (PLAN §5 CLI, M3 Tune): run eval per combo of the
     /// axes declared in --grid (values within an axis travel together; axes
@@ -229,7 +256,7 @@ fn main() -> ExitCode {
                     Err("params: nothing to do (use --dump to print the effective config)".into())
                 }
             }),
-        Cmd::Eval { corpus, params, baseline, out, html, reel, cache_dir } => {
+        Cmd::Eval { corpus, params, baseline, out, html, reel, cache_dir, font_table } => {
             effective_params(params.as_deref(), None, None).and_then(|params| {
                 eval::run(&eval::EvalArgs {
                     corpus,
@@ -240,8 +267,12 @@ fn main() -> ExitCode {
                     reel,
                     cache_dir,
                     truecolor_only: false,
+                    font_table,
                 })
             })
+        }
+        Cmd::FontTable { font, output, name, conservative } => {
+            font_table::run(&font_table::FontTableArgs { font, output, name, conservative })
         }
         Cmd::Sweep { corpus, params, grid, out, cache_dir } => {
             effective_params(params.as_deref(), None, None).and_then(|base| {

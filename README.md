@@ -25,7 +25,7 @@ cargo run --release -p sleepy-factory -- build clip.mp4 -o intro.slpy
 
 # 2. play it
 cargo run --release -p sleepytime --bin sleepy-player -- intro.slpy
-#    q / Esc quit · 0-9 seek to 0-90% · resize the window any time
+#    q / Esc quit · 0-9 seek to 0-90% · Left/Right scrub ±5 s · resize any time
 
 # 3. no terminal? render frames as text instead
 cargo run --release -p sleepytime --example headless-dump -- intro.slpy 3 100x28
@@ -37,10 +37,38 @@ capability probe), `--sim 213x58:300` (headless render + one JSON stats line).
 `sleepy-factory inspect intro.slpy` prints the container's header, chunks and
 CRC status.
 
+## Install
+
+The fast path is a prebuilt player binary — copy it, run it, done (measured
+0.2 s from binary-in-hand to the first presented frame on this repo's
+reference box, probe deadline included; the M5 acceptance budget is
+2 *minutes*):
+
+```bash
+# from a release tarball / dist/ directory produced by scripts/release.sh:
+install -m 0755 sleepy-player-x86_64-unknown-linux-musl ~/.local/bin/sleepy-player
+sleepy-player intro.slpy        # the musl build is fully static: zero deps
+```
+
+Building each flavor yourself (`scripts/release.sh` does all of this and
+enforces the < 5 MB stripped-size gate):
+
+| target | how | notes |
+|---|---|---|
+| Linux (native) | `cargo build --release -p sleepytime --features bin` | binary at `target/release/sleepy-player`; `strip` it |
+| Linux (static musl) | `rustup target add x86_64-unknown-linux-musl` + `apt install musl-tools`, then `cargo build --release --target x86_64-unknown-linux-musl -p sleepytime --features bin` | `ldd` reports "statically linked" — runs on any x86-64 Linux |
+| Windows (cross) | `rustup target add x86_64-pc-windows-gnu` + `apt install mingw-w64`, then `cargo build --release --target x86_64-pc-windows-gnu -p sleepytime --features bin` | **untested-cross**: it compiles and links here (headless Linux CI, no wine); the session layer uses crossterm's Windows console API — report issues |
+| macOS | build **on a Mac**: `make build` or the native cargo line above (see the Makefile's macOS section) | no osxcross by policy; Apple Silicon and Intel both build from source |
+
+A from-source build on a clean checkout (fresh `target/`, warm crates.io
+cache) measures ~29 s on a 4-core box — `time cargo build --release -p
+sleepytime --features bin` — and the library embeds via a git or path dependency (e.g. `sleepytime = { git = "..." }` — not yet published to crates.io; the `0.1` form works once it is)
+(feature `bin` off if you only want `RenderSession`).
+
 ## Embedding it
 
 ```rust
-// Cargo.toml:  sleepytime = "0.1"
+// Cargo.toml:  sleepytime = { git = "<this repo>" }   (crates.io: pending first publish)
 sleepytime::Player::builder().asset("intro.slpy").looping(true).build()?.run()?;
 ```
 

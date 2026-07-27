@@ -1,5 +1,8 @@
 /target
+# scripts/release.sh output (stripped release binaries, M5 item E)
+/dist
 corpus/*.mp4
 corpus/prepared/*.mp4
 corpus/prepared/samples/
 *.slpy
+__pycache__/

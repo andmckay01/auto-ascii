@@ -30,6 +30,25 @@ pub enum RepaintMode {
     Diff,
 }
 
+/// Documented floor for [`fps_cap`](PlayerBuilder::fps_cap) (M5 fix 3):
+/// caps below 1 fps are rejected at [`build`](PlayerBuilder::build) with
+/// [`Error::Config`]. The pacing loop sleeps `1/cap` seconds between
+/// presents, so a tiny positive cap (e.g. `1e-9`) would freeze input
+/// handling for years — and small enough values overflow
+/// `Duration::from_secs_f64`, panicking only after the terminal session had
+/// already started.
+pub const MIN_FPS_CAP: f64 = 1.0;
+
+/// Seconds of asset time one Left/Right arrow press scrubs (M5 scrub UX,
+/// PLAN §7 M5). Presses coalesced within one event drain add up (holding
+/// the key nets one bigger jump); digits 0–9 still jump to 0–90%.
+pub const SCRUB_STEP_SECS: f64 = 5.0;
+
+/// How long the bottom-row progress overlay stays up after a seek before it
+/// auto-hides (M5 scrub UX; hiding forces a clean full repaint of the
+/// overlay row — see `pipeline::Player::set_progress_overlay`).
+const OVERLAY_HIDE_AFTER: Duration = Duration::from_millis(1000);
+
 /// Builder for [`Player`] — see [`Player::builder`]. Every option has a
 /// sensible default; only [`asset`](PlayerBuilder::asset) is required.
 #[derive(Debug, Default)]
@@ -45,7 +64,9 @@ pub struct PlayerBuilder {
     seek_secs: Option<f64>,
     duration_secs: Option<f64>,
     no_query: bool,
+    no_quirks: bool,
     no_cache: bool,
+    font_table: Option<String>,
 }
 
 impl PlayerBuilder {
@@ -78,8 +99,11 @@ impl PlayerBuilder {
 
     /// Cap the presentation rate below the asset fps. Frames are still
     /// selected by wall clock, so capping skips asset frames — it never
-    /// slows the video down. Must be > 0 (checked at
-    /// [`build`](PlayerBuilder::build)).
+    /// slows the video down. Must be at least [`MIN_FPS_CAP`] (1 fps),
+    /// checked at [`build`](PlayerBuilder::build): the pacing loop sleeps
+    /// `1/cap` seconds between presents, so sub-1 caps would leave quit keys
+    /// and resizes unserviced for arbitrarily long (and tiny values overflow
+    /// `Duration`, an M5 fix-3 panic after the terminal session started).
     pub fn fps_cap(mut self, fps: f64) -> Self {
         self.fps_cap = Some(fps);
         self
@@ -125,6 +149,35 @@ impl PlayerBuilder {
         self
     }
 
+    /// Skip the identity-keyed quirk table (M5, PLAN §3.1): the probe
+    /// normally corrects known reply gaps after the volley — e.g. kitty's
+    /// missing XTGETTCAP `RGB` entry, or plain xterm's "no direct color"
+    /// answer overriding a stale `COLORTERM` — keyed on the terminal's own
+    /// XTVERSION reply, never on `TERM`. This escape hatch takes the replies
+    /// at face value: the probe cache is bypassed in both directions (cached
+    /// entries embed quirk adjustments, so reading one would serve exactly
+    /// the corrected result this flag disables; and a no-quirks result is
+    /// never stored, because cached entries must be the fully adjusted
+    /// truth) and the volley always runs fresh.
+    pub fn no_quirks(mut self, no_quirks: bool) -> Self {
+        self.no_quirks = no_quirks;
+        self
+    }
+
+    /// Assert which font the terminal renders with, by ink-coverage table
+    /// (PLAN §3.4 `--font-table`): a built-in name — `conservative`,
+    /// `dejavu-sans-mono`, `liberation-mono`, `ubuntu-mono`,
+    /// `noto-sans-mono` — or a path to a `sleepy-factory font-table` TOML.
+    /// Terminals cannot be queried for their font, so this is user-asserted
+    /// truth: the table's recorded repertoire vetoes the palette selection
+    /// (a tier whose glyphs the font is missing degrades braille → unicode
+    /// → ascii instead of drawing missing-glyph boxes). Resolved and
+    /// validated at [`build`](PlayerBuilder::build).
+    pub fn font_table(mut self, name_or_path: impl Into<String>) -> Self {
+        self.font_table = Some(name_or_path.into());
+        self
+    }
+
     /// Open and validate the asset (memory-mapped) and check the
     /// configuration. Does NOT touch the terminal — that happens in
     /// [`Player::run`], so a bad path or corrupt file fails cleanly before
@@ -134,9 +187,12 @@ impl PlayerBuilder {
             Error::Config("no asset path set (PlayerBuilder::asset is required)".into())
         })?;
         if let Some(cap) = self.fps_cap
-            && (cap.is_nan() || cap <= 0.0)
+            && (cap.is_nan() || cap < MIN_FPS_CAP)
         {
-            return Err(Error::Config(format!("fps cap must be > 0 (got {cap})")));
+            return Err(Error::Config(format!(
+                "fps cap must be >= {MIN_FPS_CAP} (got {cap}): the pacing loop sleeps \
+                 1/cap seconds between presents"
+            )));
         }
         if let Some(a) = self.cell_aspect
             && (!a.is_finite() || a <= 0.0)
@@ -175,8 +231,14 @@ impl PlayerBuilder {
             }
             None => 0,
         };
+        // Resolve --font-table early (M5 §3.4): a bad name/path/table is a
+        // config error before any terminal state changes.
+        let font_table = match &self.font_table {
+            None => None,
+            Some(spec) => Some(crate::session::load_font_table(spec)?),
+        };
         drop(reader); // run() re-opens over the owned map (cheap: header parse)
-        Ok(Player { map, cfg: self, path, asset_fps, start_frame })
+        Ok(Player { map, cfg: self, path, asset_fps, start_frame, font_table })
     }
 }
 
@@ -190,6 +252,9 @@ pub struct Player {
     path: PathBuf,
     asset_fps: f64,
     start_frame: u32,
+    /// Parsed §3.4 font coverage table (repertoire veto), from
+    /// [`PlayerBuilder::font_table`].
+    font_table: Option<slpy_core::FontTable>,
 }
 
 /// Cell aspect: explicit override > terminal-reported cell pixel size > 2.0
@@ -220,7 +285,8 @@ impl Player {
     /// Blocks until the asset ends (unless [`looping`](PlayerBuilder::looping)),
     /// the configured [`duration`](PlayerBuilder::duration_secs) elapses, or
     /// the user quits (`q` / `Esc` / `Ctrl-C`). Keys `0`–`9` jump to that
-    /// ×10% of the asset.
+    /// ×10% of the asset; `←`/`→` scrub ±[`SCRUB_STEP_SECS`] (5 s). Every
+    /// seek flashes a bottom-row progress overlay that auto-hides after ~1 s.
     ///
     /// # Errors
     /// [`Error::Terminal`] when stdout is not a TTY (headless callers want
@@ -234,6 +300,7 @@ impl Player {
         let probe_opts = ProbeOptions {
             forced_tier: self.cfg.tier,
             no_query: self.cfg.no_query || self.cfg.tier.is_some(),
+            no_quirks: self.cfg.no_quirks,
             no_cache: self.cfg.no_cache,
             ..ProbeOptions::default()
         };
@@ -249,7 +316,12 @@ impl Player {
         // Palette selection inputs from Caps (PLAN §3.4 key: charset tier ×
         // color depth; density falls out of the viewport at reflow).
         let depth = pipeline::color_depth(backend.caps().color);
-        let glyphs = self.cfg.palette.resolve_for_caps(backend.caps());
+        let mut glyphs = self.cfg.palette.resolve_for_caps(backend.caps());
+        // §3.4 font-table repertoire veto: the user asserted a font; degrade
+        // any tier whose glyph surface that font cannot render.
+        if let Some(t) = &self.font_table {
+            glyphs = t.veto_tier(glyphs);
+        }
         let mut player = pipeline::Player::new(
             reader,
             aspect,
@@ -261,21 +333,25 @@ impl Player {
         player.reflow(&mut backend, cols, rows);
 
         let present_fps = match self.cfg.fps_cap {
-            Some(cap) => cap.min(self.asset_fps), // > 0 checked at build()
+            Some(cap) => cap.min(self.asset_fps), // >= MIN_FPS_CAP checked at build()
             None => self.asset_fps,
         };
         let tick = Duration::from_secs_f64(1.0 / present_fps);
         let frame_count = u64::from(player.frame_count());
         let mut base_frame = u64::from(self.start_frame);
         let t0 = Instant::now(); // duration_secs origin (never reset by jumps)
-        let mut clock = t0; // pacing origin, reset on 0–9 jumps
+        let mut clock = t0; // pacing origin, reset on 0–9 jumps + arrow scrubs
         let mut next_tick = t0;
+        // M5 scrub UX: the transient progress overlay auto-hides this long
+        // after the last seek.
+        let mut overlay_until: Option<Instant> = None;
 
         loop {
             let drained = player.drain_events(&mut backend);
             if drained.quit {
                 break;
             }
+            let mut sought = false;
             if let Some(d) = drained.jump_digit {
                 // 0–9 → jump to d×10% (PLAN §3.6; decode goes through the
                 // FIDX seek path automatically via the loaded-frame tracker,
@@ -284,6 +360,31 @@ impl Player {
                 // landing frame).
                 base_frame = frame_count * u64::from(d) / 10;
                 clock = Instant::now();
+                sought = true;
+            }
+            if drained.seek_steps != 0 {
+                // Left/Right → ±SCRUB_STEP_SECS from the frame currently on
+                // the clock (post-digit-jump if both landed in one drain),
+                // clamped to the asset; same FIDX-seek + state-reset
+                // machinery as digit jumps.
+                let pos = base_frame + (clock.elapsed().as_secs_f64() * self.asset_fps) as u64;
+                let pos = if self.cfg.looping { pos % frame_count } else { pos };
+                let delta =
+                    (f64::from(drained.seek_steps) * SCRUB_STEP_SECS * self.asset_fps) as i64;
+                let landing = (pos.min(frame_count - 1) as i64 + delta)
+                    .clamp(0, frame_count as i64 - 1) as u64;
+                base_frame = landing;
+                clock = Instant::now();
+                sought = true;
+            }
+            if sought {
+                player.set_progress_overlay(true);
+                overlay_until = Some(Instant::now() + OVERLAY_HIDE_AFTER);
+            } else if overlay_until.is_some_and(|t| Instant::now() >= t) {
+                // Auto-hide (~1 s): set_progress_overlay(false) schedules the
+                // backend invalidate that repaints the row under the overlay.
+                player.set_progress_overlay(false);
+                overlay_until = None;
             }
             if let Some(dur) = self.cfg.duration_secs
                 && t0.elapsed().as_secs_f64() >= dur
@@ -342,10 +443,78 @@ mod tests {
         assert!(matches!(e, Error::Config(_)), "fps cap checked first: {e}");
         let e = Player::builder()
             .asset("/no/such/file.slpy")
+            .fps_cap(f64::NAN)
+            .build()
+            .unwrap_err();
+        assert!(matches!(e, Error::Config(_)), "NaN fps cap: {e}");
+        let e = Player::builder()
+            .asset("/no/such/file.slpy")
             .cell_aspect(f64::NAN)
             .build()
             .unwrap_err();
         assert!(matches!(e, Error::Config(_)), "NaN cell aspect: {e}");
+    }
+
+    /// M5 fix 3 regression: a tiny positive cap used to pass the old `> 0`
+    /// check and panic inside run() (`Duration::from_secs_f64(1/cap)`
+    /// overflow / a years-long pacing sleep) AFTER the terminal session had
+    /// started. The documented floor is [`MIN_FPS_CAP`] = 1 fps, enforced at
+    /// build() where failure is still clean.
+    #[test]
+    fn fps_cap_floor_is_enforced_at_build() {
+        for bad in [1e-9, f64::MIN_POSITIVE, 0.5, 0.999] {
+            let e = Player::builder()
+                .asset("/no/such/file.slpy")
+                .fps_cap(bad)
+                .build()
+                .unwrap_err();
+            assert!(matches!(e, Error::Config(_)), "fps_cap({bad}) must be Config: {e}");
+            assert!(e.to_string().contains(">= 1"), "message names the floor: {e}");
+        }
+        // At the floor exactly, validation passes — the missing file (Io) is
+        // the next check, proving the cap itself was accepted.
+        let e = Player::builder()
+            .asset("/no/such/file.slpy")
+            .fps_cap(MIN_FPS_CAP)
+            .build()
+            .unwrap_err();
+        assert!(matches!(e, Error::Io { .. }), "cap at the floor is valid: {e}");
+    }
+
+    /// M5 item B: `--font-table` is resolved and validated at build() — a
+    /// bad name or unparseable file fails before any terminal state changes;
+    /// built-in names resolve.
+    #[test]
+    fn build_resolves_font_table_before_the_terminal() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("sleepytime-player-font-{}.slpy", std::process::id()));
+        std::fs::write(
+            &path,
+            slpy_eval::fixtures::build_fixture(slpy_eval::fixtures::Fixture::GradientMotion),
+        )
+        .unwrap();
+
+        let e = Player::builder()
+            .asset(&path)
+            .font_table("comic-sans")
+            .build()
+            .unwrap_err();
+        assert!(matches!(e, Error::Config(_)), "{e}");
+        assert!(e.to_string().contains("ubuntu-mono"), "error lists built-ins: {e}");
+
+        let p = Player::builder()
+            .asset(&path)
+            .font_table("liberation-mono")
+            .build()
+            .expect("built-in table name resolves at build()");
+        assert_eq!(p.font_table.as_ref().map(|t| t.name()), Some("liberation-mono"));
+        // The veto input is the parsed repertoire (researched: Liberation
+        // Mono has no ╱╲) — the run()-time tier degrade consumes this.
+        assert_eq!(
+            p.font_table.unwrap().veto_tier(slpy_core::GlyphTier::UnicodeBlocks),
+            slpy_core::GlyphTier::Ascii
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

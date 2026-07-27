@@ -107,6 +107,38 @@ pub struct EvalArgs {
     /// damage passes are skipped. `sleepy-factory eval` always sets false —
     /// baseline reports keep full tier coverage.
     pub truecolor_only: bool,
+    /// `--font-table NAME|PATH` (M5 item B, PLAN §3.4): ink-coverage table
+    /// for the SSIM rasterizer. `None` = the conservative default (what the
+    /// committed baseline was scored with).
+    pub font_table: Option<String>,
+}
+
+/// Resolve `--font-table NAME|PATH` into a rasterizer coverage table:
+/// built-in names first (`conservative` = the M2 constants; the four
+/// committed `fonts/*.toml` per-font tables by name), else a path to a
+/// `sleepy-factory font-table` TOML.
+pub(crate) fn resolve_font_table(spec: Option<&str>) -> Result<CoverageTable, BoxErr> {
+    let Some(spec) = spec else {
+        return Ok(CoverageTable::conservative().clone());
+    };
+    if spec == "conservative" {
+        return Ok(CoverageTable::conservative().clone());
+    }
+    if let Some(t) = slpy_core::FontTable::builtin(spec) {
+        return Ok(CoverageTable::from_font_table(t));
+    }
+    let path = Path::new(spec);
+    if path.is_file() {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("read {spec}: {e}"))?;
+        let t = slpy_core::FontTable::parse(&text)
+            .map_err(|e| format!("font table {spec}: {e}"))?;
+        return Ok(CoverageTable::from_font_table(&t));
+    }
+    Err(format!(
+        "--font-table {spec:?}: not a built-in table ({}) and no such file",
+        slpy_core::BUILTIN_FONT_TABLES.join(", ")
+    )
+    .into())
 }
 
 /// Edge-truth memo across sweep combos (M3 Tune): the source Canny masks
@@ -393,6 +425,11 @@ pub(crate) fn eval_clip(
     let mut reel_pending: Vec<ReelPending> = Vec::new();
     let mut gif_rasters: Vec<GrayImage> = Vec::new();
 
+    // M5 item B: the SSIM rasterizer's ink model is table-selectable
+    // (--font-table); the default stays the conservative table the committed
+    // baseline was scored with.
+    let coverage_table = resolve_font_table(args.font_table.as_deref())?;
+
     let tiers: &[(ColorTier, &str)] = if args.truecolor_only { &TIERS[..1] } else { TIERS };
     for &(tier, tag) in tiers {
         let truecolor = tier == ColorTier::True;
@@ -404,13 +441,16 @@ pub(crate) fn eval_clip(
         // Pure diff mode (repaint_full = false): damage rate is the metric
         // here, and invalidate-every-frame would pin it at 100%.
         // Palette config (M3): every eval pass measures the ASCII charset
-        // tier. Deliberate: the ink-coverage table behind downscale-SSIM is
-        // ASCII-only (unknown glyphs fall back to mid-gray), so a unicode-
-        // tier pass would score blocks/half-blocks as noise, not signal —
-        // and the edge/highlight/hysteresis DECISIONS under test are
-        // charset-independent (only the final glyph pick differs). The
-        // unicode tier is covered by goldens, parity, fuzz and the sim fps
-        // gates; per-font coverage tables are the M5 upgrade path.
+        // tier. Deliberate: the DEFAULT ink-coverage table behind
+        // downscale-SSIM is ASCII-only (unknown glyphs fall back to
+        // mid-gray), so a unicode-tier pass would score blocks/half-blocks
+        // as noise, not signal — and the edge/highlight/hysteresis
+        // DECISIONS under test are charset-independent (only the final
+        // glyph pick differs). The unicode tier is covered by goldens,
+        // parity, fuzz and the sim fps gates. M5 item B: `--font-table`
+        // swaps the table (per-font tables DO measure unicode ink), but the
+        // render tier here stays ASCII so scores remain comparable across
+        // table choices and against the conservative baseline.
         let mut player = Player::new(
             reader,
             DEFAULT_CELL_ASPECT,
@@ -428,7 +468,7 @@ pub(crate) fn eval_clip(
         }
         player.reflow(&mut backend, cols, rows_dim);
 
-        let table = CoverageTable::conservative();
+        let table = &coverage_table;
         let ropts = RasterOptions::default();
         let mut frame_stats = Vec::with_capacity(eval_frames as usize);
         let mut stage_acc = StageAccum::new();
@@ -1151,5 +1191,28 @@ mod tests {
         plane.extend(std::iter::repeat_n(255u8, 20)); // 2% bright outliers
         let lv = reference_levels(&plane).unwrap();
         assert_eq!((lv.p2, lv.p98), (0, 100));
+    }
+
+    /// M5 item B: --font-table resolution — default/`conservative` = the M2
+    /// constants; builtin names load the committed fonts/*.toml; paths load
+    /// generator TOML; anything else is a clean error listing the builtins.
+    #[test]
+    fn font_table_resolution() {
+        let t = resolve_font_table(None).unwrap();
+        assert_eq!(t.len(), 95, "default = conservative constants");
+        assert!(t.coverage('\u{2588}').is_none());
+        let t = resolve_font_table(Some("conservative")).unwrap();
+        assert_eq!(t.len(), 95);
+        let t = resolve_font_table(Some("dejavu-sans-mono")).unwrap();
+        assert!(t.coverage('\u{2588}').unwrap() > 0.9, "per-font: measured block ink");
+        let e = resolve_font_table(Some("papyrus")).unwrap_err().to_string();
+        assert!(e.contains("ubuntu-mono"), "lists builtins: {e}");
+        let mut p = std::env::temp_dir();
+        p.push(format!("slpy-eval-ft-{}.toml", std::process::id()));
+        std::fs::write(&p, "name = \"f\"\nmissing = []\n[[glyphs]]\nch = \"a\"\ncoverage = 0.5\n")
+            .unwrap();
+        let t = resolve_font_table(Some(p.to_str().unwrap())).unwrap();
+        assert_eq!(t.coverage('a'), Some(0.5));
+        let _ = std::fs::remove_file(&p);
     }
 }

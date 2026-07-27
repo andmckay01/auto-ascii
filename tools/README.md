@@ -87,3 +87,61 @@ documented functions (`contain_fit`, `build_mirror_axis`, `build_concat`,
 `build_boomerang`) so the same logic can be absorbed into the `sleepy-factory`
 ingest stage (PLAN.md §5, stage 1) when it lands. Until then, run this tool
 first and point the factory at `corpus/prepared/`.
+
+## soak.py — resize-storm soak harness (M5, PLAN §7)
+
+Forks the release player onto a fresh pty (`pty.fork`, so the pty is the
+player's controlling terminal and `TIOCSWINSZ` delivers real SIGWINCHes),
+plays an asset with `--loop`, and storms randomized resizes at it: every
+50–200 ms, uniform over 20x6..500x140, with ~8% sub-minimum 5x3 (below
+the 32x9 viewport floor → the "enlarge terminal" card path). Python 3
+stdlib only; single-threaded select loop.
+
+```
+tools/soak.py --outdir DIR [--duration SECS=3600] [--seed N]
+              [--asset PATH] [--player PATH]
+```
+
+Build the player first: `cargo build --release -p sleepytime --features bin`.
+
+Continuously: drains the pty into a rotation-capped log (**first 2 MB** →
+`head.log`, **last 10 MB** ring → `tail.log`, flushed every 30 s — both
+disk *and* write volume stay bounded regardless of player throughput);
+samples player VmRSS from `/proc` every 10 s → `rss.csv`; records every
+resize → `resizes.csv`. At the deadline it sends `q`, drains the restore
+bytes, and writes `summary.json`: exit code, resize/byte counts, whether
+`RESTORE_SEQ` appears in the tail, a post-warmup least-squares RSS
+slope (MB/h), and the **structural escape-stream check** (`escape_check`).
+
+The structural check is the M5-acceptance "no desync in captured output"
+evidence (PLAN §7 M5 A): both `head.log` and `tail.log` are run through a
+strict VT parser (`check_escape_stream`, in the spirit of the byte-exact
+interpreter in `crates/sleepytime/tests/scrub_overlay.rs`) that accepts
+exactly the player's specified output vocabulary — the probe volley, the
+session enter/restore modes, CUP within the storm's size bounds (≤500×140),
+well-formed tier SGRs, the `?2026` wrap, printable/UTF-8 ground text — and
+reports anything else (truncated CSI, out-of-bounds CUP, stray control
+bytes, malformed SGR/UTF-8) as a structural error. This catches a
+diff-baseline desync the player *survives*, which the exit code cannot see.
+`head.log` may end mid-sequence (byte cap — allowed); `tail.log` starts at
+an arbitrary ring cut (the parser resyncs to the first ESC) and must end on
+a complete sequence.
+
+Harness exits 0 iff the player survived the full duration, exited 0 on
+`q`, emitted the restore bytes, **and both logs pass the structural
+check**; the RSS-slope acceptance (< 1 MB/h after warmup) is reported for
+review, not gated.
+
+Standalone: `tools/soak.py --check-logs DIR` re-runs the structural check
+over an existing outdir (exit 1 on errors); `tools/soak.py --self-test`
+runs the validator's own regression cases (a clean specified-vocabulary
+stream passes; each corruption class — truncated CSI, OOB CUP, unknown
+finals, bad SGR, control bytes, malformed UTF-8 — is caught).
+
+Smoke mode (~1 min): `tools/soak.py --duration 60 --outdir /tmp/soak-smoke`.
+Full detached soak:
+
+```sh
+setsid nohup tools/soak.py --duration 3600 --outdir runs/soak-1h \
+    > runs/soak-1h/harness.out 2>&1 &
+```

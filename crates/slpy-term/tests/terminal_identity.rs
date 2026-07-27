@@ -62,6 +62,7 @@ macro_rules! fixture_env {
 
 // ---------------------------------------------------------------------------
 // The five local terminals of PLAN §7 M4 + two floors (xterm-direct, console)
+// + the M5 RGB-parse failing guard (xterm-direct behind TERM=xterm-256color)
 // ---------------------------------------------------------------------------
 
 /// **kitty** — sets `TERM=xterm-kitty` and `COLORTERM=truecolor`.
@@ -231,10 +232,47 @@ const XTERM: Identity = Identity {
 /// color enabled: now the `RGB` reply carries a real width (hex("8")) and
 /// the *query* path is what upgrades the tier, with no `COLORTERM` in sight.
 /// The pair (this vs [`XTERM`]) is the regression that keeps the RGB value
-/// parse from collapsing back into a prefix test.
+/// parse from collapsing back into a prefix test. NOTE (M5 fix 4): this
+/// fixture's `want_color: True` is NOT a guard on the parse itself —
+/// `TERM=xterm-direct` already proves truecolor passively; the parse's
+/// failing guard is [`XTERM_DIRECT_256`] below.
 const XTERM_DIRECT: Identity = Identity {
     name: "xterm (direct color)",
     env: fixture_env!["TERM" => Some("xterm-direct"), "COLORTERM" => None,
+              "TERM_PROGRAM" => None],
+    ws: winsize_with_cell_px(80, 24, 8, 16),
+    replies: b"\x1bP>|XTerm(390)\x1b\\\
+\x1b[?2026;0$y\
+\x1bP1+r524742=38\x1b\\\
+\x1b[6;16;8t\
+\x1b[?63;1;2;4;6;9;15;16;17;18;21;22;28;29c",
+    want_color: "True",
+    want_sync: false,
+    want_cell_px: "8x16",
+    want_support: "UnicodeCore",
+    want_glyphs: 1 | 2 | 4,
+};
+
+/// **xterm -direct2 behind `TERM=xterm-256color`** — the *failing guard* for
+/// the XTGETTCAP-RGB-by-value parse (M5 fix 4).
+///
+/// [`XTERM_DIRECT`] alone cannot catch a parse regression: its
+/// `TERM=xterm-direct` already proves truecolor through the passive path
+/// (`apply_passive`: `term.contains("direct")`), so its `want_color: True`
+/// stays green even if the query parse silently dies. This fixture removes
+/// that safety net: `TERM` is pinned to plain `xterm-256color` — the ncurses
+/// user-level workaround xterm's own FAQ documents for direct-color xterm,
+/// since many hosts lack the `xterm-direct` terminfo entry and programs
+/// misbehave under it (invisible.island.net/ncurses/ncurses.faq: "why not
+/// just set TERM to xterm-256color?"), and the value `ssh` carries to remote
+/// hosts — no `COLORTERM`, and the same direct-color reply stream
+/// `DCS 1 + r 524742 = 38 ST` (hex("8"): 8-bit channels, xterm/misc.c
+/// `xtermGetTcap`). Passive evidence says C256; ONLY the by-value XTGETTCAP
+/// parse can conclude True. If that parse regresses (dropped, or collapsed
+/// into a prefix test that then mis-handles the value), this fixture fails.
+const XTERM_DIRECT_256: Identity = Identity {
+    name: "xterm (direct color, TERM=xterm-256color)",
+    env: fixture_env!["TERM" => Some("xterm-256color"), "COLORTERM" => None,
               "TERM_PROGRAM" => None],
     ws: winsize_with_cell_px(80, 24, 8, 16),
     replies: b"\x1bP>|XTerm(390)\x1b\\\
@@ -273,9 +311,68 @@ const LINUX_CONSOLE: Identity = Identity {
     want_glyphs: 1 | 2,
 };
 
+/// **kitty with COLORTERM stripped** — the M5 quirk-table fixture (item C).
+///
+/// Same terminal, same replies as [`KITTY`], but launched through something
+/// that scrubs `COLORTERM` (sudo, `env -i`, env-whitelisting session
+/// managers). Passive evidence now says C256 and the query path cannot help:
+/// kitty's XTGETTCAP tables carry `Tc` but no `RGB`, so our `+q524742` query
+/// gets the invalid `0+r…` form back (kitty/terminfo.py). kitty itself is
+/// unconditionally truecolor (its docs and its own COLORTERM export) — the
+/// identity-keyed quirk `kitty-rgbless-xtgettcap` (src/quirks.rs) must
+/// restore True from the XTVERSION reply alone.
+const KITTY_STRIPPED: Identity = Identity {
+    name: "kitty (COLORTERM stripped)",
+    env: fixture_env!["TERM" => Some("xterm-kitty"), "COLORTERM" => None,
+              "TERM_PROGRAM" => None],
+    ws: winsize_with_cell_px(80, 24, 8, 16),
+    replies: b"\x1bP>|kitty(0.42.2)\x1b\\\
+\x1b[?2026;2$y\
+\x1bP0+r524742\x1b\\\
+\x1b[6;20;10t\
+\x1b[?62;52;c",
+    want_color: "True",
+    want_sync: true,
+    want_cell_px: "10x20",
+    want_support: "UnicodeCore",
+    want_glyphs: 1 | 2 | 4,
+};
+
+/// **plain xterm behind a `.bashrc` `export COLORTERM=truecolor`** — the M5
+/// quirk-table fixture, downgrade direction (item C).
+///
+/// The terminal is [`XTERM`] verbatim — and it *answered* the RGB query with
+/// the valid form carrying "-1", "no direct color" (xterm/misc.c
+/// `xtermGetTcap`). The globally exported COLORTERM would promote the
+/// passive tier to True, but xterm approximates every SGR 38;2 into its
+/// 256-color palette; the `xterm-no-direct-color` quirk (src/quirks.rs)
+/// clamps the tier back to what the queried terminal can actually display.
+const XTERM_COLORTERM_LIE: Identity = Identity {
+    name: "xterm (COLORTERM=truecolor lie)",
+    env: fixture_env!["TERM" => Some("xterm-256color"), "COLORTERM" => Some("truecolor"),
+              "TERM_PROGRAM" => None],
+    ws: winsize_with_cell_px(80, 24, 8, 16),
+    replies: b"\x1bP>|XTerm(390)\x1b\\\
+\x1b[?2026;0$y\
+\x1bP1+r524742=2D31\x1b\\\
+\x1b[6;13;6t\
+\x1b[?63;1;2;4;6;9;15;16;17;18;21;22;28;29c",
+    want_color: "C256",
+    want_sync: false,
+    want_cell_px: "6x13",
+    want_support: "UnicodeCore",
+    want_glyphs: 1 | 2 | 4,
+};
+
 /// Replay one identity through the real probe on a real pty.
 fn assert_identity(id: &Identity) {
-    let (pty, mut child) = spawn_harness_with("probe-reply", id.ws, id.env);
+    assert_identity_mode(id, "probe-reply");
+}
+
+/// Same, with an explicit harness probe mode (`probe-reply-noquirks` = the
+/// `--no-quirks` escape hatch — M5 item C).
+fn assert_identity_mode(id: &Identity, mode: &str) {
+    let (pty, mut child) = spawn_harness_with(mode, id.ws, id.env);
     let mut out = Vec::new();
     // The volley is ONE write ending in the DA1 query — wait for its tail,
     // then answer exactly as this terminal would.
@@ -327,9 +424,114 @@ fn xterm_direct_color_identity() {
     assert_identity(&XTERM_DIRECT);
 }
 
+/// M5 fix 4: truecolor here is derivable ONLY from the XTGETTCAP reply
+/// value (no COLORTERM, no "direct" in TERM) — the failing guard for the
+/// by-value RGB parse. See [`XTERM_DIRECT_256`].
+#[test]
+fn xterm_direct_color_behind_256color_term_identity() {
+    assert_identity(&XTERM_DIRECT_256);
+}
+
 #[test]
 fn linux_console_identity() {
     assert_identity(&LINUX_CONSOLE);
+}
+
+/// M5 item C, upgrade direction: the quirk table (keyed on the queried
+/// XTVERSION identity, applied post-probe) restores truecolor for a
+/// COLORTERM-stripped kitty — and `--no-quirks` reproduces the raw
+/// pre-quirk conclusion (C256).
+#[test]
+fn kitty_stripped_colorterm_quirk_and_escape_hatch() {
+    assert_identity(&KITTY_STRIPPED);
+    let raw = Identity { want_color: "C256", ..KITTY_STRIPPED };
+    assert_identity_mode(&raw, "probe-reply-noquirks");
+}
+
+/// M5 item C, downgrade direction: the queried xterm denied direct color, so
+/// the passive COLORTERM=truecolor claim is clamped to C256 — and
+/// `--no-quirks` reproduces the raw (uncorrected) True.
+#[test]
+fn xterm_colorterm_lie_quirk_and_escape_hatch() {
+    assert_identity(&XTERM_COLORTERM_LIE);
+    let raw = Identity { want_color: "True", ..XTERM_COLORTERM_LIE };
+    assert_identity_mode(&raw, "probe-reply-noquirks");
+}
+
+/// Spawn the harness for `id` in a cache-enabled probe mode with the probe
+/// cache rooted at `cache_dir`, optionally answer the volley, and return the
+/// concluded color tier plus the raw pty output. `answer_volley: false`
+/// asserts the warm-cache path — PROBE-DONE must arrive with NO volley
+/// written (a cache hit skips it).
+fn run_cached_probe(
+    id: &Identity,
+    mode: &str,
+    cache_dir: &std::path::Path,
+    answer_volley: bool,
+) -> (String, Vec<u8>) {
+    let dir = cache_dir.to_str().expect("utf8 cache dir");
+    let mut env: Vec<(&str, Option<&str>)> = id.env.to_vec();
+    env.push(("SLPY_HARNESS_CACHE_DIR", Some(dir)));
+    let (pty, mut child) = spawn_harness_with(mode, id.ws, &env);
+    let mut out = Vec::new();
+    if answer_volley {
+        wait_until_contains(pty.master, &mut out, b"\x1b[c");
+        write_master(pty.master, id.replies);
+    }
+    wait_until_contains(pty.master, &mut out, b"PROBE-DONE");
+    wait_child_success(&mut child);
+    let line = probe_done_line(&out);
+    (field(&line, "color").to_owned(), out)
+}
+
+fn temp_cache_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("slpy-idcache-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+/// M5 review high 1: the downgrade-direction quirk must survive the cache.
+/// Cold run: volley answered, `xterm-no-direct-color` clamps the COLORTERM
+/// lie to C256, entry stored. Warm run (same key, cache hit, NO volley):
+/// the clamp must still hold — before the fix, the upgrade-only merge let
+/// the passive COLORTERM=truecolor evidence win back True on every run
+/// after the first.
+#[test]
+fn xterm_colorterm_lie_quirk_survives_the_cache() {
+    let dir = temp_cache_dir("xterm-lie");
+
+    let (cold, _) = run_cached_probe(&XTERM_COLORTERM_LIE, "probe-cached", &dir, true);
+    assert_eq!(cold, "C256", "cold run: quirk clamps the COLORTERM lie");
+
+    let (warm, out) = run_cached_probe(&XTERM_COLORTERM_LIE, "probe-cached", &dir, false);
+    assert!(
+        common::find(&out, b"\x1b[>0q").is_none(),
+        "warm run must be a cache hit (no volley written)"
+    );
+    assert_eq!(warm, "C256", "the quirk clamp must survive the cache hit");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// M5 review medium 2: `--no-quirks` must bypass the cache in BOTH
+/// directions. With a quirk-clamped entry already cached, a no-quirks run
+/// must NOT serve it — it re-volleys and takes the replies at face value
+/// (True under the COLORTERM lie). Before the fix the cache hit skipped the
+/// volley and handed back the quirk-derived result the flag promises to
+/// disable.
+#[test]
+fn no_quirks_bypasses_the_cached_quirk_result() {
+    let dir = temp_cache_dir("noquirks");
+
+    let (cold, _) = run_cached_probe(&XTERM_COLORTERM_LIE, "probe-cached", &dir, true);
+    assert_eq!(cold, "C256", "seed the cache with the quirk-clamped entry");
+
+    // answer_volley: true — a cache hit would hang here (no volley to
+    // answer); the wait itself asserts the bypass.
+    let (raw, _) = run_cached_probe(&XTERM_COLORTERM_LIE, "probe-cached-noquirks", &dir, true);
+    assert_eq!(raw, "True", "--no-quirks: replies at face value, cache ignored");
+
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// The fixture set is not allowed to quietly collapse: the M4 matrix is five
@@ -338,8 +540,19 @@ fn linux_console_identity() {
 /// assertions otherwise).
 #[test]
 fn identity_matrix_is_diverse() {
-    let all = [KITTY, ALACRITTY, WEZTERM, GNOME_VTE, XTERM, XTERM_DIRECT, LINUX_CONSOLE];
-    assert_eq!(all.len(), 7);
+    let all = [
+        KITTY,
+        ALACRITTY,
+        WEZTERM,
+        GNOME_VTE,
+        XTERM,
+        XTERM_DIRECT,
+        XTERM_DIRECT_256,
+        LINUX_CONSOLE,
+        KITTY_STRIPPED,
+        XTERM_COLORTERM_LIE,
+    ];
+    assert_eq!(all.len(), 10);
     assert!(all.iter().any(|i| i.want_color == "C256"), "a 256-color terminal");
     assert!(all.iter().any(|i| i.want_color == "C16"), "a 16-color terminal");
     assert!(all.iter().any(|i| i.want_sync), "a terminal with synchronized output");

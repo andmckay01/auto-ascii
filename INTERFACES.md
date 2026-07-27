@@ -77,7 +77,15 @@ pub const DEFAULT_CELL_ASPECT: f64 = 2.0;
 pub const MIN_COLS: u16 = 32;  pub const MIN_ROWS: u16 = 9;
 pub struct Viewport { pub cols, rows, pad_left, pad_right, pad_top, pad_bottom: u16 }
 pub fn compute_viewport(term_cols: u16, term_rows: u16, cell_aspect: f64)
-    -> Option<Viewport>;   // None = below 32×9 → "enlarge terminal" card
+    -> Option<Viewport>;   // None = below 32×9 → "enlarge terminal" card;
+    // 16:9 convenience wrapper over compute_viewport_for (bit-identical)
+pub fn compute_viewport_for(term_cols: u16, term_rows: u16, cell_aspect: f64,
+    aspect_num: u16, aspect_den: u16) -> Option<Viewport>;  // M5 fix 2: the
+    // letterbox targets the ASSET's header aspect (PLAN §4 aspect_num/den);
+    // zero num/den falls back to 16:9. pipeline::Player::reflow_grid feeds
+    // the header values through this, so Player AND RenderSession letterbox
+    // non-16:9 assets correctly (tests: slpy-core viewport.rs,
+    // sleepytime/tests/render_session.rs letterbox suite)
 
 // resample.rs (§3.3) — IMPLEMENTED
 pub struct Tap1D { pub src_start: u16, pub ntaps: u16, pub w_off: u32 } // Q8, sum 256
@@ -149,6 +157,38 @@ pub fn select_palettes(GlyphTier, ColorDepth, viewport_cols: u16) -> PaletteSet;
 // Key (§1b): C16/Mono → palette 8 base uncapped ("mono longest"); True caps
 // ramps to 8, C256 to 12; Ascii → coarse/fine by density + subpos; unicode
 // tiers → halfblock + quadrant; braille only BrailleVerified × Fine density.
+pub fn tier_glyphs(GlyphTier) -> Vec<char>;   // M5 item B: every glyph the
+pub fn all_palette_glyphs() -> Vec<char>;     // compositor can emit at a
+    // tier / across all 8 palettes, ENUMERATED from the palette data
+    // (select_palettes walked over depths × densities + edge LUTs +
+    // subpos + quadrants + reachable braille masks); sorted, deduped.
+    // Consumers: the font-table generator + the repertoire veto below.
+
+// font_table.rs (§3.4 per-font ink-coverage tables) — NEW at M5 item B.
+// Hand-rolled reader of exactly the `sleepy-factory font-table` TOML
+// emitter subset (slpy-core stays zero-dep); structural problems are
+// Err(String), not panics (tables arrive via --font-table PATH).
+pub const BUILTIN_FONT_TABLES: &[&str];  // conservative, dejavu-sans-mono,
+                                         // liberation-mono, ubuntu-mono,
+                                         // noto-sans-mono
+pub struct FontTable;   // name + sorted (char, coverage 0..=1) + missing[]
+impl FontTable {
+  pub fn parse(&str) -> Result<FontTable, String>;
+  pub fn builtin(name: &str) -> Option<&'static FontTable>;  // include_str!
+      // of the committed fonts/*.toml, parsed once (LazyLock)
+  pub fn name/entries/missing();
+  pub fn coverage(char) -> Option<f32>;  // Some(0.0) for listed-but-missing
+  pub fn has_glyph(char) -> bool;        // listed AND not in missing[]
+  pub fn veto_tier(&self, want: GlyphTier) -> GlyphTier;
+      // §3.4 repertoire veto: highest tier ≤ want whose tier_glyphs() the
+      // font fully covers; degrades Braille → UnicodeBlocks → Ascii; Ascii
+      // is the floor. Researched reality (cmap-verified, fonts/README.md):
+      // NO common monospace font ships braille (DejaVu's braille is in the
+      // Sans face, not Mono), Liberation lacks ╱╲ + corner quadrants,
+      // Ubuntu Mono also lacks ‾ and every half/quadrant block — both veto
+      // any unicode request to Ascii. Pinned by
+      // builtins_load_and_veto_as_researched.
+}
 
 // orient.rs (§3.3) — sign/comparison only, no atan2, no floats.
 // PLANE CONTRACT (matches factory features.rs/edges.rs): Ex/Ey are bias-128
@@ -250,7 +290,7 @@ pub fn compose_frame_masked(...same args, out: &mut Grid<Cell>,
 ## slpy-term (PLAN §3.1, §3.6) — M1: caps probe + color tiers + ?2026
 
 M4 (item B): feature `"session"` (default ON) gates everything that touches
-a real terminal — `ansi`/`probe`/`restore` modules, their re-exports
+a real terminal — `ansi`/`probe`/`quirks`/`restore` modules, their re-exports
 (`AnsiBackend`, `probe_caps`/`ProbeOptions`/`ProbeParser`/`ProbeReplies`/
 `DEFAULT_PROBE_TIMEOUT`, `RESTORE_SEQ`/`install_restore_hooks`) and the pty
 harness bin — plus the crossterm + libc deps. Everything below that is
@@ -282,6 +322,12 @@ pub const VOLLEY: &[u8];  // ONE write: XTVERSION, DECRQM 2026, XTGETTCAP RGB,
                           // CSI 16 t, then DA1 (CSI c) LAST as sentinel
 pub struct ProbeOptions { pub forced_tier: Option<ColorTier>,  // --tier
                           pub no_query: bool,                  // --no-query
+                          pub no_quirks: bool,   // --no-quirks (M5 item C):
+                          // skip the quirk table AND bypass the cache both
+                          // ways — never stored (cached entries must be the
+                          // fully adjusted truth — cache hits can't
+                          // re-quirk) and never read (cached entries embed
+                          // quirk adjustments); always re-volleys
                           pub no_cache: bool, pub timeout: Duration,
                           pub cache_dir: Option<PathBuf> }     // + Default
 pub fn probe_caps(&ProbeOptions) -> Caps;
@@ -331,6 +377,19 @@ pub struct ProbeReplies { pub xtversion: Option<String>, pub decrqm_2026: Option
                           pub xtgettcap_rgb: Option<bool>,
                           pub cell_px: Option<(u16,u16)>, pub da1: bool }
 
+// quirks.rs — NEW at M5 item C (PLAN §3.1 "quirk table keyed on queried
+// identity"); session-gated. Matched on the XTVERSION reply prefix + the
+// XTGETTCAP-RGB reading — never TERM; applied by probe_caps post-volley,
+// pre-forced-tier, never on cache hits / --no-query (details + the two
+// sourced entries: note 26a).
+pub struct Quirk { pub name: &'static str, pub xtversion_prefix: &'static str,
+                   pub rgb_reply: Option<Option<bool>>,    // None = don't care
+                   pub color_at_least: Option<ColorTier>,  // caps adjustments
+                   pub color_at_most: Option<ColorTier> }
+pub const QUIRKS: &[Quirk];   // kitty-rgbless-xtgettcap, xterm-no-direct-color
+pub fn apply_quirks(caps: &mut Caps, &ProbeReplies) -> Vec<&'static str>;
+    // returns the names applied (probe logging/tests)
+
 // quant.rs — NEW at M1 (PLAN §3.1 quantize-before-diff; pure math)
 pub fn rgb_to_256(Rgb) -> u8;     // xterm 6×6×6 cube (16–231) + gray ramp (232–255)
 pub fn rgb_to_16(Rgb) -> u8;      // nearest of the standard 16 (xterm defaults)
@@ -338,7 +397,9 @@ pub fn ansi256_to_rgb(u8) -> Rgb; // canonical inverse (roundtrip-exact 16..=255
 pub fn ansi16_to_rgb(u8) -> Rgb;
 
 // event.rs — crossterm types never leak into the pub API
-pub enum Key { Char(char), Ctrl(char), Esc }
+pub enum Key { Char(char), Ctrl(char), Esc, Left, Right }
+    // Left/Right NEW at M5 (scrub UX): arrow keys mapped by AnsiBackend;
+    // the player turns them into ±5 s seeks (SCRUB_STEP_SECS)
 pub enum Event { Resize(u16, u16), Key(Key), Quit }
 pub struct EventQueue;  // new/push/pop/is_empty/clear (implemented, VecDeque)
 
@@ -479,9 +540,15 @@ HTML contact sheets is `sleepy-factory eval` (M2 item B) — not this crate.
 // artifact (no corpus/font dependency at test time). Covers all printable
 // ASCII (⊇ every shipped palette incl. the PLAN §3.4 mono ramp " .:coO8@").
 pub const CONSERVATIVE_COVERAGE: &[(char, f32)];  // 95 entries, sorted
-pub struct CoverageTable;   // sorted entries + max; per-font tables at M5
+pub struct CoverageTable;   // sorted entries + max; per-font tables: M5 ↓
 impl CoverageTable {
   pub fn conservative() -> &'static CoverageTable;
+  pub fn from_font_table(&slpy_core::FontTable) -> CoverageTable;  // M5 item
+      // B: per-font scoring (eval --font-table). Missing glyphs enter at
+      // coverage 0 (blank ink, the §3.4 missing-glyph policy — NOT the
+      // unknown-glyph mid-gray fallback); max_coverage (the normalize_ink
+      // anchor) tracks the table, so absolute SSIM is only comparable
+      // within one table choice.
   pub fn from_entries(Vec<(char, f32)>) -> CoverageTable; // panics: empty/dup/!0..=1
   pub fn coverage(&self, char) -> Option<f32>;
   pub fn coverage_or_fallback(&self, char) -> f32;  // unknown → 0.5·max (mid-gray)
@@ -686,7 +753,8 @@ pub enum Error;                       // one coherent error (thiserror-style
     // layering, hand-rolled): Io{path,source} | Format{path,source:SlpyError}
     // | Asset(&'static str) | Decode{frame,plane,source:SlpyError}
     // | Config(String) | Terminal(io::Error); #[non_exhaustive];
-    // Display embeds the cause, source() exposes the chain
+    // M5 fix 1: Display states THIS layer only; the cause is exposed via
+    // source() alone, so anyhow-style chain printers show it exactly once
 pub enum PaletteChoice { Auto, Ascii, Unicode, Braille }  // §3.4 charset axis
     // Auto = probed caps (Player) / Unicode blocks (RenderSession);
     // braille NEVER chosen automatically
@@ -713,10 +781,17 @@ impl RenderSession {
       // realloc+reset (same as terminal resize)
   pub fn fps(&self) -> f64;           // drive your clock: (t·fps) as u32
   pub fn frame_count(&self) -> u32;   // > 0, enforced at open
-  pub fn aspect(&self) -> f64;        // asset picture aspect (w/h, ≈1.778)
+  pub fn aspect(&self) -> f64;        // asset picture aspect (w/h, ≈1.778);
+      // since M5 fix 2 this IS the letterbox target ratio render() uses
   pub fn set_palette(&mut self, PaletteChoice);            // resets temporal
   pub fn set_cell_aspect(&mut self, f64) -> Result<(), Error>; // §3.2 knob
       // (1.0 for square cells in an embedder's own renderer)
+  pub fn set_font_table(&mut self, Option<&str>) -> Result<(), Error>;
+      // M5 item B (§3.4 --font-table): builtin NAME | PATH to a generator
+      // TOML | None to clear. The table's repertoire VETOES the palette
+      // choice via FontTable::veto_tier (braille→unicode→ascii) — resets
+      // temporal state like set_palette; bad specs are Error::Config and
+      // leave the session untouched
 }
 
 // player.rs — feature "terminal" (in the default set via "bin")
@@ -727,16 +802,24 @@ impl PlayerBuilder {        // the spec'd builder (§7 M4) + escape hatches
   pub fn palette(self, PaletteChoice) -> Self;             // default Auto
   pub fn tier(self, Option<ColorTier>) -> Self;   // Some = force + skip volley
   pub fn repaint(self, RepaintMode) -> Self;
-  pub fn fps_cap(self, f64) -> Self;              // >0 checked at build
+  pub fn fps_cap(self, f64) -> Self;    // >= MIN_FPS_CAP (1.0) checked at
+      // build (M5 fix 3: tiny caps used to panic/hang in run() AFTER the
+      // session started); pub const MIN_FPS_CAP: f64 = 1.0 is exported
   pub fn looping(self, bool) -> Self;
   pub fn cell_aspect(self, f64) -> Self;          // finite >0 checked at build
   pub fn seek_secs(self, f64) -> Self;            // FIDX seek; bounds at build
   pub fn duration_secs(self, f64) -> Self;        // stop after N s wall clock
   pub fn no_query(self, bool) -> Self;            // probe escape hatches
   pub fn no_cache(self, bool) -> Self;            //   (PLAN §3.1)
+  pub fn no_quirks(self, bool) -> Self;           // M5 item C: skip the
+      // identity-keyed quirk table (slpy-term quirks.rs) post-probe
+  pub fn font_table(self, impl Into<String>) -> Self;  // M5 item B (§3.4):
+      // builtin NAME | PATH; parsed+validated at build(); run() applies the
+      // repertoire veto AFTER resolve_for_caps (user-asserted font truth
+      // degrades the probed/forced tier, never upgrades it)
   pub fn build(self) -> Result<Player, Error>;    // opens+validates the asset;
       // does NOT touch the terminal — bad path/file fails before any
-      // screen state changes
+      // screen state changes (incl. font-table resolution)
 }
 pub struct Player;          // asset open+validated, terminal untouched
 impl Player {
@@ -754,8 +837,10 @@ pub use slpy_term::ColorTier;   // the tier(..) argument type — the ONLY
 ```
 
 Deliberately `#[doc(hidden)]` (workspace harness contract, semver-exempt):
-`sleepytime::pipeline` (below) and `PaletteChoice::resolve_for_caps(&Caps)`
-(CLI/--sim plumbing).
+`sleepytime::pipeline` (below), `PaletteChoice::resolve_for_caps(&Caps)`
+and `sleepytime::load_font_table(&str) -> Result<slpy_core::FontTable,
+Error>` (M5: the bin's `--sim` path applies the same repertoire veto as
+run(); embedders use the wrapped forms above) — CLI/--sim plumbing.
 
 ## sleepytime::pipeline — the hidden engine room (ex sleepy-player lib)
 
@@ -780,7 +865,10 @@ reflow; RenderSession setters).
 ```rust
 // pipeline.rs — M3: the full §3.5 three-layer path (integrator; note 20).
 pub struct StageNs { pub decode, resample, compose, present: u64 } // ns, Copy
-pub struct Drained { pub quit: bool, pub jump_digit: Option<u8> }
+pub struct Drained { pub quit: bool, pub jump_digit: Option<u8>,
+                     pub seek_steps: i32 }  // M5 scrub UX: net Left(−1)/
+    // Right(+1) presses, coalesced per drain; caller converts to ±5 s.
+    // Nonzero ⇒ hysteresis already reset (same rule as jump_digit).
     // M3 review fix (medium, seek ghosting): when jump_digit is Some,
     // drain_events has ALREADY reset all hysteresis state — a digit seek is
     // a temporal discontinuity (same class as the §3.5 cut/resize resets;
@@ -813,6 +901,13 @@ impl<'a> Player<'a> {
       // build, §3.3), feature tap tables at Vc×Vr (only when planes exist),
       // HysteresisState.resize (realloc+reset — §3.5 graft from C)
   pub fn drain_events<B: Backend>(&mut self, backend: &mut B) -> Drained;
+  pub fn set_progress_overlay(&mut self, visible: bool);  // M5 scrub UX:
+      // 1-line bottom-row progress bar drawn over the composed grid by
+      // render_grid; visible→hidden schedules a one-shot backend invalidate
+      // consumed by the next render_present (the diff baseline can never
+      // keep describing overlay cells). Presentation-only: hysteresis and
+      // the LayerMask are untouched; eval never enables it. Tested by
+      // sleepytime/tests/scrub_overlay.rs (strict escape-stream replay).
   pub fn render_present<B: Backend>(&mut self, backend: &mut B, frame_idx: u32)
       -> Result<FrameStats, Error>;  // M4: facade Error
       // M3 frame: decode Y(+E/Ex/Ey/H/C present-planes; sequential roll or
@@ -837,6 +932,10 @@ impl<'a> Player<'a> {
 pub fn build_levels_lut(lut: &mut [u8; 256], levels: Option<PlaneLevels>);
 pub fn unpack_rgb565(src: &[u8], r, g, b: &mut [u8]);
 pub fn draw_enlarge_card(grid: &mut Grid<Cell>);
+pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32,
+                             frame_count: u32, fps: f64);  // M5 scrub UX:
+    // the bottom-row bar (" M:SS / M:SS [====>....] NN% ", pure ASCII,
+    // byte-deterministic — unchanged rows cost zero diff damage)
 // REMOVED at M3: compose_cells (the M1 base-only compositor) — the §3.5
 // path replaced it wholesale; keeping it invited silent drift between the
 // shipping renderer and the golden harness.
@@ -849,13 +948,23 @@ facade surface + this hidden module.)
 
 ## Binaries
 
-- `sleepy-factory` (PLAN §5), CLI as of M3:
+- `sleepy-factory` (PLAN §5), CLI as of M3 (+ M5 item B):
   `build <in> -o <out> [--ss T] [--t T] [--fps N] [--res WxH] [--params F]`,
   `inspect <asset> [--dump-planes DIR] [--frame N]...` (M3: per-plane value
   stats over sampled frames + optional PGM/PPM plane dumps for eyeballing),
   `params --dump [--params F]`,
+  `font-table <font.ttf> -o T.toml [--name N] | font-table --conservative
+  -o T.toml` (M5 item B: rasterizes `all_palette_glyphs()` at 64×128 via
+  ab_glyph — advance-fitted, ink-box centered+clipped — into a
+  deterministic TOML coverage table; same font bytes ⇒ byte-identical
+  output, unit-tested; missing glyphs get coverage 0 + `missing` entry +
+  stderr WARN; the five committed `fonts/*.toml` are its artifacts, see
+  fonts/README.md),
   `eval --corpus <dir> [--params F] [--baseline B.json] --out X.json
-  [--html X.html] [--reel R.html] [--cache-dir D]`,
+  [--html X.html] [--reel R.html] [--cache-dir D] [--font-table NAME|PATH]`
+  (M5: `--font-table` swaps the SSIM rasterizer's ink model — builtin name
+  or generator TOML path; default `conservative` = the committed baseline's
+  table; sweep always scores conservative),
   `sweep --corpus <dir> --grid G.toml --out DIR [--params F]
   [--cache-dir D]` (M3 Tune, note 21: the PLAN §5 sweep CLI — G.toml
   declares `[[axes]]` of dotted-param override sets (values within an axis
@@ -948,9 +1057,13 @@ facade surface + this hidden module.)
   notes 9, 11 and 20):
   `<asset> [--repaint full|diff] [--loop] [--fps-cap FPS] [--cell-aspect F]
   [--duration-secs N] [--seek TIMESTAMP] [--tier TIER] [--no-query]
-  [--no-cache] [--palette auto|ascii|unicode|braille]
-  [--sim COLSxROWS:NFRAMES] [--sim-tier TIER] [--sim-dump PATH]
-  [--sim-resize [COLSxROWS]]`.
+  [--no-cache] [--no-quirks] [--palette auto|ascii|unicode|braille]
+  [--bench-seek N]
+  [--font-table NAME|PATH] [--sim COLSxROWS:NFRAMES] [--sim-tier TIER]
+  [--sim-dump PATH] [--sim-resize [COLSxROWS]]`.
+  M5 item B: `--font-table` maps onto `PlayerBuilder::font_table`
+  (interactive) and applies the identical repertoire veto on the `--sim`
+  path via the hidden `sleepytime::load_font_table`.
   M3: `--palette` overrides the Caps-derived charset tier for palette
   selection (`auto` = `glyph_tier_from_caps`; `--sim` derives auto from
   `Caps::default()` — ascii). The `--sim` JSON line gained
@@ -1567,3 +1680,111 @@ facade surface + this hidden module.)
     carry `#![cfg(feature = "bin")]`, so they no longer silently exercise a
     stale `target/debug/sleepy-player` left by an earlier default-feature
     build. No public signature changed in (c).
+
+25. **M5 item B landed** (font-tables agent; PLAN §3.4 "coverage tables for
+    4 common monospace fonts plus one conservative default" + `--font-table`).
+    New surface per the sections above: `slpy_core::palette::{tier_glyphs,
+    all_palette_glyphs}` (palette-data-driven glyph enumeration),
+    `slpy_core::font_table` (`FontTable` parse/builtin/veto_tier,
+    `BUILTIN_FONT_TABLES`), `slpy_eval::CoverageTable::from_font_table`,
+    facade `PlayerBuilder::font_table` + `RenderSession::set_font_table` +
+    hidden `sleepytime::load_font_table`, factory `font-table` subcommand +
+    `eval --font-table`, player `--font-table`. Decisions recorded:
+    (a) **Generator = `sleepy-factory font-table`** (ab_glyph — already in
+    the tree via imageproc; new direct workspace dep). Cell model: font
+    scaled so the monospace ADVANCE = 64 px (terminals size by advance,
+    not em), ink box centered and clipped to the 64×128 cell; coverage =
+    antialiased-ink integral (same model as the M2 derive_coverage.py
+    reference — DejaVu `@` agrees within 1.5%). Deterministic TOML emitter
+    (fixed field order/precision, basename+sha256 provenance only):
+    byte-identity unit-tested AND the five committed tables reproduce
+    byte-for-byte from the system fonts (fonts-dejavu-core,
+    fonts-liberation, fonts-ubuntu, fonts-noto-mono).
+    (b) **Tables committed at repo-root `fonts/*.toml`** and embedded into
+    slpy-core via `include_str!` (`FontTable::builtin`) — slpy-core is not
+    on the `cargo package -p sleepytime` path, so item F is unaffected; the
+    facade embeds nothing.
+    (c) **Repertoire findings (cmap-verified, cited in fonts/README.md):**
+    no common monospace font ships palette-7 braille (DejaVu's braille is
+    in the Sans face); Liberation Mono lacks `╱╲`+corner quadrants; Ubuntu
+    Mono also lacks `‾` and all half/quadrant blocks. veto_tier therefore
+    degrades braille→unicode for DejaVu/Noto and unicode→ascii for
+    Liberation/Ubuntu — pinned by slpy-core/facade tests
+    (`builtins_load_and_veto_as_researched`,
+    `font_table_repertoire_vetoes_palette_tier`). The veto was wired (it
+    was trivial on top of the repertoire data), satisfying the §3.4
+    "palette selection can veto" clause.
+    (d) **Comparison note (fonts/README.md):** mean per-glyph ΔL* across
+    the four fonts 5.0, max ΔL* 19.6 (`▒`, DejaVu much denser); ramp-
+    ordering INVERSIONS exist under every font (e.g. `:`→`-` and `=`→`+`
+    in palette 1 everywhere; `f`→`L` in palette 2 everywhere; `+`→`*` in
+    palette 4 under DejaVu/Liberation/conservative); palettes 5 and 8 are
+    monotone under all fonts. Ramps deliberately NOT retuned at M5 (task
+    directive) — the tables are the input for that follow-up.
+    (e) **Eval default unchanged:** `eval` without `--font-table` scores
+    through the conservative constants exactly as before (runs/base.json
+    untouched); per-font SSIM is a new mode whose normalization anchor
+    moves with the table (documented on from_font_table).
+
+26. **M5 items C + D + E + F landed** (scrub/ship agent). PLAN §7 M5 minus
+    the soak (A) and font tables (B), which landed separately (note 25).
+    (a) **Quirk table keyed on queried identity** (item C, PLAN §3.1):
+    `slpy_term::quirks` (session-gated) — a static `QUIRKS: &[Quirk]`
+    matched on the XTVERSION reply prefix plus the XTGETTCAP-RGB reading,
+    applied by `probe_caps` post-volley and pre-`--tier`, NEVER on cache
+    hits/`--no-query` (no queried identity there). Two sourced entries:
+    `kitty-rgbless-xtgettcap` (kitty's XTGETTCAP tables carry `Tc` but no
+    `RGB` → `0+r`; kitty is unconditionally truecolor, so a
+    COLORTERM-stripped kitty is upgraded C256→True; kitty/terminfo.py) and
+    `xterm-no-direct-color` (xterm answers the valid RGB form with "-1" =
+    no direct color and approximates SGR 38;2 into its 256 palette;
+    xterm/misc.c + ctlseqs — a .bashrc `COLORTERM=truecolor` lie is clamped
+    True→C256). Escape hatch `--no-quirks` end-to-end
+    (`ProbeOptions.no_quirks` / `PlayerBuilder::no_quirks` / CLI); no-quirks
+    bypasses the probe cache both ways — never stored (cache hits cannot
+    re-quirk) and never read (cached entries embed quirk adjustments) — so
+    it always re-volleys. Cache entries record downgrade-direction quirk
+    clamps (`quirk_clamped`, cache v3) so a warm-cache hit re-applies the
+    clamp over the same passive evidence instead of losing it to the
+    upgrade-only merge. Tests: quirks.rs unit suite + pty identity fixtures
+    (KITTY_STRIPPED, XTERM_COLORTERM_LIE) each asserted quirked AND via the
+    harness mode `probe-reply-noquirks`, plus cache×quirk pty regressions
+    (`probe-cached[-noquirks]` modes: clamp survives a cache hit; no-quirks
+    ignores the cached quirked entry).
+    (b) **Scrub UX** (item D): `Key::{Left,Right}` (slpy-term) → ±5 s
+    (`sleepytime::SCRUB_STEP_SECS`), coalesced per drain
+    (`Drained.seek_steps`), hysteresis reset exactly like digit jumps;
+    digits keep their 0–90% bindings. Transient bottom-row progress overlay
+    (`set_progress_overlay`/`draw_progress_overlay`), auto-hidden by the
+    facade loop after ~1 s (`OVERLAY_HIDE_AFTER`); hide schedules a one-shot
+    backend invalidate so the diff baseline is rebuilt — proven by
+    tests/scrub_overlay.rs, which replays the diff-mode escape stream
+    through a strict screen model (parse failure = corruption) and pins
+    with-overlay vs no-overlay screens identical after hide + the full
+    repaint on the hide frame. Scrub latency instrumented by the new
+    `sleepy-player --bench-seek N` (reset + FIDX seek + decode + resample +
+    compose + present @300×80, seeded xorshift frame sequence): on the
+    856 MB sheep asset, 100 seeks → p50 8.6 ms / p95 20.3 ms / max 32.3 ms
+    (accept < 50 ms).
+    (c) **Ship** (item E): `scripts/release.sh` — native gnu + musl
+    (static-pie, `ldd` "statically linked", gated) + windows-gnu cross
+    (mingw-w64), all stripped and gated < 5 MB (measured 1.66 / 1.77 /
+    2.99 MiB; factory native 3.61 MiB, informational); wine smoke only if
+    wine exists, else the .exe ships documented as UNTESTED-CROSS. The
+    windows-gnu build required cfg-splitting slpy-term's session layer:
+    libc is now a `[target.'cfg(unix)']` dependency; windows halves of
+    ansi/restore/probe go through crossterm's WinAPI layer (raw mode,
+    execute!-entered alt screen, `std::io` writes), probe is passive-only
+    (`can_query=false`, no volley, no cache, quirks inert), restore is
+    panic-hook + Drop (Ctrl-C arrives as a key event in raw mode). Unix
+    behavior is byte-identical (pure cfg split). Makefile (build/dist/test/
+    eval + the macOS build-on-mac section) and README "Install" added;
+    measured: binary path 0.2 s copy→first frame (pty, probe deadline
+    included), clean `git archive HEAD` source build 28.7 s wall.
+    (d) **Publish hygiene** (item F): workspace path deps carry version
+    reqs; slpy-eval stays path-only ON PURPOSE (dev-dep cycle with
+    slpy-term — cargo strips path-only dev-deps when packaging). Manifest
+    check: `cargo package -p slpy-core -p slpy-format -p slpy-term
+    -p sleepytime --no-verify` passes (the closure is packaged together
+    because the deps are unpublished; `--no-verify` skips the rebuild,
+    nothing is published; on a dirty tree add `--allow-dirty`).

@@ -28,6 +28,8 @@ pub mod event;
 #[cfg(feature = "session")]
 pub mod probe;
 pub mod quant;
+#[cfg(feature = "session")]
+pub mod quirks;
 mod render;
 #[cfg(feature = "session")]
 pub mod restore;

@@ -76,6 +76,19 @@ impl CoverageTable {
         CoverageTable { entries, max }
     }
 
+    /// Build from a parsed per-font table (M5 `--font-table`, PLAN §3.4):
+    /// entries carry the generator's measured coverage; glyphs the font
+    /// lacks are listed at coverage 0 — the missing-glyph policy — so they
+    /// rasterize as blank ink instead of the unknown-glyph mid-gray guess.
+    ///
+    /// Note the normalization anchor ([`max_coverage`](Self::max_coverage))
+    /// moves with the table: per-font tables include `█` (≈0.9+) while the
+    /// conservative table tops out at `@` (≈0.26), so absolute SSIM values
+    /// are only comparable *within* one table choice.
+    pub fn from_font_table(table: &slpy_core::FontTable) -> CoverageTable {
+        CoverageTable::from_entries(table.entries().to_vec())
+    }
+
     /// Ink coverage for `ch`, or `None` if the glyph is not in the table.
     #[inline]
     pub fn coverage(&self, ch: char) -> Option<f32> {
@@ -258,6 +271,31 @@ mod tests {
         assert_eq!(t.coverage('█'), None);
         let fb = t.coverage_or_fallback('█');
         assert!((fb - t.max_coverage() * 0.5).abs() < 1e-6);
+    }
+
+    /// M5: per-font tables flow into the rasterizer — measured coverage for
+    /// present glyphs, 0 (blank ink) for the font's missing ones, and the
+    /// normalization anchor tracks the table.
+    #[test]
+    fn from_font_table_carries_coverage_and_missing_policy() {
+        let toml = "name = \"t\"\nmissing = [\"╱\"]\n\
+                    [[glyphs]]\nch = \" \"\ncoverage = 0.0\n\
+                    [[glyphs]]\nch = \"@\"\ncoverage = 0.25\n\
+                    [[glyphs]]\nch = \"█\"\ncoverage = 0.95\n\
+                    [[glyphs]]\nch = \"╱\"\ncoverage = 0.0\n";
+        let ft = slpy_core::FontTable::parse(toml).unwrap();
+        let t = CoverageTable::from_font_table(&ft);
+        assert_eq!(t.len(), 4);
+        assert_eq!(t.coverage('@'), Some(0.25));
+        assert_eq!(t.coverage('█'), Some(0.95), "unicode ink is now measured, not fallback");
+        assert_eq!(t.coverage('╱'), Some(0.0), "missing glyph rasterizes as blank");
+        assert!((t.max_coverage() - 0.95).abs() < 1e-6, "anchor moves with the table");
+        // The committed builtins load the same way.
+        let dj = CoverageTable::from_font_table(
+            slpy_core::FontTable::builtin("dejavu-sans-mono").unwrap(),
+        );
+        assert!(dj.coverage('█').unwrap() > 0.9);
+        assert!((dj.coverage('@').unwrap() - 0.2665).abs() < 0.01, "≈ the conservative constant");
     }
 
     #[test]

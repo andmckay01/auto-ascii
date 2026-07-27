@@ -27,6 +27,9 @@ toml = { workspace = true }
 memmap2 = { workspace = true }
 # M3 review reel: animated GIF encoder (grayscale palette, rasterized render).
 gif = { workspace = true }
+# M5 item B: `font-table` subcommand — offline glyph rasterization for the
+# per-font ink-coverage tables (PLAN §3.4).
+ab_glyph = { workspace = true }
 
 [[bin]]
 name = "sleepy-factory"

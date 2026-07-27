@@ -35,8 +35,9 @@ slpy-core = { workspace = true }
 slpy-format = { workspace = true }
 # default-features = false: the session layer (crossterm/libc) enters only
 # via the `terminal` feature above. Direct path dep — workspace inheritance
-# cannot subtract default features.
-slpy-term = { path = "../slpy-term", default-features = false }
+# cannot subtract default features. The version req keeps `cargo package`'s
+# manifest check green (M5 item F: path deps are stripped to versions there).
+slpy-term = { path = "../slpy-term", version = "0.1.0", default-features = false }
 # PLAN §8: assets are mmap'd read-only. Terminal-free (embedder builds keep it).
 memmap2 = { workspace = true }
 # bin-only (feature-gated; PLAN §8).

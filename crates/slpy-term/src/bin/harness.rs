@@ -17,6 +17,10 @@
 //!   per-terminal identity fixtures use (`tests/terminal_identity.rs`): the
 //!   test picks the terminal's env (TERM/COLORTERM/TERM_PROGRAM/locale) and
 //!   pty winsize, then types that terminal's canned reply stream.
+//! - `probe-cached` / `probe-cached-noquirks` — `probe-reply` with the REAL
+//!   probe cache enabled, rooted at `$SLPY_HARNESS_CACHE_DIR` (M5 cache ×
+//!   quirk regressions: a warm cache must preserve a store-time quirk
+//!   clamp; `--no-quirks` must bypass the cache and re-volley).
 //! - `probe-noquery` — `--no-query` escape hatch: passive hints only, no
 //!   volley bytes may reach the terminal.
 //! - `probe-latereply` — replies dribble in around/past the deadline: the
@@ -69,8 +73,35 @@ fn stdin_pending_bytes() -> usize {
     total
 }
 
-fn run_probe(timeout: Duration, no_query: bool) {
-    let opts = ProbeOptions { no_cache: true, no_query, timeout, ..ProbeOptions::default() };
+fn run_probe(timeout: Duration, no_query: bool, no_quirks: bool) {
+    run_probe_opts(ProbeOptions {
+        no_cache: true,
+        no_query,
+        no_quirks,
+        timeout,
+        ..ProbeOptions::default()
+    });
+}
+
+/// `probe-cached[-noquirks]`: the same probe with the REAL cache enabled,
+/// rooted at `$SLPY_HARNESS_CACHE_DIR` (test-owned temp dir — never the
+/// user's cache). Exists for the M5 cache×quirk regressions: a cache-hit run
+/// must preserve a store-time quirk clamp, and `--no-quirks` must bypass the
+/// cache entirely (`tests/terminal_identity.rs`).
+fn run_probe_cached(no_quirks: bool) {
+    let dir = std::env::var_os("SLPY_HARNESS_CACHE_DIR")
+        .map(std::path::PathBuf::from)
+        .expect("probe-cached modes require SLPY_HARNESS_CACHE_DIR");
+    run_probe_opts(ProbeOptions {
+        no_cache: false,
+        no_quirks,
+        cache_dir: Some(dir),
+        timeout: Duration::from_secs(2),
+        ..ProbeOptions::default()
+    });
+}
+
+fn run_probe_opts(opts: ProbeOptions) {
     let start = Instant::now();
     let caps = probe_caps(&opts);
     let ms = start.elapsed().as_millis();
@@ -116,6 +147,8 @@ fn run_straggler_session() {
                 Event::Key(Key::Char(c)) => println!("EV=char:{c}"),
                 Event::Key(Key::Ctrl(c)) => println!("EV=ctrl:{c}"),
                 Event::Key(Key::Esc) => println!("EV=esc"),
+                Event::Key(Key::Left) => println!("EV=left"),
+                Event::Key(Key::Right) => println!("EV=right"),
                 Event::Resize(c, r) => println!("EV=resize:{c}x{r}"),
             }
         }
@@ -135,13 +168,22 @@ fn main() {
         // `caps` is the same run under a name that makes sense when a HUMAN
         // types it on a real terminal: it prints one PROBE-DONE line with
         // what the shipping probe concluded there (docs/TERMINAL-CHECKLIST.md).
-        "probe-silent" | "caps" => return run_probe(slpy_term::DEFAULT_PROBE_TIMEOUT, false),
+        "probe-silent" | "caps" => {
+            return run_probe(slpy_term::DEFAULT_PROBE_TIMEOUT, false, false);
+        }
         // Scripted replies from the test side; generous deadline (deflaked).
-        "probe-reply" => return run_probe(Duration::from_secs(2), false),
+        "probe-reply" => return run_probe(Duration::from_secs(2), false, false),
+        // Same, with the M5 quirk table disabled (`--no-quirks` escape
+        // hatch) — the identity fixtures assert the raw pre-quirk caps here.
+        "probe-reply-noquirks" => return run_probe(Duration::from_secs(2), false, true),
+        // Scripted replies with the real cache enabled (dir from
+        // $SLPY_HARNESS_CACHE_DIR) — the M5 cache×quirk regressions.
+        "probe-cached" => return run_probe_cached(false),
+        "probe-cached-noquirks" => return run_probe_cached(true),
         // --no-query escape hatch: passive hints only, zero volley bytes.
-        "probe-noquery" => return run_probe(slpy_term::DEFAULT_PROBE_TIMEOUT, true),
+        "probe-noquery" => return run_probe(slpy_term::DEFAULT_PROBE_TIMEOUT, true, false),
         // Replies dribbling past the deadline: grace drain must eat them.
-        "probe-latereply" => return run_probe(slpy_term::DEFAULT_PROBE_TIMEOUT, false),
+        "probe-latereply" => return run_probe(slpy_term::DEFAULT_PROBE_TIMEOUT, false, false),
         // Full straggler regression: probe timeout, then session + events.
         "probe-straggler" => return run_straggler_session(),
         _ => {}

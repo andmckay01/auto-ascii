@@ -96,7 +96,7 @@ pub use error::Error;
 pub use session::RenderSession;
 
 #[cfg(feature = "terminal")]
-pub use player::{Player, PlayerBuilder, RepaintMode};
+pub use player::{MIN_FPS_CAP, Player, PlayerBuilder, RepaintMode, SCRUB_STEP_SECS};
 
 // The minimal embedding type set (M4 audit: what a simple project actually
 // touches). Grid/Cell/Rgb are what RenderSession::render returns; ColorTier
@@ -124,6 +124,15 @@ pub enum PaletteChoice {
     /// Unicode plus braille edge/texture glyphs (U+2800–U+28FF) — only for
     /// fonts verified to cover them; never solid fills.
     Braille,
+}
+
+/// Resolve a `--font-table NAME|PATH` spec into a parsed coverage table
+/// (PLAN §3.4, M5). Hidden: CLI/harness plumbing — embedders use
+/// [`RenderSession::set_font_table`] / `PlayerBuilder::font_table`, which
+/// wrap this and keep `slpy_core::FontTable` out of the facade surface.
+#[doc(hidden)]
+pub fn load_font_table(spec: &str) -> Result<slpy_core::FontTable, Error> {
+    session::load_font_table(spec)
 }
 
 impl PaletteChoice {

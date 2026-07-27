@@ -80,8 +80,13 @@ fn asset() -> &'static [u8] {
 /// Worst tap-rebuild time across all cases (reported at the end).
 static WORST_TAP_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// §6 invariants 2–4 on a fresh `compute_viewport` result (invariant 3
-/// recomputes both PLAN §3.2 candidates from the spec formula).
+/// §6 invariants 2–4 on a fresh viewport result (invariant 3 recomputes
+/// both PLAN §3.2 candidates from the spec formula). The 16/9 below is the
+/// FIXTURE ASSET's header aspect, not a global constant: since M5 fix 2 the
+/// player letterboxes to the asset's `aspect_num/den`, so the replication
+/// must use the same ratio — `run_storm` asserts the fixture header is 16:9
+/// (non-16:9 targeting is covered by `slpy-core` viewport tests and the
+/// `render_session` letterbox tests).
 fn check_viewport(cols: u16, rows: u16, vp: Option<Viewport>) -> Result<(), TestCaseError> {
     let a = slpy_core::DEFAULT_CELL_ASPECT;
     let Some(v) = vp else {
@@ -226,6 +231,14 @@ fn render_present(
 
 fn run_storm(ops: &[Op]) -> Result<(), TestCaseError> {
     let reader = SlpyReader::open(asset()).expect("fixture asset is valid");
+    // check_viewport replicates the spec candidates at 16:9 — valid only
+    // because THIS asset's header says 16:9 (see check_viewport docs).
+    let header = reader.header();
+    assert_eq!(
+        (header.aspect_num, header.aspect_den),
+        (16, 9),
+        "fixture header aspect changed: update check_viewport's replication"
+    );
     // Diff mode (repaint_full = false) so invariant 7 proves reflow's
     // invalidate, not a blanket every-frame repaint; chroma on (the C-plane
     // realloc path is part of invariant 5's surface); unicode tier so the
