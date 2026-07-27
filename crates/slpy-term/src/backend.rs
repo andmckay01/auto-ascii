@@ -1,5 +1,6 @@
 //! The `Backend` trait (PLAN §3.1) — exactly two production impls
-//! ([`crate::AnsiBackend`], [`crate::SimBackend`]) plus a future ConPTY oddity.
+//! ([`crate::AnsiBackend`], [`crate::SimBackend`]) — and nothing else
+//! (Scope amendment: no connectivity- or platform-specific backends).
 
 use slpy_core::{Cell, Grid};
 
@@ -20,7 +21,7 @@ pub trait Backend {
 
     /// Render a full grid: quantize to the caps color tier → diff against the
     /// previous quantized grid → span/SGR elision → ONE `write(2)`
-    /// (PLAN §3.1, §3.6 step 6). Returns stats for the governor/harness.
+    /// (PLAN §3.1, §3.6 step 6). Returns per-frame stats for the eval harness.
     fn present(&mut self, grid: &Grid<Cell>) -> FrameStats;
 
     /// Force a full repaint on the next `present` (drops the previous-grid

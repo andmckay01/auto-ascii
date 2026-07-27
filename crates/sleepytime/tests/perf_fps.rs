@@ -15,7 +15,7 @@
 use std::io::Cursor;
 use std::time::Instant;
 
-use sleepy_player::pipeline::Player;
+use sleepytime::pipeline::Player;
 use slpy_format::header::plane_id;
 use slpy_format::{Meta, PlaneRef, SlpyReader, SlpyWriter, WriterOptions};
 use slpy_term::SimBackend;

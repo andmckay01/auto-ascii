@@ -21,13 +21,20 @@
 //! Straggler hygiene (M1 review low 2): replies still in flight at the
 //! deadline are consumed by a bounded quiet-gap grace drain (only when the
 //! terminal was already mid-answer — silent terminals return at the
-//! deadline unchanged), and [`volley_stragglers_possible`] tells the
+//! deadline unchanged), and a crate-private straggler flag tells the
 //! backend's event decoder to filter any reply fragments that arrive later
 //! still, so probe bytes never surface as key events (digits are seek
 //! bindings!).
 //!
 //! Capability tiers are color depth + glyph repertoire only — no
 //! throughput/latency classification (Scope amendment).
+//!
+//! Reply interpretation is deliberately strict (M4 item D, pinned by the
+//! per-terminal pty identity fixtures in `tests/terminal_identity.rs`):
+//! DECRPM 2026 counts only when the mode is *settable*
+//! ([`ProbeReplies::sync_supported`]), and the XTGETTCAP `RGB` answer is read
+//! by value, because xterm replies `1+r524742=` "-1" — a *valid* reply
+//! meaning "no direct color".
 
 use std::fs;
 use std::io;
@@ -101,14 +108,55 @@ impl Default for ProbeOptions {
 pub struct ProbeReplies {
     /// XTVERSION text (e.g. `kitty(0.32.2)`), for the future quirk table.
     pub xtversion: Option<String>,
-    /// DECRPM `Ps` for mode 2026 (0 = not recognized, 1/2/3/4 = recognized).
+    /// DECRPM `Ps` for mode 2026: 0 = not recognized, 1 = set, 2 = reset,
+    /// 3 = permanently set, 4 = permanently reset. Only 1/2 mean the mode is
+    /// usable — see [`ProbeReplies::sync_supported`].
     pub decrqm_2026: Option<u8>,
-    /// XTGETTCAP `RGB`: `Some(true)` on a valid (`1+r`) reply.
+    /// XTGETTCAP `RGB`: `Some(true)` when the terminal advertises a usable
+    /// direct-color width, `Some(false)` on an invalid (`0+r`) reply *or* on
+    /// a valid reply carrying the "no direct color" value `-1` (xterm's
+    /// answer when it is not in direct-color mode — see [`ProbeParser`]).
     pub xtgettcap_rgb: Option<bool>,
     /// Cell size in px `(w, h)` from the `CSI 16 t` reply.
     pub cell_px: Option<(u16, u16)>,
     /// The DA1 sentinel answered — the volley is complete.
     pub da1: bool,
+}
+
+impl ProbeReplies {
+    /// DEC mode 2026 (synchronized output) is actually usable.
+    ///
+    /// DECRPM answers 0 = not recognized, 1 = set, 2 = reset, 3 = permanently
+    /// set, 4 = permanently reset — and only **1 or 2** mean the mode can be
+    /// driven: 4 is "recognized but will never be honored" and 3 is
+    /// explicitly undefined behavior (synchronized-output spec, "How to
+    /// detect" table:
+    /// <https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036>).
+    ///
+    /// This is not hypothetical: VTE (gnome-terminal) *knows* mode 2026 but
+    /// keeps it in the fixed-mode table as ALWAYS_RESET, so its DECRQM
+    /// handler answers `CSI ? 2026 ; 4 $ y` — sources
+    /// `vte/src/modes.py` (`mode_WHAT('CONTOUR_BATCHED_RENDERING', 2026,
+    /// default=False)`, non-writable ⇒ `MODE_FIXED(..., ALWAYS_RESET)`) and
+    /// `vte/src/vteseq.cc` (`Terminal::DECRQM_DEC`: `eALWAYS_RESET` ⇒ 4).
+    /// Wrapping frames in `?2026h…l` there would burn bytes for nothing.
+    pub fn sync_supported(&self) -> bool {
+        matches!(self.decrqm_2026, Some(1 | 2))
+    }
+}
+
+/// Hex-decode an XTGETTCAP payload (2 ASCII hex digits per byte).
+fn hex_decode(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(2) {
+        return None;
+    }
+    let nib = |b: u8| match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    };
+    bytes.chunks_exact(2).map(|p| Some((nib(p[0])? << 4) | nib(p[1])?)).collect()
 }
 
 /// Incremental parser for volley replies — a tiny VT-reply state machine
@@ -293,12 +341,35 @@ impl ProbeParser {
         if let Some(rest) = body.strip_prefix(b">|") {
             // XTVERSION: DCS > | text ST
             self.replies.xtversion = Some(String::from_utf8_lossy(rest).into_owned());
-        } else if body.starts_with(b"1+r") {
-            // XTGETTCAP valid reply — confirm it is about the RGB cap
-            // (hex "524742"), case-insensitively.
-            let upper: Vec<u8> = body.iter().map(u8::to_ascii_uppercase).collect();
-            if upper.windows(6).any(|w| w == b"524742") {
-                self.replies.xtgettcap_rgb = Some(true);
+        } else if let Some(rest) = body.strip_prefix(b"1+r") {
+            // XTGETTCAP valid reply: `name[=hexvalue]` pairs separated by ';'.
+            // Find the RGB cap (name hex "524742", case-insensitive) and read
+            // its VALUE — presence alone is not proof of direct color.
+            for entry in rest.split(|&c| c == b';') {
+                let (name, value) = match entry.iter().position(|&c| c == b'=') {
+                    Some(at) => (&entry[..at], Some(&entry[at + 1..])),
+                    None => (entry, None),
+                };
+                if !name.eq_ignore_ascii_case(b"524742") {
+                    continue;
+                }
+                self.replies.xtgettcap_rgb = Some(match value {
+                    // Boolean-cap form (`1+r524742`, no value): terminfo RGB
+                    // is a boolean, so a bare valid reply means yes.
+                    None => true,
+                    // Valued form: "8" / "8/8/8" = channel bit widths; xterm
+                    // answers the *valid* reply with the value "-1" when it
+                    // is not in direct-color mode, i.e. NOT truecolor
+                    // (xterm/misc.c: `if (direct_color && has_rgb) {…} else
+                    // unparseputs(xw, "-1")`). Treating that as truecolor
+                    // would promote every plain xterm — the bug this parse
+                    // exists to prevent.
+                    Some(hex) => match hex_decode(hex) {
+                        Some(v) => !v.starts_with(b"-") && v != b"0",
+                        None => false,
+                    },
+                });
+                break;
             }
         } else if body.starts_with(b"0+r") && self.replies.xtgettcap_rgb.is_none() {
             self.replies.xtgettcap_rgb = Some(false);
@@ -434,7 +505,7 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
                     if replies.xtgettcap_rgb == Some(true) {
                         caps.color = ColorTier::True;
                     }
-                    caps.sync_2026 = matches!(replies.decrqm_2026, Some(1..=4));
+                    caps.sync_2026 = replies.sync_supported();
                     if replies.cell_px.is_some() {
                         caps.cell_px = replies.cell_px;
                     }
@@ -903,6 +974,43 @@ mod tests {
         let mut caps = passive(&hints("linux", "", "", "C"));
         apply_cache_hit(&mut caps, CacheEntry { color: ColorTier::C16, sync_2026: false });
         assert_eq!(caps.color, ColorTier::C16);
+    }
+
+    /// M4 (item D): only a *settable* mode 2026 counts as supported —
+    /// permanently-set/reset answers (3/4) are not. See
+    /// [`ProbeReplies::sync_supported`] for the spec + VTE sources.
+    #[test]
+    fn sync_supported_only_for_settable_modes() {
+        for (ps, want) in [(None, false)]
+            .into_iter()
+            .chain([(0, false), (1, true), (2, true), (3, false), (4, false)].map(|(p, w)| (Some(p), w)))
+        {
+            let replies = ProbeReplies { decrqm_2026: ps, ..ProbeReplies::default() };
+            assert_eq!(replies.sync_supported(), want, "DECRPM Ps={ps:?}");
+        }
+    }
+
+    #[test]
+    fn hex_decode_pairs_and_rejects_malformed() {
+        assert_eq!(hex_decode(b"524742").as_deref(), Some(&b"RGB"[..]));
+        assert_eq!(hex_decode(b"2D31").as_deref(), Some(&b"-1"[..]), "xterm's no-direct-color value");
+        assert_eq!(hex_decode(b"382f382f38").as_deref(), Some(&b"8/8/8"[..]), "lowercase hex");
+        assert_eq!(hex_decode(b""), None);
+        assert_eq!(hex_decode(b"38f"), None, "odd length");
+        assert_eq!(hex_decode(b"zz"), None, "non-hex");
+    }
+
+    /// Scope-amendment audit, as a test (M4 item E): the multiplexer flag is
+    /// a CACHE-KEY input only — it partitions cache slots (an inner session
+    /// must not inherit the outer terminal's proven caps) and must never
+    /// change a single detected capability. There is no tmux/SSH/ConPTY code
+    /// path anywhere; this pins that the one env read we do keep stays inert.
+    #[test]
+    fn multiplexer_flag_only_partitions_the_cache() {
+        let outer = hints("screen-256color", "", "truecolor", "en_US.UTF-8");
+        let inner = EnvHints { tmux: true, ..outer.clone() };
+        assert_eq!(passive(&outer), passive(&inner), "no capability may depend on it");
+        assert_ne!(cache_key(&outer), cache_key(&inner), "but the cache slots differ");
     }
 
     #[test]

@@ -2,6 +2,12 @@
 //! tier byte checks through `--sim-dump`, seek-vs-sequential byte identity,
 //! runtime NORM application, chroma fg, and probe-related no-hang behavior.
 
+// These drive the real `sleepy-player` binary via CARGO_BIN_EXE_*, which
+// only exists when the `bin` feature is on (its required-features).
+// Without this gate the harness silently reuses a stale binary left on
+// disk by an earlier default-feature build (M4 review).
+#![cfg(feature = "bin")]
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -252,7 +258,7 @@ fn tier_mono_emits_no_sgr_and_truecolor_uses_chroma_fg() {
 /// test pins, at the plane level through the real `Player`.
 #[test]
 fn seek_lands_on_identical_decoded_planes() {
-    use sleepy_player::pipeline::Player;
+    use sleepytime::pipeline::Player;
     use slpy_core::{ColorDepth, GlyphTier};
     use slpy_format::SlpyReader;
     use slpy_term::SimBackend;

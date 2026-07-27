@@ -8,9 +8,19 @@ license.workspace = true
 [dependencies]
 slpy-core = { workspace = true }
 # PLAN §8: crossterm for raw mode / alt screen / events ONLY — never per-cell commands.
-crossterm = { workspace = true }
+crossterm = { workspace = true, optional = true }
 # PLAN §8: ioctl (TIOCGWINSZ), termios, SIGWINCH self-pipe, atexit.
-libc = { workspace = true }
+libc = { workspace = true, optional = true }
+
+# M4 (item B): the real-terminal session layer (AnsiBackend, probe volley,
+# restore hooks) sits behind `session` so a pure-embedder build of the
+# `sleepytime` facade carries no crossterm/libc. Default ON — every existing
+# consumer (player bin, factory eval, pty tests) is unchanged. The Backend
+# trait, Caps/ColorTier data types, EventQueue, quantizer, diff renderer and
+# SimBackend are capability DATA + pure code and stay unconditional.
+[features]
+default = ["session"]
+session = ["dep:crossterm", "dep:libc"]
 
 # Test-only pty harness for the M0 acceptance-(3) restore tests
 # (tests/pty_restore.rs spawns it under an openpty pair). Not shipped.
@@ -18,6 +28,7 @@ libc = { workspace = true }
 name = "slpy-term-harness"
 path = "src/bin/harness.rs"
 doc = false
+required-features = ["session"]
 
 # M2 item C: per-tier escape-stream goldens (tests/tier_goldens.rs) render a
 # deterministic synthetic fixture frame through slpy-eval's fixture module.

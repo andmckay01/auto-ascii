@@ -214,6 +214,10 @@ pub struct ComposeTable {
     pub halfblock_min_delta: u32,
     /// Edge magnitude at/above this upgrades an ASCII junction `+` to `#`.
     pub edge_strong: u32,
+    /// Quadrant-refinement noise floor, arm threshold (strict `e >`).
+    pub quad_e_on: u32,
+    /// Quadrant-refinement noise floor, hold threshold (strict `e >`).
+    pub quad_e_off: u32,
     /// Ramp-index hysteresis width in Q8 fractions of one step (§3.5
     /// "± 0.35·step" = 90). Promoted from a slpy-core constant at M3 Tune.
     pub idx_hyst_q8: u32,
@@ -231,6 +235,8 @@ impl Default for ComposeTable {
             edge_white_cut_q8: 240,
             halfblock_min_delta: 64,
             edge_strong: 96,
+            quad_e_on: 2,
+            quad_e_off: 1,
             idx_hyst_q8: 160,
         }
     }
@@ -248,6 +254,8 @@ impl ComposeTable {
             edge_white_cut_q8: self.edge_white_cut_q8 as u8,
             halfblock_min_delta: self.halfblock_min_delta as u8,
             edge_strong: self.edge_strong as u8,
+            quad_e_on: self.quad_e_on as u8,
+            quad_e_off: self.quad_e_off as u8,
             idx_hyst_q8: self.idx_hyst_q8 as u8,
         }
     }
@@ -422,6 +430,8 @@ impl Params {
             ("edge_white_cut_q8", c.edge_white_cut_q8),
             ("halfblock_min_delta", c.halfblock_min_delta),
             ("edge_strong", c.edge_strong),
+            ("quad_e_on", c.quad_e_on),
+            ("quad_e_off", c.quad_e_off),
             ("idx_hyst_q8", c.idx_hyst_q8),
         ] {
             if v > 255 {
@@ -433,6 +443,9 @@ impl Params {
         }
         if c.coh_min_q8 > c.coh_dir_q8 {
             return Err("params: compose must satisfy coh_min_q8 <= coh_dir_q8".into());
+        }
+        if c.quad_e_off > c.quad_e_on {
+            return Err("params: compose must satisfy quad_e_off <= quad_e_on".into());
         }
         let e = &self.eval;
         if e.grid_cols == 0 || e.grid_rows == 0 {
@@ -602,6 +615,8 @@ mod tests {
         assert_eq!(t.edge_white_cut_q8, d.edge_white_cut_q8);
         assert_eq!(t.halfblock_min_delta, d.halfblock_min_delta);
         assert_eq!(t.edge_strong, d.edge_strong);
+        assert_eq!(t.quad_e_on, d.quad_e_on);
+        assert_eq!(t.quad_e_off, d.quad_e_off);
         assert_eq!(t.idx_hyst_q8, d.idx_hyst_q8);
     }
 
@@ -616,5 +631,8 @@ mod tests {
         let mut p = Params::default();
         p.compose.coh_min_q8 = 200;
         assert!(p.validate().unwrap_err().to_string().contains("coh_min_q8 <= coh_dir_q8"));
+        let mut p = Params::default();
+        p.compose.quad_e_off = p.compose.quad_e_on + 1;
+        assert!(p.validate().unwrap_err().to_string().contains("quad_e_off <= quad_e_on"));
     }
 }

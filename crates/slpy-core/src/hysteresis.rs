@@ -25,6 +25,12 @@ pub const IDX_HYST_Q8: u32 = 90;
 pub mod cell_flags {
     /// The edge gate was on last frame (dual-threshold memory).
     pub const WAS_EDGE: u8 = 1;
+    /// The quadrant-refinement magnitude gate was on last frame — its own
+    /// dual-threshold memory, on a far lower band than [`WAS_EDGE`] (see
+    /// `ComposeParams::quad_e_on`). Separate flag because the two gates
+    /// arm independently: a cell can be well below the edge gate and still
+    /// carry real sub-cell diagonal structure.
+    pub const WAS_QUADRANT: u8 = 1 << 1;
 }
 
 /// Per-cell temporal state: previous ramp index, orientation bin, flags.

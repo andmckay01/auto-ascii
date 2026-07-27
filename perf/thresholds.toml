@@ -1,6 +1,6 @@
 # M2 item E (PLAN §6): committed criterion perf gates.
 #
-# Keys mirror the bench IDs in crates/sleepy-player/benches/pipeline.rs;
+# Keys mirror the bench IDs in crates/sleepytime/benches/pipeline.rs;
 # scripts/perf-gate.sh runs that bench suite and fails (nonzero exit) when
 # any criterion median (target/criterion/<id>/new/estimates.json,
 # median.point_estimate) exceeds its max_median_ns.

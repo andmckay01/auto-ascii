@@ -6,7 +6,7 @@
 
 use std::io::Cursor;
 
-use sleepy_player::pipeline::Player;
+use sleepytime::pipeline::Player;
 use slpy_core::{ColorDepth, GlyphTier, layer};
 use slpy_eval::fixtures::{Fixture, build_fixture};
 use slpy_format::header::plane_id;
@@ -259,7 +259,10 @@ fn tier_palettes_select_and_subcell_structure_fires() {
     mono.reflow(&mut backend, 206, 58);
     mono.render_present(&mut backend, 7).unwrap();
     backend.take_output();
-    let allowed: Vec<char> = " .:coO8@\u{203E}_-".chars().collect();
+    // Palette 8 + the ASCII subposition triplet — all of it printable ASCII
+    // (`slpy_core::palette::every_ascii_tier_glyph_is_ascii` is the data-side
+    // pin; this is the same guarantee observed through the shipping player).
+    let allowed: Vec<char> = " .:coO8@\"_-".chars().collect();
     for c in mono.grid().as_slice() {
         assert!(
             allowed.contains(&c.glyph()),
@@ -271,7 +274,7 @@ fn tier_palettes_select_and_subcell_structure_fires() {
         .grid()
         .as_slice()
         .iter()
-        .any(|c| c.glyph() == '\u{203E}' || c.glyph() == '_');
+        .any(|c| c.glyph() == '"' || c.glyph() == '_');
     assert!(has_subpos, "ascii-tier subposition glyphs must fire on checker content");
 
     let mut uni = player(&asset, ColorDepth::True, GlyphTier::UnicodeBlocks);

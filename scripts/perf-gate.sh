@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # M2 item E (PLAN §6): the criterion perf gate.
 #
-# Runs the sleepy-player pipeline benches (decode / resample / compose /
+# Runs the sleepytime pipeline benches (decode / resample / compose /
 # present truecolor+256 / end-to-end frame), then compares each criterion
 # median (target/criterion/<id>/new/estimates.json) against the committed
 # thresholds in perf/thresholds.toml. Exits nonzero on any breach.
@@ -31,7 +31,7 @@ if [[ "${1:-}" != "--no-run" ]]; then
     MARKER="target/.perf-gate-run-start"
     mkdir -p target
     touch "$MARKER"
-    cargo bench -p sleepy-player --bench pipeline -- --noplot
+    cargo bench -p sleepytime --bench pipeline -- --noplot
 fi
 
 GATE_MARKER="$MARKER" python3 - <<'PY'

@@ -1,0 +1,27 @@
+TERM=linux console — 80x24, 16 colors, CP437/ASCII floor, frame 10
++--------------------------------------------------------------------------------+
+|:::::::ccccccooooooOOOOOOO888888@@@@@@@@@@@@@@@@888888OOOOOOooooooccccccc::::::.|
+|::::ccccccoooooooOOOOOO888888@@@@@@@@@@@@@@@@888888OOOOOOooooooccccccc::::::....|
+|:ccccccoooooooOOOOOO888888@@@@@@@@@@@@@@@@888888OOOOOOooooooccccccc::::::...... |
+|ccccoooooooOOOOOO888888@@@@@@@@@@@@@@@@888888OOOOOOooooooocccccc::::::......    |
+|coooooooOOOOOO888888@@@@@@@@@@@@@@@@888888OOOOOOooooooocccccc::::::.......      |
+|oooooOOOOOO888888@@@@@@@@@@@@@@@@888888OOOOOOooooooocccccc::::::.......         |
+|ooOOOOOO888888@@@@@@@@@@@@@@@@888888OOOOOOooooooocccccc::::::.......            |
+|OOOOO888888@@@@@@@@@@@@@@@@888888OOOOOOOoooooocccccc::::::.......               |
+|OO8888888@@@@@@@@@@@@@@@888888OOOOOOOoooooocccccc:::::::......               ...|
+|888888@@@@@@@@@@@@@@@888888OOOOOOOoooooocccccc:::::::......                .....|
+|888@@@@@@@@@@@@@@@888888OOOOOOOoooooocccccc:::::::......                ......::|
+|@@@@@@@@@@@@@@@8888888OOOOOOoooooocccccc:::::::......                ......:::::|
+|@@@@@@@@@@@@8888888OOOOOOoooooocccccc:::::::......                ......::::::cc|
+|@@@@@@@@@8888888OOOOOOoooooocccccc:::::::......                ......::::::ccccc|
+|@@@@@@8888888OOOOOOooooooccccccc::::::......                ......:::::::cccccco|
+|@@@@888888OOOOOOooooooccccccc::::::......                ......:::::::ccccccoooo|
+|@888888OOOOOOooooooccccccc::::::......                ......:::::::ccccccooooooO|
+|8888OOOOOOooooooccccccc::::::......                ......:::::::ccccccooooooOOOO|
+|8OOOOOOooooooocccccc::::::......                ......:::::::ccccccooooooOOOOOOO|
+|OOOOooooooocccccc::::::.......               ......:::::::ccccccooooooOOOOOOO888|
+|Oooooooocccccc::::::.......               ......:::::::ccccccooooooOOOOOOO888888|
+|ooooocccccc::::::.......               .......::::::ccccccooooooOOOOOOO888888@@@|
+|oocccccc:::::::......               .......::::::ccccccoooooooOOOOOO888888@@@@@@|
+|                                                                                |
++--------------------------------------------------------------------------------+

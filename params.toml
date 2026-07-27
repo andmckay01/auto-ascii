@@ -110,6 +110,17 @@ edge_white_cut_q8 = 240
 halfblock_min_delta = 64
 # ASCII junction '+' upgrades to '#' at/above this magnitude.
 edge_strong = 96
+# Quadrant-refinement NOISE floor (arm/hold, strict >), unicode tiers only.
+# Coherence divides by max(E, 1), so a 1-LSB resample-noise (Ex,Ey) vector
+# over E 0..1 reads as perfectly coherent and would pick a noise-driven
+# corner quadrant. This is a noise floor, NOT a second edge gate: resampled
+# E is diluted by the cell box average (corpus source E mean 3.6, 8.95%
+# nonzero), so a genuine fine diagonal lands near cell E 6-11 — raising this
+# to the edge gate's hold threshold (16) would silently downgrade the whole
+# band quadrants exist for. Dual threshold so a cell dithering across the
+# floor cannot alternate quadrant/half-block every frame.
+quad_e_on = 2
+quad_e_off = 1
 # Ramp-index hysteresis width, Q8 fractions of one ramp step. The §3.5 spec
 # nominal is "boundary +/- 0.35 step" = 90 (slpy_core::IDX_HYST_Q8); promoted
 # to a tunable at M3 Tune and RE-TUNED to 160 (0.625 step) by the committed

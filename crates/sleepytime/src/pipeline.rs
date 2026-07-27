@@ -2,8 +2,18 @@
 //! (PLAN §3.4–§3.6). Extracted from the binary at M2 (item B decision) so
 //! `sleepy-factory eval` drives the EXACT player code path headlessly
 //! against `SimBackend` — metrics measure the real renderer, not a
-//! reimplementation. The binary's event loop, pacing and CLI stay in
-//! `main.rs`; nothing here touches a clock or a tty.
+//! reimplementation. The event loop, pacing and CLI stay above (`Player`
+//! / the `sleepy-player` bin); nothing here touches a clock or a tty.
+//!
+//! M4: re-homed from `sleepy-player` into the `sleepytime` facade and split
+//! along the backend seam — [`Player::reflow_grid`]/[`Player::render_grid`]
+//! carry everything up to the composed [`Grid<Cell>`] with NO backend in
+//! sight (the terminal-free [`crate::RenderSession`] path), and
+//! [`Player::reflow`]/[`Player::render_present`] wrap them with the
+//! `Backend` resize/invalidate/present calls (identical behavior to M3 —
+//! same call order, same bytes). This module is `#[doc(hidden)]`: it is the
+//! workspace harness contract (factory eval, fuzz, benches, goldens), not
+//! the embedding API, and is exempt from facade semver.
 //!
 //! M3: the full §3.5 three-layer path. Luma is resampled at Vc×2Vr (§3.3 —
 //! ONE tap-table build at 2× vertical through the same separable code path);
@@ -17,7 +27,6 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, Result, bail};
 use slpy_core::{
     Cell, ColorDepth, ComposeParams, FramePlanes, GlyphTier, Grid, HysteresisState, PaletteSet,
     Resampler, Rgb, Viewport, compose_frame, compose_frame_masked, compute_viewport,
@@ -26,6 +35,12 @@ use slpy_core::{
 use slpy_format::header::plane_id;
 use slpy_format::{PlaneLevels, SlpyReader};
 use slpy_term::{Backend, Caps, ColorTier, Event, FrameStats, GlyphFlags, GlyphSupportTier, Key};
+
+use crate::error::Error;
+
+/// Module-local result over the facade [`Error`] (the pipeline reports
+/// through the same coherent type as the public API).
+type Result<T> = std::result::Result<T, Error>;
 
 /// H-mask box-average thresholds (integrator decision, M3): the H plane is
 /// bitflags, so each bit is expanded to a 0/255 mask at source resolution,
@@ -184,10 +199,10 @@ impl<'a> Player<'a> {
     ) -> Result<Player<'a>> {
         let (src_w, src_h) = reader
             .plane_dims(plane_id::Y)
-            .context("asset has no Y (luma) plane")?;
+            .ok_or(Error::Asset("asset has no Y (luma) plane"))?;
         let frame_count = reader.frame_count();
         if frame_count == 0 {
-            bail!("asset has zero frames");
+            return Err(Error::Asset("asset has zero frames"));
         }
         let chroma_dims = reader.plane_dims(plane_id::C);
         let use_chroma = color != ColorDepth::Mono && chroma_dims.is_some();
@@ -332,6 +347,15 @@ impl<'a> Player<'a> {
     /// invalidate. The next rendered frame lands on the new grid.
     pub fn reflow<B: Backend>(&mut self, backend: &mut B, cols: u16, rows: u16) {
         backend.resize(cols, rows);
+        self.reflow_grid(cols, rows);
+        backend.invalidate();
+    }
+
+    /// Backend-free reflow (M4): everything [`reflow`](Player::reflow) does
+    /// except the backend `resize`/`invalidate` calls — grid realloc,
+    /// viewport, tap tables, palette, hysteresis realloc+reset. The
+    /// terminal-free [`crate::RenderSession`] resize path.
+    pub fn reflow_grid(&mut self, cols: u16, rows: u16) {
         self.grid.resize(cols, rows);
         if let Some(mask) = &mut self.layer_mask {
             mask.resize(cols, rows); // realloc + reset with the grid (§6 discipline)
@@ -373,7 +397,6 @@ impl<'a> Player<'a> {
             self.chroma_resampler = None;
             self.state.resize(0, 0);
         }
-        backend.invalidate();
     }
 
     /// Drain the event queue (PLAN §3.6 step 1): Quit wins, resizes coalesce
@@ -416,14 +439,11 @@ impl<'a> Player<'a> {
         dst: &mut [u8],
     ) -> Result<()> {
         if sequential {
-            reader
-                .decode_plane_into(frame_idx, id, dst)
-                .with_context(|| format!("decoding plane {id} of frame {frame_idx}"))?;
+            reader.decode_plane_into(frame_idx, id, dst)
         } else {
-            reader
-                .seek_plane_into(frame_idx, id, dst)
-                .with_context(|| format!("seeking plane {id} to frame {frame_idx}"))?;
+            reader.seek_plane_into(frame_idx, id, dst)
         }
+        .map_err(|source| Error::Decode { frame: frame_idx, plane: id, source })?;
         Ok(())
     }
 
@@ -480,6 +500,22 @@ impl<'a> Player<'a> {
         backend: &mut B,
         frame_idx: u32,
     ) -> Result<FrameStats> {
+        self.render_grid(frame_idx)?;
+        if self.repaint_full {
+            backend.invalidate();
+        }
+        let t = Instant::now();
+        let stats = backend.present(&self.grid);
+        self.stage.present += t.elapsed().as_nanos() as u64;
+        Ok(stats)
+    }
+
+    /// Backend-free frame render (M4): decode → resample → NORM levels →
+    /// compose into [`grid`](Player::grid), stopping short of `present` —
+    /// the terminal-free [`crate::RenderSession`] frame path. Identical
+    /// composition (and identical temporal-state mutations) to
+    /// [`render_present`](Player::render_present).
+    pub fn render_grid(&mut self, frame_idx: u32) -> Result<()> {
         if self.vp.is_some() && self.resampler.is_some() {
             let t = Instant::now();
             self.load_frame(frame_idx)?;
@@ -561,14 +597,29 @@ impl<'a> Player<'a> {
                 mask.fill(slpy_core::layer::BASE);
             }
         }
+        Ok(())
+    }
 
-        if self.repaint_full {
-            backend.invalidate();
-        }
-        let t = Instant::now();
-        let stats = backend.present(&self.grid);
-        self.stage.present += t.elapsed().as_nanos() as u64;
-        Ok(stats)
+    /// Reset ALL per-cell temporal state (ramp-index hysteresis, edge
+    /// on/off memory, orientation bins) — the §3.5 discontinuity reset.
+    /// [`crate::RenderSession`] calls this on a backward frame jump; the
+    /// interactive digit-seek path resets through
+    /// [`drain_events`](Player::drain_events).
+    pub fn reset_temporal_state(&mut self) {
+        self.state.reset();
+    }
+
+    /// Re-key palette selection (PLAN §3.4 charset tier axis). Takes effect
+    /// at the next [`reflow_grid`](Player::reflow_grid)/[`reflow`](Player::reflow)
+    /// — palette objects are (re)built there, keyed on the viewport density.
+    pub fn set_glyph_tier(&mut self, glyph_tier: GlyphTier) {
+        self.glyph_tier = glyph_tier;
+    }
+
+    /// Override the §3.2 cell aspect (`cell_h_px / cell_w_px`). Takes effect
+    /// at the next reflow (viewport math is recomputed there).
+    pub fn set_cell_aspect(&mut self, cell_aspect: f64) {
+        self.cell_aspect = cell_aspect;
     }
 }
 

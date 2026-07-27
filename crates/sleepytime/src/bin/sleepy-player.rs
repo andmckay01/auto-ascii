@@ -1,52 +1,47 @@
-//! `sleepy-player` — realtime terminal player (PLAN §3, M1).
-//!
-//! Frame loop (PLAN §3.6): drain events (resize → recompute viewport §3.2,
-//! rebuild resampler §3.3, reset diff state, invalidate; digit keys 0–9 jump
-//! to 0–90%) → wall-clock pacing with latest-frame-wins frame skipping (§3.6
-//! step 2) → decode Y (+ C chroma on color tiers) with sequential delta rolls
-//! or FIDX seek (§4) → resample to viewport → per-shot NORM levels folded
-//! into a 256-entry LUT rebuilt on shot change (§3.5 auto-levels, no
-//! per-frame pumping) → compose (base ramp glyph + chroma fg, §3.4/§3.5) →
-//! `Backend::present`, with `--repaint full` (invalidate-every-frame) as the
-//! default mode (PLAN §3.1/§7: one render path).
-//!
-//! The pipeline itself lives in [`sleepy_player::pipeline`] (M2: extracted
-//! to the lib so `sleepy-factory eval` reuses it verbatim); this binary owns
-//! the CLI, the clock and the tty.
-//!
-//! Startup runs the capability probe (PLAN §3.1 DA1-sentinel volley) unless
-//! `--sim`, `--tier` or `--no-query` — the escape hatches skip the volley
-//! entirely and rely on passive hints (plus the forced tier).
+//! `sleepy-player` — realtime terminal player (PLAN §3), M4: a thin CLI
+//! over the `sleepytime` facade. Interactive playback is
+//! [`sleepytime::Player`] verbatim — argv maps 1:1 onto
+//! [`PlayerBuilder`](sleepytime::PlayerBuilder) options and NOTHING else
+//! (no logic fork between bin and lib paths, M4 item B); this file owns
+//! only argument parsing and the headless `--sim` harness.
 //!
 //! Never run interactively without a TTY; headless verification uses
 //! `--sim COLSxROWS:NFRAMES` (SimBackend), which renders N frames as fast as
 //! possible and prints one JSON line of stats. `--sim-tier` selects the
 //! simulated color tier and `--sim-dump PATH` captures the raw escape stream
 //! for byte-level tier checks; `--sim-resize [COLSxROWS]` injects a resize
-//! event at frame N/2 to prove reflow.
+//! event at frame N/2 to prove reflow. The `--sim` path drives the same
+//! [`sleepytime::pipeline`] the facade Player runs.
 
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use memmap2::Mmap;
-use sleepy_player::pipeline::{Player, color_depth, glyph_tier_from_caps};
-use slpy_core::GlyphTier;
+use sleepytime::pipeline::{Player, color_depth};
+use sleepytime::{PaletteChoice, RepaintMode};
 use slpy_format::SlpyReader;
-use slpy_term::{
-    AnsiBackend, Backend, Caps, ColorTier, Event, ProbeOptions, SimBackend, probe_caps,
-};
+use slpy_term::{Backend, Caps, ColorTier, Event, SimBackend};
 
-/// Repaint mode (PLAN §3.1: one render path — "full" is diff with
-/// `invalidate()` every frame, the M0 kitty-target default per §7).
+/// CLI face of [`sleepytime::RepaintMode`] (PLAN §3.1: one render path —
+/// "full" is diff with `invalidate()` every frame, the M0 default per §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum RepaintMode {
+enum RepaintArg {
     /// Invalidate every frame → full escape stream each present (M0 default).
     Full,
     /// Pure diff: only damaged cells are rewritten; invalidate on resize only.
     Diff,
+}
+
+impl From<RepaintArg> for RepaintMode {
+    fn from(r: RepaintArg) -> RepaintMode {
+        match r {
+            RepaintArg::Full => RepaintMode::Full,
+            RepaintArg::Diff => RepaintMode::Diff,
+        }
+    }
 }
 
 /// Charset-tier override for palette selection (PLAN §3.4). `auto` derives
@@ -61,13 +56,13 @@ enum PaletteArg {
     Braille,
 }
 
-impl PaletteArg {
-    fn resolve(self, caps: &Caps) -> GlyphTier {
-        match self {
-            PaletteArg::Auto => glyph_tier_from_caps(caps),
-            PaletteArg::Ascii => GlyphTier::Ascii,
-            PaletteArg::Unicode => GlyphTier::UnicodeBlocks,
-            PaletteArg::Braille => GlyphTier::BrailleVerified,
+impl From<PaletteArg> for PaletteChoice {
+    fn from(p: PaletteArg) -> PaletteChoice {
+        match p {
+            PaletteArg::Auto => PaletteChoice::Auto,
+            PaletteArg::Ascii => PaletteChoice::Ascii,
+            PaletteArg::Unicode => PaletteChoice::Unicode,
+            PaletteArg::Braille => PaletteChoice::Braille,
         }
     }
 }
@@ -79,8 +74,8 @@ struct Cli {
     asset: PathBuf,
 
     /// Repaint mode (PLAN §7: M0 default is invalidate-every-frame).
-    #[arg(long, value_enum, default_value_t = RepaintMode::Full)]
-    repaint: RepaintMode,
+    #[arg(long, value_enum, default_value_t = RepaintArg::Full)]
+    repaint: RepaintArg,
 
     /// Loop playback instead of exiting at the last frame.
     #[arg(long = "loop")]
@@ -291,152 +286,87 @@ fn run_sim(mut player: Player<'_>, cli: &Cli, tier: ColorTier, start_frame: u32)
     Ok(())
 }
 
-/// Cell aspect: explicit flag > terminal-reported cell pixel size > 2.0
-/// (PLAN §3.2).
-fn resolve_cell_aspect(flag: Option<f64>, cell_px: Option<(u16, u16)>) -> f64 {
-    if let Some(a) = flag {
-        return a;
-    }
-    match cell_px {
-        Some((w, h)) if w > 0 && h > 0 => f64::from(h) / f64::from(w),
-        _ => slpy_core::DEFAULT_CELL_ASPECT,
-    }
-}
-
-/// Interactive loop (PLAN §3.6): wall-clock pacing, latest-frame-wins.
-fn run_interactive(reader: SlpyReader<'_>, cli: &Cli, asset_fps: f64, start_frame: u32) -> Result<()> {
-    // Capability probe (PLAN §3.1) BEFORE the backend touches the terminal —
-    // the volley manages its own termios. `--tier` and `--no-query` skip the
-    // volley entirely (escape hatches); `--tier` still wins inside probe_caps.
-    let probe_opts = ProbeOptions {
-        forced_tier: cli.tier,
-        no_query: cli.no_query || cli.tier.is_some(),
-        no_cache: cli.no_cache,
-        ..ProbeOptions::default()
-    };
-    let caps = probe_caps(&probe_opts);
-
-    // AnsiBackend::new arms restore + installs panic/SIGINT/SIGTERM/atexit
-    // hooks before touching the terminal (M0 acceptance 3, pty-tested in
-    // slpy-term). Errors cleanly if stdout is not a TTY.
-    let mut backend = AnsiBackend::new(caps)
-        .context("cannot enter terminal session (headless? use --sim COLSxROWS:NFRAMES)")?;
-    let aspect = resolve_cell_aspect(cli.cell_aspect, backend.caps().cell_px);
-    // Palette selection inputs from Caps (PLAN §3.4 key: charset tier ×
-    // color depth; density falls out of the viewport at reflow).
-    let depth = color_depth(backend.caps().color);
-    let glyphs = cli.palette.resolve(backend.caps());
-    let mut player =
-        Player::new(reader, aspect, cli.repaint == RepaintMode::Full, depth, glyphs)?;
-    let (cols, rows) = backend.caps().cells;
-    player.reflow(&mut backend, cols, rows);
-
-    let present_fps = match cli.fps_cap {
-        Some(cap) if cap > 0.0 => cap.min(asset_fps),
-        Some(_) => bail!("--fps-cap must be > 0"),
-        None => asset_fps,
-    };
-    let tick = Duration::from_secs_f64(1.0 / present_fps);
-    let frame_count = u64::from(player.frame_count());
-    let mut base_frame = u64::from(start_frame);
-    let t0 = Instant::now(); // --duration-secs origin (never reset by jumps)
-    let mut clock = t0; // pacing origin, reset on 0–9 jumps
-    let mut next_tick = t0;
-
-    loop {
-        let drained = player.drain_events(&mut backend);
-        if drained.quit {
-            break;
-        }
-        if let Some(d) = drained.jump_digit {
-            // 0–9 → jump to d×10% (PLAN §3.6; decode goes through the FIDX
-            // seek path automatically via the loaded-frame tracker, and
-            // drain_events already reset the hysteresis state — a seek must
-            // not ghost pre-seek edges/indices into the landing frame).
-            base_frame = frame_count * u64::from(d) / 10;
-            clock = Instant::now();
-        }
-        if let Some(dur) = cli.duration_secs
-            && t0.elapsed().as_secs_f64() >= dur
-        {
-            break;
-        }
-        // Pacing (§3.6 step 2): target frame by wall clock — if we fell
-        // behind, this skips asset frames (latest-frame-wins, never queued).
-        let mut target = base_frame + (clock.elapsed().as_secs_f64() * asset_fps) as u64;
-        if target >= frame_count {
-            if cli.loop_playback {
-                target %= frame_count;
-            } else {
-                break;
-            }
-        }
-        player.render_present(&mut backend, target as u32)?;
-
-        next_tick += tick;
-        let now = Instant::now();
-        if next_tick > now {
-            std::thread::sleep(next_tick - now);
-        } else {
-            next_tick = now; // behind: render immediately, drop the deficit
-        }
-    }
-    backend.shutdown();
-    Ok(())
-}
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let file = std::fs::File::open(&cli.asset)
-        .with_context(|| format!("opening {}", cli.asset.display()))?;
-    // Safety: read-only private map of a file we never mutate through this
-    // mapping; M0 contract is that assets are not truncated mid-playback
-    // (the same assumption every mmap'd reader makes).
-    let mmap = unsafe { Mmap::map(&file) }
-        .with_context(|| format!("mmap {}", cli.asset.display()))?;
-    let reader = SlpyReader::open(&mmap)
-        .with_context(|| format!("{} is not a valid SLPY asset", cli.asset.display()))?;
-
-    let header = reader.header();
-    // Belt-and-braces: SlpyReader::open rejects zero fps since M1, but a
-    // zero fps_num here would reach Duration::from_secs_f64(1/0.0) and panic.
-    if header.fps_num == 0 || header.fps_den == 0 {
-        bail!("corrupt header: fps_num or fps_den == 0");
-    }
-    let asset_fps = f64::from(header.fps_num) / f64::from(header.fps_den);
-
-    let start_frame: u32 = match cli.seek.as_deref() {
-        Some(ts) => {
-            let secs = parse_timestamp(ts).with_context(|| format!("--seek {ts:?}"))?;
-            let frame = (secs * asset_fps).floor();
-            if frame >= f64::from(reader.frame_count()) {
-                bail!(
-                    "--seek {ts} is past the end of the asset ({} frames @ {asset_fps} fps)",
-                    reader.frame_count()
-                );
-            }
-            frame as u32
-        }
-        None => 0,
-    };
+    let seek_secs = cli
+        .seek
+        .as_deref()
+        .map(|ts| parse_timestamp(ts).with_context(|| format!("--seek {ts:?}")))
+        .transpose()?;
 
     if cli.sim.is_some() {
+        // Headless harness path: drive the pipeline directly (the facade
+        // Player is a terminal session by definition).
+        let file = std::fs::File::open(&cli.asset)
+            .with_context(|| format!("opening {}", cli.asset.display()))?;
+        // Safety: read-only private map of a file we never mutate through
+        // this mapping; M0 contract is that assets are not truncated
+        // mid-playback (the same assumption every mmap'd reader makes).
+        let mmap = unsafe { Mmap::map(&file) }
+            .with_context(|| format!("mmap {}", cli.asset.display()))?;
+        let reader = SlpyReader::open(&mmap)
+            .with_context(|| format!("{} is not a valid SLPY asset", cli.asset.display()))?;
+
+        let header = reader.header();
+        // Belt-and-braces: SlpyReader::open rejects zero fps since M1.
+        if header.fps_num == 0 || header.fps_den == 0 {
+            bail!("corrupt header: fps_num or fps_den == 0");
+        }
+        let asset_fps = f64::from(header.fps_num) / f64::from(header.fps_den);
+        let start_frame: u32 = match seek_secs {
+            Some(secs) => {
+                let frame = (secs * asset_fps).floor();
+                if frame >= f64::from(reader.frame_count()) {
+                    bail!(
+                        "--seek is past the end of the asset ({} frames @ {asset_fps} fps)",
+                        reader.frame_count()
+                    );
+                }
+                frame as u32
+            }
+            None => 0,
+        };
+
         let aspect = cli.cell_aspect.unwrap_or(slpy_core::DEFAULT_CELL_ASPECT);
         let tier = cli.sim_tier.or(cli.tier).unwrap_or(ColorTier::True);
         // --sim never probes: palette auto derives from the SimBackend's
         // default Caps (ascii repertoire); --palette overrides.
-        let glyphs = cli.palette.resolve(&Caps::default());
+        let glyphs = PaletteChoice::from(cli.palette).resolve_for_caps(&Caps::default());
         let player = Player::new(
             reader,
             aspect,
-            cli.repaint == RepaintMode::Full,
+            cli.repaint == RepaintArg::Full,
             color_depth(tier),
             glyphs,
         )?;
         return run_sim(player, &cli, tier, start_frame);
     }
-    run_interactive(reader, &cli, asset_fps, start_frame)
+
+    // Interactive path: argv → PlayerBuilder, then the facade owns the
+    // probe, the session, the pacing loop and the restore (no logic here).
+    let mut builder = sleepytime::Player::builder()
+        .asset(&cli.asset)
+        .palette(cli.palette.into())
+        .tier(cli.tier)
+        .repaint(cli.repaint.into())
+        .looping(cli.loop_playback)
+        .no_query(cli.no_query)
+        .no_cache(cli.no_cache);
+    if let Some(cap) = cli.fps_cap {
+        builder = builder.fps_cap(cap);
+    }
+    if let Some(a) = cli.cell_aspect {
+        builder = builder.cell_aspect(a);
+    }
+    if let Some(secs) = seek_secs {
+        builder = builder.seek_secs(secs);
+    }
+    if let Some(dur) = cli.duration_secs {
+        builder = builder.duration_secs(dur);
+    }
+    builder.build()?.run()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -465,13 +395,5 @@ mod tests {
         assert!(parse_timestamp("1:2:3:4").is_err());
         assert!(parse_timestamp("-5").is_err());
         assert!(parse_timestamp("abc").is_err());
-    }
-
-    #[test]
-    fn cell_aspect_resolution() {
-        assert_eq!(resolve_cell_aspect(Some(1.5), Some((10, 20))), 1.5);
-        assert_eq!(resolve_cell_aspect(None, Some((10, 21))), 2.1);
-        assert_eq!(resolve_cell_aspect(None, Some((0, 20))), 2.0);
-        assert_eq!(resolve_cell_aspect(None, None), 2.0);
     }
 }

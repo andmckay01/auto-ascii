@@ -106,7 +106,7 @@ impl Default for Caps {
     }
 }
 
-/// Per-`present` accounting (PLAN §3.1): feeds the governor's EMA (§3.6 step 7)
+/// Per-`present` accounting (PLAN §3.1): feeds the §3.6 step 7 frame stats
 /// and the eval harness's damage/bytes metrics (§6).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameStats {

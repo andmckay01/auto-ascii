@@ -73,7 +73,8 @@ fn golden_checker_drift() {
 /// really sits in shot 2 (distinct normalization), the checkerboard is
 /// box-averaged (interior glyphs, not aliased extremes), and the M3
 /// acceptance surface is demonstrably active — half-blocks on the unicode
-/// tier, `‾`/`_` subposition glyphs on the ascii tier (PLAN §3.3/§3.5).
+/// tier, `"`/`_` subposition glyphs on the ascii tier (PLAN §3.3/§3.5), and
+/// the ascii tier stays inside its ASCII repertoire (M4 review).
 #[test]
 fn golden_frames_are_meaningful() {
     // Hard cut: frame 40 is past the CUT boundary.
@@ -97,7 +98,7 @@ fn golden_frames_are_meaningful() {
 
     // M3 acceptance 4 (goldens demonstrate sub-cell structure): at 206×58
     // the checker's vertical taps split 2-px blocks, so the unicode config
-    // must emit half-block pairs and the ascii config `‾`/`_` subposition
+    // must emit half-block pairs and the ascii config `"`/`_` subposition
     // glyphs somewhere in the viewport.
     let mut uni = FixtureRenderer::new(&asset, GoldenPalette::Unicode);
     uni.reflow(206, 58);
@@ -110,10 +111,18 @@ fn golden_frames_are_meaningful() {
 
     let mut asc = FixtureRenderer::new(&asset, GoldenPalette::Ascii);
     asc.reflow(206, 58);
-    let has_subpos = asc
-        .render(snapshot_frame(Fixture::CheckerDrift))
-        .as_slice()
-        .iter()
-        .any(|c| matches!(c.glyph(), '‾' | '_'));
+    let asc_grid = asc.render(snapshot_frame(Fixture::CheckerDrift));
+    let has_subpos = asc_grid.as_slice().iter().any(|c| matches!(c.glyph(), '"' | '_'));
     assert!(has_subpos, "ascii golden config must exercise subposition glyphs");
+    // …and every glyph in that same render is CP437-safe ASCII. The
+    // subposition assertion above is what makes this non-vacuous: it proves
+    // the branch that used to emit U+203E OVERLINE actually ran here.
+    for c in asc_grid.as_slice() {
+        let g = c.glyph();
+        assert!(
+            g == ' ' || g.is_ascii_graphic(),
+            "ascii golden config emitted non-ASCII {g:?} (U+{:04X})",
+            g as u32
+        );
+    }
 }

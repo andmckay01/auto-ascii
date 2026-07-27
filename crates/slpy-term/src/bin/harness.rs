@@ -13,7 +13,10 @@
 //!   must time out to conservative defaults; prints one `PROBE-DONE` line
 //!   with elapsed ms, resulting caps and leftover stdin byte count.
 //! - `probe-reply` — same but with a 2 s deadline so the test can script
-//!   replies (kitty-style) through the pty master.
+//!   replies (kitty-style) through the pty master. Also the mode the M4
+//!   per-terminal identity fixtures use (`tests/terminal_identity.rs`): the
+//!   test picks the terminal's env (TERM/COLORTERM/TERM_PROGRAM/locale) and
+//!   pty winsize, then types that terminal's canned reply stream.
 //! - `probe-noquery` — `--no-query` escape hatch: passive hints only, no
 //!   volley bytes may reach the terminal.
 //! - `probe-latereply` — replies dribble in around/past the deadline: the
@@ -77,8 +80,9 @@ fn run_probe(timeout: Duration, no_query: bool) {
         None => "none".to_string(),
     };
     println!(
-        "PROBE-DONE ms={ms} color={:?} sync={} can_query={} cellpx={cell_px} stray={stray}",
-        caps.color, caps.sync_2026, caps.can_query
+        "PROBE-DONE ms={ms} color={:?} sync={} can_query={} cellpx={cell_px} \
+         support={:?} glyphs={} stray={stray}",
+        caps.color, caps.sync_2026, caps.can_query, caps.glyph_support, caps.glyphs.0
     );
 }
 
@@ -127,7 +131,11 @@ fn main() {
     match mode.as_str() {
         // M1 acceptance 4: silent terminal → defaults, < 300 ms, no stray
         // bytes. Default deadline is 200 ms.
-        "probe-silent" => return run_probe(slpy_term::DEFAULT_PROBE_TIMEOUT, false),
+        //
+        // `caps` is the same run under a name that makes sense when a HUMAN
+        // types it on a real terminal: it prints one PROBE-DONE line with
+        // what the shipping probe concluded there (docs/TERMINAL-CHECKLIST.md).
+        "probe-silent" | "caps" => return run_probe(slpy_term::DEFAULT_PROBE_TIMEOUT, false),
         // Scripted replies from the test side; generous deadline (deflaked).
         "probe-reply" => return run_probe(Duration::from_secs(2), false),
         // --no-query escape hatch: passive hints only, zero volley bytes.

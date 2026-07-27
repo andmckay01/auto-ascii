@@ -1,0 +1,76 @@
+[package]
+name = "sleepytime"
+description = "Realtime ASCII-art video: play SLPY feature assets in a terminal, or render them into your own cell grid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# Publish metadata (M4 item C). `license` is the workspace's dual
+# MIT OR Apache-2.0; LICENSE-MIT / LICENSE-APACHE live at the repo root.
+keywords = ["ascii", "terminal", "video", "tui", "ansi"]
+categories = ["multimedia::video", "command-line-utilities", "rendering"]
+readme = "README.md"
+
+# THE public library (M4 item A): the workspace slpy-* crates are
+# implementation details behind this facade. Three tiers of build:
+#
+#   default            — library + the `sleepy-player` binary (cargo install works)
+#   --no-default-features --features terminal
+#                      — library only, WITH the blocking terminal Player
+#   --no-default-features
+#                      — pure embedder: RenderSession + Grid/Cell only; the
+#                        dep tree carries NO clap/anyhow/crossterm (M4
+#                        acceptance 4 — verify with
+#                        `cargo tree -p sleepytime --no-default-features`)
+[features]
+default = ["bin"]
+# The blocking terminal player (Player/PlayerBuilder): real session entry,
+# caps probe, restore hooks — pulls slpy-term's crossterm/libc session layer.
+terminal = ["slpy-term/session"]
+# The `sleepy-player` CLI binary (thin argv shim over the facade + the
+# headless --sim harness).
+bin = ["terminal", "dep:clap", "dep:anyhow"]
+
+[dependencies]
+slpy-core = { workspace = true }
+slpy-format = { workspace = true }
+# default-features = false: the session layer (crossterm/libc) enters only
+# via the `terminal` feature above. Direct path dep — workspace inheritance
+# cannot subtract default features.
+slpy-term = { path = "../slpy-term", default-features = false }
+# PLAN §8: assets are mmap'd read-only. Terminal-free (embedder builds keep it).
+memmap2 = { workspace = true }
+# bin-only (feature-gated; PLAN §8).
+clap = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+
+[[bin]]
+name = "sleepy-player"
+path = "src/bin/sleepy-player.rs"
+required-features = ["bin"]
+
+# M4 item C. embedded-loop/headless-dump are RenderSession-only and build in
+# every configuration (including `--no-default-features`); simple-play drives
+# the terminal Player, so it is gated the same way that API is.
+[[example]]
+name = "simple-play"
+required-features = ["terminal"]
+
+[[example]]
+name = "embedded-loop"
+
+[[example]]
+name = "headless-dump"
+
+# M2 item E: criterion perf gates over the real player pipeline (PLAN §6).
+# Thresholds live in perf/thresholds.toml; scripts/perf-gate.sh compares.
+# slpy-eval (fixture assets) + proptest: the §6 resize-fuzz invariants and
+# the committed goldens exercise THIS crate's pipeline, not a test-harness
+# replica (M2 review fix; moved here with the pipeline at M4).
+[dev-dependencies]
+criterion = { workspace = true }
+slpy-eval = { workspace = true }
+proptest = { workspace = true }
+
+[[bench]]
+name = "pipeline"
+harness = false

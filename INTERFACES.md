@@ -5,22 +5,39 @@ Implementers fill `todo!()` bodies; **signature/layout changes require updating
 this file and a deliberate decision** — the factory⇄player format contract
 (PLAN §4) and the §3.1 types are the riskiest interfaces in the system.
 
+**As of M4 the OUTWARD-facing API is the `sleepytime` facade crate** (see
+"sleepytime — THE public facade"); every other crate section below is the
+workspace-internal registry behind it.
+
 ## Workspace & dependency edges (PLAN §2, §8)
 
 ```
 crates/
   slpy-core       lib   deps: (none beyond std)
-  slpy-term       lib   deps: slpy-core, crossterm, libc
+  slpy-term       lib   deps: slpy-core; feature "session" (default ON) =
+                        crossterm + libc — gates ansi/probe/restore + the
+                        pty harness bin; Backend/Caps/EventQueue/quant/
+                        diff-render/SimBackend are unconditional (M4 item B:
+                        a sessionless build is terminal-free)
   slpy-format     lib   deps: zstd, crc32fast, ciborium, serde(derive, META struct only)
   slpy-eval       lib   deps: slpy-core, slpy-term, slpy-format, serde, serde_json
                         dev: insta, proptest   (NEW at M2; slpy-format added
                         at item C for the synthetic fixture builders)
   sleepy-factory  bin   deps: slpy-format, slpy-core, slpy-term, slpy-eval,
-                        sleepy-player(lib), clap, indicatif, serde, serde_json,
+                        sleepytime(default-features=false — pipeline only),
+                        clap, indicatif, serde, serde_json,
                         toml, memmap2               (M2 item B additions)
-  sleepy-player   bin+lib  deps: slpy-core, slpy-term, slpy-format, memmap2,
-                        clap, anyhow   (lib target NEW at M2: `pipeline`
-                        module only — see the sleepy-player lib section)
+  sleepytime      lib+bin  THE public facade (M4 item A; absorbed the
+                        sleepy-player crate — pipeline, tests, benches, bin).
+                        deps: slpy-core, slpy-format, memmap2,
+                        slpy-term(default-features=false)
+                        features: default = ["bin"];
+                          terminal = slpy-term/session (Player/PlayerBuilder);
+                          bin = terminal + clap + anyhow (the sleepy-player
+                          binary, required-features gated).
+                        --no-default-features = pure embedder: RenderSession
+                        only; dep tree has NO clap/anyhow/crossterm
+                        (M4 acceptance 4)
 ```
 
 - Root workspace: resolver 3, edition 2024, `license = "MIT OR Apache-2.0"`,
@@ -110,7 +127,12 @@ pub const UNICODE_BASE: &[char];      // palette 5 " ·░▒▓█"
 pub const UNICODE_QUADRANTS: &[char]; // palette 5 "▖▘▝▗▀▄▌▐" (▌▐ unreachable
                                       // until 2Vc×2Vr sampling — documented)
 pub const MONO_FALLBACK_BASE: &[char]; // palette 8 " .:coO8@" (CP437-safe)
-pub const SUBPOS_GLYPHS: [char; 3];   // ‾ - _ (§3.3; ascii-tier subposition)
+pub const SUBPOS_GLYPHS: [char; 3];   // " - _ (§3.3; ascii-tier subposition;
+                                      // CHANGED at M4 review: was ‾ U+203E,
+                                      // which is NOT CP437 and boxed out on
+                                      // the Linux console — the tier is now
+                                      // pure ASCII, pinned by
+                                      // every_ascii_tier_glyph_is_ascii)
 pub struct BrailleLut { pub by_class: [[u8;3];4], pub junction: u8 }
 pub const BRAILLE_EDGE: BrailleLut;   // palette 7 dot masks, ≤5 dots (never
 pub fn braille_glyph(mask: u8) -> char;               // solid; edge-only)
@@ -146,7 +168,9 @@ pub const IDX_HYST_Q8: u32 = 90;             // round(0.35·256) — the spec
                                              // DEFAULT; live width is
                                              // ComposeParams::idx_hyst_q8
                                              // (M3 Tune, note 21)
-pub mod cell_flags { pub const WAS_EDGE: u8 = 1; }
+pub mod cell_flags { pub const WAS_EDGE: u8 = 1;
+                     pub const WAS_QUADRANT: u8 = 2; }  // M4: quadrant
+                     // noise-floor memory, independent of the edge gate
 pub struct CellState { pub idx: u8, pub bin: u8, pub flags: u8 }  // + Default
 pub struct HysteresisState;  // new(cols,rows)/cols/rows/cell/cell_mut +
                              // reset() = scene cut (no realloc) +
@@ -177,6 +201,16 @@ pub struct ComposeParams { pub edge_t_on/edge_t_off: u8,        // 32/16 (M3
                                      // idx_hyst_q8
   pub halfblock_min_delta: u8,       // 64: |top−bottom| "large"
   pub edge_strong: u8,               // 96: ascii junction '+' → '#' (note 20i)
+  pub quad_e_on/quad_e_off: u8,      // 2/1 (M4 review): quadrant-refinement
+                                     // NOISE floor, dual-threshold via
+                                     // edge_gate(). Guards the coherence
+                                     // divide-by-max(e,1) at E 0–1 WITHOUT
+                                     // eating the E∈[2,15] fine-diagonal
+                                     // band (resampled E is box-diluted:
+                                     // corpus source E mean 3.6) — an
+                                     // earlier fix used edge_t_off (16)
+                                     // here and silently downgraded every
+                                     // real fine diagonal to a half-block
   pub idx_hyst_q8: u8 }              // §3.5 idx hysteresis width in Q8 steps
                                      // (promoted at M3 Tune, note 21);
                                      // default 160 since the Tune finish
@@ -191,7 +225,7 @@ pub fn compose_cell(&CellInputs, lut: &[u8;256], &PaletteSet, &ComposeParams,
 // on braille sets; junction when bins conflict) → deep-shadow darkest step →
 // highlight (boosted fg +25% toward white; hidx spread over the gate range)
 // → |Δ|≥delta: quadrant (coherent diagonal) / half-block ▀▄ (chroma scaled
-// per tap around the cell mean) / ascii ‾ _ subposition → base ramp.
+// per tap around the cell mean) / ascii " _ subposition → base ramp.
 pub struct FramePlanes<'a> { pub luma2: &'a [u8],       // Vc × 2Vr
   pub e, ex, ey, h: Option<&'a [u8]>,                   // Vc × Vr
   pub chroma: Option<(&'a [u8], &'a [u8], &'a [u8])> }  // r,g,b at Vc × Vr
@@ -214,6 +248,17 @@ pub fn compose_frame_masked(...same args, out: &mut Grid<Cell>,
 ```
 
 ## slpy-term (PLAN §3.1, §3.6) — M1: caps probe + color tiers + ?2026
+
+M4 (item B): feature `"session"` (default ON) gates everything that touches
+a real terminal — `ansi`/`probe`/`restore` modules, their re-exports
+(`AnsiBackend`, `probe_caps`/`ProbeOptions`/`ProbeParser`/`ProbeReplies`/
+`DEFAULT_PROBE_TIMEOUT`, `RESTORE_SEQ`/`install_restore_hooks`) and the pty
+harness bin — plus the crossterm + libc deps. Everything below that is
+capability data or pure code and stays unconditional (`Backend`, `Caps`,
+`ColorTier`, `GlyphFlags`, `GlyphSupportTier`, `FrameStats`, `Event`/
+`EventQueue`/`Key`, quantizer, diff renderer, `SimBackend`) — the
+sessionless build is what the sleepytime facade's pure-embedder
+configuration links.
 
 ```rust
 // caps.rs — M1: `Throughput` enum + `Caps.throughput` REMOVED (Scope
@@ -243,8 +288,13 @@ pub fn probe_caps(&ProbeOptions) -> Caps;
 // Never hangs: !isatty(stdin/stdout) or DA1 silence → conservative default
 // (256-color, ASCII glyphs). tty flow: passive env hints (COLORTERM / TERM /
 // TERM_PROGRAM / locale→glyph tier) as base; volley upgrades (XTGETTCAP RGB
-// valid → True; DECRPM 2026 Ps∈1..=4 → sync_2026; CSI 16 t → cell_px);
-// forced_tier overrides color last. Result cached at
+// with a usable width → True; DECRPM 2026 Ps∈{1,2} → sync_2026; CSI 16 t →
+// cell_px, overriding the TIOCGWINSZ pixel fields); forced_tier overrides
+// color last. M4 (item D) tightened two reply readings against researched
+// terminal behavior: Ps 3/4 are "permanently set/reset" = NOT support (VTE
+// answers 4 for 2026), and the RGB cap is read BY VALUE — xterm answers the
+// *valid* form `1+r524742=` hex("-1") when it is not in direct-color mode, so
+// a prefix test used to promote every plain xterm to truecolor. Result cached at
 // $XDG_CACHE_HOME/sleepytime/caps (fallback ~/.cache) keyed on
 // (TERM, TERM_PROGRAM, COLORTERM, tmux?) — M2 fix (M1 review low 3): key
 // includes COLORTERM, and a cache hit only ever UPGRADES the tier passive
@@ -265,6 +315,15 @@ pub fn probe_caps(&ProbeOptions) -> Caps;
 // ≤150 ms later, armed sessions only). Pty-tested (tests/pty_probe.rs:
 // probe-latereply, probe-straggler harness modes incl. split-burst,
 // post-2s-burst and lone-Esc-quit regressions).
+pub fn ProbeReplies::sync_supported(&self) -> bool;  // NEW at M4: DECRPM 1|2
+// M4 item D — per-terminal pty identity fixtures (tests/terminal_identity.rs,
+// shared pty plumbing in tests/common/mod.rs): kitty / alacritty / wezterm /
+// gnome-terminal (VTE) / xterm / xterm-direct / Linux console are replayed
+// through probe_caps on a real pty — their env, their TIOCGWINSZ, their canned
+// reply stream (sourced from each terminal's own code, cited inline) — and the
+// resulting Caps asserted. The harness PROBE-DONE line gained `support=` and
+// `glyphs=` fields, and mode `caps` (alias of probe-silent) is the human-facing
+// diagnostic documented in docs/TERMINAL-CHECKLIST.md.
 pub struct ProbeParser;   // incremental VT reply parser (pure; scripted-byte tests)
 impl ProbeParser { pub fn new(); pub fn feed(&mut self, &[u8]) -> bool /*DA1 seen*/;
                    pub fn done(&self) -> bool; pub fn replies(&self) -> &ProbeReplies }
@@ -591,7 +650,7 @@ pub enum GoldenPalette { Ascii, Unicode, MonoGlyphOnly }
     // serialization.
 pub struct FixtureRenderer<'a>;  // player-pipeline replay on public APIs,
                                  // pinned cell-for-cell to the REAL Player by
-                                 // sleepy-player/tests/pipeline_parity.rs
+                                 // sleepytime/tests/pipeline_parity.rs
                                  // (M2 review fix 4c — goldens transitively
                                  // cover the shipping renderer via that pin;
                                  // M3: parity covers the temporal state
@@ -615,12 +674,108 @@ pub fn snapshot(title, term: (u16,u16), GoldenPalette, Option<Viewport>,
     // (glyph-only palettes omit the fg section)
 ```
 
-## sleepy-player lib (`sleepy_player::pipeline`) — NEW at M2 (item B)
+## sleepytime — THE public facade (M4 item A; source of truth for the API)
 
-The binary crate gained a lib target so `sleepy-factory eval` drives the
-EXACT player frame pipeline headlessly (metrics must measure the real
-renderer, not a reimplementation — decision recorded in note 14). The
-binary keeps the CLI/clock/tty; the pipeline is pure w.r.t. both.
+The `sleepytime` crate is the one crate an outside project depends on; every
+`slpy-*` crate is an implementation detail behind it. Public surface —
+audited item-by-item against "does a simple embedding project need this?":
+
+```rust
+// lib.rs — always available (also under --no-default-features)
+pub enum Error;                       // one coherent error (thiserror-style
+    // layering, hand-rolled): Io{path,source} | Format{path,source:SlpyError}
+    // | Asset(&'static str) | Decode{frame,plane,source:SlpyError}
+    // | Config(String) | Terminal(io::Error); #[non_exhaustive];
+    // Display embeds the cause, source() exposes the chain
+pub enum PaletteChoice { Auto, Ascii, Unicode, Braille }  // §3.4 charset axis
+    // Auto = probed caps (Player) / Unicode blocks (RenderSession);
+    // braille NEVER chosen automatically
+pub use slpy_core::{Cell, Grid, Rgb};  // what render() hands back — nothing
+    // else from slpy-core is re-exported (resampler, palettes, viewport,
+    // hysteresis: engine internals a simple project never touches)
+
+// session.rs — the terminal-free embedder entry (always available)
+pub struct RenderSession;   // owns the mmap + decode state + hysteresis
+impl RenderSession {
+  pub fn open(path: impl AsRef<Path>) -> Result<RenderSession, Error>;
+      // mmap read-only + validate; defaults: Unicode palette, truecolor
+      // cells (embedder owns quantization), cell aspect 2.0.
+      // Internally Player<'static> over the owned map (encapsulated
+      // self-reference; SAFETY comment in session.rs — drop order pins
+      // the borrow, the fake 'static never escapes)
+  pub fn render(&mut self, frame_idx: u32, cols: u16, rows: u16)
+      -> Result<&Grid<Cell>, Error>;
+      // letterboxed compose at cols×rows; <32×9 renders the enlarge card.
+      // TEMPORAL-STATE CONTRACT (documented on the type): monotonic
+      // frame_idx advance (skips fine) = full hysteresis quality;
+      // BACKWARD jump = automatic full temporal reset (no pre-seek
+      // ghosting, landing frame == cold start); grid size change =
+      // realloc+reset (same as terminal resize)
+  pub fn fps(&self) -> f64;           // drive your clock: (t·fps) as u32
+  pub fn frame_count(&self) -> u32;   // > 0, enforced at open
+  pub fn aspect(&self) -> f64;        // asset picture aspect (w/h, ≈1.778)
+  pub fn set_palette(&mut self, PaletteChoice);            // resets temporal
+  pub fn set_cell_aspect(&mut self, f64) -> Result<(), Error>; // §3.2 knob
+      // (1.0 for square cells in an embedder's own renderer)
+}
+
+// player.rs — feature "terminal" (in the default set via "bin")
+pub enum RepaintMode { Full /*default*/, Diff }
+pub struct PlayerBuilder;   // Default; #[must_use]
+impl PlayerBuilder {        // the spec'd builder (§7 M4) + escape hatches
+  pub fn asset(self, impl Into<PathBuf>) -> Self;          // REQUIRED
+  pub fn palette(self, PaletteChoice) -> Self;             // default Auto
+  pub fn tier(self, Option<ColorTier>) -> Self;   // Some = force + skip volley
+  pub fn repaint(self, RepaintMode) -> Self;
+  pub fn fps_cap(self, f64) -> Self;              // >0 checked at build
+  pub fn looping(self, bool) -> Self;
+  pub fn cell_aspect(self, f64) -> Self;          // finite >0 checked at build
+  pub fn seek_secs(self, f64) -> Self;            // FIDX seek; bounds at build
+  pub fn duration_secs(self, f64) -> Self;        // stop after N s wall clock
+  pub fn no_query(self, bool) -> Self;            // probe escape hatches
+  pub fn no_cache(self, bool) -> Self;            //   (PLAN §3.1)
+  pub fn build(self) -> Result<Player, Error>;    // opens+validates the asset;
+      // does NOT touch the terminal — bad path/file fails before any
+      // screen state changes
+}
+pub struct Player;          // asset open+validated, terminal untouched
+impl Player {
+  pub fn builder() -> PlayerBuilder;
+  pub fn run(self) -> Result<(), Error>;  // BLOCKING: probe (§3.1) →
+      // AnsiBackend session (restore hooks armed first) → the §3.6
+      // wall-clock loop (latest-frame-wins, digit jumps, resize reflow) →
+      // shutdown/restore. Consumes self; the M0–M3 machinery verbatim
+      // (moved from the old sleepy-player main.rs — no logic fork with the
+      // bin, which is now a pure argv shim)
+}
+pub use slpy_term::ColorTier;   // the tier(..) argument type — the ONLY
+    // slpy-term re-export; Caps deliberately NOT re-exported (probing is
+    // run()'s internal business; audit: a simple project never needs it)
+```
+
+Deliberately `#[doc(hidden)]` (workspace harness contract, semver-exempt):
+`sleepytime::pipeline` (below) and `PaletteChoice::resolve_for_caps(&Caps)`
+(CLI/--sim plumbing).
+
+## sleepytime::pipeline — the hidden engine room (ex sleepy-player lib)
+
+Extracted to a lib at M2 so `sleepy-factory eval` drives the EXACT player
+frame pipeline headlessly (metrics must measure the real renderer, not a
+reimplementation — note 14); M4 moved it verbatim from `sleepy_player::` to
+`sleepytime::` and hid it from the public docs. Consumers: the sleepy-player
+bin (--sim), factory eval, resize fuzz, perf benches, parity goldens.
+
+M4 signature changes: all `anyhow::Result` became `Result<_, sleepytime::Error>`
+(same coherent type as the facade; factory's `?` still works — Error is a
+std error). New: the backend seam is split so RenderSession stays
+terminal-free — `reflow_grid(cols, rows)` (everything but backend
+resize/invalidate) and `render_grid(frame_idx)` (everything but present);
+`reflow`/`render_present` are now thin wrappers over them + the backend
+calls (call order and bytes IDENTICAL to M3 — verified by the pre/post
+sim-dump sha256 pin at M4). Also new: `reset_temporal_state()` (the §3.5
+discontinuity reset, used by RenderSession backward jumps),
+`set_glyph_tier(GlyphTier)` + `set_cell_aspect(f64)` (take effect at next
+reflow; RenderSession setters).
 
 ```rust
 // pipeline.rs — M3: the full §3.5 three-layer path (integrator; note 20).
@@ -632,7 +787,7 @@ pub struct Drained { pub quit: bool, pub jump_digit: Option<u8> }
     // update_levels only covers jumps that cross a shot boundary, so a
     // same-shot jump used to ghost pre-seek was_edge/idx into the landing
     // frame). Callers just repoint their clock and render (regression:
-    // sleepy-player/tests/m3_layers.rs digit_jump_seek_resets_hysteresis_state).
+    // sleepytime/tests/m3_layers.rs digit_jump_seek_resets_hysteresis_state).
 pub fn glyph_tier_from_caps(&Caps) -> GlyphTier;  // AsciiOnly/Cp437→Ascii,
       // UnicodeCore→UnicodeBlocks, UnicodeFull→UnicodeBlocks unless
       // Caps.glyphs has BRAILLE (verified-only) → BrailleVerified
@@ -641,7 +796,7 @@ pub struct Player<'a>;   // decode → resample → NORM LUT → compose → pre
 impl<'a> Player<'a> {
   pub fn new(reader: SlpyReader<'a>, cell_aspect: f64, repaint_full: bool,
              color: ColorDepth, glyph_tier: GlyphTier)
-      -> anyhow::Result<Player<'a>>;
+      -> Result<Player<'a>, Error>;   // M4: facade Error
       // SIGNATURE CHANGED at M3 (was want_color: bool): the player owns
       // palette selection, keyed Caps-shaped (charset tier × color depth;
       // density falls out of the viewport at reflow via select_palettes).
@@ -659,7 +814,7 @@ impl<'a> Player<'a> {
       // HysteresisState.resize (realloc+reset — §3.5 graft from C)
   pub fn drain_events<B: Backend>(&mut self, backend: &mut B) -> Drained;
   pub fn render_present<B: Backend>(&mut self, backend: &mut B, frame_idx: u32)
-      -> anyhow::Result<FrameStats>;
+      -> Result<FrameStats, Error>;  // M4: facade Error
       // M3 frame: decode Y(+E/Ex/Ey/H/C present-planes; sequential roll or
       // FIDX seek per plane) → update_levels (LUT rebuild on shot change
       // ALSO resets hysteresis — deliberate superset of the §3.5 CUT rule:
@@ -687,8 +842,10 @@ pub fn draw_enlarge_card(grid: &mut Grid<Cell>);
 // shipping renderer and the golden harness.
 ```
 
-The M4 embeddable API will grow from here; until then nothing else in the
-crate is `pub`.
+(M4 additions to this registry — `reflow_grid`/`render_grid`/
+`reset_temporal_state`/`set_glyph_tier`/`set_cell_aspect` — are described in
+the facade section above. Nothing else in the crate is `pub` outside the
+facade surface + this hidden module.)
 
 ## Binaries
 
@@ -727,7 +884,8 @@ crate is `pub`.
   `[highlights] tophat_radius/tophat_thresh/shadow_pct/shadow_max_l`,
   `[temporal] ema_alpha_{y,e,c}_milli` (M3, note 18),
   `[compose] edge_t_on/edge_t_off/coh_min_q8/coh_dir_q8/hi_cut_q8/
-  edge_white_cut_q8/halfblock_min_delta/edge_strong` (M3 integrator, note
+  edge_white_cut_q8/halfblock_min_delta/edge_strong/quad_e_on/quad_e_off`
+  (M3 integrator + M4 review quadrant noise floor, note
   20: RENDERER knobs — mapped onto `slpy_core::ComposeParams` and handed to
   the Player by the eval driver; deliberately EXCLUDED from
   `build_fingerprint`, so compose sweeps never rebuild assets; defaults
@@ -780,7 +938,14 @@ crate is `pub`.
   reports shots + cut flags, keyframe count, per-plane compressed/raw sizes,
   compression ratio vs raw planes, and per-plane value stats over sampled
   frames (E nonzero %, Ex/Ey bias deviation, H flag rates).
-- `sleepy-player` (PLAN §3), CLI as of M3 (see notes 9, 11 and 20):
+- `sleepy-player` (PLAN §3) — M4: now built from `crates/sleepytime`
+  (`[[bin]]` behind the default-on `bin` feature, so `cargo install
+  sleepytime` ships it; `required-features` keeps embedder builds
+  binary-free). The bin is a thin argv shim: interactive flags map 1:1 onto
+  `PlayerBuilder` and `run()` (no logic fork); `--sim` drives
+  `sleepytime::pipeline` directly. CLI unchanged since M3 and byte-identical
+  in behavior (sim-dump sha256 pinned pre/post move). CLI as of M3 (see
+  notes 9, 11 and 20):
   `<asset> [--repaint full|diff] [--loop] [--fps-cap FPS] [--cell-aspect F]
   [--duration-secs N] [--seek TIMESTAMP] [--tier TIER] [--no-query]
   [--no-cache] [--palette auto|ascii|unicode|braille]
@@ -956,7 +1121,7 @@ crate is `pub`.
     DEV-dependency on slpy-eval for this (a legal dev-dep cycle — dev-deps
     sit outside the package's own dep graph).
     Resize fuzzing (§6 invariant set as explicit assertions; MOVED to
-    `crates/sleepy-player/tests/resize_fuzz.rs` against the real `Player`
+    `crates/sleepytime/tests/resize_fuzz.rs` against the real `Player`
     by review fix 4c, note 17):
     originally `crates/slpy-eval/tests/resize_fuzz.rs` — random
     1×1..=1000×1000 resize
@@ -1013,7 +1178,7 @@ crate is `pub`.
     workspace dependency.
 15. **M2 item E + review fixes 2/3 landed** (perf-gate agent). No `pub`
     signature changed. Perf gates (PLAN §6): criterion benches at
-    `crates/sleepy-player/benches/pipeline.rs` over the REAL pipeline —
+    `crates/sleepytime/benches/pipeline.rs` over the REAL pipeline —
     `decode_delta_roll_480x270` (Y+C sequential delta roll),
     `resample_480x270_to_300x80`, `compose_300x80` (viewport inside the
     300×80 grid), `present_truecolor_300x80` / `present_256_300x80`
@@ -1024,7 +1189,7 @@ crate is `pub`.
     reference box; ids mirror the bench ids); `scripts/perf-gate.sh
     [--no-run]` compares criterion's `estimates.json` medians and exits
     nonzero on any breach or missing estimate. The unthrottled end-to-end
-    gate is a plain test, `crates/sleepy-player/tests/perf_fps.rs`
+    gate is a plain test, `crates/sleepytime/tests/perf_fps.rs`
     (asserts ≥ 24 fps @300×80 truecolor; ~500 fps measured under the dev
     profile). Verified: 5 consecutive green gate runs (incl. under load
     ~16) and a deliberate spin in `Resampler::apply` tripping the gate
@@ -1085,17 +1250,17 @@ crate is `pub`.
     trips the gate (resample −8.4% headroom → FAIL); reverted; two
     consecutive clean-gate PASS runs.
     (4c) **goldens/fuzz exercised a replica** [medium]: the resize fuzz
-    moved to `crates/sleepy-player/tests/resize_fuzz.rs` and now drives
+    moved to `crates/sleepytime/tests/resize_fuzz.rs` and now drives
     the real `Player` through `drain_events`/`reflow`/`render_present`
     (new read-only accessor `Player::resampler_dims`); new
-    `crates/sleepy-player/tests/pipeline_parity.rs` pins FixtureRenderer
+    `crates/sleepytime/tests/pipeline_parity.rs` pins FixtureRenderer
     to Player cell-for-cell (3 fixtures × grid sweep incl. all golden
     sizes + 48×12 tier-golden size × color/mono × seq/seek/cut frames ×
     mid-run reflows), so the 27 insta goldens + 4 tier goldens
     transitively cover the shipping renderer (mutation-tested: dropping
     reflow's ramp update fails parity). sleepy-player gained dev-deps
     slpy-eval + proptest; slpy-eval dropped its proptest dev-dep;
-    scripts/eval.sh fuzz section now targets sleepy-player.
+    scripts/eval.sh fuzz section now targets it (M4: crate renamed sleepytime).
     (4d) **eval cache staleness** [medium]: the eval asset cache key
     gained a third component — `SLPY_PIPELINE_FINGERPRINT`, an FNV-1a 64
     over every `.rs` in sleepy-factory/src + slpy-format/src emitted by
@@ -1190,7 +1355,7 @@ crate is `pub`.
     slpy-eval, `gif` for sleepy-factory — PNG I/O stays with the ffmpeg
     subprocess.
 20. **M3 pipeline integration landed** (integrator). The player runs the
-    full §3.5 path — see the sleepy-player lib section for the surface.
+    full §3.5 path — see the sleepytime::pipeline section for the surface.
     Decisions recorded:
     (a) **Player::new signature** `want_color: bool` → `(ColorDepth,
     GlyphTier)`: palette selection is the player's job (Caps mapped via the
@@ -1297,3 +1462,108 @@ crate is `pub`.
     run) and **runs/base.json is the tuned-M3 baseline** (deliberate
     re-baseline: schema v2, edge-F1 family + tuned metrics; the M1-era
     baseline was unreproducible against the M3 renderer by design).
+
+23. **M4 items D + E landed** (terminal-matrix agent; PLAN §7 M4 "local
+    terminals verified", Scope-amendment audit). No facade API change; two
+    probe *readings* corrected against researched terminal behavior, one new
+    `pub` helper (`ProbeReplies::sync_supported`), one new harness mode
+    (`caps`) and two extra fields on the harness PROBE-DONE line
+    (`support=`, `glyphs=`).
+    (a) **Per-terminal pty identity fixtures**
+    (`crates/slpy-term/tests/terminal_identity.rs`, pty plumbing extracted to
+    `tests/common/mod.rs` and shared with `pty_probe.rs`): kitty, alacritty,
+    wezterm, gnome-terminal (VTE), xterm, xterm-direct and the Linux console
+    are each replayed through the real `probe_caps` on a real pty — that
+    terminal's env (`TERM`/`COLORTERM`/`TERM_PROGRAM`/locale), its
+    `TIOCGWINSZ` (with or without pixel fields) and its canned reply stream —
+    and the resulting `Caps` (color tier, sync_2026, cell_px, glyph support
+    tier, glyph flags, zero stray bytes) asserted. Every stream is derived
+    from that terminal's own source, cited inline (kitty screen.c/terminfo.py/
+    window.py; alacritty term/mod.rs + CHANGELOG; wezterm terminalstate/mod.rs;
+    vte vteseq.cc/modes.py/pty.cc; xterm ctlseqs + misc.c; console_codes(4)).
+    (b) **Two probe readings fixed by that research.** DECRPM 2026 now counts
+    only Ps ∈ {1,2}: 3/4 mean "permanently set/reset" (not support), and VTE
+    answers **4**, so gnome-terminal no longer gets `?2026h…l` wraps it will
+    never honor. XTGETTCAP `RGB` is now read BY VALUE: xterm answers the
+    *valid* `1+r524742=`hex("-1") form when not in direct-color mode, which
+    the old prefix test promoted to truecolor — plain xterm is C256,
+    `xterm-direct` (value "8") and wezterm (value "8/8/8") are True. Kitty
+    answers `0+r` (no RGB cap in its tables) and reaches truecolor via
+    COLORTERM. Unit tests (`sync_supported_only_for_settable_modes`,
+    `hex_decode_pairs_and_rejects_malformed`), parser cases
+    (`xtgettcap_rgb_is_read_by_value`) and the kitty/xterm/vte transcripts in
+    `tests/probe_parser.rs` re-pointed at the researched truth.
+    (c) **`TERM=linux` legibility floor**
+    (`crates/sleepytime/tests/linux_console_golden.rs` + committed
+    `tests/goldens/linux_console_80x24_f10.txt`): the fixture frame rendered
+    through the REAL `pipeline::Player` at console caps (C16 + Cp437 →
+    `PaletteChoice::Auto` resolves the ASCII floor, palette 8 ramp, aspect
+    fallback 2.0) — glyph-grid golden plus assertions no golden can express:
+    every glyph CP437-safe (0x20..=0x7E), > 50 % non-blank coverage, ≥ 5
+    distinct glyphs, blank letterbox pad, and a present() stream free of
+    `38;2`/`38;5`/`?2026`.
+    (d) **Owner doc**: `docs/TERMINAL-CHECKLIST.md` — one command per real
+    terminal, expected visuals, known quirks (kitty's missing RGB cap, VTE's
+    permanent-reset 2026 ⇒ expected tearing, xterm's correct 256-color
+    banding + `-direct2` path, alacritty's winsize-only cell size), the
+    `slpy-term-harness caps` diagnostic, the escape-hatch table, and what the
+    fixtures do/don't cover.
+    (e) **No-connectivity audit** (command + result in
+    `docs/TERMINAL-CHECKLIST.md` §5): zero connectivity code paths. The only
+    hits are the multiplexer flag inside the probe's *cache key*, now pinned
+    inert by `multiplexer_flag_only_partitions_the_cache` (identical `Caps`
+    with the flag set/unset, different cache slot). Stale prose about a
+    ConPTY backend and the descoped throughput governor removed from
+    slpy-term docs. No bench, `perf/thresholds.toml`, `runs/` or params file
+    was touched.
+
+24. **M4 review fixes landed** (review-fix agent). Three confirmed findings,
+    each with a regression test that can actually see the defect.
+    (a) **ASCII tier is now genuinely ASCII.** `SUBPOS_GLYPHS` top slot
+    `‾` U+203E → `"`. U+203E is not a CP437 code point (CP437 0xEE is
+    U+00AF MACRON), so the shipping ASCII/CP437 path drew a missing-glyph box
+    on the Linux console — or three mojibake bytes outside UTF-8 mode —
+    exactly the failure `docs/TERMINAL-CHECKLIST.md` tells the owner to watch
+    for. `"` also fixes an eval-side accident: U+203E was absent from
+    `CONSERVATIVE_COVERAGE` and rasterized through the `max·0.5` ≈ 0.13
+    fallback, ~2× its real ink; `"` measures 0.064 against `_`'s 0.055, so
+    the top/bottom subposition pair is now ink-matched. Pinned by
+    `slpy_core::palette::every_ascii_tier_glyph_is_ascii` (enumerates the
+    whole ASCII PaletteSet surface across both densities × all four color
+    depths — data-side, unconditional), by the ascii-render sweep in
+    `slpy-eval` `golden_frames_are_meaningful`, and by
+    `linux_console_golden.rs::every_glyph_is_console_printable`, which now
+    sweeps 3 fixtures × 40 frames **and asserts it actually reached the
+    subposition branch** (the single-frame version was vacuous — it passed
+    only because that one gradient frame had no subposition cells).
+    **Goldens re-pinned:** 6 checker-drift ascii/mono snapshots, 174 lines,
+    diff verified to be the single substitution `‾`→`"` and nothing else.
+    (b) **Quadrant noise floor re-tuned + made dither-stable.** The M3-review
+    floor used `edge_t_off` (16), which disabled quadrant refinement across
+    the whole E ∈ [2,15] band it exists to serve: resampled E is diluted by
+    the cell box average (corpus source E mean 3.6, 8.95 % nonzero), so a
+    genuine fine diagonal lands near cell E 6–11. New `ComposeParams`
+    `quad_e_on`/`quad_e_off` = 2/1 — a *noise* floor (1-LSB resample noise
+    cannot exceed E = 1), run through the same `edge_gate()` dual threshold
+    as the edge layer with its own `cell_flags::WAS_QUADRANT` memory, so a
+    cell dithering across the floor cannot alternate quadrant/half-block
+    every frame. Both new fields are `params.toml` `[compose]` knobs
+    (validated `quad_e_off <= quad_e_on`, pinned to the core defaults by the
+    existing single-source-of-truth test). CI could not see any of this — all
+    committed goldens contain zero quadrant glyphs and `sleepy-factory eval`
+    renders at `GlyphTier::Ascii`, where `quadrant: false` — so the coverage
+    is three `slpy-core` unit tests instead:
+    `lsb_noise_orientation_never_picks_quadrant` (floor holds),
+    `fine_diagonal_band_still_refines_to_quadrants` (E 3..=15, both diagonal
+    classes — this is the test the `edge_t_off` floor would fail), and
+    `quadrant_floor_is_dither_stable` (arm/hold/re-arm + scene-cut reset).
+    (c) **Doctests are green in the pure-embedder configuration.** The
+    crate-level quickstart's first fence is now
+    `#![cfg_attr(not(feature = "terminal"), doc = "```no_run,ignore")]`, so
+    `cargo test -p sleepytime --no-default-features --doc` passes (2 passed,
+    1 ignored) instead of failing on a `Player` that is configured out;
+    docs.rs builds with default features and still shows the runnable form.
+    Same-config rot fixed alongside: `tests/m1_sim.rs` and `tests/sim_e2e.rs`
+    carry `#![cfg(feature = "bin")]`, so they no longer silently exercise a
+    stale `target/debug/sleepy-player` left by an earlier default-feature
+    build. No public signature changed in (c).

@@ -1,7 +1,7 @@
 //! `sleepy-factory eval` — the M2 agent socket (PLAN §5/§6, item B).
 //!
 //! For every video in `--corpus`: build (or reuse) the asset, then drive the
-//! REAL player pipeline (`sleepy_player::pipeline::Player`, extracted to a
+//! REAL player pipeline (`sleepytime::pipeline::Player`, extracted to a
 //! lib at M2 exactly so this driver measures the renderer and not a
 //! reimplementation) headlessly against `SimBackend`, collecting the §6
 //! metrics:
@@ -45,7 +45,7 @@ use std::time::Duration;
 use std::collections::BTreeMap;
 
 use memmap2::Mmap;
-use sleepy_player::pipeline::Player;
+use sleepytime::pipeline::Player;
 use slpy_core::{DEFAULT_CELL_ASPECT, compute_viewport};
 use slpy_eval::{
     ClipMetrics, ClipReport, CompareReport, CoverageTable, EDGE_MATCH_TOLERANCE, EdgeMask,
@@ -415,7 +415,7 @@ pub(crate) fn eval_clip(
             reader,
             DEFAULT_CELL_ASPECT,
             false,
-            sleepy_player::pipeline::color_depth(tier),
+            sleepytime::pipeline::color_depth(tier),
             slpy_core::GlyphTier::Ascii,
         )?;
         // §3.5 compositor tunables from params.toml [compose] — the
@@ -732,7 +732,7 @@ fn frame_ssim(
     normed: &mut Vec<u8>,
 ) -> f64 {
     let mut lut = [0u8; 256];
-    sleepy_player::pipeline::build_levels_lut(&mut lut, reference_levels(player.luma_src()));
+    sleepytime::pipeline::build_levels_lut(&mut lut, reference_levels(player.luma_src()));
     normed.clear();
     normed.extend(player.luma_src().iter().map(|&v| lut[v as usize]));
     downscale_ssim(cropped, normed, src_w, src_h)

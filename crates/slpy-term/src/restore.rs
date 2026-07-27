@@ -5,7 +5,7 @@
 //! bytes on Ctrl-C, SIGTERM and panic.
 //!
 //! Design: `AnsiBackend::new` *arms* a process-global (tty fd + pre-raw
-//! termios) before touching the terminal; [`restore_now`] disarms and
+//! termios) before touching the terminal; `restore_now` disarms and
 //! restores exactly once, from whichever path fires first — orderly
 //! `shutdown`/`Drop`, the panic hook, SIGINT/SIGTERM, or atexit. Everything
 //! on the signal path is async-signal-safe: atomics, raw `write(2)`,
@@ -34,7 +34,7 @@ static SAVED_TERMIOS: TermiosStore = TermiosStore(UnsafeCell::new(MaybeUninit::u
 static HOOKS: Once = Once::new();
 
 /// Install restoration hooks (PLAN §3.1): a panic hook, SIGINT/SIGTERM
-/// handlers, and atexit — each runs [`restore_now`] (async-signal-safe raw
+/// handlers, and atexit — each runs `restore_now` (async-signal-safe raw
 /// `write(2)` of [`RESTORE_SEQ`] + `tcsetattr`, no locks/allocation); the
 /// signal handlers then re-raise with the default disposition so the exit
 /// status still reports the signal.

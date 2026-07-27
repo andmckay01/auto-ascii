@@ -4,6 +4,12 @@
 //! A tiny synthetic SLPY asset is written with `SlpyWriter`, then the
 //! `sleepy-player` binary is driven with `CARGO_BIN_EXE_sleepy-player`.
 
+// These drive the real `sleepy-player` binary via CARGO_BIN_EXE_*, which
+// only exists when the `bin` feature is on (its required-features).
+// Without this gate the harness silently reuses a stale binary left on
+// disk by an earlier default-feature build (M4 review).
+#![cfg(feature = "bin")]
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;

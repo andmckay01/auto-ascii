@@ -8,7 +8,7 @@ members = [
     "crates/slpy-term",
     "crates/slpy-eval",
     "crates/sleepy-factory",
-    "crates/sleepy-player",
+    "crates/sleepytime",
 ]
 
 [workspace.package]
@@ -22,7 +22,12 @@ slpy-core = { path = "crates/slpy-core" }
 slpy-term = { path = "crates/slpy-term" }
 slpy-format = { path = "crates/slpy-format" }
 slpy-eval = { path = "crates/slpy-eval" }
-sleepy-player = { path = "crates/sleepy-player" } # lib target: pipeline reuse in sleepy-factory eval (M2)
+# M4: the facade crate replaced the sleepy-player lib target (the pipeline
+# moved into it; the `sleepy-player` binary now lives there behind the
+# default-on `bin` feature). default-features = false here: consumers of the
+# workspace dep (sleepy-factory eval, slpy-eval dev) need only the pipeline —
+# no clap/terminal-session deps.
+sleepytime = { path = "crates/sleepytime", default-features = false }
 # slpy-format (PLAN §8): zstd + crc32fast + ciborium (META only; frame payloads hand-rolled)
 zstd = "0.13"
 crc32fast = "1.4"
@@ -80,7 +85,8 @@ opt-level = 3
 # M2 item B: `sleepy-factory eval` runs the player pipeline + the factory
 # extract loops over whole corpus clips under `cargo test`/debug — same
 # rationale as above (hot per-pixel/per-cell loops; debug-assertions stay on).
-[profile.dev.package.sleepy-player]
+# M4: sleepy-player's pipeline moved into the sleepytime facade.
+[profile.dev.package.sleepytime]
 opt-level = 3
 [profile.dev.package.sleepy-factory]
 opt-level = 3

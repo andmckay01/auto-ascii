@@ -1279,7 +1279,7 @@ dependencies = [
  "memmap2",
  "serde",
  "serde_json",
- "sleepy-player",
+ "sleepytime",
  "slpy-core",
  "slpy-eval",
  "slpy-format",
@@ -1288,7 +1288,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sleepy-player"
+name = "sleepytime"
 version = "0.1.0"
 dependencies = [
  "anyhow",

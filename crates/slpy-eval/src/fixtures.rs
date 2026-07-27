@@ -21,8 +21,8 @@
 //! resample at Vc×2Vr → per-shot NORM LUT → the §3.5 three-layer
 //! `compose_frame`) against these assets using only public
 //! slpy-core/slpy-format APIs. It is pinned cell-for-cell
-//! to the REAL `sleepy_player::pipeline::Player` by
-//! `sleepy-player/tests/pipeline_parity.rs` (M2 review fix — the committed
+//! to the REAL `sleepytime::pipeline::Player` by
+//! `sleepytime/tests/pipeline_parity.rs` (M2 review fix — the committed
 //! goldens transitively cover the shipping renderer through that pin; a
 //! divergence fails the parity test, not silently the replica alone).
 //! [`snapshot`] is the compact text serialization the

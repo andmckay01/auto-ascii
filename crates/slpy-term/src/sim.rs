@@ -41,7 +41,7 @@ impl SimBackend {
 
     /// Throttle the simulated writer to `bytes_per_sec` (`None` or 0 =
     /// unlimited). `present` accounts the simulated drain time in
-    /// `FrameStats::write_ns` — no real sleeping — so pacing/governor logic
+    /// `FrameStats::write_ns` — no real sleeping — so pacing logic
     /// is testable headlessly (PLAN §6).
     pub fn set_throughput(&mut self, bytes_per_sec: Option<u64>) {
         self.throughput_bps = bytes_per_sec;

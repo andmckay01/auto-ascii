@@ -85,7 +85,7 @@ pub mod layer {
     pub const HIGHLIGHT: u8 = 2;
     /// Deep-shadow clamp won (H bit1 → darkest step).
     pub const SHADOW: u8 = 3;
-    /// Sub-cell vertical structure won (half-block / quadrant / `‾ _`
+    /// Sub-cell vertical structure won (half-block / quadrant / `" _`
     /// subposition — §3.3's Vc×2Vr payoff, not an edge-layer decision).
     pub const STRUCTURE: u8 = 4;
 }
@@ -134,6 +134,22 @@ pub struct ComposeParams {
     pub halfblock_min_delta: u8,
     /// Edge magnitude at/above this upgrades an ASCII junction `+` to `#`.
     pub edge_strong: u8,
+    /// Quadrant-refinement **noise floor**, arm threshold (strict
+    /// `e > quad_e_on`). Coherence divides by `max(e, 1)`, so at a resampled
+    /// E of 0–1 a 1-LSB resample-noise `(Ex, Ey)` vector reads as "perfectly
+    /// coherent" and would steer the cell to a noise-driven corner quadrant
+    /// (M3 review). This is deliberately a *noise* floor and not the edge
+    /// gate's hold threshold: resampled E is heavily diluted by the box
+    /// average (corpus source E mean ≈ 3.6, 8.95% nonzero), so a genuine fine
+    /// diagonal — source E ≈ 100 across one or two pixels of a 3×6 source box
+    /// — lands near cell E 6–11, exactly the band quadrants exist to serve.
+    pub quad_e_on: u8,
+    /// Quadrant-refinement noise floor, hold threshold (strict
+    /// `e > quad_e_off` while the gate was on last frame). The pair is a
+    /// Canny-style dual threshold for the same reason the edge gate is one:
+    /// a single hard threshold on this noisy plane lets a cell dithering
+    /// across it alternate quadrant/half-block every frame.
+    pub quad_e_off: u8,
     /// Ramp-index hysteresis width in Q8 fractions of one step. The §3.5
     /// spec nominal is "boundary ± 0.35·step" = 90 ([`crate::IDX_HYST_Q8`]);
     /// promoted to a tunable at M3 Tune — wider = stickier cells (less
@@ -159,6 +175,11 @@ impl Default for ComposeParams {
             edge_white_cut_q8: 240,
             halfblock_min_delta: 64,
             edge_strong: 96,      // ascii '+' → '#', same E scale
+            // Noise floor only (M4 review): 1-LSB resample noise cannot
+            // exceed E = 1, so `> 2` arms on genuine ink and `> 1` holds it
+            // — the whole E ∈ [2, 15] fine-diagonal band stays served.
+            quad_e_on: 2,
+            quad_e_off: 1,
             // M3 Tune: 160 (0.625·step) from the committed corpus sweep —
             // grass flicker 2.313 → 1.651 (fixes the ≤ 2 gate breach) with
             // edge F1 invariant (the near-white veto rides the plain index)
@@ -191,7 +212,7 @@ fn shade(c: Rgb, l: u8, m: u8) -> Rgb {
 ///
 /// Layer priority (§3.4, override never blend): edge (gated + coherent, base
 /// not near-white) → deep-shadow clamp (H bit1 → darkest step) → highlight
-/// (H bit0, `idx < HI_CUT`) → half-block/quadrant (unicode) or `‾ - _`
+/// (H bit0, `idx < HI_CUT`) → half-block/quadrant (unicode) or `" - _`
 /// subposition (ascii) when `|top−bottom|` is large → base ramp. Foreground
 /// is always the chroma sample (gray fallback); the backend quantizes.
 pub fn compose_cell(
@@ -244,6 +265,26 @@ pub fn compose_cell_layer(
     } else {
         s.flags &= !cell_flags::WAS_EDGE;
     }
+
+    // Quadrant-refinement magnitude gate — the same Canny-style dual
+    // threshold shape as the edge gate, an order of magnitude lower (see
+    // `ComposeParams::quad_e_on`). Evaluated here rather than inside the
+    // quadrant branch so the memory tracks E on every frame, including ones
+    // where another layer wins the cell. Skipped entirely on palettes with
+    // no quadrants (every ASCII tier), where the flag is never read; a
+    // palette change goes through `reflow` → `HysteresisState::resize`,
+    // which resets all state, so no stale bit can survive into a set that
+    // does read it.
+    let quad_on = set.quadrant && {
+        let was_quad = s.flags & cell_flags::WAS_QUADRANT != 0;
+        let on = edge_gate(inp.e, was_quad, params.quad_e_on, params.quad_e_off);
+        if on {
+            s.flags |= cell_flags::WAS_QUADRANT;
+        } else {
+            s.flags &= !cell_flags::WAS_QUADRANT;
+        }
+        on
+    };
 
     let fg = inp.chroma.unwrap_or(Rgb::gray(n));
     // The asset stores the GRADIENT doubled-angle convention (factory
@@ -308,7 +349,17 @@ pub fn compose_cell_layer(
             // Quadrant refinement (palette 5): coherent diagonal orientation
             // below the edge gate — see `palette::quadrant_for` for the
             // vertical-pair + dominant-orientation approximation.
-            if set.quadrant && coherence_at_least(dx, dy, inp.e, params.coh_dir_q8) {
+            //
+            // Magnitude floor (M3 review low, re-tuned at M4 review):
+            // coherence divides by max(e, 1), so at resampled E of 0–1 a
+            // 1-LSB resample-noise (Ex,Ey) vector is "perfectly coherent"
+            // and would steer the cell to a noise-driven corner quadrant.
+            // `quad_on` is the dual-threshold NOISE floor for that — not the
+            // edge gate's hold threshold, which would take the whole
+            // E ∈ [2, 15] fine-diagonal band with it (see
+            // `ComposeParams::quad_e_on`). Below the floor the plain
+            // half-block is the honest glyph.
+            if quad_on && coherence_at_least(dx, dy, inp.e, params.coh_dir_q8) {
                 let bin = bin_with_guard(dx, dy, s.bin);
                 s.bin = bin;
                 if let Some(q) = quadrant_for(GlyphClass::from_bin(bin), lt >= lb) {
@@ -326,7 +377,7 @@ pub fn compose_cell_layer(
             };
         }
         if set.subpos {
-            // ASCII tiers: `‾` / `_` when the bright half is decisive (`-` is
+            // ASCII tiers: `"` / `_` when the bright half is decisive (`-` is
             // the mid slot, never decisive here — §3.3).
             let g = if lt >= lb {
                 SUBPOS_GLYPHS[SubPos::Top as usize]
@@ -682,9 +733,9 @@ mod tests {
         assert_eq!(cell.glyph(), '▀');
         assert_eq!(cell.fg, Rgb::new(255, 181, 90));
         assert_eq!(cell.bg, Rgb::new(36, 18, 9));
-        // ASCII tier gets `‾`/`_` instead (§3.5 subposition path).
+        // ASCII tier gets `"`/`_` instead (§3.5 subposition path).
         let ascii = select_palettes(GlyphTier::Ascii, ColorDepth::True, 100);
-        assert_eq!(cell_with(&top, &ascii).glyph(), '‾');
+        assert_eq!(cell_with(&top, &ascii).glyph(), '"');
         assert_eq!(cell_with(&bot, &ascii).glyph(), '_');
     }
 
@@ -701,6 +752,87 @@ mod tests {
         let (ex, ey) = exy(90.0, 24.0);
         let v = CellInputs { ex, ey, ..inp };
         assert_eq!(cell_with(&v, &uni).glyph(), '▀');
+    }
+
+    /// M3 review low (regression): a 1-LSB resample-noise (Ex,Ey) vector
+    /// over a near-zero E plane must NOT steer quadrant refinement —
+    /// coherence divides by max(e, 1), so (129, 128) at e ∈ {0, 1} reads as
+    /// "fully coherent" without a magnitude floor and picked a noise-driven
+    /// corner quadrant instead of the half-block.
+    #[test]
+    fn lsb_noise_orientation_never_picks_quadrant() {
+        let uni = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::True, 100);
+        for e in [0u8, 1] {
+            for (ex, ey) in [(129u8, 128u8), (127, 128), (128, 129), (129, 127)] {
+                let inp = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None };
+                let cell = cell_with(&inp, &uni);
+                assert_eq!(
+                    cell.glyph(),
+                    '▀',
+                    "e={e} exy=({ex},{ey}): noise must fall through to the half-block"
+                );
+            }
+        }
+        // The floor is a NOISE floor: the first magnitude above 1-LSB noise
+        // already refines (arm threshold is strict `>`).
+        let p = ComposeParams::default();
+        let e = p.quad_e_on + 1;
+        let (ex, ey) = exy(45.0, f64::from(e));
+        let inp = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None };
+        assert_eq!(cell_with(&inp, &uni).glyph(), '▝', "arms one LSB above the noise floor");
+    }
+
+    /// M4 review (regression): the floor must not eat the fine-diagonal band
+    /// it exists to serve. Resampled E is diluted by the cell box average
+    /// (corpus source E mean ≈ 3.6), so a genuine fine diagonal lands around
+    /// cell E 6–11 — far below the edge gate's hold threshold (16), which an
+    /// earlier fix used as the floor and which silently downgraded every one
+    /// of these cells to a plain half-block.
+    #[test]
+    fn fine_diagonal_band_still_refines_to_quadrants() {
+        let uni = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::True, 100);
+        let p = ComposeParams::default();
+        assert!(p.quad_e_on < p.edge_t_off, "the floor must sit below the edge gate");
+        for e in 3u8..=15 {
+            // Coherent 45°/135° strokes at the cell's own magnitude.
+            let (ex, ey) = exy(45.0, f64::from(e));
+            let up = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None };
+            assert_eq!(cell_with(&up, &uni).glyph(), '▝', "E={e} diagonal lost its quadrant");
+            let (ex, ey) = exy(135.0, f64::from(e));
+            let dn = CellInputs { ex, ey, ..up };
+            assert_eq!(cell_with(&dn, &uni).glyph(), '▘', "E={e} diagonal lost its quadrant");
+        }
+    }
+
+    /// M4 review (regression): a single hard threshold on the E plane lets a
+    /// cell whose resampled magnitude dithers across it alternate
+    /// quadrant/half-block every frame — invisible to the ≤2 switches/cell/s
+    /// flicker gate, which only sees the ascii-tier eval render. The floor is
+    /// therefore a dual threshold: once armed, a 1-LSB dip holds the quadrant.
+    #[test]
+    fn quadrant_floor_is_dither_stable() {
+        let uni = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::True, 100);
+        let (lut, p) = (ident(), ComposeParams::default());
+        let mut st = HysteresisState::new(1, 1);
+        let at = |e: u8, st: &mut HysteresisState| {
+            let (ex, ey) = exy(45.0, 8.0); // steady coherent orientation
+            let inp = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None };
+            compose_cell(&inp, &lut, &uni, &p, st, 0, 0).glyph()
+        };
+        // Arm just above the floor, then dither across it: no switching.
+        assert_eq!(at(p.quad_e_on + 1, &mut st), '▝');
+        for _ in 0..8 {
+            assert_eq!(at(p.quad_e_on, &mut st), '▝', "hold threshold absorbs the dip");
+            assert_eq!(at(p.quad_e_on + 1, &mut st), '▝');
+        }
+        // Below the hold threshold it drops, and the arm threshold alone is
+        // then required to come back (same shape as the edge gate).
+        assert_eq!(at(p.quad_e_off, &mut st), '▀', "below the hold threshold: half-block");
+        assert_eq!(at(p.quad_e_on, &mut st), '▀', "the hold threshold cannot re-arm");
+        assert_eq!(at(p.quad_e_on + 1, &mut st), '▝');
+        // Scene-cut reset clears the memory too.
+        st.reset();
+        assert_eq!(at(p.quad_e_on, &mut st), '▀', "after a cut, arming is required again");
     }
 
     #[test]

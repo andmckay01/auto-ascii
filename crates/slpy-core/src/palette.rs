@@ -16,7 +16,8 @@ use crate::ramp::{ASCII_BASE_COARSE, ASCII_BASE_FINE, FINE_MIN_COLS};
 /// render (derived from `Caps` by the caller; PLAN §3.4 font-coverage tiers).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GlyphTier {
-    /// ASCII repertoire only (plus the `‾ - _` subposition triplet, §3.3/§3.5).
+    /// ASCII repertoire only, `0x20..=0x7E` — including the `" - _`
+    /// subposition triplet (§3.3/§3.5), so the whole tier is CP437-safe.
     Ascii,
     /// Unicode blocks/box-drawing trusted (half-blocks, quadrants, `╱╲`).
     UnicodeBlocks,
@@ -179,10 +180,20 @@ pub const UNICODE_QUADRANTS: &[char] = &['▖', '▘', '▝', '▗', '▀', '▄
 /// (PLAN §3.4): `" .:coO8@"`, CP437-safe.
 pub const MONO_FALLBACK_BASE: &[char] = &[' ', '.', ':', 'c', 'o', 'O', '8', '@'];
 
-/// Subposition glyph triplet `‾ - _` (PLAN §3.3/§3.5) for ASCII tiers, indexed
-/// by [`SubPos`]. `‾` is U+203E OVERLINE — the one non-ASCII code point the
-/// plan mandates on ASCII tiers; `-` (mid) is never decisive in the base path.
-pub const SUBPOS_GLYPHS: [char; 3] = ['‾', '-', '_'];
+/// Subposition glyph triplet `" - _` (PLAN §3.3/§3.5) for ASCII tiers, indexed
+/// by [`SubPos`]. `-` (mid) is never decisive in the base path.
+///
+/// Deviation forced by ASCII, the same one [`ASCII_EDGE`] documents for its
+/// raised horizontal: ASCII has no overline. v1 shipped U+203E OVERLINE in
+/// the top slot and that was a defect on this tier's own floor terminal —
+/// **U+203E is not in CP437** (CP437's 0xEE is U+00AF MACRON), so the Linux
+/// console draws a missing-glyph box for it, or three mojibake bytes when the
+/// console is not in UTF-8 mode. `"` is the closest raised-ink ASCII glyph and
+/// it also pairs correctly with `_` by ink weight (conservative DejaVu
+/// coverage 0.064 vs 0.055 — U+203E was not in the coverage table at all and
+/// rasterized through the 0.13 fallback, i.e. twice its real ink).
+/// `every_ascii_tier_glyph_is_ascii` pins the whole ASCII-tier repertoire.
+pub const SUBPOS_GLYPHS: [char; 3] = ['"', '-', '_'];
 
 /// Braille orientation LUT — palette 7, `unicode/detail` (PLAN §3.4): dot
 /// masks per `[GlyphClass][SubPos]` + junction, rendered via [`braille_glyph`].
@@ -306,7 +317,7 @@ pub struct PaletteSet {
     /// Braille detail replaces edge glyphs (role [`LayerRole::Detail`],
     /// palette 7 — BrailleVerified tier at fine density only).
     pub braille: bool,
-    /// ASCII `‾ - _` subposition glyphs active (ascii tiers, §3.5).
+    /// ASCII `" - _` subposition glyphs active (ascii tiers, §3.5).
     pub subpos: bool,
 }
 
@@ -361,7 +372,54 @@ mod tests {
         assert_eq!(s(UNICODE_BASE), " ·░▒▓█"); // 5 base
         assert_eq!(s(UNICODE_QUADRANTS), "▖▘▝▗▀▄▌▐"); // 5 quadrants
         assert_eq!(s(MONO_FALLBACK_BASE), " .:coO8@"); // 8
-        assert_eq!(SUBPOS_GLYPHS.iter().collect::<String>(), "‾-_");
+        assert_eq!(SUBPOS_GLYPHS.iter().collect::<String>(), "\"-_");
+    }
+
+    /// **The ASCII-tier repertoire floor** (M4 review). Every glyph the
+    /// compositor can emit on [`GlyphTier::Ascii`] — base ramps at both
+    /// densities and all four color depths, the highlight ramp, the whole
+    /// edge LUT including both junctions, and the subposition triplet — must
+    /// be printable ASCII (`0x20..=0x7E`), a strict subset of CP437.
+    ///
+    /// This is the *shipping* guarantee behind the `TERM=linux` legibility
+    /// floor: the Linux console runs a CP437 font, so one stray non-ASCII
+    /// glyph draws a missing-glyph box (or three mojibake bytes outside UTF-8
+    /// mode). U+203E OVERLINE in the top subposition slot was exactly that
+    /// defect — CP437 has no U+203E (its 0xEE is U+00AF MACRON) — and the
+    /// integration golden could not see it, because whether a *particular*
+    /// fixture frame reaches the subposition branch is an accident of its
+    /// luma. Enumerating the palette data catches it unconditionally.
+    #[test]
+    fn every_ascii_tier_glyph_is_ascii() {
+        let printable = |ch: char, what: &str| {
+            assert!(
+                ch == ' ' || ch.is_ascii_graphic(),
+                "{what}: {ch:?} (U+{:04X}) is not CP437-safe ASCII",
+                ch as u32
+            );
+        };
+        for ch in SUBPOS_GLYPHS {
+            printable(ch, "SUBPOS_GLYPHS");
+        }
+        for ch in ASCII_EDGE.by_class.iter().flatten().copied() {
+            printable(ch, "ASCII_EDGE.by_class");
+        }
+        printable(ASCII_EDGE.junction, "ASCII_EDGE.junction");
+        printable(ASCII_EDGE.junction_strong, "ASCII_EDGE.junction_strong");
+
+        for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
+            for cols in [40u16, 200] {
+                let set = select_palettes(GlyphTier::Ascii, color, cols);
+                assert!(!set.halfblock && !set.quadrant && !set.braille && set.subpos);
+                assert_eq!(set.edge, &ASCII_EDGE, "ascii tier must use palette 3");
+                for &ch in set.base.glyphs() {
+                    printable(ch, "base ramp");
+                }
+                for &ch in set.highlight.glyphs() {
+                    printable(ch, "highlight ramp");
+                }
+            }
+        }
     }
 
     /// Palette 3/6 LUT glyph inventories match the PLAN table exactly.

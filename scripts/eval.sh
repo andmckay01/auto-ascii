@@ -71,7 +71,7 @@ cargo clippy --workspace --all-targets --quiet -- -D warnings
 section_done
 
 section "resize fuzz x$FUZZ_CASES"
-PROPTEST_CASES="$FUZZ_CASES" cargo test --quiet -p sleepy-player --test resize_fuzz
+PROPTEST_CASES="$FUZZ_CASES" cargo test --quiet -p sleepytime --test resize_fuzz
 section_done
 
 section "perf gate"
