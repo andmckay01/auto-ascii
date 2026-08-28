@@ -18,9 +18,10 @@ is "where things stand and how to pick them up."
 
 Tag `v0.1.0` marks the completed state. Working tree at save time: clean.
 
-**Off-box backup:** private GitHub repo `https://github.com/andmckay01/sleepytime-ascii`
-(`origin`; main + all tags pushed 2026-08-28). Note: `andmckay01/sleepytime`
-(no suffix) is a DIFFERENT project ("Sleepytime for Mac") — do not push there.
+**Off-box backup:** private GitHub repo `https://github.com/andmckay01/sleepytime-memory`
+(`origin`; main + all tags pushed 2026-08-28; owner named it this to keep the
+plain `sleepytime` name free). Note: `andmckay01/sleepytime` is a DIFFERENT
+project ("Sleepytime for Mac") — do not push there.
 
 ## Quick start (this box: hetzner, 4-core, Rust 1.97.1, ffmpeg installed)
 
