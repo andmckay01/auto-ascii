@@ -1,9 +1,13 @@
 [package]
 name = "slpy-term"
-description = "Sleepytime terminal backends: Backend trait, AnsiBackend, SimBackend, caps, session hygiene (PLAN §3.1, §3.6)"
+description = "Terminal backends for sleepytime: Backend trait, ANSI backend, capability probe, headless simulator"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords = ["terminal", "ansi", "tui", "ascii", "capabilities"]
+categories = ["command-line-interface", "rendering"]
+readme = "../../README.md"
 
 [dependencies]
 slpy-core = { workspace = true }

@@ -4,6 +4,7 @@ description = "Sleepytime offline factory: ffmpeg ingest -> feature planes -> SL
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 # PLAN §8 lists image/imageproc/ndarray/rayon for the factory; M0 is luma-only
 # (grayscale from ffmpeg rawvideo, no gradients, single-threaded encode), so

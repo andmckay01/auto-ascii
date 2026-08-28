@@ -15,6 +15,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/andmckay01/auto-ascii"
 
 [workspace.dependencies]
 # libs (path deps). Version reqs alongside the paths (M5 item F, publish

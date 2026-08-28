@@ -4,6 +4,7 @@ description = "Realtime ASCII-art video: play SLPY feature assets in a terminal,
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 # Publish metadata (M4 item C). `license` is the workspace's dual
 # MIT OR Apache-2.0; LICENSE-MIT / LICENSE-APACHE live at the repo root.
 keywords = ["ascii", "terminal", "video", "tui", "ansi"]

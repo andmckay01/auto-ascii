@@ -1,9 +1,13 @@
 [package]
 name = "slpy-format"
-description = "SLPY v1 chunked container: deterministic writer, mmap-friendly reader (PLAN §4)"
+description = "SLPY v1 chunked container for sleepytime: deterministic writer, mmap-friendly reader, zstd + temporal delta, O(1) seek"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords = ["ascii", "terminal", "video", "format", "container"]
+categories = ["multimedia::video", "encoding"]
+readme = "../../README.md"
 
 # PLAN §8: zstd + crc32fast + ciborium (META only — frame payloads are
 # hand-rolled fixed layout, not serde). serde only for the META struct.

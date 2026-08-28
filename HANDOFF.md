@@ -18,10 +18,12 @@ is "where things stand and how to pick them up."
 
 Tag `v0.1.0` marks the completed state. Working tree at save time: clean.
 
-**Off-box backup:** private GitHub repo `https://github.com/andmckay01/sleepytime-memory`
-(`origin`; main + all tags pushed 2026-08-28; owner named it this to keep the
-plain `sleepytime` name free). Note: `andmckay01/sleepytime` is a DIFFERENT
-project ("Sleepytime for Mac") — do not push there.
+**Off-box backup:** private GitHub repo `https://github.com/andmckay01/auto-ascii`
+(`origin`; main + all tags). Renamed there 2026-08-28 from `sleepytime-memory`;
+GitHub redirects the old URL. Two neighbours are DIFFERENT projects — do not
+push to either: `andmckay01/sleepytime` ("Sleepytime for Mac") and
+`andmckay01/auto-ascii-legacy` (a frame-based ASCII animation workspace that
+held the `auto-ascii` name until this rename, preserved untouched).
 
 ## Quick start (this box: hetzner, 4-core, Rust 1.97.1, ffmpeg installed)
 
@@ -52,15 +54,40 @@ Embedding: `crates/sleepytime/examples/simple-play.rs` (13 lines) and
 
 ## Open items (owner)
 
-1. **M3 human sign-off** — open `runs/m3-reel.html`, judge the look. If wrong,
-   tune via `sleepy-factory sweep` (see PLAN §5-6; M3 sweep records in
-   `runs/sweeps/`), not code edits.
+1. ~~**M3 human sign-off**~~ — **DONE 2026-08-28.** Owner reviewed the reel and
+   signed off on the look. No tuning pass needed; `params.toml` stands as-is.
+   (Reel was published as a Claude artifact for review, the build box being
+   headless; `runs/m3-reel.html` remains the durable copy.)
 2. **GUI terminal pass** — `docs/TERMINAL-CHECKLIST.md`, ~5 min in real
    kitty/alacritty/wezterm/gnome-terminal/xterm (this box is headless; only
-   pty-fixture verification was possible here).
-3. **crates.io publish decision** — manifests pass `cargo package`; README
-   documents git-dependency until first publish.
+   pty-fixture verification was possible here). Practical route: SSH in from
+   each terminal on the Mac — the probe reads the *local* terminal, so color,
+   fonts and aspect are faithful. Judge **tearing locally only**; link latency
+   confounds that one signal.
+3. **crates.io publish** — *prepped, awaiting owner's token.* All four
+   publishable crates now carry `repository`/`keywords`/`categories`/`readme`
+   and pass `cargo package` **with `--verify`** (a real build from each
+   tarball); the "no documentation, homepage or repository" warning is gone.
+   `slpy-eval` and `sleepy-factory` are deliberately NOT published. As of
+   2026-08-28 all four names were free on crates.io. No token exists on this
+   box and a publish is permanent (yank-only), so the owner runs:
+
+   ```bash
+   cargo login <token>
+   cargo publish -p slpy-format     # no internal deps
+   cargo publish -p slpy-core       # no internal deps
+   cargo publish -p slpy-term       # needs slpy-core
+   cargo publish -p sleepytime      # needs all three
+   ```
+
+   Order matters — each crate must be live on the index before the next
+   resolves it (allow a minute between). Afterwards, swap the README's git
+   dependency for `sleepytime = "0.1"`.
 4. **macOS binaries** — build on a Mac (`Makefile` macOS section; no osxcross).
+   Cannot be done from this box at all. On the Mac:
+   `git clone https://github.com/andmckay01/auto-ascii && cd auto-ascii &&
+   make build && strip target/release/sleepy-player`. Needs Rust; ffmpeg
+   (`brew install ffmpeg`) only if building assets, not for playback.
 
 ## Backlog (PLAN §7 M6+, explicitly out of v1)
 

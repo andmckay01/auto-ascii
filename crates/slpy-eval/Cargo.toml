@@ -4,6 +4,7 @@ description = "Sleepytime eval harness: ink-coverage rasterizer, downscale-SSIM,
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 # PLAN §8: metrics library. slpy-core for Grid/Cell/Resampler, slpy-term for
 # FrameStats (the SimBackend damage/bytes source), serde/serde_json for the

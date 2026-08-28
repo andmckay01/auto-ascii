@@ -17,6 +17,13 @@ All Rust, one workspace, two binaries (`sleepy-factory`, `sleepy-player`) and on
 library crate (`sleepytime`). ffmpeg is used by the factory as a subprocess; the
 player links no codecs.
 
+**Status — v0.1.0.** All planned milestones (M0–M5) are complete and the look
+has been signed off. `scripts/eval.sh` is the gate and it is green: 402 tests,
+clippy clean at `-D warnings`, a 2000-iteration resize fuzz, and four criterion
+perf gates passing with 37–47 % headroom. Corpus quality metrics reproduce
+bit-identically across runs. Prebuilt Linux (glibc + static musl) and
+cross-built Windows binaries live in `dist/`; macOS builds from source.
+
 ## Quickstart
 
 ```bash
@@ -62,13 +69,21 @@ enforces the < 5 MB stripped-size gate):
 
 A from-source build on a clean checkout (fresh `target/`, warm crates.io
 cache) measures ~29 s on a 4-core box — `time cargo build --release -p
-sleepytime --features bin` — and the library embeds via a git or path dependency (e.g. `sleepytime = { git = "..." }` — not yet published to crates.io; the `0.1` form works once it is)
-(feature `bin` off if you only want `RenderSession`).
+sleepytime --features bin`.
+
+To embed the library, depend on it by git (turn the `bin` feature off if you
+only want `RenderSession`):
+
+```toml
+sleepytime = { git = "https://github.com/andmckay01/auto-ascii" }
+```
+
+It is not on crates.io yet; once published, `sleepytime = "0.1"` will work.
 
 ## Embedding it
 
 ```rust
-// Cargo.toml:  sleepytime = { git = "<this repo>" }   (crates.io: pending first publish)
+// Cargo.toml:  sleepytime = { git = "https://github.com/andmckay01/auto-ascii" }   (crates.io: pending first publish)
 sleepytime::Player::builder().asset("intro.slpy").looping(true).build()?.run()?;
 ```
 
