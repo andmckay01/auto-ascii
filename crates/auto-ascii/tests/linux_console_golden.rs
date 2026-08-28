@@ -8,18 +8,18 @@
 //! must *conclude* there; this file pins what we then *draw*:
 //!
 //! 1. a committed glyph-grid golden, rendered through the real
-//!    `sleepytime::pipeline::Player` at the caps the console produces, and
+//!    `auto_ascii::pipeline::Player` at the caps the console produces, and
 //! 2. legibility assertions that a golden alone cannot express — glyph
 //!    repertoire (CP437-safe: no glyph the console font lacks), ink coverage,
 //!    tonal range, and a 16-color escape stream with no truecolor SGR in it.
 //!
-//! Re-bless deliberately: `SLPY_UPDATE_GOLDENS=1 cargo test -p sleepytime
+//! Re-bless deliberately: `SLPY_UPDATE_GOLDENS=1 cargo test -p auto-ascii
 //! --test linux_console_golden`, then review the diff.
 
 use std::path::PathBuf;
 
-use sleepytime::pipeline::{Player, color_depth};
-use sleepytime::{Cell, Grid, PaletteChoice};
+use auto_ascii::pipeline::{Player, color_depth};
+use auto_ascii::{Cell, Grid, PaletteChoice};
 use slpy_eval::fixtures::{Fixture, build_fixture};
 use slpy_format::SlpyReader;
 use slpy_term::{

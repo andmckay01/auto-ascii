@@ -9,7 +9,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use slpy_eval::fixtures::{FIXTURE_FRAMES, Fixture, build_fixture};
-use sleepytime::{Cell, Error, Grid, PaletteChoice, RenderSession};
+use auto_ascii::{Cell, Error, Grid, PaletteChoice, RenderSession};
 
 /// Self-cleaning temp file (no tempfile dep — pinned workspace dep set).
 struct TmpFile(PathBuf);
@@ -17,7 +17,7 @@ struct TmpFile(PathBuf);
 impl TmpFile {
     fn with_fixture(fixture: Fixture, tag: &str) -> TmpFile {
         let mut p = std::env::temp_dir();
-        p.push(format!("sleepytime-session-{}-{tag}.slpy", std::process::id()));
+        p.push(format!("auto-ascii-session-{}-{tag}.slpy", std::process::id()));
         fs::write(&p, build_fixture(fixture)).expect("write fixture asset");
         TmpFile(p)
     }
@@ -148,7 +148,7 @@ fn aspect_asset(aspect_num: u16, aspect_den: u16, base_w: u16, base_h: u16) -> V
 impl TmpFile {
     fn with_bytes(bytes: &[u8], tag: &str) -> TmpFile {
         let mut p = std::env::temp_dir();
-        p.push(format!("sleepytime-session-{}-{tag}.slpy", std::process::id()));
+        p.push(format!("auto-ascii-session-{}-{tag}.slpy", std::process::id()));
         fs::write(&p, bytes).expect("write synthetic asset");
         TmpFile(p)
     }
@@ -289,7 +289,7 @@ fn font_table_path_spec_loads_and_vetoes() {
         table.push_str(&format!("[[glyphs]]\nch = \"{esc}\"\ncoverage = {cov}\n"));
     }
     let mut p = std::env::temp_dir();
-    p.push(format!("sleepytime-font-table-{}.toml", std::process::id()));
+    p.push(format!("auto-ascii-font-table-{}.toml", std::process::id()));
     fs::write(&p, table).unwrap();
 
     session.set_font_table(Some(p.to_str().unwrap())).unwrap();
@@ -310,7 +310,7 @@ fn font_table_error_surface() {
     assert!(e.to_string().contains("dejavu-sans-mono"), "error lists the built-ins: {e}");
 
     let mut p = std::env::temp_dir();
-    p.push(format!("sleepytime-bad-table-{}.toml", std::process::id()));
+    p.push(format!("auto-ascii-bad-table-{}.toml", std::process::id()));
     fs::write(&p, "name = \"broken\"\n").unwrap(); // no [[glyphs]]
     let e = session.set_font_table(Some(p.to_str().unwrap())).unwrap_err();
     assert!(matches!(e, Error::Config(_)), "{e}");

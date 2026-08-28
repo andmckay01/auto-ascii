@@ -17,7 +17,7 @@ use std::io::Cursor;
 use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use sleepytime::pipeline::Player;
+use auto_ascii::pipeline::Player;
 use slpy_core::{
     Cell, ColorDepth, ComposeParams, FramePlanes, GlyphTier, Grid, HysteresisState, Resampler,
     compose_frame, compute_viewport, h_flags, select_palettes,

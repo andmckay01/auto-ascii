@@ -8,7 +8,7 @@ members = [
     "crates/slpy-term",
     "crates/slpy-eval",
     "crates/sleepy-factory",
-    "crates/sleepytime",
+    "crates/auto-ascii",
 ]
 
 [workspace.package]
@@ -20,7 +20,7 @@ repository = "https://github.com/andmckay01/auto-ascii"
 [workspace.dependencies]
 # libs (path deps). Version reqs alongside the paths (M5 item F, publish
 # hygiene): `cargo package` replaces path deps with their version req, so a
-# path-only dep fails the manifest check — `cargo package -p sleepytime
+# path-only dep fails the manifest check — `cargo package -p auto-ascii
 # --no-verify` must pass (PLAN §7 M5; nothing is actually published).
 slpy-core = { path = "crates/slpy-core", version = "0.1.0" }
 slpy-term = { path = "crates/slpy-term", version = "0.1.0" }
@@ -29,14 +29,14 @@ slpy-format = { path = "crates/slpy-format", version = "0.1.0" }
 # as a dev-dependency (goldens/fixtures) and it dev-dep-cycles with slpy-term.
 # Cargo strips path-only dev-deps when packaging, which is exactly what lets
 # the closure `cargo package -p slpy-core -p slpy-format -p slpy-term
-# -p sleepytime --no-verify` pass its manifest check (M5 item F).
+# -p auto-ascii --no-verify` pass its manifest check (M5 item F).
 slpy-eval = { path = "crates/slpy-eval" }
 # M4: the facade crate replaced the sleepy-player lib target (the pipeline
 # moved into it; the `sleepy-player` binary now lives there behind the
 # default-on `bin` feature). default-features = false here: consumers of the
 # workspace dep (sleepy-factory eval, slpy-eval dev) need only the pipeline —
 # no clap/terminal-session deps.
-sleepytime = { path = "crates/sleepytime", default-features = false }
+auto-ascii = { path = "crates/auto-ascii", default-features = false }
 # slpy-format (PLAN §8): zstd + crc32fast + ciborium (META only; frame payloads hand-rolled)
 zstd = "0.13"
 crc32fast = "1.4"
@@ -98,8 +98,8 @@ opt-level = 3
 # M2 item B: `sleepy-factory eval` runs the player pipeline + the factory
 # extract loops over whole corpus clips under `cargo test`/debug — same
 # rationale as above (hot per-pixel/per-cell loops; debug-assertions stay on).
-# M4: sleepy-player's pipeline moved into the sleepytime facade.
-[profile.dev.package.sleepytime]
+# M4: sleepy-player's pipeline moved into the auto-ascii facade.
+[profile.dev.package.auto-ascii]
 opt-level = 3
 [profile.dev.package.sleepy-factory]
 opt-level = 3

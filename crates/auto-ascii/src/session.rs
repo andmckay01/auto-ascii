@@ -41,9 +41,9 @@ pub(crate) fn load_font_table(spec: &str) -> Result<FontTable, Error> {
 /// `(frame_idx, cols, rows)` into a composed cell grid:
 ///
 /// ```
-/// use sleepytime::RenderSession;
+/// use auto_ascii::RenderSession;
 /// # // The doctest renders a synthetic test asset instead of "intro.slpy".
-/// # let path = std::env::temp_dir().join("sleepytime-doc-session.slpy");
+/// # let path = std::env::temp_dir().join("auto-ascii-doc-session.slpy");
 /// # let fixture = slpy_eval::fixtures::Fixture::GradientMotion;
 /// # std::fs::write(&path, slpy_eval::fixtures::build_fixture(fixture)).unwrap();
 ///
@@ -55,7 +55,7 @@ pub(crate) fn load_font_table(spec: &str) -> Result<FontTable, Error> {
 /// }
 /// # assert!(grid.as_slice().iter().any(|c| c.glyph() != ' '), "asset rendered");
 /// # std::fs::remove_file(&path).unwrap();
-/// # Ok::<(), sleepytime::Error>(())
+/// # Ok::<(), auto_ascii::Error>(())
 /// ```
 ///
 /// # Temporal-state semantics

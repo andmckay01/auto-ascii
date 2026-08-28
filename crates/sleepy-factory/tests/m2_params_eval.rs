@@ -340,7 +340,7 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
 
     // HTML contact sheet: self-contained, embedded PNGs, both clips.
     let html = std::fs::read_to_string(&out_html).unwrap();
-    assert!(html.contains("<title>sleepytime eval</title>"));
+    assert!(html.contains("<title>auto-ascii eval</title>"));
     assert!(html.contains("clip-a") && html.contains("clip-b"));
     let pngs = html.matches("data:image/png;base64,iVBOR").count();
     assert!(pngs >= 8, "expected >= 8 embedded PNGs (source+render x snaps x clips), got {pngs}");
@@ -350,7 +350,7 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     // Review reel (M3 sign-off artifact): self-contained, per-clip animated
     // GIF + >= 4 source|render timestamp rows with metric strips.
     let reel = std::fs::read_to_string(&out_reel).unwrap();
-    assert!(reel.contains("<title>sleepytime review reel</title>"));
+    assert!(reel.contains("<title>auto-ascii review reel</title>"));
     assert!(reel.contains("clip-a") && reel.contains("clip-b"));
     assert_eq!(reel.matches("data:image/gif;base64,").count(), 2, "one GIF per clip");
     let reel_pngs = reel.matches("data:image/png;base64,iVBOR").count();
@@ -545,7 +545,7 @@ fn sweep_ranks_combos_and_reuses_the_asset_cache() {
 
     // Leaderboard: self-contained, one row per combo, skip labeled.
     let html = std::fs::read_to_string(out_dir.join("leaderboard.html")).unwrap();
-    assert!(html.contains("<title>sleepytime sweep leaderboard</title>"));
+    assert!(html.contains("<title>auto-ascii sweep leaderboard</title>"));
     assert!(html.contains("skipped:"));
     assert!(!html.contains("http://") && !html.contains("https://"), "must be self-contained");
 

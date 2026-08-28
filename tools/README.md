@@ -102,7 +102,7 @@ tools/soak.py --outdir DIR [--duration SECS=3600] [--seed N]
               [--asset PATH] [--player PATH]
 ```
 
-Build the player first: `cargo build --release -p sleepytime --features bin`.
+Build the player first: `cargo build --release -p auto-ascii --features bin`.
 
 Continuously: drains the pty into a rotation-capped log (**first 2 MB** →
 `head.log`, **last 10 MB** ring → `tail.log`, flushed every 30 s — both
@@ -116,7 +116,7 @@ slope (MB/h), and the **structural escape-stream check** (`escape_check`).
 The structural check is the M5-acceptance "no desync in captured output"
 evidence (PLAN §7 M5 A): both `head.log` and `tail.log` are run through a
 strict VT parser (`check_escape_stream`, in the spirit of the byte-exact
-interpreter in `crates/sleepytime/tests/scrub_overlay.rs`) that accepts
+interpreter in `crates/auto-ascii/tests/scrub_overlay.rs`) that accepts
 exactly the player's specified output vocabulary — the probe volley, the
 session enter/restore modes, CUP within the storm's size bounds (≤500×140),
 well-formed tier SGRs, the `?2026` wrap, printable/UTF-8 ground text — and

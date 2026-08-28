@@ -10,7 +10,7 @@
 //!   reference player once the overlay hides, and the hide itself forces a
 //!   full repaint (the diff baseline cannot keep describing overlay cells).
 
-use sleepytime::pipeline::Player;
+use auto_ascii::pipeline::Player;
 use slpy_core::{ColorDepth, GlyphTier};
 use slpy_eval::fixtures::{Fixture, build_fixture};
 use slpy_format::SlpyReader;
@@ -251,5 +251,5 @@ fn arrow_scrub_reports_steps_and_resets_state() {
 #[cfg(feature = "terminal")]
 #[test]
 fn scrub_step_is_five_seconds() {
-    assert_eq!(sleepytime::SCRUB_STEP_SECS, 5.0);
+    assert_eq!(auto_ascii::SCRUB_STEP_SECS, 5.0);
 }

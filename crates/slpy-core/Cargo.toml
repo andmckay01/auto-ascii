@@ -1,6 +1,6 @@
 [package]
 name = "slpy-core"
-description = "Pure rendering engine for sleepytime: viewport/letterbox math, separable resampler, glyph ramp palettes, Cell/Grid"
+description = "Pure rendering engine for auto-ascii: viewport/letterbox math, separable resampler, glyph ramp palettes, Cell/Grid"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

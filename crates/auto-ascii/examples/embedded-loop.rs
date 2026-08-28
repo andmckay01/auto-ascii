@@ -1,4 +1,4 @@
-//! Driving sleepytime from *your* event loop with [`RenderSession`].
+//! Driving auto-ascii from *your* event loop with [`RenderSession`].
 //!
 //! `RenderSession` is terminal-free: you own the clock, the surface size and
 //! the output layer (a game engine, a GUI widget, a web canvas, a test).
@@ -16,11 +16,11 @@
 //!
 //! Run: `cargo run --example embedded-loop -- asset.slpy`
 //!
-//! [`RenderSession`]: sleepytime::RenderSession
+//! [`RenderSession`]: auto_ascii::RenderSession
 
 use std::time::Duration;
 
-use sleepytime::{Cell, Grid, PaletteChoice, RenderSession};
+use auto_ascii::{Cell, Grid, PaletteChoice, RenderSession};
 
 /// Stand-in for "blit this grid onto my surface": returns (non-blank cells,
 /// brightest foreground channel) so the loop has something to report.
@@ -38,7 +38,7 @@ fn draw(grid: &Grid<Cell>) -> (usize, u8) {
     (ink, peak)
 }
 
-fn main() -> Result<(), sleepytime::Error> {
+fn main() -> Result<(), auto_ascii::Error> {
     let path = std::env::args().nth(1).expect("usage: embedded-loop <asset.slpy>");
 
     let mut session = RenderSession::open(&path)?;

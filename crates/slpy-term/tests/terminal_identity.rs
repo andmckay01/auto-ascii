@@ -297,7 +297,7 @@ const XTERM_DIRECT_256: Identity = Identity {
 /// CP437 tier from passive hints, cell aspect falling back to 2.0.
 ///
 /// The matching render golden lives in
-/// `crates/sleepytime/tests/linux_console_golden.rs`.
+/// `crates/auto-ascii/tests/linux_console_golden.rs`.
 const LINUX_CONSOLE: Identity = Identity {
     name: "Linux console",
     env: fixture_env!["TERM" => Some("linux"), "COLORTERM" => None, "TERM_PROGRAM" => None],

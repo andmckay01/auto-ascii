@@ -258,7 +258,7 @@ fn tier_mono_emits_no_sgr_and_truecolor_uses_chroma_fg() {
 /// test pins, at the plane level through the real `Player`.
 #[test]
 fn seek_lands_on_identical_decoded_planes() {
-    use sleepytime::pipeline::Player;
+    use auto_ascii::pipeline::Player;
     use slpy_core::{ColorDepth, GlyphTier};
     use slpy_format::SlpyReader;
     use slpy_term::SimBackend;

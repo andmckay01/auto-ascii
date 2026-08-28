@@ -1,7 +1,7 @@
 //! `sleepy-player` — realtime terminal player (PLAN §3), M4: a thin CLI
-//! over the `sleepytime` facade. Interactive playback is
-//! [`sleepytime::Player`] verbatim — argv maps 1:1 onto
-//! [`PlayerBuilder`](sleepytime::PlayerBuilder) options and NOTHING else
+//! over the `auto-ascii` facade. Interactive playback is
+//! [`auto_ascii::Player`] verbatim — argv maps 1:1 onto
+//! [`PlayerBuilder`](auto_ascii::PlayerBuilder) options and NOTHING else
 //! (no logic fork between bin and lib paths, M4 item B); this file owns
 //! only argument parsing and the headless `--sim` harness.
 //!
@@ -11,7 +11,7 @@
 //! simulated color tier and `--sim-dump PATH` captures the raw escape stream
 //! for byte-level tier checks; `--sim-resize [COLSxROWS]` injects a resize
 //! event at frame N/2 to prove reflow. The `--sim` path drives the same
-//! [`sleepytime::pipeline`] the facade Player runs.
+//! [`auto_ascii::pipeline`] the facade Player runs.
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -20,12 +20,12 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use memmap2::Mmap;
-use sleepytime::pipeline::{Player, color_depth};
-use sleepytime::{PaletteChoice, RepaintMode};
+use auto_ascii::pipeline::{Player, color_depth};
+use auto_ascii::{PaletteChoice, RepaintMode};
 use slpy_format::SlpyReader;
 use slpy_term::{Backend, Caps, ColorTier, Event, SimBackend};
 
-/// CLI face of [`sleepytime::RepaintMode`] (PLAN §3.1: one render path —
+/// CLI face of [`auto_ascii::RepaintMode`] (PLAN §3.1: one render path —
 /// "full" is diff with `invalidate()` every frame, the M0 default per §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum RepaintArg {
@@ -406,7 +406,7 @@ fn main() -> Result<()> {
         // --font-table repertoire veto applies exactly as interactively.
         let mut glyphs = PaletteChoice::from(cli.palette).resolve_for_caps(&Caps::default());
         if let Some(spec) = &cli.font_table {
-            glyphs = sleepytime::load_font_table(spec)?.veto_tier(glyphs);
+            glyphs = auto_ascii::load_font_table(spec)?.veto_tier(glyphs);
         }
         let player = Player::new(
             reader,
@@ -423,7 +423,7 @@ fn main() -> Result<()> {
 
     // Interactive path: argv → PlayerBuilder, then the facade owns the
     // probe, the session, the pacing loop and the restore (no logic here).
-    let mut builder = sleepytime::Player::builder()
+    let mut builder = auto_ascii::Player::builder()
         .asset(&cli.asset)
         .palette(cli.palette.into())
         .tier(cli.tier)

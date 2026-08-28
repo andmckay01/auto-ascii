@@ -6,7 +6,7 @@
 
 use std::io::Cursor;
 
-use sleepytime::pipeline::Player;
+use auto_ascii::pipeline::Player;
 use slpy_core::{ColorDepth, GlyphTier, layer};
 use slpy_eval::fixtures::{Fixture, build_fixture};
 use slpy_format::header::plane_id;

@@ -27,7 +27,7 @@
             "max_bytes_per_frame": 85509,
             "avg_damage_rate": 0.43699097938144355,
             "max_damage_rate": 1.0,
-            "avg_write_ms": 0.002855134020618557,
+            "avg_write_ms": 0.0013326958762886598,
             "bytes_per_sec": 1857892.4226804124
           },
           "mono": {
@@ -38,7 +38,7 @@
             "max_bytes_per_frame": 24551,
             "avg_damage_rate": 0.09573067010309279,
             "max_damage_rate": 1.0,
-            "avg_write_ms": 0.0013687577319587629,
+            "avg_write_ms": 0.0004772525773195876,
             "bytes_per_sec": 180981.80412371134
           },
           "truecolor": {
@@ -49,30 +49,30 @@
             "max_bytes_per_frame": 352166,
             "avg_damage_rate": 0.6991131872852232,
             "max_damage_rate": 1.0,
-            "avg_write_ms": 0.01641946907216495,
+            "avg_write_ms": 0.006436123711340206,
             "bytes_per_sec": 8873081.13402062
           }
         },
         "stage_ms": {
           "decode": {
             "frames": 194,
-            "mean_ms": 0.9490589639175258,
-            "max_ms": 10.840031
+            "mean_ms": 0.6085635206185567,
+            "max_ms": 0.959452
           },
           "resample": {
             "frames": 194,
-            "mean_ms": 3.0176556546391753,
-            "max_ms": 14.046208
+            "mean_ms": 1.6762749536082475,
+            "max_ms": 2.771736
           },
           "compose": {
             "frames": 194,
-            "mean_ms": 0.5717152268041237,
-            "max_ms": 5.537022
+            "mean_ms": 0.37625925257731957,
+            "max_ms": 0.549606
           },
           "present": {
             "frames": 194,
-            "mean_ms": 0.7126239484536082,
-            "max_ms": 3.668925
+            "mean_ms": 0.4804299329896907,
+            "max_ms": 0.701234
           }
         }
       }
@@ -102,7 +102,7 @@
             "max_bytes_per_frame": 55209,
             "avg_damage_rate": 0.10564212962962957,
             "max_damage_rate": 1.0,
-            "avg_write_ms": 0.00162698,
+            "avg_write_ms": 0.0005613522222222222,
             "bytes_per_sec": 334065.86666666664
           },
           "mono": {
@@ -113,7 +113,7 @@
             "max_bytes_per_frame": 24551,
             "avg_damage_rate": 0.05702069444444446,
             "max_damage_rate": 1.0,
-            "avg_write_ms": 0.0008745766666666667,
+            "avg_write_ms": 0.0003444233333333333,
             "bytes_per_sec": 64139.899999999994
           },
           "truecolor": {
@@ -124,30 +124,30 @@
             "max_bytes_per_frame": 260027,
             "avg_damage_rate": 0.236554027777778,
             "max_damage_rate": 1.0,
-            "avg_write_ms": 0.00313904,
+            "avg_write_ms": 0.0014422955555555557,
             "bytes_per_sec": 1918889.8333333333
           }
         },
         "stage_ms": {
           "decode": {
             "frames": 900,
-            "mean_ms": 0.30235295,
-            "max_ms": 4.677074
+            "mean_ms": 0.20751975555555555,
+            "max_ms": 1.359293
           },
           "resample": {
             "frames": 900,
-            "mean_ms": 2.8773875,
-            "max_ms": 10.66759
+            "mean_ms": 1.712413602222222,
+            "max_ms": 3.644207
           },
           "compose": {
             "frames": 900,
-            "mean_ms": 0.6065730555555555,
-            "max_ms": 6.201744
+            "mean_ms": 0.37243413000000003,
+            "max_ms": 0.857028
           },
           "present": {
             "frames": 900,
-            "mean_ms": 0.2609402822222222,
-            "max_ms": 4.775282
+            "mean_ms": 0.16537116666666665,
+            "max_ms": 0.79827
           }
         }
       }
@@ -177,7 +177,7 @@
             "max_bytes_per_frame": 86641,
             "avg_damage_rate": 0.10183004629629623,
             "max_damage_rate": 1.0,
-            "avg_write_ms": 0.0012519933333333334,
+            "avg_write_ms": 0.0006154333333333332,
             "bytes_per_sec": 377515.56666666665
           },
           "mono": {
@@ -188,7 +188,7 @@
             "max_bytes_per_frame": 24551,
             "avg_damage_rate": 0.06732541666666665,
             "max_damage_rate": 1.0,
-            "avg_write_ms": 0.0007659411111111111,
+            "avg_write_ms": 0.00036320222222222226,
             "bytes_per_sec": 76264.46666666667
           },
           "truecolor": {
@@ -199,30 +199,30 @@
             "max_bytes_per_frame": 143733,
             "avg_damage_rate": 0.13366319444444452,
             "max_damage_rate": 1.0,
-            "avg_write_ms": 0.0014008299999999998,
+            "avg_write_ms": 0.0007286144444444444,
             "bytes_per_sec": 879730.3333333333
           }
         },
         "stage_ms": {
           "decode": {
             "frames": 900,
-            "mean_ms": 0.20071795111111113,
-            "max_ms": 3.515403
+            "mean_ms": 0.15741154000000002,
+            "max_ms": 1.228366
           },
           "resample": {
             "frames": 900,
-            "mean_ms": 2.2616505544444445,
-            "max_ms": 10.019228
+            "mean_ms": 1.6217752977777777,
+            "max_ms": 4.253402
           },
           "compose": {
             "frames": 900,
-            "mean_ms": 0.46593703999999997,
-            "max_ms": 3.014199
+            "mean_ms": 0.3285853888888889,
+            "max_ms": 0.773172
           },
           "present": {
             "frames": 900,
-            "mean_ms": 0.13850006555555555,
-            "max_ms": 3.282233
+            "mean_ms": 0.09915094666666667,
+            "max_ms": 0.277457
           }
         }
       }

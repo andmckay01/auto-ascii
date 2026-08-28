@@ -21,7 +21,7 @@
 //! diverged: fix the pipeline or update FixtureRenderer + re-bless the
 //! goldens DELIBERATELY — never let them drift apart silently.
 
-use sleepytime::pipeline::Player;
+use auto_ascii::pipeline::Player;
 use slpy_eval::fixtures::{Fixture, FixtureRenderer, GoldenPalette, build_fixture};
 use slpy_format::SlpyReader;
 use slpy_term::SimBackend;

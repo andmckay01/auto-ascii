@@ -5,8 +5,8 @@ Implementers fill `todo!()` bodies; **signature/layout changes require updating
 this file and a deliberate decision** — the factory⇄player format contract
 (PLAN §4) and the §3.1 types are the riskiest interfaces in the system.
 
-**As of M4 the OUTWARD-facing API is the `sleepytime` facade crate** (see
-"sleepytime — THE public facade"); every other crate section below is the
+**As of M4 the OUTWARD-facing API is the `auto-ascii` facade crate** (see
+"auto-ascii — THE public facade"); every other crate section below is the
 workspace-internal registry behind it.
 
 ## Workspace & dependency edges (PLAN §2, §8)
@@ -24,10 +24,10 @@ crates/
                         dev: insta, proptest   (NEW at M2; slpy-format added
                         at item C for the synthetic fixture builders)
   sleepy-factory  bin   deps: slpy-format, slpy-core, slpy-term, slpy-eval,
-                        sleepytime(default-features=false — pipeline only),
+                        auto-ascii(default-features=false — pipeline only),
                         clap, indicatif, serde, serde_json,
                         toml, memmap2               (M2 item B additions)
-  sleepytime      lib+bin  THE public facade (M4 item A; absorbed the
+  auto-ascii      lib+bin  THE public facade (M4 item A; absorbed the
                         sleepy-player crate — pipeline, tests, benches, bin).
                         deps: slpy-core, slpy-format, memmap2,
                         slpy-term(default-features=false)
@@ -85,7 +85,7 @@ pub fn compute_viewport_for(term_cols: u16, term_rows: u16, cell_aspect: f64,
     // zero num/den falls back to 16:9. pipeline::Player::reflow_grid feeds
     // the header values through this, so Player AND RenderSession letterbox
     // non-16:9 assets correctly (tests: slpy-core viewport.rs,
-    // sleepytime/tests/render_session.rs letterbox suite)
+    // auto-ascii/tests/render_session.rs letterbox suite)
 
 // resample.rs (§3.3) — IMPLEMENTED
 pub struct Tap1D { pub src_start: u16, pub ntaps: u16, pub w_off: u32 } // Q8, sum 256
@@ -297,7 +297,7 @@ harness bin — plus the crossterm + libc deps. Everything below that is
 capability data or pure code and stays unconditional (`Backend`, `Caps`,
 `ColorTier`, `GlyphFlags`, `GlyphSupportTier`, `FrameStats`, `Event`/
 `EventQueue`/`Key`, quantizer, diff renderer, `SimBackend`) — the
-sessionless build is what the sleepytime facade's pure-embedder
+sessionless build is what the auto-ascii facade's pure-embedder
 configuration links.
 
 ```rust
@@ -341,7 +341,7 @@ pub fn probe_caps(&ProbeOptions) -> Caps;
 // answers 4 for 2026), and the RGB cap is read BY VALUE — xterm answers the
 // *valid* form `1+r524742=` hex("-1") when it is not in direct-color mode, so
 // a prefix test used to promote every plain xterm to truecolor. Result cached at
-// $XDG_CACHE_HOME/sleepytime/caps (fallback ~/.cache) keyed on
+// $XDG_CACHE_HOME/auto-ascii/caps (fallback ~/.cache) keyed on
 // (TERM, TERM_PROGRAM, COLORTERM, tmux?) — M2 fix (M1 review low 3): key
 // includes COLORTERM, and a cache hit only ever UPGRADES the tier passive
 // evidence proves this run (never downgrades); silence is never cached.
@@ -717,7 +717,7 @@ pub enum GoldenPalette { Ascii, Unicode, MonoGlyphOnly }
     // serialization.
 pub struct FixtureRenderer<'a>;  // player-pipeline replay on public APIs,
                                  // pinned cell-for-cell to the REAL Player by
-                                 // sleepytime/tests/pipeline_parity.rs
+                                 // auto-ascii/tests/pipeline_parity.rs
                                  // (M2 review fix 4c — goldens transitively
                                  // cover the shipping renderer via that pin;
                                  // M3: parity covers the temporal state
@@ -741,9 +741,9 @@ pub fn snapshot(title, term: (u16,u16), GoldenPalette, Option<Viewport>,
     // (glyph-only palettes omit the fg section)
 ```
 
-## sleepytime — THE public facade (M4 item A; source of truth for the API)
+## auto-ascii — THE public facade (M4 item A; source of truth for the API)
 
-The `sleepytime` crate is the one crate an outside project depends on; every
+The `auto-ascii` crate is the one crate an outside project depends on; every
 `slpy-*` crate is an implementation detail behind it. Public surface —
 audited item-by-item against "does a simple embedding project need this?":
 
@@ -837,20 +837,20 @@ pub use slpy_term::ColorTier;   // the tier(..) argument type — the ONLY
 ```
 
 Deliberately `#[doc(hidden)]` (workspace harness contract, semver-exempt):
-`sleepytime::pipeline` (below), `PaletteChoice::resolve_for_caps(&Caps)`
-and `sleepytime::load_font_table(&str) -> Result<slpy_core::FontTable,
+`auto_ascii::pipeline` (below), `PaletteChoice::resolve_for_caps(&Caps)`
+and `auto_ascii::load_font_table(&str) -> Result<slpy_core::FontTable,
 Error>` (M5: the bin's `--sim` path applies the same repertoire veto as
 run(); embedders use the wrapped forms above) — CLI/--sim plumbing.
 
-## sleepytime::pipeline — the hidden engine room (ex sleepy-player lib)
+## auto_ascii::pipeline — the hidden engine room (ex sleepy-player lib)
 
 Extracted to a lib at M2 so `sleepy-factory eval` drives the EXACT player
 frame pipeline headlessly (metrics must measure the real renderer, not a
 reimplementation — note 14); M4 moved it verbatim from `sleepy_player::` to
-`sleepytime::` and hid it from the public docs. Consumers: the sleepy-player
+`auto_ascii::` and hid it from the public docs. Consumers: the sleepy-player
 bin (--sim), factory eval, resize fuzz, perf benches, parity goldens.
 
-M4 signature changes: all `anyhow::Result` became `Result<_, sleepytime::Error>`
+M4 signature changes: all `anyhow::Result` became `Result<_, auto_ascii::Error>`
 (same coherent type as the facade; factory's `?` still works — Error is a
 std error). New: the backend seam is split so RenderSession stays
 terminal-free — `reflow_grid(cols, rows)` (everything but backend
@@ -875,7 +875,7 @@ pub struct Drained { pub quit: bool, pub jump_digit: Option<u8>,
     // update_levels only covers jumps that cross a shot boundary, so a
     // same-shot jump used to ghost pre-seek was_edge/idx into the landing
     // frame). Callers just repoint their clock and render (regression:
-    // sleepytime/tests/m3_layers.rs digit_jump_seek_resets_hysteresis_state).
+    // auto-ascii/tests/m3_layers.rs digit_jump_seek_resets_hysteresis_state).
 pub fn glyph_tier_from_caps(&Caps) -> GlyphTier;  // AsciiOnly/Cp437→Ascii,
       // UnicodeCore→UnicodeBlocks, UnicodeFull→UnicodeBlocks unless
       // Caps.glyphs has BRAILLE (verified-only) → BrailleVerified
@@ -907,7 +907,7 @@ impl<'a> Player<'a> {
       // consumed by the next render_present (the diff baseline can never
       // keep describing overlay cells). Presentation-only: hysteresis and
       // the LayerMask are untouched; eval never enables it. Tested by
-      // sleepytime/tests/scrub_overlay.rs (strict escape-stream replay).
+      // auto-ascii/tests/scrub_overlay.rs (strict escape-stream replay).
   pub fn render_present<B: Backend>(&mut self, backend: &mut B, frame_idx: u32)
       -> Result<FrameStats, Error>;  // M4: facade Error
       // M3 frame: decode Y(+E/Ex/Ey/H/C present-planes; sequential roll or
@@ -1047,12 +1047,12 @@ facade surface + this hidden module.)
   reports shots + cut flags, keyframe count, per-plane compressed/raw sizes,
   compression ratio vs raw planes, and per-plane value stats over sampled
   frames (E nonzero %, Ex/Ey bias deviation, H flag rates).
-- `sleepy-player` (PLAN §3) — M4: now built from `crates/sleepytime`
+- `sleepy-player` (PLAN §3) — M4: now built from `crates/auto-ascii`
   (`[[bin]]` behind the default-on `bin` feature, so `cargo install
-  sleepytime` ships it; `required-features` keeps embedder builds
+  auto-ascii` ships it; `required-features` keeps embedder builds
   binary-free). The bin is a thin argv shim: interactive flags map 1:1 onto
   `PlayerBuilder` and `run()` (no logic fork); `--sim` drives
-  `sleepytime::pipeline` directly. CLI unchanged since M3 and byte-identical
+  `auto_ascii::pipeline` directly. CLI unchanged since M3 and byte-identical
   in behavior (sim-dump sha256 pinned pre/post move). CLI as of M3 (see
   notes 9, 11 and 20):
   `<asset> [--repaint full|diff] [--loop] [--fps-cap FPS] [--cell-aspect F]
@@ -1063,7 +1063,7 @@ facade surface + this hidden module.)
   [--sim-dump PATH] [--sim-resize [COLSxROWS]]`.
   M5 item B: `--font-table` maps onto `PlayerBuilder::font_table`
   (interactive) and applies the identical repertoire veto on the `--sim`
-  path via the hidden `sleepytime::load_font_table`.
+  path via the hidden `auto_ascii::load_font_table`.
   M3: `--palette` overrides the Caps-derived charset tier for palette
   selection (`auto` = `glyph_tier_from_caps`; `--sim` derives auto from
   `Caps::default()` — ascii). The `--sim` JSON line gained
@@ -1234,7 +1234,7 @@ facade surface + this hidden module.)
     DEV-dependency on slpy-eval for this (a legal dev-dep cycle — dev-deps
     sit outside the package's own dep graph).
     Resize fuzzing (§6 invariant set as explicit assertions; MOVED to
-    `crates/sleepytime/tests/resize_fuzz.rs` against the real `Player`
+    `crates/auto-ascii/tests/resize_fuzz.rs` against the real `Player`
     by review fix 4c, note 17):
     originally `crates/slpy-eval/tests/resize_fuzz.rs` — random
     1×1..=1000×1000 resize
@@ -1291,7 +1291,7 @@ facade surface + this hidden module.)
     workspace dependency.
 15. **M2 item E + review fixes 2/3 landed** (perf-gate agent). No `pub`
     signature changed. Perf gates (PLAN §6): criterion benches at
-    `crates/sleepytime/benches/pipeline.rs` over the REAL pipeline —
+    `crates/auto-ascii/benches/pipeline.rs` over the REAL pipeline —
     `decode_delta_roll_480x270` (Y+C sequential delta roll),
     `resample_480x270_to_300x80`, `compose_300x80` (viewport inside the
     300×80 grid), `present_truecolor_300x80` / `present_256_300x80`
@@ -1302,7 +1302,7 @@ facade surface + this hidden module.)
     reference box; ids mirror the bench ids); `scripts/perf-gate.sh
     [--no-run]` compares criterion's `estimates.json` medians and exits
     nonzero on any breach or missing estimate. The unthrottled end-to-end
-    gate is a plain test, `crates/sleepytime/tests/perf_fps.rs`
+    gate is a plain test, `crates/auto-ascii/tests/perf_fps.rs`
     (asserts ≥ 24 fps @300×80 truecolor; ~500 fps measured under the dev
     profile). Verified: 5 consecutive green gate runs (incl. under load
     ~16) and a deliberate spin in `Resampler::apply` tripping the gate
@@ -1363,17 +1363,17 @@ facade surface + this hidden module.)
     trips the gate (resample −8.4% headroom → FAIL); reverted; two
     consecutive clean-gate PASS runs.
     (4c) **goldens/fuzz exercised a replica** [medium]: the resize fuzz
-    moved to `crates/sleepytime/tests/resize_fuzz.rs` and now drives
+    moved to `crates/auto-ascii/tests/resize_fuzz.rs` and now drives
     the real `Player` through `drain_events`/`reflow`/`render_present`
     (new read-only accessor `Player::resampler_dims`); new
-    `crates/sleepytime/tests/pipeline_parity.rs` pins FixtureRenderer
+    `crates/auto-ascii/tests/pipeline_parity.rs` pins FixtureRenderer
     to Player cell-for-cell (3 fixtures × grid sweep incl. all golden
     sizes + 48×12 tier-golden size × color/mono × seq/seek/cut frames ×
     mid-run reflows), so the 27 insta goldens + 4 tier goldens
     transitively cover the shipping renderer (mutation-tested: dropping
     reflow's ramp update fails parity). sleepy-player gained dev-deps
     slpy-eval + proptest; slpy-eval dropped its proptest dev-dep;
-    scripts/eval.sh fuzz section now targets it (M4: crate renamed sleepytime).
+    scripts/eval.sh fuzz section now targets it (M4: crate renamed auto-ascii).
     (4d) **eval cache staleness** [medium]: the eval asset cache key
     gained a third component — `SLPY_PIPELINE_FINGERPRINT`, an FNV-1a 64
     over every `.rs` in sleepy-factory/src + slpy-format/src emitted by
@@ -1468,7 +1468,7 @@ facade surface + this hidden module.)
     slpy-eval, `gif` for sleepy-factory — PNG I/O stays with the ffmpeg
     subprocess.
 20. **M3 pipeline integration landed** (integrator). The player runs the
-    full §3.5 path — see the sleepytime::pipeline section for the surface.
+    full §3.5 path — see the auto_ascii::pipeline section for the surface.
     Decisions recorded:
     (a) **Player::new signature** `want_color: bool` → `(ColorDepth,
     GlyphTier)`: palette selection is the player's job (Caps mapped via the
@@ -1607,7 +1607,7 @@ facade surface + this hidden module.)
     (`xtgettcap_rgb_is_read_by_value`) and the kitty/xterm/vte transcripts in
     `tests/probe_parser.rs` re-pointed at the researched truth.
     (c) **`TERM=linux` legibility floor**
-    (`crates/sleepytime/tests/linux_console_golden.rs` + committed
+    (`crates/auto-ascii/tests/linux_console_golden.rs` + committed
     `tests/goldens/linux_console_80x24_f10.txt`): the fixture frame rendered
     through the REAL `pipeline::Player` at console caps (C16 + Cp437 →
     `PaletteChoice::Auto` resolves the ASCII floor, palette 8 ramp, aspect
@@ -1673,7 +1673,7 @@ facade surface + this hidden module.)
     (c) **Doctests are green in the pure-embedder configuration.** The
     crate-level quickstart's first fence is now
     `#![cfg_attr(not(feature = "terminal"), doc = "```no_run,ignore")]`, so
-    `cargo test -p sleepytime --no-default-features --doc` passes (2 passed,
+    `cargo test -p auto-ascii --no-default-features --doc` passes (2 passed,
     1 ignored) instead of failing on a `Player` that is configured out;
     docs.rs builds with default features and still shows the runnable form.
     Same-config rot fixed alongside: `tests/m1_sim.rs` and `tests/sim_e2e.rs`
@@ -1688,7 +1688,7 @@ facade surface + this hidden module.)
     `slpy_core::font_table` (`FontTable` parse/builtin/veto_tier,
     `BUILTIN_FONT_TABLES`), `slpy_eval::CoverageTable::from_font_table`,
     facade `PlayerBuilder::font_table` + `RenderSession::set_font_table` +
-    hidden `sleepytime::load_font_table`, factory `font-table` subcommand +
+    hidden `auto_ascii::load_font_table`, factory `font-table` subcommand +
     `eval --font-table`, player `--font-table`. Decisions recorded:
     (a) **Generator = `sleepy-factory font-table`** (ab_glyph — already in
     the tree via imageproc; new direct workspace dep). Cell model: font
@@ -1702,7 +1702,7 @@ facade surface + this hidden module.)
     fonts-liberation, fonts-ubuntu, fonts-noto-mono).
     (b) **Tables committed at repo-root `fonts/*.toml`** and embedded into
     slpy-core via `include_str!` (`FontTable::builtin`) — slpy-core is not
-    on the `cargo package -p sleepytime` path, so item F is unaffected; the
+    on the `cargo package -p auto-ascii` path, so item F is unaffected; the
     facade embeds nothing.
     (c) **Repertoire findings (cmap-verified, cited in fonts/README.md):**
     no common monospace font ships palette-7 braille (DejaVu's braille is
@@ -1752,7 +1752,7 @@ facade surface + this hidden module.)
     (`probe-cached[-noquirks]` modes: clamp survives a cache hit; no-quirks
     ignores the cached quirked entry).
     (b) **Scrub UX** (item D): `Key::{Left,Right}` (slpy-term) → ±5 s
-    (`sleepytime::SCRUB_STEP_SECS`), coalesced per drain
+    (`auto_ascii::SCRUB_STEP_SECS`), coalesced per drain
     (`Drained.seek_steps`), hysteresis reset exactly like digit jumps;
     digits keep their 0–90% bindings. Transient bottom-row progress overlay
     (`set_progress_overlay`/`draw_progress_overlay`), auto-hidden by the
@@ -1785,6 +1785,6 @@ facade surface + this hidden module.)
     reqs; slpy-eval stays path-only ON PURPOSE (dev-dep cycle with
     slpy-term — cargo strips path-only dev-deps when packaging). Manifest
     check: `cargo package -p slpy-core -p slpy-format -p slpy-term
-    -p sleepytime --no-verify` passes (the closure is packaged together
+    -p auto-ascii --no-verify` passes (the closure is packaged together
     because the deps are unpublished; `--no-verify` skips the rebuild,
     nothing is published; on a dirty tree add `--allow-dirty`).

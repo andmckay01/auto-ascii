@@ -99,6 +99,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "auto-ascii"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "criterion",
+ "memmap2",
+ "proptest",
+ "slpy-core",
+ "slpy-eval",
+ "slpy-format",
+ "slpy-term",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1274,33 +1289,18 @@ name = "sleepy-factory"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "auto-ascii",
  "clap",
  "gif",
  "indicatif",
  "memmap2",
  "serde",
  "serde_json",
- "sleepytime",
  "slpy-core",
  "slpy-eval",
  "slpy-format",
  "slpy-term",
  "toml",
-]
-
-[[package]]
-name = "sleepytime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "criterion",
- "memmap2",
- "proptest",
- "slpy-core",
- "slpy-eval",
- "slpy-format",
- "slpy-term",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 [package]
-name = "sleepytime"
+name = "auto-ascii"
 description = "Realtime ASCII-art video: play SLPY feature assets in a terminal, or render them into your own cell grid"
 version.workspace = true
 edition.workspace = true
@@ -21,7 +21,7 @@ readme = "README.md"
 #                      — pure embedder: RenderSession + Grid/Cell only; the
 #                        dep tree carries NO clap/anyhow/crossterm (M4
 #                        acceptance 4 — verify with
-#                        `cargo tree -p sleepytime --no-default-features`)
+#                        `cargo tree -p auto-ascii --no-default-features`)
 [features]
 default = ["bin"]
 # The blocking terminal player (Player/PlayerBuilder): real session entry,

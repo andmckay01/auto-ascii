@@ -3,8 +3,8 @@
 //! whole M0–M3 machinery behind two calls:
 //!
 //! ```no_run
-//! sleepytime::Player::builder().asset("intro.slpy").build()?.run()?;
-//! # Ok::<(), sleepytime::Error>(())
+//! auto_ascii::Player::builder().asset("intro.slpy").build()?.run()?;
+//! # Ok::<(), auto_ascii::Error>(())
 //! ```
 
 use std::path::PathBuf;
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn build_resolves_font_table_before_the_terminal() {
         let mut path = std::env::temp_dir();
-        path.push(format!("sleepytime-player-font-{}.slpy", std::process::id()));
+        path.push(format!("auto-ascii-player-font-{}.slpy", std::process::id()));
         std::fs::write(
             &path,
             slpy_eval::fixtures::build_fixture(slpy_eval::fixtures::Fixture::GradientMotion),

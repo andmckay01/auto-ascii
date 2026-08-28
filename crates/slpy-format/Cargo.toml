@@ -1,6 +1,6 @@
 [package]
 name = "slpy-format"
-description = "SLPY v1 chunked container for sleepytime: deterministic writer, mmap-friendly reader, zstd + temporal delta, O(1) seek"
+description = "SLPY v1 chunked container for auto-ascii: deterministic writer, mmap-friendly reader, zstd + temporal delta, O(1) seek"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

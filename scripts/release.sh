@@ -11,7 +11,7 @@
 #                              UNTESTED-CROSS (headless Linux box — documented
 #                              in README "Install").
 #   macOS: no cross build (no osxcross by policy) — build on a Mac:
-#          `cargo build --release -p sleepytime --features bin` (see Makefile).
+#          `cargo build --release -p auto-ascii --features bin` (see Makefile).
 #
 # Output: dist/sleepy-player-<target>[.exe], stripped, each REQUIRED < 5 MB
 # (PLAN §7 M5 "binaries <5 MB"). The factory is built natively and reported
@@ -48,15 +48,15 @@ mkdir -p "$DIST"
 
 # --- builds -----------------------------------------------------------------
 say "build: native ($NATIVE_TARGET)"
-cargo build --release -p sleepytime --features bin
+cargo build --release -p auto-ascii --features bin
 cp target/release/sleepy-player "$DIST/sleepy-player-$NATIVE_TARGET"
 
 say "build: $MUSL_TARGET (fully static)"
-cargo build --release --target "$MUSL_TARGET" -p sleepytime --features bin
+cargo build --release --target "$MUSL_TARGET" -p auto-ascii --features bin
 cp "target/$MUSL_TARGET/release/sleepy-player" "$DIST/sleepy-player-$MUSL_TARGET"
 
 say "build: $WIN_TARGET (MinGW cross)"
-cargo build --release --target "$WIN_TARGET" -p sleepytime --features bin
+cargo build --release --target "$WIN_TARGET" -p auto-ascii --features bin
 cp "target/$WIN_TARGET/release/sleepy-player.exe" "$DIST/sleepy-player-$WIN_TARGET.exe"
 
 say "build: sleepy-factory (native, informational)"

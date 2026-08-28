@@ -1,6 +1,6 @@
 //! Resize fuzzing (PLAN §6, M2 item D): random (cols, rows) sequences
 //! 1×1..=1000×1000 — including mid-playback storms — driven through
-//! `SimBackend` and the REAL `sleepytime::pipeline::Player` (M2 review
+//! `SimBackend` and the REAL `auto_ascii::pipeline::Player` (M2 review
 //! fix: the §6 invariants gate the shipping renderer, not a test-harness
 //! replica; the fuzz moved here from slpy-eval and now goes through
 //! `Player::drain_events`/`reflow`/`render_present` — the exact code the
@@ -24,7 +24,7 @@
 //! event path and the same reflow the interactive loop uses.
 //!
 //! Case count: 256 by default (fast `cargo test`), env-scaled in scripts:
-//! `PROPTEST_CASES=10000 cargo test -p sleepytime --test resize_fuzz`
+//! `PROPTEST_CASES=10000 cargo test -p auto-ascii --test resize_fuzz`
 //! (M2 acceptance 5 runs 10k). The test prints cases + wall time + the
 //! worst observed tap rebuild.
 
@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestCaseError, TestError, TestRunner};
-use sleepytime::pipeline::Player;
+use auto_ascii::pipeline::Player;
 use slpy_core::{Resampler, Viewport};
 use slpy_eval::fixtures::{FIXTURE_BASE_H, FIXTURE_BASE_W, Fixture, build_fixture};
 use slpy_format::SlpyReader;

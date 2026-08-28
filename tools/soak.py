@@ -62,7 +62,7 @@ Full soak, detached:
         > runs/soak-1h/harness.out 2>&1 &
 
 Python 3.8+ stdlib only. The player binary is NOT built here — build it
-first: `cargo build --release -p sleepytime --features bin`.
+first: `cargo build --release -p auto-ascii --features bin`.
 """
 
 from __future__ import annotations
@@ -224,7 +224,7 @@ def rss_slope_mb_per_h(samples: list[tuple[float, int]], warmup_s: float) -> flo
 # captured output — final frames still parse as valid escape streams").
 #
 # A strict VT parser over the captured pty bytes, in the spirit of the
-# byte-exact interpreter in crates/sleepytime/tests/scrub_overlay.rs: it
+# byte-exact interpreter in crates/auto-ascii/tests/scrub_overlay.rs: it
 # accepts EXACTLY the sequences the player is specified to emit and reports
 # anything else. The player's full output vocabulary (slpy-term/src/{ansi,
 # render,restore,probe}.rs):
@@ -530,7 +530,7 @@ def main() -> int:
         ap.error("--outdir is required (unless --check-logs/--self-test)")
     if not args.player.is_file():
         sys.exit(f"player binary not found: {args.player}\n"
-                 f"build it: cargo build --release -p sleepytime --features bin")
+                 f"build it: cargo build --release -p auto-ascii --features bin")
     if not args.asset.is_file():
         sys.exit(f"asset not found: {args.asset}")
 

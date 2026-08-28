@@ -5,7 +5,7 @@
 
 # The player binary for THIS machine (target/release/sleepy-player).
 build:
-	cargo build --release -p sleepytime --features bin
+	cargo build --release -p auto-ascii --features bin
 
 # Stripped release binaries into dist/: native + static musl + windows-gnu
 # cross, each gated < 5 MB (M5 item E). Linux-hosted; needs rustup + apt.
@@ -27,7 +27,7 @@ clean:
 # There is no macOS cross build (no osxcross by policy — PLAN §7 M5): build on
 # a Mac instead. Both Apple Silicon and Intel work from source:
 #
-#     make build          # or: cargo build --release -p sleepytime --features bin
+#     make build          # or: cargo build --release -p auto-ascii --features bin
 #     strip target/release/sleepy-player
 #
 # The player uses only crossterm + POSIX termios/ioctl (the same unix session

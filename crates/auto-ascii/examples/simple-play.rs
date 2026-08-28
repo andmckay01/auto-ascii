@@ -5,9 +5,9 @@
 //! Make an asset:  `sleepy-factory build clip.mp4 -o intro.slpy`
 //! Then:           `cargo run --example simple-play -- intro.slpy`
 
-use sleepytime::Player;
+use auto_ascii::Player;
 
-fn main() -> Result<(), sleepytime::Error> {
+fn main() -> Result<(), auto_ascii::Error> {
     let asset = std::env::args().nth(1).expect("usage: simple-play <asset.slpy>");
     Player::builder().asset(asset).looping(true).build()?.run()
 }

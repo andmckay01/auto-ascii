@@ -1,4 +1,4 @@
-# sleepytime
+# auto-ascii
 
 Realtime ASCII-art video for terminals — and for whatever you want to draw it
 with.
@@ -11,7 +11,7 @@ flickers. Assets never store glyphs: every glyph decision happens at render time
 for *your* grid, *your* palette, *your* terminal.
 
 ```rust
-sleepytime::Player::builder().asset("intro.slpy").looping(true).build()?.run()?;
+auto_ascii::Player::builder().asset("intro.slpy").looping(true).build()?.run()?;
 ```
 
 That is the whole player: capability probe, letterbox, live resize, terminal

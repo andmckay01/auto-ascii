@@ -5,7 +5,7 @@
 //! reimplementation. The event loop, pacing and CLI stay above (`Player`
 //! / the `sleepy-player` bin); nothing here touches a clock or a tty.
 //!
-//! M4: re-homed from `sleepy-player` into the `sleepytime` facade and split
+//! M4: re-homed from `sleepy-player` into the `auto-ascii` facade and split
 //! along the backend seam — [`Player::reflow_grid`]/[`Player::render_grid`]
 //! carry everything up to the composed [`Grid<Cell>`] with NO backend in
 //! sight (the terminal-free [`crate::RenderSession`] path), and
@@ -99,7 +99,7 @@ pub struct Drained {
     pub jump_digit: Option<u8>,
     /// Net arrow-key scrub steps this drain (M5 scrub UX): each `Right` is
     /// +1, each `Left` −1; the caller converts steps to ±5 s
-    /// (`sleepytime::SCRUB_STEP_SECS`) of asset time and repoints its clock.
+    /// (`auto_ascii::SCRUB_STEP_SECS`) of asset time and repoints its clock.
     /// When nonzero, hysteresis state has ALREADY been reset (same temporal-
     /// discontinuity rule as `jump_digit`).
     pub seek_steps: i32,

@@ -1,4 +1,4 @@
-# sleepytime
+# auto-ascii
 
 Realtime ASCII-art video for terminals — and a library you can drop into your
 own project.
@@ -14,7 +14,7 @@ and equally right inside *your* renderer, if you'd rather draw the cells
 yourself.
 
 All Rust, one workspace, two binaries (`sleepy-factory`, `sleepy-player`) and one
-library crate (`sleepytime`). ffmpeg is used by the factory as a subprocess; the
+library crate (`auto-ascii`). ffmpeg is used by the factory as a subprocess; the
 player links no codecs.
 
 **Status — v0.1.0.** All planned milestones (M0–M5) are complete and the look
@@ -31,11 +31,11 @@ cross-built Windows binaries live in `dist/`; macOS builds from source.
 cargo run --release -p sleepy-factory -- build clip.mp4 -o intro.slpy
 
 # 2. play it
-cargo run --release -p sleepytime --bin sleepy-player -- intro.slpy
+cargo run --release -p auto-ascii --bin sleepy-player -- intro.slpy
 #    q / Esc quit · 0-9 seek to 0-90% · Left/Right scrub ±5 s · resize any time
 
 # 3. no terminal? render frames as text instead
-cargo run --release -p sleepytime --example headless-dump -- intro.slpy 3 100x28
+cargo run --release -p auto-ascii --example headless-dump -- intro.slpy 3 100x28
 ```
 
 Useful player flags: `--loop`, `--fps-cap 30`, `--seek 1:30`, `--palette
@@ -62,29 +62,29 @@ enforces the < 5 MB stripped-size gate):
 
 | target | how | notes |
 |---|---|---|
-| Linux (native) | `cargo build --release -p sleepytime --features bin` | binary at `target/release/sleepy-player`; `strip` it |
-| Linux (static musl) | `rustup target add x86_64-unknown-linux-musl` + `apt install musl-tools`, then `cargo build --release --target x86_64-unknown-linux-musl -p sleepytime --features bin` | `ldd` reports "statically linked" — runs on any x86-64 Linux |
-| Windows (cross) | `rustup target add x86_64-pc-windows-gnu` + `apt install mingw-w64`, then `cargo build --release --target x86_64-pc-windows-gnu -p sleepytime --features bin` | **untested-cross**: it compiles and links here (headless Linux CI, no wine); the session layer uses crossterm's Windows console API — report issues |
+| Linux (native) | `cargo build --release -p auto-ascii --features bin` | binary at `target/release/sleepy-player`; `strip` it |
+| Linux (static musl) | `rustup target add x86_64-unknown-linux-musl` + `apt install musl-tools`, then `cargo build --release --target x86_64-unknown-linux-musl -p auto-ascii --features bin` | `ldd` reports "statically linked" — runs on any x86-64 Linux |
+| Windows (cross) | `rustup target add x86_64-pc-windows-gnu` + `apt install mingw-w64`, then `cargo build --release --target x86_64-pc-windows-gnu -p auto-ascii --features bin` | **untested-cross**: it compiles and links here (headless Linux CI, no wine); the session layer uses crossterm's Windows console API — report issues |
 | macOS | build **on a Mac**: `make build` or the native cargo line above (see the Makefile's macOS section) | no osxcross by policy; Apple Silicon and Intel both build from source |
 
 A from-source build on a clean checkout (fresh `target/`, warm crates.io
 cache) measures ~29 s on a 4-core box — `time cargo build --release -p
-sleepytime --features bin`.
+auto-ascii --features bin`.
 
 To embed the library, depend on it by git (turn the `bin` feature off if you
 only want `RenderSession`):
 
 ```toml
-sleepytime = { git = "https://github.com/andmckay01/auto-ascii" }
+auto-ascii = { git = "https://github.com/andmckay01/auto-ascii" }
 ```
 
-It is not on crates.io yet; once published, `sleepytime = "0.1"` will work.
+It is not on crates.io yet; once published, `auto-ascii = "0.1"` will work.
 
 ## Embedding it
 
 ```rust
-// Cargo.toml:  sleepytime = { git = "https://github.com/andmckay01/auto-ascii" }   (crates.io: pending first publish)
-sleepytime::Player::builder().asset("intro.slpy").looping(true).build()?.run()?;
+// Cargo.toml:  auto-ascii = { git = "https://github.com/andmckay01/auto-ascii" }   (crates.io: pending first publish)
+auto_ascii::Player::builder().asset("intro.slpy").looping(true).build()?.run()?;
 ```
 
 That is the whole player: capability probe, letterbox, live resize, terminal
@@ -92,7 +92,7 @@ restore on quit/Ctrl-C/panic. If you own your event loop and your output layer �
 a game engine, a GUI widget, a test — use the terminal-free entry instead:
 
 ```rust
-use sleepytime::RenderSession;
+use auto_ascii::RenderSession;
 
 let mut session = RenderSession::open("intro.slpy")?;
 let grid = session.render(/*frame*/ 0, /*cols*/ 120, /*rows*/ 40)?; // -> &Grid<Cell>
@@ -104,13 +104,13 @@ for row in 0..grid.rows() {
 ```
 
 Build it with `default-features = false` and the dependency tree is the engine
-and nothing else — no clap, no crossterm ([`crates/sleepytime`](crates/sleepytime)
+and nothing else — no clap, no crossterm ([`crates/auto-ascii`](crates/auto-ascii)
 documents the three feature tiers). Runnable examples:
-[`simple-play`](crates/sleepytime/examples/simple-play.rs) (12 lines, the whole
-player), [`embedded-loop`](crates/sleepytime/examples/embedded-loop.rs)
+[`simple-play`](crates/auto-ascii/examples/simple-play.rs) (12 lines, the whole
+player), [`embedded-loop`](crates/auto-ascii/examples/embedded-loop.rs)
 (`RenderSession` in a hand-rolled loop, with a mid-run resize) and
-[`headless-dump`](crates/sleepytime/examples/headless-dump.rs) (frames to stdout
-as text). API docs: `cargo doc -p sleepytime --open`.
+[`headless-dump`](crates/auto-ascii/examples/headless-dump.rs) (frames to stdout
+as text). API docs: `cargo doc -p auto-ascii --open`.
 
 ## Palettes
 
@@ -164,7 +164,7 @@ committed).
 
 | path | what |
 |---|---|
-| `crates/sleepytime` | **the public library** + the `sleepy-player` binary |
+| `crates/auto-ascii` | **the public library** + the `sleepy-player` binary |
 | `crates/slpy-format` | SLPY v1 container (zstd + temporal delta, O(1) seek) |
 | `crates/slpy-core` | pure engine: viewport, resampler, compositor, palettes, hysteresis |
 | `crates/slpy-term` | `Backend` trait, ANSI backend, capability probe, simulator |

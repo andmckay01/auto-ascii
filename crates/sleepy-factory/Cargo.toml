@@ -10,7 +10,7 @@ repository.workspace = true
 # (grayscale from ffmpeg rawvideo, no gradients, single-threaded encode), so
 # per the M0 dependency guidance they are deferred until a stage needs them.
 # M2 (item B) adds the eval driver: params.toml (serde/toml), the player
-# pipeline reused verbatim (M4: `sleepytime::pipeline`, the facade's hidden
+# pipeline reused verbatim (M4: `auto_ascii::pipeline`, the facade's hidden
 # engine room — default-features = false via the workspace dep, so no
 # clap/terminal-session pull), SimBackend + metrics
 # (slpy-term/slpy-core/slpy-eval), mmap'd asset reads (memmap2).
@@ -19,7 +19,7 @@ slpy-format = { workspace = true }
 slpy-core = { workspace = true }
 slpy-term = { workspace = true }
 slpy-eval = { workspace = true }
-sleepytime = { workspace = true }
+auto-ascii = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }
 serde = { workspace = true }

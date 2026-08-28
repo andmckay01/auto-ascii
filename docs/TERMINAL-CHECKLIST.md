@@ -8,7 +8,7 @@ are replayed through the real probe on a real pty, and the resulting `Caps` are
 asserted per terminal
 (`crates/slpy-term/tests/terminal_identity.rs`, seven fixtures; byte-level
 parser coverage in `crates/slpy-term/tests/probe_parser.rs`; the console render
-floor in `crates/sleepytime/tests/linux_console_golden.rs`).
+floor in `crates/auto-ascii/tests/linux_console_golden.rs`).
 
 What a machine cannot check is what this document is for: **fonts, real colors,
 tearing, cell aspect, and whether it looks good.** Budget five minutes per
@@ -19,7 +19,7 @@ terminal.
 ## 0. Before you start
 
 ```bash
-cargo build --release -p sleepytime           # the player
+cargo build --release -p auto-ascii           # the player
 ASSET=assets/sheep-counting-neroni-clips.slpy # any .slpy you have
 PLAY="./target/release/sleepy-player $ASSET"
 ```
@@ -169,7 +169,7 @@ $PLAY --palette ascii       # same thing, forced
 
 *Expect:* the picture in `" .:coO8@"` ink with 16 ANSI colors, letterboxed at
 80×24, **no missing-glyph boxes and no mojibake** — the committed golden
-(`crates/sleepytime/tests/goldens/linux_console_80x24_f10.txt`) is what this
+(`crates/auto-ascii/tests/goldens/linux_console_80x24_f10.txt`) is what this
 should look like in glyph terms. Sub-cell structure shows up as the `"` / `_`
 subposition pair; nothing on this tier leaves printable ASCII, which is what
 makes the "no boxes" expectation enforceable rather than hopeful (see
@@ -193,7 +193,7 @@ skips even that.
 | Picture too tall or too wide | `--cell-aspect 2.0` (or measure: `cellpx=WxH` → aspect = H/W) |
 | Terminal hangs on start, or garbage keys | `--no-query` (never writes the volley) |
 | A quirk-table correction looks wrong for your terminal | `--no-quirks` (re-runs the volley, bypassing the probe cache, and takes the replies at face value; the table is `slpy-term/src/quirks.rs`, keyed on the XTVERSION reply) |
-| Stale caps after changing terminal config | `--no-cache` (the probe cache lives at `$XDG_CACHE_HOME/sleepytime/caps`) |
+| Stale caps after changing terminal config | `--no-cache` (the probe cache lives at `$XDG_CACHE_HOME/auto-ascii/caps`) |
 
 ---
 
@@ -206,7 +206,7 @@ skips even that.
 | Probe never hangs, never leaks reply bytes into the app | `crates/slpy-term/tests/pty_probe.rs` |
 | Terminal always restored (drop / panic / SIGINT / SIGTERM) | `crates/slpy-term/tests/pty_restore.rs` |
 | Per-tier escape streams (truecolor / 256 / 16 / mono) | `crates/slpy-term/tests/tier_goldens.rs` |
-| `TERM=linux` render golden + legibility floor | `crates/sleepytime/tests/linux_console_golden.rs` |
+| `TERM=linux` render golden + legibility floor | `crates/auto-ascii/tests/linux_console_golden.rs` |
 
 Not covered by any of them, and hence this document: font coverage, actual
 rendered color, perceived tearing, and taste.

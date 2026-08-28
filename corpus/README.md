@@ -1,6 +1,6 @@
 # Reference corpus
 
-Canonical clips that define "good" for sleepytime (PLAN.md §10, question 1). Every
+Canonical clips that define "good" for auto-ascii (PLAN.md §10, question 1). Every
 eval metric baseline, golden test, and contact sheet is generated from these — once
 locked, they should not change without re-baselining.
 

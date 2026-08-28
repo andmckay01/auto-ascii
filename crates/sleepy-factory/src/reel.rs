@@ -99,7 +99,7 @@ pub fn render_reel_html(clips: &[ReelClip], generator: &str) -> String {
     let mut h = String::with_capacity(1 << 22);
     h.push_str(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
-         <title>sleepytime review reel</title>\n<style>\n\
+         <title>auto-ascii review reel</title>\n<style>\n\
          body{font-family:system-ui,sans-serif;margin:2rem auto;max-width:1250px;\
          background:#14151a;color:#d8dae2;line-height:1.45}\n\
          h1{font-size:1.5rem}h2{font-size:1.2rem;border-bottom:1px solid #33363f;\
@@ -115,7 +115,7 @@ pub fn render_reel_html(clips: &[ReelClip], generator: &str) -> String {
          .strip{font-size:.85rem;white-space:nowrap}\n\
          .strip b{color:#eaecf2}\n\
          </style>\n</head>\n<body>\n\
-         <h1>sleepytime review reel — M3 sign-off</h1>\n",
+         <h1>auto-ascii review reel — M3 sign-off</h1>\n",
     );
     h.push_str(&format!(
         "<p class=\"meta\">{} | {} clip(s) | source | rasterized render | metrics per \

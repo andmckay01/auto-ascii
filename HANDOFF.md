@@ -1,6 +1,6 @@
 # HANDOFF — project save point (2026-08-28)
 
-Resume document for the **sleepytime** ASCII video engine. Written for a future
+Resume document for the **auto-ascii** ASCII video engine. Written for a future
 work session (human or Claude) returning cold. The spec is `PLAN.md`; this file
 is "where things stand and how to pick them up."
 
@@ -13,17 +13,37 @@ is "where things stand and how to pick them up."
 | M1 | `564259d` | Full SLPY v1 (delta+zstd, FIDX seek, NORM, chroma), caps probe, color tiers |
 | M2 | `73e4434` | Eval harness: SSIM/flicker/damage metrics, goldens, fuzz, perf gates, `params.toml` |
 | M3 | `f5ff5d1` | Layer compositor (edges/highlights/half-blocks), 8 palettes, edge-F1, tuning sweep |
-| M4 | `e6170a6` | `sleepytime` facade crate (Player + RenderSession), feature-gated bin, terminal matrix |
+| M4 | `e6170a6` | `auto-ascii` facade crate (Player + RenderSession), feature-gated bin, terminal matrix |
 | M5 | `5fcbfb5` | 1-h soak, font tables, quirk table, scrub UX, static binaries, publish hygiene |
 
 Tag `v0.1.0` marks the completed state. Working tree at save time: clean.
 
 **Off-box backup:** private GitHub repo `https://github.com/andmckay01/auto-ascii`
-(`origin`; main + all tags). Renamed there 2026-08-28 from `sleepytime-memory`;
+(`origin`; main + all tags). Renamed there 2026-08-28 from `auto-ascii-memory`;
 GitHub redirects the old URL. Two neighbours are DIFFERENT projects — do not
-push to either: `andmckay01/sleepytime` ("Sleepytime for Mac") and
+push to either: `andmckay01/auto-ascii` ("Sleepytime for Mac") and
 `andmckay01/auto-ascii-legacy` (a frame-based ASCII animation workspace that
 held the `auto-ascii` name until this rename, preserved untouched).
+
+## Naming & layout (settled 2026-08-28)
+
+Four confusable projects; get this right before renaming or publishing anything.
+
+```
+/home/mckay/personal/
+  sleepytime/auto-ascii/     <- THIS project (origin = andmckay01/auto-ascii)
+  sleepy-archive/            <- reference clones, not worked on
+    sleepytime-memory/       memory daemon for Claude Code (74 commits, v1.3.0)
+    auto-ascii-legacy/       older LLM-authored ASCII animation workspace (1 commit)
+```
+
+The facade crate was renamed `sleepytime` -> `auto-ascii` (Rust path `auto_ascii::`)
+because a **different, incoming project owns the name `sleepytime`** — another agent is
+building it. **Never publish a crate named `sleepytime` from here.**
+
+Deliberately NOT renamed: the `slpy-*` crates, the `sleepy-player` / `sleepy-factory`
+binaries, and the **`SLPY` on-disk magic** — those four bytes open every `.slpy` asset, so
+changing the format name would invalidate ~1 GB of built assets for a cosmetic gain.
 
 ## Quick start (this box: hetzner, 4-core, Rust 1.97.1, ffmpeg installed)
 
@@ -35,8 +55,8 @@ export PATH="$HOME/.cargo/bin:$PATH"
 python3 tools/soak.py --duration 60   # resize-storm smoke (3600 = the real soak)
 ```
 
-Embedding: `crates/sleepytime/examples/simple-play.rs` (13 lines) and
-`README.md` "Embedding it". Library-only build: `cargo build -p sleepytime
+Embedding: `crates/auto-ascii/examples/simple-play.rs` (13 lines) and
+`README.md` "Embedding it". Library-only build: `cargo build -p auto-ascii
 --no-default-features` (no terminal/CLI deps).
 
 ## What is durable vs regenerable
@@ -77,13 +97,25 @@ Embedding: `crates/sleepytime/examples/simple-play.rs` (13 lines) and
    cargo publish -p slpy-format     # no internal deps
    cargo publish -p slpy-core       # no internal deps
    cargo publish -p slpy-term       # needs slpy-core
-   cargo publish -p sleepytime      # needs all three
+   cargo publish -p auto-ascii      # needs all three
    ```
 
    Order matters — each crate must be live on the index before the next
    resolves it (allow a minute between). Afterwards, swap the README's git
-   dependency for `sleepytime = "0.1"`.
-4. **macOS binaries** — build on a Mac (`Makefile` macOS section; no osxcross).
+   dependency for `auto-ascii = "0.1"`.
+4. ~~**Flicker gate breach on `terminator-flaming-wreckage`**~~ — **RESOLVED
+   2026-08-28: the metric is wrong, not the renderer.** The clip measures 2.856
+   glyph switches/cell/s against the PLAN §6 gate of &le;2 (43 % over), but the
+   owner watched it and signed off with "the fire looks super dope, no notes."
+   The gate is specified for *static shots*; this clip is roiling fire plus 6
+   hard cuts in 26 s, and the reported number is a whole-clip mean, so the
+   breach is the measurement meeting footage it was never written for.
+   **Action: the flicker metric wants a static-shot-only definition** (restrict
+   the mean to frames inside a shot, excluding cut-adjacent frames) rather than
+   a `params.toml` sweep. Until then, do NOT add this clip to `runs/base.json`
+   — it would wedge the gate on a false positive. No tuning pass was run;
+   `params.toml` still stands as signed off at M3.
+5. **macOS binaries** — build on a Mac (`Makefile` macOS section; no osxcross).
    Cannot be done from this box at all. On the Mac:
    `git clone https://github.com/andmckay01/auto-ascii && cd auto-ascii &&
    make build && strip target/release/sleepy-player`. Needs Rust; ffmpeg
@@ -118,5 +150,5 @@ Built via multi-agent workflows (research panel → per-milestone build/verify/
 adversarial-review loops), ~60 agents total. Every milestone was independently
 re-verified by a fresh-eyes agent and adversarially reviewed; 9 serious bugs
 were caught pre-commit this way. Claude session memory for this project lives
-at `~/.claude/projects/-home-mckay-personal-sleepytime-ascii/memory/` and is
+at `~/.claude/projects/-home-mckay-personal-auto-ascii-ascii/memory/` and is
 auto-loaded by future sessions in this directory.

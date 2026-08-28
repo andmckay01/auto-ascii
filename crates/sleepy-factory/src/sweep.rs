@@ -408,7 +408,7 @@ fn render_leaderboard(report: &SweepReport) -> String {
     let mut h = String::with_capacity(1 << 14);
     h.push_str(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
-         <title>sleepytime sweep leaderboard</title>\n<style>\n\
+         <title>auto-ascii sweep leaderboard</title>\n<style>\n\
          body{font-family:system-ui,sans-serif;margin:2rem auto;max-width:1100px;\
          background:#14151a;color:#d8dae2;line-height:1.45}\n\
          h1{font-size:1.4rem}\n\
@@ -420,7 +420,7 @@ fn render_leaderboard(report: &SweepReport) -> String {
          tr.best td{background:#15321b}\n\
          tr.skip td{color:#9aa0ae}\n\
          .meta{color:#9aa0ae;font-size:.85rem}\n\
-         </style>\n</head>\n<body>\n<h1>sleepytime sweep leaderboard</h1>\n",
+         </style>\n</head>\n<body>\n<h1>auto-ascii sweep leaderboard</h1>\n",
     );
     let w = &report.score_weights;
     h.push_str(&format!(
@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(ids, vec![2, 0, 1]);
 
         let html = render_leaderboard(&report);
-        assert!(html.contains("<title>sleepytime sweep leaderboard</title>"));
+        assert!(html.contains("<title>auto-ascii sweep leaderboard</title>"));
         assert!(html.contains("class=\"best\""));
         assert!(html.contains("skipped: nope"));
         assert!(

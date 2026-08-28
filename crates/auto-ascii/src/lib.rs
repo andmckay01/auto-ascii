@@ -1,4 +1,4 @@
-//! **sleepytime** — realtime ASCII-art video for terminals and embedders.
+//! **auto-ascii** — realtime ASCII-art video for terminals and embedders.
 //!
 //! An offline factory distills reference video into a resolution-independent
 //! feature asset (`.slpy`); this crate maps that asset onto whatever cell
@@ -19,21 +19,21 @@
 // default features, so the rendered page always shows the runnable form.
 #![cfg_attr(feature = "terminal", doc = "```no_run")]
 #![cfg_attr(not(feature = "terminal"), doc = "```no_run,ignore")]
-//! sleepytime::Player::builder()
+//! auto_ascii::Player::builder()
 //!     .asset("intro.slpy")
 //!     .looping(true)
 //!     .build()?
 //!     .run()?;
-//! # Ok::<(), sleepytime::Error>(())
+//! # Ok::<(), auto_ascii::Error>(())
 //! ```
 //!
 //! Or skip the terminal entirely and drive your own output layer — a game
 //! engine, a GUI, a test — with [`RenderSession`]:
 //!
 //! ```
-//! use sleepytime::RenderSession;
+//! use auto_ascii::RenderSession;
 //! # // The doctest renders a synthetic test asset instead of "intro.slpy".
-//! # let path = std::env::temp_dir().join("sleepytime-doc-quickstart.slpy");
+//! # let path = std::env::temp_dir().join("auto-ascii-doc-quickstart.slpy");
 //! # let fixture = slpy_eval::fixtures::Fixture::GradientMotion;
 //! # std::fs::write(&path, slpy_eval::fixtures::build_fixture(fixture)).unwrap();
 //!
@@ -43,12 +43,12 @@
 //! let grid = session.render(/*frame*/ 0, /*cols*/ 120, /*rows*/ 40)?;
 //! for row in 0..grid.rows() {
 //!     for cell in grid.row(row) {
-//!         let _ = (cell.glyph(), cell.fg); // char + sleepytime::Rgb
+//!         let _ = (cell.glyph(), cell.fg); // char + auto_ascii::Rgb
 //!     }
 //! }
 //! # assert_eq!((grid.cols(), grid.rows(), fps), (120, 40, 30.0));
 //! # std::fs::remove_file(&path).unwrap();
-//! # Ok::<(), sleepytime::Error>(())
+//! # Ok::<(), auto_ascii::Error>(())
 //! ```
 //!
 //! The crate's three runnable `examples/` are the same story at full size:

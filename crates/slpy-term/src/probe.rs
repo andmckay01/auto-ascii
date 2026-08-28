@@ -9,7 +9,7 @@
 //! parsed until the DA1 answer or a deadline (default 200 ms); `!isatty`
 //! or silence → conservative default (256-color, ASCII glyphs). Never hangs.
 //!
-//! Results are cached at `$XDG_CACHE_HOME/sleepytime/caps` keyed on
+//! Results are cached at `$XDG_CACHE_HOME/auto-ascii/caps` keyed on
 //! `(TERM, TERM_PROGRAM, COLORTERM, tmux?)` — COLORTERM is part of the key
 //! (M1 review low 3: a COLORTERM-stripped run, e.g. under a pipe wrapper,
 //! must not poison later runs where COLORTERM proves truecolor), and a
@@ -114,8 +114,8 @@ pub struct ProbeOptions {
     pub no_cache: bool,
     /// Reply deadline for the volley.
     pub timeout: Duration,
-    /// Cache directory override; `None` → `$XDG_CACHE_HOME/sleepytime`
-    /// (fallback `~/.cache/sleepytime`).
+    /// Cache directory override; `None` → `$XDG_CACHE_HOME/auto-ascii`
+    /// (fallback `~/.cache/auto-ascii`).
     pub cache_dir: Option<PathBuf>,
 }
 
@@ -787,7 +787,7 @@ fn run_volley(in_fd: libc::c_int, out_fd: libc::c_int, timeout: Duration) -> io:
 }
 
 // ---------------------------------------------------------------------------
-// Cache: $XDG_CACHE_HOME/sleepytime/caps, keyed on
+// Cache: $XDG_CACHE_HOME/auto-ascii/caps, keyed on
 // (TERM, TERM_PROGRAM, COLORTERM, tmux?)
 // ---------------------------------------------------------------------------
 
@@ -869,7 +869,7 @@ fn cache_dir(opts: &ProbeOptions) -> Option<PathBuf> {
                 .filter(|v| !v.is_empty())
                 .map(|h| PathBuf::from(h).join(".cache"))
         })?;
-    Some(base.join("sleepytime"))
+    Some(base.join("auto-ascii"))
 }
 
 #[cfg(unix)]

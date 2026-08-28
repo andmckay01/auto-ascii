@@ -8,11 +8,11 @@
 //!
 //! Run: `cargo run --example headless-dump -- asset.slpy [FRAMES] [COLSxROWS]`
 //!
-//! [`RenderSession`]: sleepytime::RenderSession
+//! [`RenderSession`]: auto_ascii::RenderSession
 
 use std::io::Write;
 
-use sleepytime::{Cell, Grid, PaletteChoice, RenderSession};
+use auto_ascii::{Cell, Grid, PaletteChoice, RenderSession};
 
 const USAGE: &str = "usage: headless-dump <asset.slpy> [FRAMES] [COLSxROWS]";
 
@@ -40,7 +40,7 @@ fn dump_frame(
     Ok(())
 }
 
-fn main() -> Result<(), sleepytime::Error> {
+fn main() -> Result<(), auto_ascii::Error> {
     let mut args = std::env::args().skip(1);
     let path = args.next().expect(USAGE);
     let frames: u32 = args.next().map_or(3, |s| s.parse().expect(USAGE));

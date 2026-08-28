@@ -24,7 +24,7 @@ image = { workspace = true }
 imageproc = { workspace = true }
 
 # M2 item C: cell-grid goldens (insta). The resize storm fuzz (item D)
-# lives in the sleepytime crate (ex sleepy-player) since the M2 review fix — the §6 invariants gate
+# lives in the auto-ascii crate (ex sleepy-player) since the M2 review fix — the §6 invariants gate
 # the real Player, and tests/pipeline_parity.rs there pins FixtureRenderer
 # to it.
 [dev-dependencies]

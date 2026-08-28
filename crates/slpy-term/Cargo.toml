@@ -1,6 +1,6 @@
 [package]
 name = "slpy-term"
-description = "Terminal backends for sleepytime: Backend trait, ANSI backend, capability probe, headless simulator"
+description = "Terminal backends for auto-ascii: Backend trait, ANSI backend, capability probe, headless simulator"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -23,7 +23,7 @@ libc = { workspace = true, optional = true }
 
 # M4 (item B): the real-terminal session layer (AnsiBackend, probe volley,
 # restore hooks) sits behind `session` so a pure-embedder build of the
-# `sleepytime` facade carries no crossterm/libc. Default ON — every existing
+# `auto-ascii` facade carries no crossterm/libc. Default ON — every existing
 # consumer (player bin, factory eval, pty tests) is unchanged. The Backend
 # trait, Caps/ColorTier data types, EventQueue, quantizer, diff renderer and
 # SimBackend are capability DATA + pure code and stay unconditional.

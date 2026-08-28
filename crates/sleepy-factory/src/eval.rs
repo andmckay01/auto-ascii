@@ -1,7 +1,7 @@
 //! `sleepy-factory eval` — the M2 agent socket (PLAN §5/§6, item B).
 //!
 //! For every video in `--corpus`: build (or reuse) the asset, then drive the
-//! REAL player pipeline (`sleepytime::pipeline::Player`, extracted to a
+//! REAL player pipeline (`auto_ascii::pipeline::Player`, extracted to a
 //! lib at M2 exactly so this driver measures the renderer and not a
 //! reimplementation) headlessly against `SimBackend`, collecting the §6
 //! metrics:
@@ -45,7 +45,7 @@ use std::time::Duration;
 use std::collections::BTreeMap;
 
 use memmap2::Mmap;
-use sleepytime::pipeline::Player;
+use auto_ascii::pipeline::Player;
 use slpy_core::{DEFAULT_CELL_ASPECT, compute_viewport};
 use slpy_eval::{
     ClipMetrics, ClipReport, CompareReport, CoverageTable, EDGE_MATCH_TOLERANCE, EdgeMask,
@@ -455,7 +455,7 @@ pub(crate) fn eval_clip(
             reader,
             DEFAULT_CELL_ASPECT,
             false,
-            sleepytime::pipeline::color_depth(tier),
+            auto_ascii::pipeline::color_depth(tier),
             slpy_core::GlyphTier::Ascii,
         )?;
         // §3.5 compositor tunables from params.toml [compose] — the
@@ -772,7 +772,7 @@ fn frame_ssim(
     normed: &mut Vec<u8>,
 ) -> f64 {
     let mut lut = [0u8; 256];
-    sleepytime::pipeline::build_levels_lut(&mut lut, reference_levels(player.luma_src()));
+    auto_ascii::pipeline::build_levels_lut(&mut lut, reference_levels(player.luma_src()));
     normed.clear();
     normed.extend(player.luma_src().iter().map(|&v| lut[v as usize]));
     downscale_ssim(cropped, normed, src_w, src_h)
@@ -955,7 +955,7 @@ fn render_html(report: &EvalReport, evals: &[ClipEval], compare: Option<&Compare
     let mut h = String::with_capacity(1 << 20);
     h.push_str(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
-         <title>sleepytime eval</title>\n<style>\n\
+         <title>auto-ascii eval</title>\n<style>\n\
          body{font-family:system-ui,sans-serif;margin:2rem auto;max-width:1100px;\
          background:#14151a;color:#d8dae2;line-height:1.45}\n\
          h1{font-size:1.5rem}h2{font-size:1.2rem;border-bottom:1px solid #33363f;\
@@ -974,7 +974,7 @@ fn render_html(report: &EvalReport, evals: &[ClipEval], compare: Option<&Compare
          .meta{color:#9aa0ae;font-size:.85rem}\n\
          </style>\n</head>\n<body>\n",
     );
-    h.push_str("<h1>sleepytime eval — contact sheet</h1>\n");
+    h.push_str("<h1>auto-ascii eval — contact sheet</h1>\n");
     h.push_str(&format!(
         "<p class=\"meta\">{} | schema v{} | {} clip(s)</p>\n",
         html_escape(&report.generator),
