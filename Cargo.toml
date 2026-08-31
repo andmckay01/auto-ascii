@@ -39,6 +39,10 @@ slpy-eval = { path = "crates/slpy-eval" }
 auto-ascii = { path = "crates/auto-ascii", default-features = false }
 # slpy-format (PLAN §8): zstd + crc32fast + ciborium (META only; frame payloads hand-rolled)
 zstd = "0.13"
+# slpy-format `parallel` feature: a frame's plane subblocks compress
+# independently, so they fan out across cores. OPTIONAL and off by default —
+# the player only ever READS assets and must not pull in a thread pool.
+rayon = "1"
 crc32fast = "1.4"
 ciborium = "0.2"
 serde = { version = "1", features = ["derive"] } # META struct only (ciborium is serde-based)

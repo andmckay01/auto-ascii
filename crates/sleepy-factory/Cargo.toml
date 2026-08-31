@@ -15,7 +15,7 @@ repository.workspace = true
 # clap/terminal-session pull), SimBackend + metrics
 # (slpy-term/slpy-core/slpy-eval), mmap'd asset reads (memmap2).
 [dependencies]
-slpy-format = { workspace = true }
+slpy-format = { workspace = true, features = ["parallel"] }
 slpy-core = { workspace = true }
 slpy-term = { workspace = true }
 slpy-eval = { workspace = true }

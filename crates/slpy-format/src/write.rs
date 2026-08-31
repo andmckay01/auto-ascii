@@ -116,18 +116,65 @@ pub struct SlpyWriter<W: Write + Seek> {
     /// Current absolute file offset (tracked, not queried — deterministic
     /// and seek-free on the streaming path).
     pos: u64,
-    /// Reused zstd context — one compressor for the whole file (fixed level,
-    /// no dictionary: byte-determinism).
-    cctx: zstd::bulk::Compressor<'static>,
-    /// Previous frame's raw planes (TEMPORAL_DELTA only), parallel to
-    /// `opts.plane_ids` — the delta reference (PLAN §4).
-    prev: Vec<Vec<u8>>,
-    /// Reused delta scratch (`cur − prev mod 256` before compression).
-    delta_buf: Vec<u8>,
-    /// Reused compression scratch buffer.
-    comp_buf: Vec<u8>,
+    /// Per-plane codec state, parallel to `opts.plane_ids`. One slot per plane
+    /// so a frame's subblocks are built from disjoint state — which is what
+    /// lets the `parallel` feature compress them concurrently.
+    codecs: Vec<PlaneCodec>,
     /// Reused FRAM payload assembly buffer.
     payload_buf: Vec<u8>,
+}
+
+/// Everything one plane needs to turn its raw bytes into a subblock payload.
+///
+/// Each plane owns its compressor, its delta reference and its scratch, so no
+/// two planes touch shared state. Plane subblocks are already independent on
+/// disk (`plane_id | comp_size | raw_size | zstd bytes`, each 64-B aligned),
+/// so compressing them concurrently is purely a scheduling change.
+///
+/// **Byte-determinism.** Output is identical serial or parallel, and identical
+/// to the single-context writer this replaced: zstd's `bulk` API compresses
+/// each buffer as a standalone frame with no dictionary and no carry-over
+/// between calls, so the bytes depend only on (input, level) — never on which
+/// context ran it, or in what order. Subblocks are appended to the payload in
+/// plane order afterwards, so file layout is unaffected. The eval harness's
+/// determinism guard covers this end to end.
+struct PlaneCodec {
+    /// Fixed level, no dictionary.
+    cctx: zstd::bulk::Compressor<'static>,
+    /// This plane's raw size, from the PLAN §4 registry.
+    raw_size: usize,
+    /// Previous frame's raw bytes (TEMPORAL_DELTA only) — the delta reference.
+    prev: Vec<u8>,
+    /// `cur − prev mod 256` staging.
+    delta: Vec<u8>,
+    /// Compressed output staging, grown to zstd's bound on first use.
+    comp: Vec<u8>,
+    /// Valid prefix length of `comp` after the most recent compress.
+    comp_len: usize,
+}
+
+impl PlaneCodec {
+    /// Compress this plane's contribution to one frame into `self.comp`.
+    /// Touches only `self`, so callers may run these concurrently.
+    fn encode(&mut self, data: &[u8], keyframe: bool, delta_filter: bool) -> Result<()> {
+        let bound = zstd::zstd_safe::compress_bound(self.raw_size);
+        if self.comp.len() < bound {
+            self.comp.resize(bound, 0);
+        }
+        self.comp_len = if keyframe {
+            self.cctx.compress_to_buffer(data, &mut self.comp[..])?
+        } else {
+            // Temporal byte-delta pre-pass (PLAN §4): cur − prev mod 256.
+            for ((d, &c), &p) in self.delta[..self.raw_size].iter_mut().zip(data).zip(&self.prev) {
+                *d = c.wrapping_sub(p);
+            }
+            self.cctx.compress_to_buffer(&self.delta[..self.raw_size], &mut self.comp[..])?
+        };
+        if delta_filter {
+            self.prev.copy_from_slice(data);
+        }
+        Ok(())
+    }
 }
 
 /// Emit one chunk: 16-B header | payload | crc32(payload) when enabled.
@@ -203,17 +250,25 @@ impl<W: Write + Seek> SlpyWriter<W> {
             })
             .collect::<Result<Vec<usize>>>()?;
 
-        let cctx = zstd::bulk::Compressor::new(opts.zstd_level)?;
-
         let mut meta_buf = Vec::new();
         ciborium::ser::into_writer(meta, &mut meta_buf).map_err(|_| SlpyError::BadMeta)?;
 
-        let (prev, delta_buf) = if opts.filter == filter::TEMPORAL_DELTA {
-            let max_raw = raw_sizes.iter().copied().max().unwrap_or(0);
-            (raw_sizes.iter().map(|&s| vec![0u8; s]).collect(), vec![0u8; max_raw])
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        // One codec per plane. The delta reference and its staging buffer are
+        // only allocated under TEMPORAL_DELTA — INTRA never reads them.
+        let delta_filter = opts.filter == filter::TEMPORAL_DELTA;
+        let codecs = raw_sizes
+            .iter()
+            .map(|&raw_size| {
+                Ok(PlaneCodec {
+                    cctx: zstd::bulk::Compressor::new(opts.zstd_level)?,
+                    raw_size,
+                    prev: if delta_filter { vec![0u8; raw_size] } else { Vec::new() },
+                    delta: if delta_filter { vec![0u8; raw_size] } else { Vec::new() },
+                    comp: Vec::new(),
+                    comp_len: 0,
+                })
+            })
+            .collect::<Result<Vec<PlaneCodec>>>()?;
 
         let mut this = SlpyWriter {
             w,
@@ -223,10 +278,7 @@ impl<W: Write + Seek> SlpyWriter<W> {
             frames_written: 0,
             norm_written: false,
             pos: 0,
-            cctx,
-            prev,
-            delta_buf,
-            comp_buf: Vec::new(),
+            codecs,
             payload_buf: Vec::new(),
         };
 
@@ -308,25 +360,29 @@ impl<W: Write + Seek> SlpyWriter<W> {
         self.payload_buf.extend_from_slice(&frame_idx.to_le_bytes());
         self.payload_buf.push(flags);
 
-        for (i, plane) in planes.iter().enumerate() {
-            let raw_size = self.raw_sizes[i];
-            let bound = zstd::zstd_safe::compress_bound(raw_size);
-            self.comp_buf.resize(bound, 0);
-
-            let comp_size = if keyframe {
-                self.cctx.compress_to_buffer(plane.data, &mut self.comp_buf[..])?
-            } else {
-                // Temporal byte-delta pre-pass (PLAN §4): cur − prev mod 256.
-                for ((d, &c), &p) in
-                    self.delta_buf[..raw_size].iter_mut().zip(plane.data).zip(&self.prev[i])
-                {
-                    *d = c.wrapping_sub(p);
-                }
-                self.cctx.compress_to_buffer(&self.delta_buf[..raw_size], &mut self.comp_buf[..])?
-            };
-            if delta_filter {
-                self.prev[i].copy_from_slice(plane.data);
+        // Compress every plane into its own codec's scratch. The planes share
+        // no state, so this is the one place the frame's work fans out; with
+        // `parallel` off it is the same loop on one thread. Either way the
+        // bytes are identical — see `PlaneCodec`.
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            self.codecs
+                .par_iter_mut()
+                .zip(planes.par_iter())
+                .try_for_each(|(codec, plane)| codec.encode(plane.data, keyframe, delta_filter))?;
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            for (codec, plane) in self.codecs.iter_mut().zip(planes) {
+                codec.encode(plane.data, keyframe, delta_filter)?;
             }
+        }
+
+        // Append the finished subblocks in plane order — file layout is
+        // unchanged by how the compression above was scheduled.
+        for (codec, plane) in self.codecs.iter().zip(planes) {
+            let (comp_size, raw_size) = (codec.comp_len, codec.raw_size);
             if comp_size > u32::MAX as usize || raw_size > u32::MAX as usize {
                 return Err(SlpyError::Corrupt("writer: plane subblock exceeds u32"));
             }
@@ -334,7 +390,7 @@ impl<W: Write + Seek> SlpyWriter<W> {
             self.payload_buf.push(plane.id);
             self.payload_buf.extend_from_slice(&(comp_size as u32).to_le_bytes());
             self.payload_buf.extend_from_slice(&(raw_size as u32).to_le_bytes());
-            self.payload_buf.extend_from_slice(&self.comp_buf[..comp_size]);
+            self.payload_buf.extend_from_slice(&codec.comp[..comp_size]);
             // Pad the subblock to 64-B alignment (PLAN §4); pads are payload
             // bytes → counted by the chunk `size`, covered by the CRC.
             let sub_len = 9 + comp_size;
