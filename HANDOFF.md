@@ -45,7 +45,7 @@ Deliberately NOT renamed: the `slpy-*` crates, the `sleepy-player` / `sleepy-fac
 binaries, and the **`SLPY` on-disk magic** — those four bytes open every `.slpy` asset, so
 changing the format name would invalidate ~1 GB of built assets for a cosmetic gain.
 
-## Quick start (this box: hetzner, 4-core, Rust 1.97.1, ffmpeg installed)
+## Quick start (this box: hetzner, **2 physical cores + SMT** (4 logical, EPYC-Milan), Rust 1.97.1, ffmpeg installed)
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -120,6 +120,43 @@ Embedding: `crates/auto-ascii/examples/simple-play.rs` (13 lines) and
    `git clone https://github.com/andmckay01/auto-ascii && cd auto-ascii &&
    make build && strip target/release/sleepy-player`. Needs Rust; ffmpeg
    (`brew install ffmpeg`) only if building assets, not for playback.
+
+## Measurement hygiene — read before trusting any timing here
+
+This box is **2 physical cores + SMT-2**, not 4 cores (`lscpu`: Core(s) per
+socket 2, Thread(s) per core 2). Docs said "4-core" for months; the perf
+thresholds stay valid (they were calibrated empirically) but any parallelism
+expectation reasoned from "4 cores" is ~40% too optimistic. ~2x is the physical
+ceiling for CPU-bound work; threads 3-4 are hyperthread siblings worth ~35%.
+
+**It is also a shared box** — other workspaces burst (1-min load observed
+swinging 1.1 -> 5.6 -> 1.3 inside 25 minutes). A single timing run here is
+worthless. On 2026-08-31 a single-run A/B produced a "1.04x" speedup figure for
+per-plane parallelism that a load-controlled median-of-3 revealed to be
+**1.85x** — the slow run had simply been granted ~1.4 cores instead of 4.
+**Take a median of at least 3, log `uptime` around every run, and discard
+contended reps.**
+
+## Build speed (settled 2026-08-31)
+
+Two changes, audited, together taking a 63 s clip from ~7 min to ~2.5 min:
+
+- **zstd 19 -> 15** (`params.toml [build]`, and the factory's in-code default,
+  which now DIVERGES from `slpy_format::WriterOptions::default()` at 19 on
+  purpose — level is encoder policy, not a container property). +0.91 % asset
+  bytes, 2.84x faster. zstd is lossless: L15 and L19 assets were verified to
+  render byte-identically. `FIXTURE_SLPY_SHA` re-pinned; `assets/*.slpy`
+  regenerated (a stale asset still PLAYS fine — only byte-reproducibility
+  breaks, which is what the corpus determinism guard checks).
+- **Per-plane parallel compression** kept (`slpy-format/parallel`). Worth
+  **1.85x** on this box, NOT the 1.04x an early contended measurement claimed
+  — see the measurement-hygiene note above; commit `fe10e2c`'s mechanism
+  paragraph is WRONG and superseded. Keyframes are ~1.4 % of compression time,
+  not the dominant cost: on grainy film the deltas carry nearly all the
+  entropy, and a keyframe is actually *cheaper* to compress than a delta.
+- Next bottleneck is now the SERIAL EXTRACT stage, not compression. GOP-parallel
+  encoding will NOT pay on this box (2 physical cores; SMT caps ~2.1x and
+  per-plane already reaches it) — only on genuinely multicore hardware.
 
 ## Backlog (PLAN §7 M6+, explicitly out of v1)
 

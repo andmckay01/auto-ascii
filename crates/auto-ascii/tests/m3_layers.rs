@@ -318,3 +318,51 @@ fn reflow_reallocs_hysteresis_state() {
         }
     }
 }
+
+/// The shadow-lift dial must actually change the picture, not just the LUT.
+///
+/// Renders the same frame twice through the REAL `Player` — once with the
+/// dial off, once at full — and asserts the dark half of the ramp moves UP.
+/// This is the property the dial exists for: on an 8–16 step ramp a subject
+/// below the first step shares a glyph with black and is simply invisible, so
+/// "lift" has to mean "reaches a lighter glyph", not merely "the LUT changed".
+#[test]
+fn shadow_lift_dial_moves_dark_cells_up_the_ramp() {
+    let asset = build_fixture(Fixture::GradientMotion);
+
+    let render = |lift: u8| -> Vec<char> {
+        let mut p = player(&asset, ColorDepth::True, GlyphTier::Ascii);
+        let mut params = p.compose_params();
+        params.shadow_lift = lift;
+        p.set_compose_params(params);
+        let mut backend = SimBackend::new(120, 40);
+        p.reflow(&mut backend, 120, 40);
+        p.render_present(&mut backend, 3).unwrap();
+        backend.take_output();
+        p.grid().as_slice().iter().map(|c| c.glyph()).collect()
+    };
+
+    let off = render(0);
+    let full = render(255);
+    assert_eq!(off.len(), full.len(), "same grid geometry either way");
+    assert_ne!(off, full, "a full shadow lift must change the rendered glyphs");
+
+    // Rank glyphs by the ASCII ramp's own ink ordering: a lift may only ever
+    // move a cell to an equal-or-denser glyph, never a darker one.
+    const RAMP: &str = " .,:;i1tftLCG08@";
+    let rank = |c: char| RAMP.find(c).map(|i| i as i32).unwrap_or(-1);
+    let (mut lifted, mut darkened) = (0usize, 0usize);
+    for (&a, &b) in off.iter().zip(&full) {
+        let (ra, rb) = (rank(a), rank(b));
+        if ra < 0 || rb < 0 {
+            continue; // edge/structure glyphs are outside the base ramp
+        }
+        if rb > ra {
+            lifted += 1;
+        } else if rb < ra {
+            darkened += 1;
+        }
+    }
+    assert!(lifted > 0, "lift should raise at least some base-ramp cells");
+    assert_eq!(darkened, 0, "a shadow lift must never darken a base-ramp cell");
+}

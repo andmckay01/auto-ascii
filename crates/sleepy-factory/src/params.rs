@@ -63,7 +63,14 @@ impl Default for BuildParams {
             fps: 30,
             base_w: slpy_format::BASE_W,
             base_h: slpy_format::BASE_H,
-            zstd_level: w.zstd_level,
+            // DELIBERATE divergence from `w.zstd_level` (which stays 19).
+            // Compression level is encoder POLICY, not a property of the
+            // container — the format reads any level, and a decoder cannot
+            // tell which was used. Audited 2026-08-31 on 600 real frames:
+            // 15 costs +0.91% asset bytes and builds 2.84x faster; zstd is
+            // lossless so no quality metric moves. Kept in sync with
+            // params.toml `[build].zstd_level` by the pinning test.
+            zstd_level: 15,
             keyframe_ivl: u32::from(w.keyframe_ivl),
         }
     }
@@ -221,6 +228,10 @@ pub struct ComposeTable {
     /// Ramp-index hysteresis width in Q8 fractions of one step (§3.5
     /// "± 0.35·step" = 90). Promoted from a slpy-core constant at M3 Tune.
     pub idx_hyst_q8: u32,
+    /// Shadow lift (`slpy_core::ComposeParams::shadow_lift`): 0 = off, 255 =
+    /// a full sqrt curve. A RENDERER knob like the rest of this table, so it
+    /// is sweepable and costs no asset rebuild.
+    pub shadow_lift: u32,
 }
 
 impl Default for ComposeTable {
@@ -238,6 +249,7 @@ impl Default for ComposeTable {
             quad_e_on: 2,
             quad_e_off: 1,
             idx_hyst_q8: 160,
+            shadow_lift: 0,
         }
     }
 }
@@ -257,6 +269,7 @@ impl ComposeTable {
             quad_e_on: self.quad_e_on as u8,
             quad_e_off: self.quad_e_off as u8,
             idx_hyst_q8: self.idx_hyst_q8 as u8,
+            shadow_lift: self.shadow_lift as u8,
         }
     }
 }

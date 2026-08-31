@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use memmap2::Mmap;
+use slpy_core::ComposeParams;
 use slpy_format::SlpyReader;
 use slpy_term::{AnsiBackend, Backend, ColorTier, ProbeOptions, probe_caps};
 
@@ -43,6 +44,85 @@ pub const MIN_FPS_CAP: f64 = 1.0;
 /// PLAN §7 M5). Presses coalesced within one event drain add up (holding
 /// the key nets one bigger jump); digits 0–9 still jump to 0–90%.
 pub const SCRUB_STEP_SECS: f64 = 5.0;
+
+/// How long the live-dial readout stays up after the last turn of the dial.
+/// Longer than the seek overlay: you are watching the picture change while you
+/// turn it, and the readout is the only thing telling you where you are.
+const DIAL_OVERLAY_HIDE_AFTER: Duration = Duration::from_millis(2500);
+
+/// A renderer knob adjustable during playback: `d` selects, `[`/`]` turns it.
+///
+/// Every dial is a [`ComposeParams`] field, and that is the point — those are
+/// documented as excluded from the build fingerprint and the eval cache key,
+/// so turning one re-renders the asset already in memory instead of rebuilding
+/// it. One asset serves every setting; nothing is baked in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dial {
+    /// Open the shadows so a dark subject clears the first ramp steps instead
+    /// of sharing a glyph with black. First in the cycle: it is the one that
+    /// rescues detail that is otherwise simply absent.
+    ShadowLift,
+    /// Edge gate on-threshold. LOWER draws more edges — the dial is inverted
+    /// on screen so that turning it up means "more edges", which is what a
+    /// person turning a dial expects.
+    EdgeStrength,
+    /// Ramp-index hysteresis width: wider = stickier cells = less flicker,
+    /// narrower = more responsive.
+    Hysteresis,
+}
+
+impl Dial {
+    /// Cycle order. Shadow lift leads deliberately (see the variant docs).
+    pub const ALL: [Dial; 3] = [Dial::ShadowLift, Dial::EdgeStrength, Dial::Hysteresis];
+
+    /// Short label for the on-screen readout.
+    pub fn label(self) -> &'static str {
+        match self {
+            Dial::ShadowLift => "shadow lift",
+            Dial::EdgeStrength => "edge strength",
+            Dial::Hysteresis => "hysteresis",
+        }
+    }
+
+    /// How far one `[`/`]` press moves it. Sized so a dial crosses its useful
+    /// range in roughly a dozen presses rather than a hundred.
+    pub fn step(self) -> i32 {
+        match self {
+            Dial::ShadowLift => 16,
+            Dial::EdgeStrength => 4,
+            Dial::Hysteresis => 16,
+        }
+    }
+
+    /// Upper bound of the on-screen scale.
+    pub fn max(self) -> u8 {
+        match self {
+            Dial::ShadowLift | Dial::Hysteresis => 255,
+            Dial::EdgeStrength => 128,
+        }
+    }
+
+    /// Current on-screen value (already un-inverted where the underlying
+    /// field runs the other way).
+    pub fn get(self, p: &ComposeParams) -> u8 {
+        match self {
+            Dial::ShadowLift => p.shadow_lift,
+            Dial::EdgeStrength => self.max().saturating_sub(p.edge_t_on),
+            Dial::Hysteresis => p.idx_hyst_q8,
+        }
+    }
+
+    /// Apply a signed number of steps, saturating at the dial's ends.
+    pub fn turn(self, p: &mut ComposeParams, steps: i32) {
+        let cur = i32::from(self.get(p));
+        let next = (cur + steps * self.step()).clamp(0, i32::from(self.max())) as u8;
+        match self {
+            Dial::ShadowLift => p.shadow_lift = next,
+            Dial::EdgeStrength => p.edge_t_on = self.max() - next,
+            Dial::Hysteresis => p.idx_hyst_q8 = next,
+        }
+    }
+}
 
 /// How long the bottom-row progress overlay stays up after a seek before it
 /// auto-hides (M5 scrub UX; hiding forces a clean full repaint of the
@@ -345,6 +425,12 @@ impl Player {
         // M5 scrub UX: the transient progress overlay auto-hides this long
         // after the last seek.
         let mut overlay_until: Option<Instant> = None;
+        // Live dials (M6 tuning UX): `d` selects, `[`/`]` turns. Starts from
+        // whatever the CLI/params handed the pipeline, so a --shadow-lift on
+        // the command line is simply the dial's opening position.
+        let mut dial_idx: usize = 0;
+        let mut compose = player.compose_params();
+        let mut dial_until: Option<Instant> = None;
 
         loop {
             let drained = player.drain_events(&mut backend);
@@ -376,6 +462,23 @@ impl Player {
                 base_frame = landing;
                 clock = Instant::now();
                 sought = true;
+            }
+            if drained.dial_cycle > 0 || drained.dial_delta != 0 {
+                if drained.dial_cycle > 0 {
+                    dial_idx = (dial_idx + drained.dial_cycle as usize) % Dial::ALL.len();
+                }
+                let dial = Dial::ALL[dial_idx];
+                if drained.dial_delta != 0 {
+                    dial.turn(&mut compose, drained.dial_delta);
+                    // Renderer-only: re-tunes the asset already in memory, no
+                    // rebuild, no temporal reset.
+                    player.set_compose_params(compose);
+                }
+                player.set_dial_overlay(Some((dial.label(), dial.get(&compose), dial.max())));
+                dial_until = Some(Instant::now() + DIAL_OVERLAY_HIDE_AFTER);
+            } else if dial_until.is_some_and(|t| Instant::now() >= t) {
+                player.set_dial_overlay(None);
+                dial_until = None;
             }
             if sought {
                 player.set_progress_overlay(true);

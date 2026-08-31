@@ -30,7 +30,7 @@
  |    -> E, Ex, Ey (2-theta)   |      asset.slpy                 +---------v----------+
  |  top-hat highlights (H)     |      [HEADER|META|NORM|         |  slpy-core         |
  |  temporal EMA               |       FRAM..|FIDX|TRLR]         |  viewport/letterbox|
- |  delta + zstd-19 encode     | ---> mmap + O(1) index seek --> |  separable resample|
+ |  delta + zstd-15 encode     | ---> mmap + O(1) index seek --> |  separable resample|
  +-----------------------------+      0.2 ms/frame decode        |  layer compositor  |
               ^                                                  |  hysteresis        |
               |                                                  |  glyph+RGB Cells   |
@@ -190,7 +190,7 @@ CHUNKS (tag FourCC u32 | flags u8 (bit0=required) | pad u24 | size u64 | payload
 
 **Planes (6):** Y as L\* 480×270 u8; E = smoothed edge magnitude, unthinned (runtime max-pools so thin edges survive any grid); Ex/Ey doubled-angle u8 bias-128; H flags (bit0 highlight, bit1 deep shadow); C chroma RGB565 at 240×135 (half-res invisible at cell granularity).
 
-**Compression:** temporal byte-delta (`cur−prev mod 256`) then per-frame zstd, level **-19** in the factory (decode speed unaffected). Keyframe every 60 frames; seek = binary-search FIDX to nearest keyframe + ≤59 delta rolls ≈ 12 ms worst case. Playback decodes exactly one block + one memadd into a double-buffered plane set — zero alloc/frame.
+**Compression:** temporal byte-delta (`cur−prev mod 256`) then per-frame zstd, level **-15** in the factory (decode speed is unaffected by level; lowered from -19 on 2026-08-31 — +0.91% size for a 2.84x faster build, and zstd is lossless so no quality metric moves). The format crate's `WriterOptions::default()` stays at 19: level is encoder policy, not a container property. Keyframe every 60 frames; seek = binary-search FIDX to nearest keyframe + ≤59 delta rolls ≈ 12 ms worst case. Playback decodes exactly one block + one memadd into a double-buffered plane set — zero alloc/frame.
 
 **Versioning & forward compat (graft from C, explicit):** the plane-ID registry with skip-unknown semantics plus the required-chunk flag *is* the compat story. A future motion plane or audio-envelope plane is a new plane ID old players skip — not a version bump. Unknown non-required chunks are skipped by size; unknown required chunks are a hard error; major-version mismatch is the only other breaking path.
 
@@ -209,7 +209,7 @@ CHUNKS (tag FourCC u32 | flags u8 (bit0=required) | pad u24 | size u64 | payload
 3. **Extract** — sRGB→linear→L\* luma; Scharr gradients (better rotational symmetry than Sobel) → **two passes of orientation-aware bilateral smoothing on the doubled-angle field** (pragmatist cut: full Kang ETF only if the flicker metric later demands it) → hysteresis-thresholded edge magnitude, **unthinned** (thinning breaks under resampling) → Ex/Ey; top-hat highlight + percentile deep-shadow flags (offline detection is far stabler than runtime thresholding).
 4. **Temporal EMA** on all planes (sensor-noise suppression, the first line of anti-flicker defense).
 5. **Levels** — per-shot p2/p98, temporally smoothed → NORM (per-frame auto-levels pump; global levels waste range; per-shot is the 80/20 winner).
-6. **Encode** — u8 quantize, temporal delta, zstd -19, FRAM/FIDX/TRLR.
+6. **Encode** — u8 quantize, temporal delta, zstd -15, FRAM/FIDX/TRLR.
 
 **CLI shape:**
 

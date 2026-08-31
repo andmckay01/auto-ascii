@@ -19,8 +19,16 @@ fps = 30
 # >= 2 — the C chroma plane is stored at half res (INTERFACES §4 terms).
 base_w = 480
 base_h = 270
-# zstd level for FRAM planes (PLAN §4: 19 — decode speed unaffected).
-zstd_level = 19
+# zstd compression level for frame payloads. Lowered 19 -> 15 (2026-08-31)
+# after an audited sweep on 600 real frames: L15 costs +0.91% asset bytes and
+# builds 2.84x faster end-to-end. L12 is a dominated choice — it gives up
+# +8% size for only 1.56x, while L12->L9 buys another 1.49x for just +1.1%
+# more; anyone willing to pay L12's size should be at L9 instead.
+# zstd is LOSSLESS, so decoded planes are byte-identical at any level: SSIM,
+# edge F1, flicker and damage cannot move. Only size and build time do.
+# NOTE: slpy-format's `WriterOptions::default()` deliberately stays at 19 —
+# the format crate's default is not the factory's policy.
+zstd_level = 15
 # Keyframe cadence for the temporal-delta filter (PLAN §4: 60).
 # Range 1..=255 — the SLPY header stores this as u8.
 keyframe_ivl = 60
@@ -130,6 +138,15 @@ quad_e_off = 1
 # all three clips (the near-white veto rides the PLAIN index since Tune),
 # mean ssim flat (0.6167 -> 0.6164). 0..=255; < 1 full step by contract.
 idx_hyst_q8 = 160
+# Shadow lift: bends the per-shot NORM levels LUT toward the shadows so a dark
+# subject clears the first ramp steps instead of sharing a glyph with black.
+# 0 = off (plain linear window), 255 = a full sqrt curve; endpoints are fixed
+# points, so it opens shadows without raising black or clipping white.
+#
+# Off by default: the corpus was tuned and signed off without it, and every
+# committed golden assumes the plain window. It is a per-clip choice — turn it
+# live in the player with `d` to select and `[`/`]` to adjust.
+shadow_lift = 0
 
 [eval]
 # Terminal grid the eval render runs on (PLAN §6 reference scale).

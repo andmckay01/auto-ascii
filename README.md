@@ -68,7 +68,7 @@ enforces the < 5 MB stripped-size gate):
 | macOS | build **on a Mac**: `make build` or the native cargo line above (see the Makefile's macOS section) | no osxcross by policy; Apple Silicon and Intel both build from source |
 
 A from-source build on a clean checkout (fresh `target/`, warm crates.io
-cache) measures ~29 s on a 4-core box — `time cargo build --release -p
+cache) measures ~29 s on this box (2 physical cores + SMT) — `time cargo build --release -p
 auto-ascii --features bin`.
 
 To embed the library, depend on it by git (turn the `bin` feature off if you
@@ -173,8 +173,7 @@ committed).
 | `scripts/eval.sh` | the one-command gate: tests, clippy, resize fuzz, perf gates, corpus eval |
 | `PLAN.md` / `INTERFACES.md` | the build plan and the API registry |
 
-`scripts/eval.sh` is what "green" means here; it runs in under five minutes on a
-four-core box (corpus sections skip automatically when the local clips are
+`scripts/eval.sh` is what "green" means here; it runs in a few minutes on this box (2 physical cores + SMT) (corpus sections skip automatically when the local clips are
 absent — committed tests never depend on them).
 
 ## License

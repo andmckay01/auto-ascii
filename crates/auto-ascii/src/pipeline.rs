@@ -103,6 +103,15 @@ pub struct Drained {
     /// When nonzero, hysteresis state has ALREADY been reset (same temporal-
     /// discontinuity rule as `jump_digit`).
     pub seek_steps: i32,
+    /// `Tab` presses this drain — each advances the live-dial selection by one
+    /// (wrapping). Dials retune the renderer during playback; see
+    /// [`Dial`](crate::Dial).
+    pub dial_cycle: u32,
+    /// Net `[`/`]` steps this drain: each `]` is +1, each `[` −1. The caller
+    /// scales this by the selected dial's step size. Purely a renderer
+    /// change — no asset is touched and no temporal state is reset, so the
+    /// picture re-tunes without a visible discontinuity.
+    pub dial_delta: i32,
 }
 
 /// The frame pipeline: decode → resample → NORM levels → compose into a
@@ -182,6 +191,9 @@ pub struct Player<'a> {
     cb_dst: Vec<u8>,
     /// Per-shot NORM levels folded into one LUT (PLAN §3.5: n =
     /// clamp((L − shot_lo) · shot_inv_range)); rebuilt only on shot change.
+    /// Transient live-dial readout for the bottom row, `(label, value, max)`.
+    /// Shares the row with the progress overlay and takes precedence while up.
+    dial_overlay: Option<(&'static str, u8, u8)>,
     levels_lut: [u8; 256],
     /// `first_frame` of the shot `levels_lut` was built for (`None` = the
     /// identity LUT for assets without NORM).
@@ -295,6 +307,7 @@ impl<'a> Player<'a> {
             cr_dst: Vec::new(),
             cg_dst: Vec::new(),
             cb_dst: Vec::new(),
+            dial_overlay: None,
             levels_lut,
             lut_shot: None,
             loaded: None,
@@ -310,7 +323,19 @@ impl<'a> Player<'a> {
     /// Override the §3.5 compositor tunables (the eval driver wires
     /// params.toml `[compose]` here; interactive playback keeps the
     /// defaults, which are pinned to the committed params.toml by test).
+    /// The compositor tunables currently in force — the starting position for
+    /// the interactive dials.
+    pub fn compose_params(&self) -> ComposeParams {
+        self.compose_params
+    }
+
     pub fn set_compose_params(&mut self, params: ComposeParams) {
+        // The levels LUT is cached per shot, but `shadow_lift` is baked into
+        // it — a dial move must invalidate that cache or the new value would
+        // not appear until the next scene cut.
+        if params.shadow_lift != self.compose_params.shadow_lift {
+            self.lut_shot = None;
+        }
         self.compose_params = params;
     }
 
@@ -458,15 +483,32 @@ impl<'a> Player<'a> {
         let mut resize: Option<(u16, u16)> = None;
         let mut jump_digit = None;
         let mut seek_steps: i32 = 0;
+        let mut dial_cycle: u32 = 0;
+        let mut dial_delta: i32 = 0;
         while let Some(ev) = backend.events().pop() {
             match ev {
-                Event::Quit => return Drained { quit: true, jump_digit: None, seek_steps: 0 },
+                Event::Quit => {
+                    return Drained {
+                        quit: true,
+                        jump_digit: None,
+                        seek_steps: 0,
+                        dial_cycle: 0,
+                        dial_delta: 0,
+                    };
+                }
                 Event::Resize(c, r) => resize = Some((c, r)),
                 Event::Key(Key::Char(c @ '0'..='9')) => jump_digit = Some(c as u8 - b'0'),
                 // M5 scrub UX: ±5 s per arrow press, coalesced per drain
                 // (holding the key nets one bigger jump, not N renders).
                 Event::Key(Key::Left) => seek_steps = seek_steps.saturating_sub(1),
                 Event::Key(Key::Right) => seek_steps = seek_steps.saturating_add(1),
+                // Live dials: `d` selects which one, `[`/`]` turn it. Coalesced
+                // per drain like the arrows, so holding a key nets one bigger
+                // move rather than N renders. Digits, arrows and q/Esc are
+                // already spoken for; these three are not.
+                Event::Key(Key::Char('d')) => dial_cycle = dial_cycle.saturating_add(1),
+                Event::Key(Key::Char('[')) => dial_delta = dial_delta.saturating_sub(1),
+                Event::Key(Key::Char(']')) => dial_delta = dial_delta.saturating_add(1),
                 Event::Key(_) => {}
             }
         }
@@ -476,7 +518,10 @@ impl<'a> Player<'a> {
         if jump_digit.is_some() || seek_steps != 0 {
             self.state.reset(); // seek discontinuity: no pre-seek ghosting
         }
-        Drained { quit: false, jump_digit, seek_steps }
+        // NOTE: a dial move deliberately does NOT reset hysteresis. It is a
+        // renderer retune, not a temporal discontinuity — the picture should
+        // slide to the new look, not flash through a full repaint.
+        Drained { quit: false, jump_digit, seek_steps, dial_cycle, dial_delta }
     }
 
     /// Sequential-roll or FIDX-seek one plane into its standing buffer.
@@ -535,7 +580,11 @@ impl<'a> Player<'a> {
     fn update_levels(&mut self, frame_idx: u32) {
         let shot = self.reader.shot_for_frame(frame_idx).map(|s| s.first_frame);
         if shot != self.lut_shot {
-            build_levels_lut(&mut self.levels_lut, self.reader.norm_levels(frame_idx, plane_id::Y));
+            build_levels_lut_lifted(
+                &mut self.levels_lut,
+                self.reader.norm_levels(frame_idx, plane_id::Y),
+                self.compose_params.shadow_lift,
+            );
             self.lut_shot = shot;
             self.state.reset(); // scene-cut / shot-change reset (§3.5)
         }
@@ -548,6 +597,16 @@ impl<'a> Player<'a> {
     /// rebuilt from a full repaint and can never keep describing overlay
     /// cells that are no longer drawn. Presentation-only: temporal state,
     /// the layer mask and the composed viewport are untouched.
+    /// Show (or clear) the live-dial readout on the bottom row. Same
+    /// hide-repaint contract as [`set_progress_overlay`](Self::set_progress_overlay):
+    /// clearing it schedules the invalidate that repaints the row underneath.
+    pub fn set_dial_overlay(&mut self, dial: Option<(&'static str, u8, u8)>) {
+        if self.dial_overlay.is_some() && dial.is_none() {
+            self.overlay_hide_pending = true;
+        }
+        self.dial_overlay = dial;
+    }
+
     pub fn set_progress_overlay(&mut self, visible: bool) {
         if self.overlay_visible && !visible {
             self.overlay_hide_pending = true;
@@ -668,6 +727,9 @@ impl<'a> Player<'a> {
             // presentation, not composition (eval never enables it).
             draw_progress_overlay(&mut self.grid, frame_idx, self.frame_count, self.fps);
         }
+        if let Some((label, value, max)) = self.dial_overlay {
+            draw_dial_overlay(&mut self.grid, label, value, max);
+        }
         Ok(())
     }
 
@@ -699,6 +761,29 @@ impl<'a> Player<'a> {
 /// degenerate span (p98 ≤ p2 — flat shot, or the (0,0) rows of unused plane
 /// slots / NORM-less assets) → identity, keeping M0 assets byte-identical.
 pub fn build_levels_lut(lut: &mut [u8; 256], levels: Option<PlaneLevels>) {
+    build_levels_lut_lifted(lut, levels, 0);
+}
+
+/// [`build_levels_lut`] with a shadow lift applied on top of the linear window
+/// ([`slpy_core::ComposeParams::shadow_lift`]). `shadow_lift == 0` reproduces
+/// `build_levels_lut` byte for byte.
+///
+/// The lift blends the normalized value `n` toward `sqrt(n · 255)` — the
+/// classic shadow-opening curve — weighted by `lift/255`:
+///
+/// ```text
+/// out = n + (isqrt(n · 255) − n) · lift / 255
+/// ```
+///
+/// **Integer by construction, deliberately.** A `powf` gamma is the textbook
+/// form, but float results are not guaranteed bit-identical across platforms
+/// and the render goldens here are byte-compared. Both terms are monotonic
+/// non-decreasing in `n` and the blend weights are fixed, so the curve is
+/// monotonic — the ramp can never invert — and identical on every target.
+/// `0` and `255` are fixed points, so this opens the shadows without raising
+/// black or clipping white. At full strength a mid-shadow 64 lands at 127: a
+/// two-to-three step move on an 8–16 step ramp, which is the entire point.
+pub fn build_levels_lut_lifted(lut: &mut [u8; 256], levels: Option<PlaneLevels>, shadow_lift: u8) {
     match levels {
         Some(PlaneLevels { p2, p98 }) if p98 > p2 => {
             let lo = u32::from(p2);
@@ -719,6 +804,23 @@ pub fn build_levels_lut(lut: &mut [u8; 256], levels: Option<PlaneLevels>) {
                 *out = v as u8;
             }
         }
+    }
+    apply_shadow_lift(lut, shadow_lift);
+}
+
+/// Bend an already-built levels LUT toward the shadows, in place. `lift == 0`
+/// returns immediately, so the un-lifted path stays byte-identical.
+fn apply_shadow_lift(lut: &mut [u8; 256], lift: u8) {
+    if lift == 0 {
+        return;
+    }
+    let lift = u32::from(lift);
+    for out in lut.iter_mut() {
+        let n = u32::from(*out);
+        // isqrt(n · 255) — exact integer square root, no float anywhere.
+        // curved >= n for every n in 0..=255, so this only ever lifts.
+        let curved = (n * 255).isqrt();
+        *out = (n + (curved - n) * lift / 255) as u8;
     }
 }
 
@@ -825,9 +927,84 @@ pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32, frame_count: u32
     }
 }
 
+/// The transient 1-line live-dial readout: bottom terminal row,
+/// `_<label>_[####----]_NNN/MMM_` in pure ASCII, so it reads on every palette
+/// and color tier exactly like the progress overlay. Pure function of
+/// `(label, value, max, cols)` — byte-deterministic, so an unchanged row costs
+/// zero damage in diff mode.
+pub fn draw_dial_overlay(grid: &mut Grid<Cell>, label: &str, value: u8, max: u8) {
+    let (cols, rows) = (grid.cols(), grid.rows());
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    let row = rows - 1;
+    // Warmer than the progress overlay's blue so the two are never confused
+    // at a glance while both are being driven from the keyboard.
+    let fg = Rgb::gray(245);
+    let bg = Rgb::new(46, 32, 16);
+
+    let left = format!(" {label} ");
+    let right = format!(" {value:>3}/{max:<3} ");
+    let mut line = String::with_capacity(cols as usize);
+    line.push_str(&left);
+    let fixed = left.chars().count() + right.chars().count() + 2; // "[" + "]"
+    if (cols as usize) > fixed {
+        let span = cols as usize - fixed;
+        // Fill proportional to value/max; max == 0 would be a degenerate dial.
+        let filled = if max > 0 {
+            (usize::from(value) * span) / usize::from(max)
+        } else {
+            0
+        };
+        line.push('[');
+        for i in 0..span {
+            line.push(if i < filled { '#' } else { '-' });
+        }
+        line.push(']');
+    }
+    line.push_str(&right);
+
+    let mut chars = line.chars();
+    for col in 0..cols {
+        let ch = chars.next().unwrap_or(' ');
+        grid.set(col, row, Cell::new(ch, fg, bg));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shadow_lift_opens_shadows_monotonically() {
+        // Off is byte-identical to the un-lifted builder.
+        let (mut plain, mut lifted) = ([0u8; 256], [0u8; 256]);
+        build_levels_lut(&mut plain, None);
+        build_levels_lut_lifted(&mut lifted, None, 0);
+        assert_eq!(plain, lifted, "shadow_lift 0 must not perturb the LUT");
+
+        for lift in [1u8, 64, 128, 255] {
+            let mut lut = [0u8; 256];
+            build_levels_lut_lifted(&mut lut, None, lift);
+            // Endpoints are fixed points: black stays black, white stays white.
+            assert_eq!(lut[0], 0, "lift {lift} raised black");
+            assert_eq!(lut[255], 255, "lift {lift} clipped white");
+            // Monotonic — a non-monotonic tone curve would invert the ramp.
+            assert!(lut.windows(2).all(|w| w[0] <= w[1]), "lift {lift} is not monotonic");
+            // It only ever lifts, never darkens.
+            assert!(
+                lut.iter().enumerate().all(|(i, &v)| v as usize >= i),
+                "lift {lift} darkened a value"
+            );
+        }
+
+        // Full strength is the sqrt curve: a mid-shadow 64 must clear the
+        // first ramp steps rather than sitting at the same glyph as black.
+        let mut full = [0u8; 256];
+        build_levels_lut_lifted(&mut full, None, 255);
+        assert_eq!(full[64], 127, "full lift should take 64 to the sqrt curve");
+        assert!(full[32] > 2 * 32, "full lift should more than double deep shadow");
+    }
 
     #[test]
     fn levels_lut_identity_without_norm() {

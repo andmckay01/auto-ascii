@@ -5,7 +5,9 @@
 # any criterion median (target/criterion/<id>/new/estimates.json,
 # median.point_estimate) exceeds its max_median_ns.
 #
-# Calibration (reference box: 4-core Linux, Rust 1.97.1, 2026-07-25, M3
+# Calibration (reference box: 2 physical cores + SMT-2 / 4 logical,
+# EPYC-Milan — long documented as "4-core", corrected 2026-08-31; the
+# thresholds are unaffected, being empirical. Linux, Rust 1.97.1, 2026-07-25, M3
 # renderer): max_median_ns = median-of-medians over 3 consecutive runs ×1.15
 # on an idle box (run spreads were ±3–5%). ×1.15 sits below 1.20 so the
 # M2 acceptance drill — a deliberate 20% regression tripping the gate —

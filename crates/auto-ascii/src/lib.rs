@@ -96,7 +96,7 @@ pub use error::Error;
 pub use session::RenderSession;
 
 #[cfg(feature = "terminal")]
-pub use player::{MIN_FPS_CAP, Player, PlayerBuilder, RepaintMode, SCRUB_STEP_SECS};
+pub use player::{Dial, MIN_FPS_CAP, Player, PlayerBuilder, RepaintMode, SCRUB_STEP_SECS};
 
 // The minimal embedding type set (M4 audit: what a simple project actually
 // touches). Grid/Cell/Rgb are what RenderSession::render returns; ColorTier

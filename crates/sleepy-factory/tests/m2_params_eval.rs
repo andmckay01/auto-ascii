@@ -149,7 +149,14 @@ const FIXTURE_MP4_SHA: &str = "a0a8d8fa401e499fb2ea04d6b00ddbc1d4e79c8dd2a728e03
 ///   every default build's bytes changed by design (PLAN §5 stages 3–4;
 ///   INTERFACES note 18). Verified: two consecutive builds byte-identical
 ///   before pinning; corpus plane dumps eyeballed (edges trace contours).
-const FIXTURE_SLPY_SHA: &str = "439e6ac8933f4fc711480579d3ba416c841ed35770d6cf0b4f0cf26d18e2aab5";
+///   RE-PINNED 2026-08-31: `[build].zstd_level` 19 -> 15 (audited sweep on
+///   600 real frames — +0.91% asset bytes for a 2.84x faster build). zstd is
+///   LOSSLESS, so this changes only the container's compressed bytes: the
+///   decoded planes, and therefore every quality metric, are bit-identical
+///   at any level. Verified before pinning: three consecutive builds all
+///   produced e5bc340e…, and the L15 and L19 assets decode to identical
+///   plane bytes.
+const FIXTURE_SLPY_SHA: &str = "e5bc340e807e5f7e2237c15ebb96aa27828b4c47ef4a12047e1957e9b5e488bf";
 
 fn synth_fixture(dir: &TempDir) -> PathBuf {
     let input = dir.path("fixture.mp4");

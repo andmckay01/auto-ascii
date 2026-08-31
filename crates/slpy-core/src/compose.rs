@@ -155,6 +155,24 @@ pub struct ComposeParams {
     /// promoted to a tunable at M3 Tune — wider = stickier cells (less
     /// flicker), narrower = more responsive.
     pub idx_hyst_q8: u8,
+    /// Shadow lift: how far to bend the tone curve toward the shadows when the
+    /// NORM levels LUT is built. `0` = off (the plain linear per-shot window);
+    /// `255` = a full square-root curve. See
+    /// [`build_levels_lut`](../../auto_ascii/pipeline/fn.build_levels_lut.html).
+    ///
+    /// **Why this exists.** The per-shot NORM window ([`PlaneLevels`] p2→0,
+    /// p98→255) is *linear*, so it cannot move a dark subject relative to a
+    /// bright one — normalizing a shot of fire leaves a face at the same
+    /// fraction of the range wherever the endpoints land. That matters more
+    /// here than in a continuous-tone renderer: a glyph ramp has only 8–16
+    /// steps, so a subject below the first step is not merely dark, it is *the
+    /// same glyph as black* and disappears. Lifting buys it a step.
+    ///
+    /// Applied to the 256-entry LUT, so it costs nothing per pixel and rides
+    /// on top of the per-shot normalization instead of replacing it. Endpoints
+    /// stay pinned (0→0, 255→255): this redistributes the middle, it does not
+    /// wash the picture out.
+    pub shadow_lift: u8,
 }
 
 impl Default for ComposeParams {
@@ -186,6 +204,10 @@ impl Default for ComposeParams {
             // and mean corpus ssim flat. The §3.5 spec nominal 0.35·step
             // remains `hysteresis::IDX_HYST_Q8` (= 90).
             idx_hyst_q8: 160,
+            // Off by default: the shipped corpus was tuned and signed off
+            // without it, and every committed golden assumes the plain linear
+            // window. It is a per-clip choice, not a global look change.
+            shadow_lift: 0,
         }
     }
 }
