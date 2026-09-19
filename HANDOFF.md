@@ -18,7 +18,8 @@ is "where things stand and how to pick them up."
 
 Tag `v0.1.0` marks the completed state. Working tree at save time: clean.
 
-**Off-box backup:** private GitHub repo `https://github.com/andmckay01/auto-ascii`
+**Off-box backup:** GitHub repo `https://github.com/andmckay01/auto-ascii`
+(**public** since 2026-09-19, so the crates.io `repository` links resolve)
 (`origin`; main + all tags). Renamed there 2026-08-28 from `sleepytime-memory`;
 GitHub redirects the old URL. Two neighbours are DIFFERENT projects — do not
 push to either: `andmckay01/sleepytime` ("Sleepytime for Mac") and
@@ -71,8 +72,11 @@ Embedding: `crates/auto-ascii/examples/simple-play.rs` (13 lines) and
   with `auto-ascii-factory build corpus/<clip> -o assets/<name>.ascii` (the eval
   harness determinism guard proves rebuild == original). `dist/` via release.sh.
 - **External:** `corpus/*.mp4` originals are gitignored (large). Sources live on
-  the owner's Mac (`~/Downloads`, see corpus/README.md); re-send via Taildrop
-  (`tailscale file cp` to hetzner, then `sudo tailscale file get <dir>`).
+  the owner's Mac (`~/Downloads`, see corpus/README.md); re-send via Taildrop —
+  `tailscale file cp <files> hetzner:` from the Mac, and that is the whole
+  procedure. A `taildrop-receive` systemd **user** unit on this box lands them
+  in `~/taildrop` automatically; the old `sudo tailscale file get` pull step is
+  gone. See `/home/mckay/CLAUDE.md`.
 
 ## Rename to `auto-ascii` — DONE 2026-09-19
 
@@ -111,7 +115,11 @@ not purely format identity: the fixture's own META label lengthened, shifting
 every FIDX offset by +7. Checked against a pre-rename worktree chunk by chunk —
 all six FRAM (compressed plane) payloads byte-identical.
 
-All six `assets/*.ascii` were rebuilt from `corpus/`.
+All six `assets/*.ascii` were rebuilt from `corpus/` and verified playable
+(`--sim 213x58:60`, truecolor, 471-690 fps headless). The superseded
+`assets/*.slpy` — 1.2 GB — were swept afterwards. `.gitignore` keeps BOTH
+patterns: renaming `*.slpy` to `*.ascii` un-ignored those stale binaries and
+briefly exposed them to `git add`.
 
 ## Open items (owner)
 
@@ -125,42 +133,35 @@ All six `assets/*.ascii` were rebuilt from `corpus/`.
    each terminal on the Mac — the probe reads the *local* terminal, so color,
    fonts and aspect are faithful. Judge **tearing locally only**; link latency
    confounds that one signal.
-3. **crates.io — publish the renamed crates, then yank the old ones.**
-   OWNER-GATED (irreversible, and the AI does not publish). What is live right
-   now is still the PRE-rename set: `slpy-core`, `slpy-format`, `slpy-term`
-   and `auto-ascii`, all 0.1.0, published 2026-09-19 with 0 downloads.
+3. ~~**crates.io**~~ — **DONE 2026-09-19.** The renamed crates are live and
+   verified consumable: a fresh project's `cargo add auto-ascii` resolved
+   0.2.0, pulled all three libraries from the registry, and built and ran
+   against the real public API.
 
-   **Decision (owner, 2026-09-19): keep the `auto-ascii` name, yank the rest.**
-   Nothing is deleted. Deleting `auto-ascii` would cost a 24-hour lockout in
-   which *nobody* — the owner included — can republish that name, and after
-   that window it is claimable by anyone; the only thing deletion would buy is
-   removing three unused pages. The mechanics behind that are verified against
-   the crates.io source in `RENAME-PLAN.md` §5 — including that the 72-hour
-   "window" is a shortcut, not a deadline, so nothing about this expires.
+   | crate | version | state |
+   |---|---|---|
+   | `auto-ascii` | **0.2.0** | live |
+   | `auto-ascii-core` | 0.1.0 | live |
+   | `auto-ascii-format` | 0.1.0 | live |
+   | `auto-ascii-term` | 0.1.0 | live |
+   | `auto-ascii` | 0.1.0 | yanked (pre-rename) |
+   | `slpy-core` / `slpy-format` / `slpy-term` | 0.1.0 | yanked (pre-rename) |
 
-   ```bash
-   # target/package/ must be empty first — stale tarballs caused a false
-   # failure last time. Wait for the index between each; a first publish of
-   # interdependent crates cannot be --dry-run validated.
-   cargo publish -p auto-ascii-core      # no internal deps
-   cargo publish -p auto-ascii-format    # no internal deps
-   cargo publish -p auto-ascii-term      # needs core
-   cargo publish -p auto-ascii           # 0.2.0 — needs all three
-   # only once the above are live:
-   cargo yank --version 0.1.0 auto-ascii   # it points at the old crates
-   cargo yank --version 0.1.0 slpy-term
-   cargo yank --version 0.1.0 slpy-core
-   cargo yank --version 0.1.0 slpy-format
-   ```
+   **Nothing was deleted, deliberately.** Deleting `auto-ascii` would have
+   locked the name against republishing for 24 hours — for the owner too —
+   and then opened it to anyone; the only gain would have been removing three
+   unused pages. The mechanics are verified in `RENAME-PLAN.md` §5 and
+   recorded in the `crates-io-deletion-mechanics` memory. The three `slpy-*`
+   names therefore stay on crates.io forever as yanked 0.1.0s. That is the
+   accepted cost.
 
-   `auto-ascii` goes out at **0.2.0**, not 0.1.0: its 0.1.0 is already spent
-   and crates.io never reuses a version number. The three libraries are first
-   publishes under names that have never existed, so they are 0.1.0 — the
-   workspace therefore carries two version numbers on purpose.
-   `auto-ascii-eval` and `auto-ascii-factory` stay unpublished.
+   Yanks were applied **after** every replacement was live, so there was never
+   a window with nothing installable. `auto-ascii-eval` and
+   `auto-ascii-factory` remain unpublished, as planned.
 
-   The README already states `auto-ascii = "0.2"`; that line only becomes true
-   at step 4 above, so publish before pointing anyone at it.
+   Publishing again later: bump the version, `cargo publish -p <crate>`. A
+   version number, once published, can never be reused — not even after a
+   delete.
 4. ~~**Flicker gate breach on `terminator-flaming-wreckage`**~~ — **RESOLVED
    2026-08-28: the metric is wrong, not the renderer.** The clip measures 2.856
    glyph switches/cell/s against the PLAN §6 gate of &le;2 (43 % over), but the

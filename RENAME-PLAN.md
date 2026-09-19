@@ -1,7 +1,11 @@
 # RENAME PLAN — everything to `auto-ascii`
 
-Written 2026-09-19 as a save point. **Not started.** The repo at `68e8c43` is
-clean, green and pushed; nothing in this document has been applied yet.
+Written 2026-09-19 as a save point. **EXECUTED 2026-09-19 in commit `da8ae2a`,
+pushed; crates.io published the same day.** This document is now the record of
+how it was done and what it cost, not a to-do. It deliberately keeps the old
+names throughout so the mappings stay readable — do not sweep it.
+
+Post-execution notes are marked inline; §5 and §7 carry the verified outcomes.
 
 Owner decisions (2026-09-19), all three confirmed:
 
@@ -163,19 +167,23 @@ window in which the name is first unpublishable by us and then claimable by
 anyone. Deleting early is therefore strictly worse than deleting late: run §5
 only once the rename is green and there is something ready to put back.
 
-**THE DECISION (owner, 2026-09-19): keep the name, yank the rest.** Nothing
-is deleted. `auto-ascii` is never surrendered, so the lockout and the squat
+**THE DECISION (owner, 2026-09-19): keep the name, yank the rest.**
+**DONE — see the outcome table in HANDOFF.md item 3.** Nothing was deleted. `auto-ascii` is never surrendered, so the lockout and the squat
 window above never open. The three `slpy-*` crates stay on crates.io as yanked
 0.1.0s — three unused pages with 0 downloads, which is the whole cost.
 
-Steps, after the rename is green:
+Steps, all completed in this order:
 
-1. `cargo publish -p auto-ascii-core`     (no internal deps)
-2. `cargo publish -p auto-ascii-format`   (no internal deps)
-3. `cargo publish -p auto-ascii-term`     (needs core)
-4. `cargo publish -p auto-ascii` at **0.2.0** (needs all three)
-5. `cargo yank --version 0.1.0 auto-ascii` — it points at the old `slpy-*`
-6. `cargo yank --version 0.1.0 slpy-term` / `slpy-core` / `slpy-format`
+1. `cargo publish -p auto-ascii-core`     (no internal deps) ✓
+2. `cargo publish -p auto-ascii-format`   (no internal deps) ✓
+3. `cargo publish -p auto-ascii-term`     (needs core) ✓
+4. `cargo publish -p auto-ascii` at **0.2.0** (needs all three) ✓
+5. `cargo yank --version 0.1.0 auto-ascii` — it points at the old `slpy-*` ✓
+6. `cargo yank --version 0.1.0 slpy-term` / `slpy-core` / `slpy-format` ✓
+
+Between 4 and 5, a throwaway project ran `cargo add auto-ascii` and built
+against the registry copies — proof the replacements worked before anything
+was yanked.
 
 Yank last: yanking a dependency of a live version is harmless, but yanking
 before the replacement exists leaves a window with nothing installable.

@@ -78,8 +78,7 @@ To embed the library (turn the `bin` feature off if you only want
 auto-ascii = "0.2"
 ```
 
-The repo is private, so the git form needs access; the crates.io form does
-not. Note the **0.2**: `auto-ascii` 0.1.0 was published under the project's
+Note the **0.2**: `auto-ascii` 0.1.0 was published under the project's
 previous crate names and is yanked — 0.2.0 is the first release of the
 renamed engine, built on `auto-ascii-core` / `-format` / `-term` 0.1.0.
 
