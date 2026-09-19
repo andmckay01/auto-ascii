@@ -1,7 +1,13 @@
 [package]
 name = "auto-ascii"
-description = "Realtime ASCII-art video: play SLPY feature assets in a terminal, or render them into your own cell grid"
-version.workspace = true
+description = "Realtime ASCII-art video: play ASCI feature assets in a terminal, or render them into your own cell grid"
+# 0.2.0, not the workspace 0.1.0: `auto-ascii` 0.1.0 is already published
+# on crates.io — that version depends on the old pre-rename crate names and
+# stays there yanked, and crates.io never lets a version number be reused.
+# The three libraries below are first publishes under new names, so they
+# keep the workspace 0.1.0 — hence the dep reqs here say 0.1.
+# See RENAME-PLAN.md §6.
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -11,10 +17,10 @@ keywords = ["ascii", "terminal", "video", "tui", "ansi"]
 categories = ["multimedia::video", "command-line-utilities", "rendering"]
 readme = "README.md"
 
-# THE public library (M4 item A): the workspace slpy-* crates are
+# THE public library (M4 item A): the workspace ascii-* crates are
 # implementation details behind this facade. Three tiers of build:
 #
-#   default            — library + the `sleepy-player` binary (cargo install works)
+#   default            — library + the `auto-ascii-player` binary (cargo install works)
 #   --no-default-features --features terminal
 #                      — library only, WITH the blocking terminal Player
 #   --no-default-features
@@ -25,20 +31,20 @@ readme = "README.md"
 [features]
 default = ["bin"]
 # The blocking terminal player (Player/PlayerBuilder): real session entry,
-# caps probe, restore hooks — pulls slpy-term's crossterm/libc session layer.
-terminal = ["slpy-term/session"]
-# The `sleepy-player` CLI binary (thin argv shim over the facade + the
+# caps probe, restore hooks — pulls auto-ascii-term's crossterm/libc session layer.
+terminal = ["auto-ascii-term/session"]
+# The `auto-ascii-player` CLI binary (thin argv shim over the facade + the
 # headless --sim harness).
 bin = ["terminal", "dep:clap", "dep:anyhow"]
 
 [dependencies]
-slpy-core = { workspace = true }
-slpy-format = { workspace = true }
+auto-ascii-core = { workspace = true }
+auto-ascii-format = { workspace = true }
 # default-features = false: the session layer (crossterm/libc) enters only
 # via the `terminal` feature above. Direct path dep — workspace inheritance
 # cannot subtract default features. The version req keeps `cargo package`'s
 # manifest check green (M5 item F: path deps are stripped to versions there).
-slpy-term = { path = "../slpy-term", version = "0.1.0", default-features = false }
+auto-ascii-term = { path = "../auto-ascii-term", version = "0.1.0", default-features = false }
 # PLAN §8: assets are mmap'd read-only. Terminal-free (embedder builds keep it).
 memmap2 = { workspace = true }
 # bin-only (feature-gated; PLAN §8).
@@ -46,8 +52,8 @@ clap = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 
 [[bin]]
-name = "sleepy-player"
-path = "src/bin/sleepy-player.rs"
+name = "auto-ascii-player"
+path = "src/bin/auto-ascii-player.rs"
 required-features = ["bin"]
 
 # M4 item C. embedded-loop/headless-dump are RenderSession-only and build in
@@ -65,12 +71,12 @@ name = "headless-dump"
 
 # M2 item E: criterion perf gates over the real player pipeline (PLAN §6).
 # Thresholds live in perf/thresholds.toml; scripts/perf-gate.sh compares.
-# slpy-eval (fixture assets) + proptest: the §6 resize-fuzz invariants and
+# auto-ascii-eval (fixture assets) + proptest: the §6 resize-fuzz invariants and
 # the committed goldens exercise THIS crate's pipeline, not a test-harness
 # replica (M2 review fix; moved here with the pipeline at M4).
 [dev-dependencies]
 criterion = { workspace = true }
-slpy-eval = { workspace = true }
+auto-ascii-eval = { workspace = true }
 proptest = { workspace = true }
 
 [[bench]]

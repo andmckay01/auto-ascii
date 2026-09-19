@@ -13,27 +13,27 @@ workspace-internal registry behind it.
 
 ```
 crates/
-  slpy-core       lib   deps: (none beyond std)
-  slpy-term       lib   deps: slpy-core; feature "session" (default ON) =
+  auto-ascii-core       lib   deps: (none beyond std)
+  auto-ascii-term       lib   deps: auto-ascii-core; feature "session" (default ON) =
                         crossterm + libc — gates ansi/probe/restore + the
                         pty harness bin; Backend/Caps/EventQueue/quant/
                         diff-render/SimBackend are unconditional (M4 item B:
                         a sessionless build is terminal-free)
-  slpy-format     lib   deps: zstd, crc32fast, ciborium, serde(derive, META struct only)
-  slpy-eval       lib   deps: slpy-core, slpy-term, slpy-format, serde, serde_json
-                        dev: insta, proptest   (NEW at M2; slpy-format added
+  auto-ascii-format     lib   deps: zstd, crc32fast, ciborium, serde(derive, META struct only)
+  auto-ascii-eval       lib   deps: auto-ascii-core, auto-ascii-term, auto-ascii-format, serde, serde_json
+                        dev: insta, proptest   (NEW at M2; auto-ascii-format added
                         at item C for the synthetic fixture builders)
-  sleepy-factory  bin   deps: slpy-format, slpy-core, slpy-term, slpy-eval,
+  auto-ascii-factory  bin   deps: auto-ascii-format, auto-ascii-core, auto-ascii-term, auto-ascii-eval,
                         auto-ascii(default-features=false — pipeline only),
                         clap, indicatif, serde, serde_json,
                         toml, memmap2               (M2 item B additions)
   auto-ascii      lib+bin  THE public facade (M4 item A; absorbed the
-                        sleepy-player crate — pipeline, tests, benches, bin).
-                        deps: slpy-core, slpy-format, memmap2,
-                        slpy-term(default-features=false)
+                        auto-ascii-player crate — pipeline, tests, benches, bin).
+                        deps: auto-ascii-core, auto-ascii-format, memmap2,
+                        auto-ascii-term(default-features=false)
                         features: default = ["bin"];
-                          terminal = slpy-term/session (Player/PlayerBuilder);
-                          bin = terminal + clap + anyhow (the sleepy-player
+                          terminal = auto-ascii-term/session (Player/PlayerBuilder);
+                          bin = terminal + clap + anyhow (the auto-ascii-player
                           binary, required-features gated).
                         --no-default-features = pure embedder: RenderSession
                         only; dep tree has NO clap/anyhow/crossterm
@@ -46,7 +46,7 @@ crates/
   deferred: M0 is luma-only from ffmpeg rawvideo — add at M1/M3 when a stage
   needs them (per M0 scoping guidance).
 
-## slpy-core (PLAN §3.1–§3.4; pure, std-only)
+## auto-ascii-core (PLAN §3.1–§3.4; pure, std-only)
 
 ```rust
 // cell.rs (§3.1)
@@ -84,12 +84,12 @@ pub fn compute_viewport_for(term_cols: u16, term_rows: u16, cell_aspect: f64,
     // letterbox targets the ASSET's header aspect (PLAN §4 aspect_num/den);
     // zero num/den falls back to 16:9. pipeline::Player::reflow_grid feeds
     // the header values through this, so Player AND RenderSession letterbox
-    // non-16:9 assets correctly (tests: slpy-core viewport.rs,
+    // non-16:9 assets correctly (tests: auto-ascii-core viewport.rs,
     // auto-ascii/tests/render_session.rs letterbox suite)
 
 // resample.rs (§3.3) — IMPLEMENTED
 pub struct Tap1D { pub src_start: u16, pub ntaps: u16, pub w_off: u32 } // Q8, sum 256
-// ntaps widened u8→u16 by the slpy-core implementer: 480 src cols → 1 dst col
+// ntaps widened u8→u16 by the auto-ascii-core implementer: 480 src cols → 1 dst col
 // (legal §6 fuzz case) needs 480 taps in one run, overflowing u8. See note 1b.
 pub struct Resampler;   // private: taps_x/taps_y, shared weight pool, shared u16 hbuf
 impl Resampler {
@@ -105,20 +105,20 @@ pub const FINE_MIN_COLS: u16 = 70;
 pub fn base_ramp_for_cols(viewport_cols: u16) -> &'static [char];
 pub fn ramp_glyph(ramp: &[char], n: u8) -> char;   // ramp[(n·len)>>8]
 
-// compose.rs (§3.4 L0-only, M0) — ADDED by the slpy-core implementer (task e);
+// compose.rs (§3.4 L0-only, M0) — ADDED by the auto-ascii-core implementer (task e);
 // M0 compositor: base ramp glyph + Rgb::gray(n) fg + black bg in the viewport,
 // Cell::BLANK pads. Never allocates; `out` must already be term-grid-sized.
 // Panics on grid/viewport mismatch, short luma, or empty ramp.
 pub fn compose_luma(luma: &[u8], vp: &Viewport, ramp: &[char], out: &mut Grid<Cell>);
 
-// ---- M3 (slpy-core layers agent): §3.4 palettes + §3.5 three-layer
+// ---- M3 (auto-ascii-core layers agent): §3.4 palettes + §3.5 three-layer
 // compositor. compose_luma and ramp.rs are UNCHANGED (M0/M2 goldens). ----
 
 // palette.rs (§3.4) — all 8 palettes as data + PaletteSet selection.
-// slpy-core stays terminal-free: the player maps Caps → these enums
+// auto-ascii-core stays terminal-free: the player maps Caps → these enums
 // (Caps.glyphs/glyph_support → GlyphTier, Caps.color → ColorDepth).
 pub enum GlyphTier { Ascii, UnicodeBlocks, BrailleVerified }
-pub enum ColorDepth { True, C256, C16, Mono }   // mirrors slpy-term ColorTier
+pub enum ColorDepth { True, C256, C16, Mono }   // mirrors auto-ascii-term ColorTier
 pub enum DensityBand { Coarse, Fine }           // + from_cols (< 70 = Coarse)
 pub enum LayerRole { Base, Edge, Highlight, Detail }  // doc/selection axis
 pub enum GlyphClass { H, DiagDown, V, DiagUp }  // + from_bin(u8); 8 bins → 4
@@ -165,8 +165,8 @@ pub fn all_palette_glyphs() -> Vec<char>;     // compositor can emit at a
     // Consumers: the font-table generator + the repertoire veto below.
 
 // font_table.rs (§3.4 per-font ink-coverage tables) — NEW at M5 item B.
-// Hand-rolled reader of exactly the `sleepy-factory font-table` TOML
-// emitter subset (slpy-core stays zero-dep); structural problems are
+// Hand-rolled reader of exactly the `auto-ascii-factory font-table` TOML
+// emitter subset (auto-ascii-core stays zero-dep); structural problems are
 // Err(String), not panics (tables arrive via --font-table PATH).
 pub const BUILTIN_FONT_TABLES: &[&str];  // conservative, dejavu-sans-mono,
                                          // liberation-mono, ubuntu-mono,
@@ -287,7 +287,7 @@ pub fn compose_frame_masked(...same args, out: &mut Grid<Cell>,
     // cells byte-identical to compose_frame (unit-tested)
 ```
 
-## slpy-term (PLAN §3.1, §3.6) — M1: caps probe + color tiers + ?2026
+## auto-ascii-term (PLAN §3.1, §3.6) — M1: caps probe + color tiers + ?2026
 
 M4 (item B): feature `"session"` (default ON) gates everything that touches
 a real terminal — `ansi`/`probe`/`quirks`/`restore` modules, their re-exports
@@ -437,11 +437,11 @@ pub const RESTORE_SEQ: &[u8] = b"\x1b[0m\x1b[?25h\x1b[?7h\x1b[?1049l";
 pub fn install_restore_hooks();   // panic hook + SIGINT/SIGTERM + atexit
 ```
 
-## slpy-format (PLAN §4; container only, no I/O policy) — M1: full SLPY v1
+## auto-ascii-format (PLAN §4; container only, no I/O policy) — M1: full ASCI v1
 
 ```rust
 // header.rs — 64-B layout frozen (offset-freezing tests)
-pub const MAGIC: [u8;4] = *b"SLPY"; pub const HEADER_SIZE: u32 = 64;
+pub const MAGIC: [u8;4] = *b"ASCI"; pub const HEADER_SIZE: u32 = 64;
 pub const VERSION_MAJOR: u16 = 1;   pub const VERSION_MINOR: u16 = 1; // M1 bump (additive)
 pub const BASE_W: u16 = 480;        pub const BASE_H: u16 = 270;
 pub mod plane_id { Y=1, E=2, EX=3, EY=4, H=5, C=6;
@@ -452,7 +452,7 @@ pub fn plane_raw_size(base_w, base_h, id: u8) -> Option<usize>;
 pub mod codec   { RAW=0, LZ4=1, ZSTD=2 }
 pub mod filter  { INTRA=0, TEMPORAL_DELTA=1 }
 pub mod header_flags { INDEX_PRESENT=1, CRCS_PRESENT=2 }
-pub struct SlpyHeader { ... unchanged ... }  // + to/from_bytes
+pub struct AsciiHeader { ... unchanged ... }  // + to/from_bytes
 
 // chunk.rs — unchanged framing (16-B chunk header, 16-B FIDX entry)
 // FIDX entry flags mirror FRAM flags (bit0 = KEYFRAME) — the seek roster.
@@ -466,7 +466,7 @@ pub struct ShotRecord { pub first_frame: u32, pub flags: u8,
 // levels indexed by plane POSITION in header plane_ids (not by plane id);
 // wire: first_frame u32 | flags u8 | pad u8×3 | (p2,p98)×8
 
-// meta.rs / error.rs — unchanged (Meta CBOR via ciborium; SlpyError as at M0)
+// meta.rs / error.rs — unchanged (Meta CBOR via ciborium; AsciiError as at M0)
 
 // write.rs — M1 stream: HEADER | META | [NORM] | FRAM×n | FIDX | TRLR
 pub struct WriterOptions { ... same fields ... }
@@ -480,7 +480,7 @@ pub struct WriterOptions { ... same fields ... }
 // panicked the player's Resampler::build). Enforced at writer new() AND
 // reader open() (and friendliest-first in factory --res/params validation);
 // no asset violating the rule can be produced or opened.
-impl SlpyWriter<W> {
+impl AsciiWriter<W> {
   pub fn new(w, opts, meta: &Meta) -> Result<Self>;
   pub fn write_norm(&mut self, shots: &[ShotRecord]) -> Result<()>;
       // NEW: ≤1×, before the first frame; first_frame strictly increasing from 0
@@ -496,12 +496,12 @@ impl SlpyWriter<W> {
 // roster. It never touches FRAM payloads (cold open+seek stays <50 ms on
 // multi-GB assets); per-frame structure re-validated on every decode;
 // verify() is still the full walk + CRC pass. open() now also rejects
-// (clean SlpyError, adversarial-review fixes): base_w/h == 0, fps_num/den
+// (clean AsciiError, adversarial-review fixes): base_w/h == 0, fps_num/den
 // == 0, keyframe_ivl == 0, dup/zero plane ids, unknown filter, malformed
 // NORM, delta asset whose frame 0 is not a keyframe, non-increasing FIDX,
 // index_offset near u64::MAX (checked_add bounds check — the unchecked add
 // wrapped and open() panicked at the FIDX header slice).
-impl SlpyReader<'a> {
+impl AsciiReader<'a> {
   pub fn open(bytes: &'a [u8]) -> Result<Self>;
   pub fn header/frame_count/meta();                 // unchanged
   pub fn plane_dims(&self, plane_id: u8) -> Option<(u16,u16)>;
@@ -525,25 +525,25 @@ impl SlpyReader<'a> {
 }
 ```
 
-## slpy-eval (PLAN §6; M2 item A — metrics library, no I/O beyond serde)
+## auto-ascii-eval (PLAN §6; M2 item A — metrics library, no I/O beyond serde)
 
 Library-only measurement primitives + the versioned JSON report schema.
 The driver that builds assets, runs SimBackend and writes `runs/*.json` +
-HTML contact sheets is `sleepy-factory eval` (M2 item B) — not this crate.
+HTML contact sheets is `auto-ascii-factory eval` (M2 item B) — not this crate.
 
 ```rust
 // coverage.rs — glyph ink-coverage table (§6 "rasterize through the stored
 // glyph-coverage tables"). Built-in conservative table derived from DejaVu
 // Sans Mono via ffmpeg drawtext at 64×128 px/cell (§3.4's raster size),
 // coverage = mean gray / 255 (antialiased ink integral); derivation script
-// committed at crates/slpy-eval/tools/derive_coverage.py, constants are the
+// committed at crates/auto-ascii-eval/tools/derive_coverage.py, constants are the
 // artifact (no corpus/font dependency at test time). Covers all printable
 // ASCII (⊇ every shipped palette incl. the PLAN §3.4 mono ramp " .:coO8@").
 pub const CONSERVATIVE_COVERAGE: &[(char, f32)];  // 95 entries, sorted
 pub struct CoverageTable;   // sorted entries + max; per-font tables: M5 ↓
 impl CoverageTable {
   pub fn conservative() -> &'static CoverageTable;
-  pub fn from_font_table(&slpy_core::FontTable) -> CoverageTable;  // M5 item
+  pub fn from_font_table(&auto_ascii_core::FontTable) -> CoverageTable;  // M5 item
       // B: per-font scoring (eval --font-table). Missing glyphs enter at
       // coverage 0 (blank ink, the §3.4 missing-glyph policy — NOT the
       // unknown-glyph mid-gray fallback); max_coverage (the normalize_ink
@@ -578,13 +578,13 @@ pub const SSIM_WINDOW: usize = 11;  pub const SSIM_SIGMA: f64 = 1.5;
 pub fn ssim(&GrayImage, &GrayImage) -> f64;        // panics on dim mismatch
 pub fn downscale_ssim(rendered: &GrayImage, src_luma: &[u8],
                       src_w: u16, src_h: u16) -> f64;
-// = §6 downscale-SSIM: source resampled to rendered dims through slpy-core's
+// = §6 downscale-SSIM: source resampled to rendered dims through auto-ascii-core's
 // own Resampler (same box-average semantics as the player), then ssim.
 // Pass the viewport-cropped raster (GrayImage::crop) — pads are not scored.
 
 // edge.rs — NEW at M3: §6 edge F1 vs SOURCE Canny at grid resolution
 // (ground truth is never the factory's own planes — the driver streams the
-// raw fps-normalized gray source; imageproc canny; slpy-eval gained the
+// raw fps-normalized gray source; imageproc canny; auto-ascii-eval gained the
 // codec-less image+imageproc deps). Prediction = cells where the edge layer
 // WON, read from the LayerMask (note 19). NaN-free by construction.
 pub const CANNY_LOW: f32 = 60.0;   pub const CANNY_HIGH: f32 = 140.0;
@@ -596,12 +596,12 @@ pub const CANNY_LOW: f32 = 60.0;   pub const CANNY_HIGH: f32 = 140.0;
 pub const EDGE_MATCH_TOLERANCE: u16 = 1;   // Chebyshev tolerance ring (cells)
 pub struct EdgeMask;  // binary cell mask: new(w,h)/w/h/get/set/count
 pub fn canny_edge_truth(src: &[u8], src_w, src_h, grid_w, grid_h) -> EdgeMask;
-    // source luma → slpy-core Resampler box-average downscale to the
+    // source luma → auto-ascii-core Resampler box-average downscale to the
     // viewport grid (same semantics as the player) → imageproc canny.
     // "grid resolution" = viewport cells (anisotropic ~1:2) — the metric is
     // cell-level by definition
 pub fn edge_cells_from_layers(&Grid<u8>, &Viewport) -> EdgeMask; // crop pads,
-    // select slpy_core::compose::layer::EDGE
+    // select auto_ascii_core::compose::layer::EDGE
 pub struct EdgeScore { precision, recall, f1: f64,
                        truth_cells, predicted_cells: u32 }
 pub fn edge_f1(truth, pred: &EdgeMask, tol: u16) -> EdgeScore;
@@ -619,7 +619,7 @@ impl FlickerAccum { pub fn new(); pub fn push(&mut self, &Grid<Cell>);
   pub fn switches_per_cell_frame() -> Option<f64>;
   pub fn score(&self, fps: f64) -> Option<f64> }   // switches/cell/SECOND
 
-// stats.rs — damage/bytes aggregation from slpy-term FrameStats + stage timers.
+// stats.rs — damage/bytes aggregation from auto-ascii-term FrameStats + stage timers.
 pub struct DamageStats { frames, dropped_frames: u32, bytes_total: u64,
   avg_bytes_per_frame: f64, max_bytes_per_frame: u32,
   avg_damage_rate, max_damage_rate: f64 /*fraction of grid, 0..=1*/,
@@ -694,7 +694,7 @@ pub fn compare_reports(current, baseline: &EvalReport, &Tolerances)
 
 // fixtures.rs — NEW at M2 item C: deterministic synthetic fixtures + golden
 // render support (repo rule: committed goldens reproducible WITHOUT the
-// corpus). Pure integer plane generators → SlpyWriter in memory (no ffmpeg,
+// corpus). Pure integer plane generators → AsciiWriter in memory (no ffmpeg,
 // no files, no floats). Test support: invalid assets PANIC (not Result).
 pub const FIXTURE_BASE_W/H: u16 = 192/108;   // 16:9, C plane 96×54 RGB565
 pub const FIXTURE_FRAMES: u32 = 72;          // 30 fps, keyframes every 24
@@ -703,7 +703,7 @@ pub const HARD_CUT_FRAME: u32 = 36;          // mid-GOP shot boundary
 pub enum Fixture { GradientMotion, HardCut, CheckerDrift }  // + ALL, name()
 pub fn luma_plane/chroma_plane(Fixture, frame: u32) -> Vec<u8>;  // pure
 pub fn shot_records(Fixture) -> Vec<ShotRecord>;  // HardCut: 2 shots, CUT
-pub fn build_fixture(Fixture) -> Vec<u8>;    // full SLPY v1 (Y+C, delta,
+pub fn build_fixture(Fixture) -> Vec<u8>;    // full ASCI v1 (Y+C, delta,
                                              // zstd-19, CRCs, NORM), byte-
                                              // deterministic (unit-tested)
 pub enum GoldenPalette { Ascii, Unicode, MonoGlyphOnly }
@@ -744,22 +744,22 @@ pub fn snapshot(title, term: (u16,u16), GoldenPalette, Option<Viewport>,
 ## auto-ascii — THE public facade (M4 item A; source of truth for the API)
 
 The `auto-ascii` crate is the one crate an outside project depends on; every
-`slpy-*` crate is an implementation detail behind it. Public surface —
+`ascii-*` crate is an implementation detail behind it. Public surface —
 audited item-by-item against "does a simple embedding project need this?":
 
 ```rust
 // lib.rs — always available (also under --no-default-features)
 pub enum Error;                       // one coherent error (thiserror-style
-    // layering, hand-rolled): Io{path,source} | Format{path,source:SlpyError}
-    // | Asset(&'static str) | Decode{frame,plane,source:SlpyError}
+    // layering, hand-rolled): Io{path,source} | Format{path,source:AsciiError}
+    // | Asset(&'static str) | Decode{frame,plane,source:AsciiError}
     // | Config(String) | Terminal(io::Error); #[non_exhaustive];
     // M5 fix 1: Display states THIS layer only; the cause is exposed via
     // source() alone, so anyhow-style chain printers show it exactly once
 pub enum PaletteChoice { Auto, Ascii, Unicode, Braille }  // §3.4 charset axis
     // Auto = probed caps (Player) / Unicode blocks (RenderSession);
     // braille NEVER chosen automatically
-pub use slpy_core::{Cell, Grid, Rgb};  // what render() hands back — nothing
-    // else from slpy-core is re-exported (resampler, palettes, viewport,
+pub use auto_ascii_core::{Cell, Grid, Rgb};  // what render() hands back — nothing
+    // else from auto-ascii-core is re-exported (resampler, palettes, viewport,
     // hysteresis: engine internals a simple project never touches)
 
 // session.rs — the terminal-free embedder entry (always available)
@@ -812,7 +812,7 @@ impl PlayerBuilder {        // the spec'd builder (§7 M4) + escape hatches
   pub fn no_query(self, bool) -> Self;            // probe escape hatches
   pub fn no_cache(self, bool) -> Self;            //   (PLAN §3.1)
   pub fn no_quirks(self, bool) -> Self;           // M5 item C: skip the
-      // identity-keyed quirk table (slpy-term quirks.rs) post-probe
+      // identity-keyed quirk table (auto-ascii-term quirks.rs) post-probe
   pub fn font_table(self, impl Into<String>) -> Self;  // M5 item B (§3.4):
       // builtin NAME | PATH; parsed+validated at build(); run() applies the
       // repertoire veto AFTER resolve_for_caps (user-asserted font truth
@@ -828,26 +828,26 @@ impl Player {
       // AnsiBackend session (restore hooks armed first) → the §3.6
       // wall-clock loop (latest-frame-wins, digit jumps, resize reflow) →
       // shutdown/restore. Consumes self; the M0–M3 machinery verbatim
-      // (moved from the old sleepy-player main.rs — no logic fork with the
+      // (moved from the old auto-ascii-player main.rs — no logic fork with the
       // bin, which is now a pure argv shim)
 }
-pub use slpy_term::ColorTier;   // the tier(..) argument type — the ONLY
-    // slpy-term re-export; Caps deliberately NOT re-exported (probing is
+pub use auto_ascii_term::ColorTier;   // the tier(..) argument type — the ONLY
+    // auto-ascii-term re-export; Caps deliberately NOT re-exported (probing is
     // run()'s internal business; audit: a simple project never needs it)
 ```
 
 Deliberately `#[doc(hidden)]` (workspace harness contract, semver-exempt):
 `auto_ascii::pipeline` (below), `PaletteChoice::resolve_for_caps(&Caps)`
-and `auto_ascii::load_font_table(&str) -> Result<slpy_core::FontTable,
+and `auto_ascii::load_font_table(&str) -> Result<auto_ascii_core::FontTable,
 Error>` (M5: the bin's `--sim` path applies the same repertoire veto as
 run(); embedders use the wrapped forms above) — CLI/--sim plumbing.
 
-## auto_ascii::pipeline — the hidden engine room (ex sleepy-player lib)
+## auto_ascii::pipeline — the hidden engine room (ex auto-ascii-player lib)
 
-Extracted to a lib at M2 so `sleepy-factory eval` drives the EXACT player
+Extracted to a lib at M2 so `auto-ascii-factory eval` drives the EXACT player
 frame pipeline headlessly (metrics must measure the real renderer, not a
-reimplementation — note 14); M4 moved it verbatim from `sleepy_player::` to
-`auto_ascii::` and hid it from the public docs. Consumers: the sleepy-player
+reimplementation — note 14); M4 moved it verbatim from `auto_ascii_player::` to
+`auto_ascii::` and hid it from the public docs. Consumers: the auto-ascii-player
 bin (--sim), factory eval, resize fuzz, perf benches, parity goldens.
 
 M4 signature changes: all `anyhow::Result` became `Result<_, auto_ascii::Error>`
@@ -882,7 +882,7 @@ pub fn glyph_tier_from_caps(&Caps) -> GlyphTier;  // AsciiOnly/Cp437→Ascii,
 pub fn color_depth(ColorTier) -> ColorDepth;      // 1:1 variant map
 pub struct Player<'a>;   // decode → resample → NORM LUT → compose → present
 impl<'a> Player<'a> {
-  pub fn new(reader: SlpyReader<'a>, cell_aspect: f64, repaint_full: bool,
+  pub fn new(reader: AsciiReader<'a>, cell_aspect: f64, repaint_full: bool,
              color: ColorDepth, glyph_tier: GlyphTier)
       -> Result<Player<'a>, Error>;   // M4: facade Error
       // SIGNATURE CHANGED at M3 (was want_color: bool): the player owns
@@ -948,7 +948,7 @@ facade surface + this hidden module.)
 
 ## Binaries
 
-- `sleepy-factory` (PLAN §5), CLI as of M3 (+ M5 item B):
+- `auto-ascii-factory` (PLAN §5), CLI as of M3 (+ M5 item B):
   `build <in> -o <out> [--ss T] [--t T] [--fps N] [--res WxH] [--params F]`,
   `inspect <asset> [--dump-planes DIR] [--frame N]...` (M3: per-plane value
   stats over sampled frames + optional PGM/PPM plane dumps for eyeballing),
@@ -995,12 +995,12 @@ facade surface + this hidden module.)
   `[compose] edge_t_on/edge_t_off/coh_min_q8/coh_dir_q8/hi_cut_q8/
   edge_white_cut_q8/halfblock_min_delta/edge_strong/quad_e_on/quad_e_off`
   (M3 integrator + M4 review quadrant noise floor, note
-  20: RENDERER knobs — mapped onto `slpy_core::ComposeParams` and handed to
+  20: RENDERER knobs — mapped onto `auto_ascii_core::ComposeParams` and handed to
   the Player by the eval driver; deliberately EXCLUDED from
   `build_fingerprint`, so compose sweeps never rebuild assets; defaults
   pinned to `ComposeParams::default()` by unit test),
   `[eval] grid_cols/grid_rows/max_frames/ssim_every/contact_frames` +
-  `[eval.tolerances]` (slpy-eval `Tolerances` subset). `build.keyframe_ivl`
+  `[eval.tolerances]` (auto-ascii-eval `Tolerances` subset). `build.keyframe_ivl`
   is u32 in params with a validate() range of 1..=255 (M2 review fix 4a:
   the wire field is u8; the acceptance drill value 600 must be a clean
   range error, not a serde type error) — every M3 field is deliberately
@@ -1011,11 +1011,11 @@ facade surface + this hidden module.)
   cached under `--cache-dir` keyed `(input sha256, build-params sha256,
   pipeline source fingerprint)` (eval-only knobs excluded via
   `Params::build_fingerprint`; the fingerprint is an FNV-1a 64 over all
-  sleepy-factory + slpy-format `src/*.rs`, emitted by build.rs — M2 review
+  auto-ascii-factory + auto-ascii-format `src/*.rs`, emitted by build.rs — M2 review
   fix 4d: factory/format code changes must invalidate cached corpus
   assets) → edge-F1 ground-truth pass (M3: one streaming ffmpeg gray decode
   of the source through the identical scale/fps chain; Canny masks at the
-  `ssim_every` cadence + reel timestamps, see slpy-eval edge.rs) → three
+  `ssim_every` cadence + reel timestamps, see auto-ascii-eval edge.rs) → three
   SimBackend passes in pure diff mode (truecolor: SSIM sampled every
   `ssim_every` frames + edge F1 against the truth masks from the player's
   LayerMask + cut-segmented flicker + per-stage times + damage;
@@ -1047,7 +1047,7 @@ facade surface + this hidden module.)
   reports shots + cut flags, keyframe count, per-plane compressed/raw sizes,
   compression ratio vs raw planes, and per-plane value stats over sampled
   frames (E nonzero %, Ex/Ey bias deviation, H flag rates).
-- `sleepy-player` (PLAN §3) — M4: now built from `crates/auto-ascii`
+- `auto-ascii-player` (PLAN §3) — M4: now built from `crates/auto-ascii`
   (`[[bin]]` behind the default-on `bin` feature, so `cargo install
   auto-ascii` ships it; `required-features` keeps embedder builds
   binary-free). The bin is a thin argv shim: interactive flags map 1:1 onto
@@ -1107,25 +1107,25 @@ facade surface + this hidden module.)
    compile-time asserted; constructors (`new`/`BLANK`) leave padding zeroed.
 4. **Factory deps trimmed** for M0 (see edges above). **NORM chunk not
    written at M0** (tag + registry reserved here so M1 is additive, not a
-   format break). `slpy-eval` was absent M0/M1; created at M2 (item A,
+   format break). `auto-ascii-eval` was absent M0/M1; created at M2 (item A,
    note 12).
 5. **Implemented now** (beyond skeletons): viewport math + worked-example
    tests, ramps, Grid/Cell, header/chunk byte codecs + layout-freezing tests,
    EventQueue, SimBackend construction/throttle/capture plumbing,
-   **Resampler build/apply + `compose_luma` (slpy-core complete for M0)**.
+   **Resampler build/apply + `compose_luma` (auto-ascii-core complete for M0)**.
    `todo!()`: both `present`/`resize` paths, AnsiBackend session setup,
-   restore hooks, SlpyWriter/SlpyReader streaming bodies, both bin mains.
+   restore hooks, AsciiWriter/AsciiReader streaming bodies, both bin mains.
 6. **`compose_luma` added** (not in the original freeze; mandated by the
-   slpy-core task item e): `compose::compose_luma(luma, &Viewport, ramp,
+   auto-ascii-core task item e): `compose::compose_luma(luma, &Viewport, ramp,
    &mut Grid<Cell>)`, re-exported at crate root. L0-only M0 compositor —
    ramp glyph + gray fg from the same luma sample, BLANK pads, zero
    allocation.
-7. **slpy-format M1 upgrade** (M1 format agent): full SLPY v1 per the section
+7. **auto-ascii-format M1 upgrade** (M1 format agent): full ASCI v1 per the section
    above. Deliberate format changes: `VERSION_MINOR` 0→1;
    `WriterOptions::default()` filter is now `TEMPORAL_DELTA`; the committed
    byte golden (`GOLDEN_SHA256` in `tests/container.rs`) was re-baselined.
    Back-compat: minor-0 intra (M0) assets still open/decode/verify —
-   confirmed against the committed `assets/*.slpy`. (`sleepy-factory build`
+   confirmed against the committed `assets/*.ascii`. (`auto-ascii-factory build`
    briefly pinned the intra profile here; superseded by the M1 factory
    upgrade, note 10 — it now emits the full v1 profile.) Adversarial-review
    fixes: zero fps and zero base dims are rejected by both writer and reader
@@ -1133,7 +1133,7 @@ facade surface + this hidden module.)
    the player's fps guard in `main()` now covers `fps_num == 0` too.
    Measured on the synthetic coherent sequence (tests/m1_format.rs):
    delta+zstd-19 is ~16.8× smaller than intra+zstd-19.
-8. **slpy-term M1 upgrade** (M1 term agent): caps probe (`probe.rs`),
+8. **auto-ascii-term M1 upgrade** (M1 term agent): caps probe (`probe.rs`),
    quantizers (`quant.rs`), tier-aware painter with quantize-before-diff,
    `?2026h…l` wrap, `SimBackend::set_caps`, `FromStr for ColorTier`
    (`--tier`), `ProbeOptions.no_query` (`--no-query`) — all per the section
@@ -1157,7 +1157,7 @@ facade surface + this hidden module.)
    cell aspect defaults to the terminal-reported cell pixel ratio
    (`Caps::cell_px`, interactive only) with 2.0 fallback (§3.2). No library
    `pub` signature changed during integration — this note is CLI-only.
-10. **sleepy-factory M1 upgrade** (M1 factory agent): full v1 pipeline per
+10. **auto-ascii-factory M1 upgrade** (M1 factory agent): full v1 pipeline per
     the Binaries section above — two-pass build (shot detection + per-shot
     levels → NORM; Y + C planes through the v1 writer default
     delta/keyframe-60/zstd-19 profile), M0's baked-in normalization removed
@@ -1171,7 +1171,7 @@ facade surface + this hidden module.)
     seek-vs-sequential, plus a two-scene lavfi concat asserting a CUT-flagged
     shot boundary exactly at the splice with distinct per-shot levels.
     Factory binary output stays byte-deterministic (determinism test kept).
-11. **sleepy-player M1 integration** (M1 integrator): CLI per the Binaries
+11. **auto-ascii-player M1 integration** (M1 integrator): CLI per the Binaries
     section above; no library `pub` signature changed. Decisions recorded:
     (a) decode policy on TEMPORAL_DELTA assets — a loaded-frame tracker
     rolls sequential successors through `decode_plane_into` (standing double
@@ -1192,16 +1192,16 @@ facade surface + this hidden module.)
     directive: the volley runs only when none of `--sim`/`--tier`/
     `--no-query` is present).
     Composition lives in the player (`compose_cells`: ramp glyph from
-    normalized luma + chroma/gray fg, BLANK pads) — slpy-core's M0
+    normalized luma + chroma/gray fg, BLANK pads) — auto-ascii-core's M0
     `compose_luma` is unchanged. Player integration tests:
     `tests/m1_sim.rs` (tier byte checks via `--sim-dump`,
     seek-vs-sequential byte identity, runtime NORM per shot, probe no-hang).
-12. **slpy-eval created** (M2 item A agent): metrics library per its section
+12. **auto-ascii-eval created** (M2 item A agent): metrics library per its section
     above — nothing else in the workspace consumes it yet (the
-    `sleepy-factory eval` wiring is M2 item B). Decisions recorded:
+    `auto-ascii-factory eval` wiring is M2 item B). Decisions recorded:
     (a) built-in coverage constants derived from DejaVu Sans Mono (the
     conservative default; per-font tables M5) via the committed
-    `crates/slpy-eval/tools/derive_coverage.py` — constants are the
+    `crates/auto-ascii-eval/tools/derive_coverage.py` — constants are the
     committed artifact, the script is the reproducible reference;
     (b) rasterizer default = 1×2 px/cell with ink normalization
     (gain = 1/max_coverage) so SSIM compares relative ink, not the ~4×
@@ -1213,30 +1213,30 @@ facade surface + this hidden module.)
     (d) report JSON carries no timestamps/host info — reruns on identical
     inputs are byte-identical (determinism-guard friendly); provenance
     lives in run filenames and git;
-    (e) deps: slpy-core + slpy-term (FrameStats is consumed directly, no
+    (e) deps: auto-ascii-core + auto-ascii-term (FrameStats is consumed directly, no
     mirror type) + serde/serde_json. insta/proptest/criterion arrive with
     M2 items C/D/E, not here.
 13. **M2 items C/D landed** (goldens + resize fuzzing agent). New surface:
-    `slpy_eval::fixtures` (see the slpy-eval section) — three deterministic
+    `auto_ascii_eval::fixtures` (see the auto-ascii-eval section) — three deterministic
     synthetic fixture assets (gradient-motion / hard-cut / checker-drift,
     192×108 Y+C, 72 frames, keyframe 24, production delta+zstd-19+CRC
     profile) and a player-pipeline-parity renderer used by every committed
     golden and the fuzzer. Committed goldens (all corpus-free):
     (a) 27 insta cell-grid snapshots at
-    `crates/slpy-eval/tests/snapshots/` — 3 fixtures × 80×24 / 206×58 /
+    `crates/auto-ascii-eval/tests/snapshots/` — 3 fixtures × 80×24 / 206×58 /
     320×90 × ascii-coarse / ascii-fine / mono-glyph-only; serialization =
     glyph grid verbatim + per-row FNV-1a 64 fg digest; re-bless with
-    `INSTA_UPDATE=always cargo test -p slpy-eval --test golden_grids`;
+    `INSTA_UPDATE=always cargo test -p auto-ascii-eval --test golden_grids`;
     (b) per-tier escape-stream byte goldens at
-    `crates/slpy-term/tests/goldens/gradient_f10_48x12_{truecolor,256,16,
+    `crates/auto-ascii-term/tests/goldens/gradient_f10_48x12_{truecolor,256,16,
     mono}.ansi` (one fixture frame, 48×12, sync_2026 wrap on, byte-exact;
-    re-bless with `SLPY_UPDATE_GOLDENS=1`); slpy-term gained a
-    DEV-dependency on slpy-eval for this (a legal dev-dep cycle — dev-deps
+    re-bless with `ASCII_UPDATE_GOLDENS=1`); auto-ascii-term gained a
+    DEV-dependency on auto-ascii-eval for this (a legal dev-dep cycle — dev-deps
     sit outside the package's own dep graph).
     Resize fuzzing (§6 invariant set as explicit assertions; MOVED to
     `crates/auto-ascii/tests/resize_fuzz.rs` against the real `Player`
     by review fix 4c, note 17):
-    originally `crates/slpy-eval/tests/resize_fuzz.rs` — random
+    originally `crates/auto-ascii-eval/tests/resize_fuzz.rs` — random
     1×1..=1000×1000 resize
     storms through `SimBackend::push_event` + player-style coalescing drain,
     asserting viewport ⊆ terminal, aspect error minimal-among-candidates
@@ -1246,15 +1246,15 @@ facade surface + this hidden module.)
     under plain `cargo test`, `PROPTEST_CASES=10000` in scripts (measured
     84 s wall on this box). The same letterbox/aspect invariants also run
     directly on `compute_viewport` in
-    `crates/slpy-core/tests/viewport_props.rs` (proptest, incl. full-u16
+    `crates/auto-ascii-core/tests/viewport_props.rs` (proptest, incl. full-u16
     dims and degenerate aspects). Workspace: `insta` + `proptest` added to
     `[workspace.dependencies]`; `[profile.dev.package.*] opt-level = 3` for
     the four libs + zstd so goldens/fuzz stay fast under `cargo test`
     (debug-assertions unchanged). No existing `pub` signature changed.
 14. **M2 item B + review fix 1 landed** (params/eval agent). Decisions
     recorded:
-    (a) **pipeline extraction over binary-shelling**: `sleepy-player` gained
-    a lib target (`pipeline` module, section above) and `sleepy-factory
+    (a) **pipeline extraction over binary-shelling**: `auto-ascii-player` gained
+    a lib target (`pipeline` module, section above) and `auto-ascii-factory
     eval` drives `Player` in-process against `SimBackend` — chosen over
     calling the player binary because the metrics need per-frame
     `Grid<Cell>` access (rasterize/flicker) and per-frame `FrameStats`,
@@ -1267,7 +1267,7 @@ facade surface + this hidden module.)
     guard byte-pins the default build (synthetic lavfi fixture, committed
     sha; corpus grass check is the `#[ignore]`d integration half);
     (c) **§4 geometry term** (M1 review fix 1): base dims even and >= 2,
-    enforced writer + reader + factory (see slpy-format section); player
+    enforced writer + reader + factory (see auto-ascii-format section); player
     regression test drives the binary on a header-patched asset (base_w ∈
     {1, 0, odd}) and asserts clean error, no panic;
     (d) **eval SSIM source side** was the per-shot-NORMALIZED luma (the
@@ -1283,7 +1283,7 @@ facade surface + this hidden module.)
     (f) **damage passes run `repaint_full = false`** (pure diff): damage
     rate is meaningless under invalidate-every-frame; the player's
     interactive default (`--repaint full`) is unchanged;
-    (g) eval cache under `runs/cache/` (gitignored via `*.slpy`), key
+    (g) eval cache under `runs/cache/` (gitignored via `*.ascii`), key
     `(input sha256, build-params sha256)` with a hand-rolled tested SHA-256
     (`sha256.rs`) — no new hashing dependency; PNGs for the contact sheet
     come from the ffmpeg subprocess (rawvideo→png and
@@ -1327,7 +1327,7 @@ facade surface + this hidden module.)
     (grass-field-windy-mirror + sheep-counting-neroni-clips from
     corpus/prepared/, silhouette-dance from corpus/) so `eval`'s
     non-recursive scan never picks up prep-tool variants, runs
-    `sleepy-factory eval` against `runs/base.json` writing
+    `auto-ascii-factory eval` against `runs/base.json` writing
     `runs/latest.{json,html}`, then the `#[ignore]`d real-corpus
     determinism guard (grass rebuild byte-identical to assets/). Absent
     corpus → notice + skip (committed gates stay corpus-free).
@@ -1371,19 +1371,19 @@ facade surface + this hidden module.)
     sizes + 48×12 tier-golden size × color/mono × seq/seek/cut frames ×
     mid-run reflows), so the 27 insta goldens + 4 tier goldens
     transitively cover the shipping renderer (mutation-tested: dropping
-    reflow's ramp update fails parity). sleepy-player gained dev-deps
-    slpy-eval + proptest; slpy-eval dropped its proptest dev-dep;
+    reflow's ramp update fails parity). auto-ascii-player gained dev-deps
+    auto-ascii-eval + proptest; auto-ascii-eval dropped its proptest dev-dep;
     scripts/eval.sh fuzz section now targets it (M4: crate renamed auto-ascii).
     (4d) **eval cache staleness** [medium]: the eval asset cache key
-    gained a third component — `SLPY_PIPELINE_FINGERPRINT`, an FNV-1a 64
-    over every `.rs` in sleepy-factory/src + slpy-format/src emitted by
-    the new `crates/sleepy-factory/build.rs` — so pipeline code changes
+    gained a third component — `ASCII_PIPELINE_FINGERPRINT`, an FNV-1a 64
+    over every `.rs` in auto-ascii-factory/src + auto-ascii-format/src emitted by
+    the new `crates/auto-ascii-factory/build.rs` — so pipeline code changes
     invalidate cached corpus assets (over-invalidation by eval-driver
     edits is accepted as the safe direction). Existing runs/cache entries
     were migrated to the new names after the grass byte-identity guard
     proved output unchanged.
 18. **M3 factory plane extraction landed** (factory agent; PLAN §5 stages
-    3–4). `sleepy-factory build` now writes all six §4 planes — see the
+    3–4). `auto-ascii-factory build` now writes all six §4 planes — see the
     Binaries section for the pipeline. **Wire semantics the player relies
     on (factory⇄player contract):**
     (a) **E** (plane 2): u8, unthinned local Scharr magnitude of the
@@ -1416,9 +1416,9 @@ facade surface + this hidden module.)
     Params: new tables `[edges]`, `[highlights]`, `[temporal]` (validated,
     fingerprint-relevant: all three invalidate the eval asset cache).
     `ShotDetector::push` split into `boundary`/`pool` (pass 1 detects on
-    raw, pools EMA'd). Deliberate re-pins: `FIXTURE_SLPY_SHA` in
+    raw, pools EMA'd). Deliberate re-pins: `FIXTURE_ASSET_SHA` in
     tests/m2_params_eval.rs (new pipeline = new default-build bytes);
-    `assets/*.slpy` are still M1-era Y+C and must be REBUILT at M3
+    `assets/*.ascii` are still M1-era Y+C and must be REBUILT at M3
     integration (the `#[ignore]`d grass byte-identity guard fails until
     then, by design). Memory: extraction state is O(plane), ~4 MB fixed
     (features.rs memory note); planes stream to the writer.
@@ -1428,7 +1428,7 @@ facade surface + this hidden module.)
     ffmpeg gray decode per clip through the identical
     `scale=W:H:flags=area,fps=N` ingest chain — independent of every
     factory tunable, same no-self-grading posture as the SSIM reference),
-    downscaled to viewport-cell resolution through slpy-core's own
+    downscaled to viewport-cell resolution through auto-ascii-core's own
     `Resampler` BEFORE Canny ("at grid resolution", literally); fixed
     eval-owned thresholds `CANNY_LOW/HIGH = 60/140` picked on the corpus at
     300×80 (truth density ~1–10% of cells; sheep outline/fence/horizon and
@@ -1439,7 +1439,7 @@ facade surface + this hidden module.)
     NaN-free empty-frame conventions in edge.rs docs.
     (b) **prediction side / LayerMask contract**: §3.4 composition is
     override-only, so per-cell render metadata is a single u8 layer id —
-    additive slpy-core API (`compose::layer`, `compose_cell_layer`,
+    additive auto-ascii-core API (`compose::layer`, `compose_cell_layer`,
     `compose_frame_masked`; masked output byte-identical to unmasked,
     unit-tested) + opt-in `Player::enable_layer_mask()`/`layer_mask()`
     (eval-only; interactive playback allocates nothing). **The M1 compose
@@ -1465,7 +1465,7 @@ facade surface + this hidden module.)
     coverage on the synthetic corpus in m2_params_eval.rs.
     (e) **deps**: workspace gains `image` (default-features off,
     codec-less buffers only) + `imageproc` (default-features off) for
-    slpy-eval, `gif` for sleepy-factory — PNG I/O stays with the ffmpeg
+    auto-ascii-eval, `gif` for auto-ascii-factory — PNG I/O stays with the ffmpeg
     subprocess.
 20. **M3 pipeline integration landed** (integrator). The player runs the
     full §3.5 path — see the auto_ascii::pipeline section for the surface.
@@ -1525,7 +1525,7 @@ facade surface + this hidden module.)
     measured on the corpus (grass F1 0.72@32 vs 0.52@40 vs 0.00@96 with
     precision ≈ 0.77 — the coherence gates carry noise suppression).
     Sweep evidence in the M3 integration report.
-21. **M3 Tune landed** (tune agent): `sleepy-factory sweep` per the Binaries
+21. **M3 Tune landed** (tune agent): `auto-ascii-factory sweep` per the Binaries
     section (PLAN §5 CLI — sweep.rs; ranked `sweep.json` schema v1 +
     `leaderboard.html`; committed axis grids under `sweeps/`). Decisions:
     (a) **composite score** = `0.4·mean(ssim) + 0.4·mean(edge_f1) −
@@ -1539,13 +1539,13 @@ facade surface + this hidden module.)
     `pub(crate)` for the sweep driver; axes-crossed combos that fail
     `Params::validate()` are recorded as skipped with the reason;
     (c) **idx hysteresis width promoted to a tunable** (the §3.5 "0.35·step"
-    constant): `slpy_core::hysteresis_idx` gained a `hyst_q8` parameter,
+    constant): `auto_ascii_core::hysteresis_idx` gained a `hyst_q8` parameter,
     `ComposeParams`/params.toml `[compose]` gained `idx_hyst_q8`
     (default 90 = the spec value; `IDX_HYST_Q8` remains as the documented
     default constant) — axis 3 of the mandated sweep plan trades cell
     stickiness against responsiveness with zero asset rebuilds.
 22. **M3 Tune finish + M2-low fixes** (fix agent). Tuning (renderer-only —
-    zero factory/asset changes; the SLPY byte pins and assets/ stay valid):
+    zero factory/asset changes; the ASCI byte pins and assets/ stay valid):
     (a) **`ComposeParams::idx_hyst_q8` default 90 → 160** (params.toml
     `[compose]` in lockstep; the pin tests still tie file ⇄ ComposeTable ⇄
     ComposeParams). Corpus sweep (note 21 composite score): 160 scores
@@ -1563,7 +1563,7 @@ facade surface + this hidden module.)
     notes, metric disappearance still fails. eval.sh can no longer go
     spuriously red from co-tenant load.
     (d) **Straggler filter session-long + split-ESC hold** (M2-low fix a):
-    see the slpy-term probe section — the 2 s disarm window and the
+    see the auto-ascii-term probe section — the 2 s disarm window and the
     lone-ESC-kills-session hole are gone; new unit + pty regressions.
     (e) **perf-gate.sh coverage hardening** (M2-low fix c): thresholds
     entry with missing estimates → FAIL; entry not refreshed by this run's
@@ -1583,7 +1583,7 @@ facade surface + this hidden module.)
     (`caps`) and two extra fields on the harness PROBE-DONE line
     (`support=`, `glyphs=`).
     (a) **Per-terminal pty identity fixtures**
-    (`crates/slpy-term/tests/terminal_identity.rs`, pty plumbing extracted to
+    (`crates/auto-ascii-term/tests/terminal_identity.rs`, pty plumbing extracted to
     `tests/common/mod.rs` and shared with `pty_probe.rs`): kitty, alacritty,
     wezterm, gnome-terminal (VTE), xterm, xterm-direct and the Linux console
     are each replayed through the real `probe_caps` on a real pty — that
@@ -1619,7 +1619,7 @@ facade surface + this hidden module.)
     terminal, expected visuals, known quirks (kitty's missing RGB cap, VTE's
     permanent-reset 2026 ⇒ expected tearing, xterm's correct 256-color
     banding + `-direct2` path, alacritty's winsize-only cell size), the
-    `slpy-term-harness caps` diagnostic, the escape-hatch table, and what the
+    `auto-ascii-term-harness caps` diagnostic, the escape-hatch table, and what the
     fixtures do/don't cover.
     (e) **No-connectivity audit** (command + result in
     `docs/TERMINAL-CHECKLIST.md` §5): zero connectivity code paths. The only
@@ -1627,7 +1627,7 @@ facade surface + this hidden module.)
     inert by `multiplexer_flag_only_partitions_the_cache` (identical `Caps`
     with the flag set/unset, different cache slot). Stale prose about a
     ConPTY backend and the descoped throughput governor removed from
-    slpy-term docs. No bench, `perf/thresholds.toml`, `runs/` or params file
+    auto-ascii-term docs. No bench, `perf/thresholds.toml`, `runs/` or params file
     was touched.
 
 24. **M4 review fixes landed** (review-fix agent). Three confirmed findings,
@@ -1641,10 +1641,10 @@ facade surface + this hidden module.)
     `CONSERVATIVE_COVERAGE` and rasterized through the `max·0.5` ≈ 0.13
     fallback, ~2× its real ink; `"` measures 0.064 against `_`'s 0.055, so
     the top/bottom subposition pair is now ink-matched. Pinned by
-    `slpy_core::palette::every_ascii_tier_glyph_is_ascii` (enumerates the
+    `auto_ascii_core::palette::every_ascii_tier_glyph_is_ascii` (enumerates the
     whole ASCII PaletteSet surface across both densities × all four color
     depths — data-side, unconditional), by the ascii-render sweep in
-    `slpy-eval` `golden_frames_are_meaningful`, and by
+    `auto-ascii-eval` `golden_frames_are_meaningful`, and by
     `linux_console_golden.rs::every_glyph_is_console_printable`, which now
     sweeps 3 fixtures × 40 frames **and asserts it actually reached the
     subposition branch** (the single-frame version was vacuous — it passed
@@ -1663,9 +1663,9 @@ facade surface + this hidden module.)
     every frame. Both new fields are `params.toml` `[compose]` knobs
     (validated `quad_e_off <= quad_e_on`, pinned to the core defaults by the
     existing single-source-of-truth test). CI could not see any of this — all
-    committed goldens contain zero quadrant glyphs and `sleepy-factory eval`
+    committed goldens contain zero quadrant glyphs and `auto-ascii-factory eval`
     renders at `GlyphTier::Ascii`, where `quadrant: false` — so the coverage
-    is three `slpy-core` unit tests instead:
+    is three `auto-ascii-core` unit tests instead:
     `lsb_noise_orientation_never_picks_quadrant` (floor holds),
     `fine_diagonal_band_still_refines_to_quadrants` (E 3..=15, both diagonal
     classes — this is the test the `edge_t_off` floor would fail), and
@@ -1678,19 +1678,19 @@ facade surface + this hidden module.)
     docs.rs builds with default features and still shows the runnable form.
     Same-config rot fixed alongside: `tests/m1_sim.rs` and `tests/sim_e2e.rs`
     carry `#![cfg(feature = "bin")]`, so they no longer silently exercise a
-    stale `target/debug/sleepy-player` left by an earlier default-feature
+    stale `target/debug/auto-ascii-player` left by an earlier default-feature
     build. No public signature changed in (c).
 
 25. **M5 item B landed** (font-tables agent; PLAN §3.4 "coverage tables for
     4 common monospace fonts plus one conservative default" + `--font-table`).
-    New surface per the sections above: `slpy_core::palette::{tier_glyphs,
+    New surface per the sections above: `auto_ascii_core::palette::{tier_glyphs,
     all_palette_glyphs}` (palette-data-driven glyph enumeration),
-    `slpy_core::font_table` (`FontTable` parse/builtin/veto_tier,
-    `BUILTIN_FONT_TABLES`), `slpy_eval::CoverageTable::from_font_table`,
+    `auto_ascii_core::font_table` (`FontTable` parse/builtin/veto_tier,
+    `BUILTIN_FONT_TABLES`), `auto_ascii_eval::CoverageTable::from_font_table`,
     facade `PlayerBuilder::font_table` + `RenderSession::set_font_table` +
     hidden `auto_ascii::load_font_table`, factory `font-table` subcommand +
     `eval --font-table`, player `--font-table`. Decisions recorded:
-    (a) **Generator = `sleepy-factory font-table`** (ab_glyph — already in
+    (a) **Generator = `auto-ascii-factory font-table`** (ab_glyph — already in
     the tree via imageproc; new direct workspace dep). Cell model: font
     scaled so the monospace ADVANCE = 64 px (terminals size by advance,
     not em), ink box centered and clipped to the 64×128 cell; coverage =
@@ -1701,7 +1701,7 @@ facade surface + this hidden module.)
     byte-for-byte from the system fonts (fonts-dejavu-core,
     fonts-liberation, fonts-ubuntu, fonts-noto-mono).
     (b) **Tables committed at repo-root `fonts/*.toml`** and embedded into
-    slpy-core via `include_str!` (`FontTable::builtin`) — slpy-core is not
+    auto-ascii-core via `include_str!` (`FontTable::builtin`) — auto-ascii-core is not
     on the `cargo package -p auto-ascii` path, so item F is unaffected; the
     facade embeds nothing.
     (c) **Repertoire findings (cmap-verified, cited in fonts/README.md):**
@@ -1709,7 +1709,7 @@ facade surface + this hidden module.)
     in the Sans face); Liberation Mono lacks `╱╲`+corner quadrants; Ubuntu
     Mono also lacks `‾` and all half/quadrant blocks. veto_tier therefore
     degrades braille→unicode for DejaVu/Noto and unicode→ascii for
-    Liberation/Ubuntu — pinned by slpy-core/facade tests
+    Liberation/Ubuntu — pinned by auto-ascii-core/facade tests
     (`builtins_load_and_veto_as_researched`,
     `font_table_repertoire_vetoes_palette_tier`). The veto was wired (it
     was trivial on top of the repertoire data), satisfying the §3.4
@@ -1729,7 +1729,7 @@ facade surface + this hidden module.)
 26. **M5 items C + D + E + F landed** (scrub/ship agent). PLAN §7 M5 minus
     the soak (A) and font tables (B), which landed separately (note 25).
     (a) **Quirk table keyed on queried identity** (item C, PLAN §3.1):
-    `slpy_term::quirks` (session-gated) — a static `QUIRKS: &[Quirk]`
+    `auto_ascii_term::quirks` (session-gated) — a static `QUIRKS: &[Quirk]`
     matched on the XTVERSION reply prefix plus the XTGETTCAP-RGB reading,
     applied by `probe_caps` post-volley and pre-`--tier`, NEVER on cache
     hits/`--no-query` (no queried identity there). Two sourced entries:
@@ -1751,7 +1751,7 @@ facade surface + this hidden module.)
     harness mode `probe-reply-noquirks`, plus cache×quirk pty regressions
     (`probe-cached[-noquirks]` modes: clamp survives a cache hit; no-quirks
     ignores the cached quirked entry).
-    (b) **Scrub UX** (item D): `Key::{Left,Right}` (slpy-term) → ±5 s
+    (b) **Scrub UX** (item D): `Key::{Left,Right}` (auto-ascii-term) → ±5 s
     (`auto_ascii::SCRUB_STEP_SECS`), coalesced per drain
     (`Drained.seek_steps`), hysteresis reset exactly like digit jumps;
     digits keep their 0–90% bindings. Transient bottom-row progress overlay
@@ -1762,7 +1762,7 @@ facade surface + this hidden module.)
     through a strict screen model (parse failure = corruption) and pins
     with-overlay vs no-overlay screens identical after hide + the full
     repaint on the hide frame. Scrub latency instrumented by the new
-    `sleepy-player --bench-seek N` (reset + FIDX seek + decode + resample +
+    `auto-ascii-player --bench-seek N` (reset + FIDX seek + decode + resample +
     compose + present @300×80, seeded xorshift frame sequence): on the
     856 MB sheep asset, 100 seeks → p50 8.6 ms / p95 20.3 ms / max 32.3 ms
     (accept < 50 ms).
@@ -1771,7 +1771,7 @@ facade surface + this hidden module.)
     (mingw-w64), all stripped and gated < 5 MB (measured 1.66 / 1.77 /
     2.99 MiB; factory native 3.61 MiB, informational); wine smoke only if
     wine exists, else the .exe ships documented as UNTESTED-CROSS. The
-    windows-gnu build required cfg-splitting slpy-term's session layer:
+    windows-gnu build required cfg-splitting auto-ascii-term's session layer:
     libc is now a `[target.'cfg(unix)']` dependency; windows halves of
     ansi/restore/probe go through crossterm's WinAPI layer (raw mode,
     execute!-entered alt screen, `std::io` writes), probe is passive-only
@@ -1782,9 +1782,9 @@ facade surface + this hidden module.)
     measured: binary path 0.2 s copy→first frame (pty, probe deadline
     included), clean `git archive HEAD` source build 28.7 s wall.
     (d) **Publish hygiene** (item F): workspace path deps carry version
-    reqs; slpy-eval stays path-only ON PURPOSE (dev-dep cycle with
-    slpy-term — cargo strips path-only dev-deps when packaging). Manifest
-    check: `cargo package -p slpy-core -p slpy-format -p slpy-term
+    reqs; auto-ascii-eval stays path-only ON PURPOSE (dev-dep cycle with
+    auto-ascii-term — cargo strips path-only dev-deps when packaging). Manifest
+    check: `cargo package -p auto-ascii-core -p auto-ascii-format -p auto-ascii-term
     -p auto-ascii --no-verify` passes (the closure is packaged together
     because the deps are unpublished; `--no-verify` skips the rebuild,
     nothing is published; on a dirty tree add `--allow-dirty`).

@@ -1,10 +1,10 @@
 //! End-to-end player tests against the real binary via `--sim` (the M0
 //! headless acceptance path — this box has no TTY/kitty; PLAN §7).
 //!
-//! A tiny synthetic SLPY asset is written with `SlpyWriter`, then the
-//! `sleepy-player` binary is driven with `CARGO_BIN_EXE_sleepy-player`.
+//! A tiny synthetic ASCI asset is written with `AsciiWriter`, then the
+//! `auto-ascii-player` binary is driven with `CARGO_BIN_EXE_auto-ascii-player`.
 
-// These drive the real `sleepy-player` binary via CARGO_BIN_EXE_*, which
+// These drive the real `auto-ascii-player` binary via CARGO_BIN_EXE_*, which
 // only exists when the `bin` feature is on (its required-features).
 // Without this gate the harness silently reuses a stale binary left on
 // disk by an earlier default-feature build (M4 review).
@@ -14,7 +14,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use slpy_format::{Meta, PlaneRef, SlpyWriter, WriterOptions, header::plane_id};
+use auto_ascii_format::{Meta, PlaneRef, AsciiWriter, WriterOptions, header::plane_id};
 
 /// Self-cleaning temp file (no tempfile dep — pinned workspace dep set).
 struct TmpFile(PathBuf);
@@ -23,7 +23,7 @@ impl TmpFile {
     fn new(name: &str) -> TmpFile {
         let mut p = std::env::temp_dir();
         p.push(format!(
-            "sleepy-player-test-{}-{name}",
+            "auto-ascii-player-test-{}-{name}",
             std::process::id()
         ));
         TmpFile(p)
@@ -37,7 +37,7 @@ impl Drop for TmpFile {
 }
 
 /// Write a small synthetic luma-only asset: `frames` frames of a moving
-/// gradient at 480x270 (fast zstd level — determinism is slpy-format's test
+/// gradient at 480x270 (fast zstd level — determinism is auto-ascii-format's test
 /// concern, not this one's).
 fn write_test_asset(path: &PathBuf, frames: u32) {
     let opts = WriterOptions { zstd_level: 3, ..WriterOptions::default() };
@@ -48,7 +48,7 @@ fn write_test_asset(path: &PathBuf, frames: u32) {
         palette_hints: vec![],
     };
     let file = fs::File::create(path).unwrap();
-    let mut writer = SlpyWriter::new(std::io::BufWriter::new(file), opts, &meta).unwrap();
+    let mut writer = AsciiWriter::new(std::io::BufWriter::new(file), opts, &meta).unwrap();
     let mut plane = vec![0u8; w * h];
     for f in 0..frames {
         for (i, px) in plane.iter_mut().enumerate() {
@@ -63,10 +63,10 @@ fn write_test_asset(path: &PathBuf, frames: u32) {
 }
 
 fn run_player(args: &[&str]) -> (bool, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_sleepy-player"))
+    let out = Command::new(env!("CARGO_BIN_EXE_auto-ascii-player"))
         .args(args)
         .output()
-        .expect("spawn sleepy-player");
+        .expect("spawn auto-ascii-player");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -87,7 +87,7 @@ fn json_field<'a>(json: &'a str, key: &str) -> &'a str {
 
 #[test]
 fn sim_renders_all_frames_and_reports_stats() {
-    let asset = TmpFile::new("stats.slpy");
+    let asset = TmpFile::new("stats.ascii");
     write_test_asset(&asset.0, 12);
 
     let (ok, stdout, stderr) = run_player(&[
@@ -124,7 +124,7 @@ fn sim_renders_all_frames_and_reports_stats() {
 
 #[test]
 fn sim_resize_reflows_mid_run() {
-    let asset = TmpFile::new("resize.slpy");
+    let asset = TmpFile::new("resize.ascii");
     write_test_asset(&asset.0, 8);
 
     // Explicit resize target.
@@ -154,7 +154,7 @@ fn sim_resize_reflows_mid_run() {
 
 #[test]
 fn sim_resize_below_minimum_renders_card_without_panic() {
-    let asset = TmpFile::new("tiny.slpy");
+    let asset = TmpFile::new("tiny.ascii");
     write_test_asset(&asset.0, 4);
 
     let (ok, stdout, stderr) = run_player(&[
@@ -172,7 +172,7 @@ fn sim_resize_below_minimum_renders_card_without_panic() {
 
 #[test]
 fn diff_repaint_mode_emits_fewer_bytes_on_static_content() {
-    let asset = TmpFile::new("diff.slpy");
+    let asset = TmpFile::new("diff.ascii");
     // One unique frame rendered repeatedly (loop wraps modulo 1): after the
     // first paint, diff mode should emit ~0 bytes; full mode repaints.
     write_test_asset(&asset.0, 1);
@@ -201,20 +201,20 @@ fn diff_repaint_mode_emits_fewer_bytes_on_static_content() {
 #[test]
 fn invalid_inputs_fail_cleanly() {
     // Missing asset.
-    let (ok, _, stderr) = run_player(&["/nonexistent/nope.slpy", "--sim", "80x24:1"]);
+    let (ok, _, stderr) = run_player(&["/nonexistent/nope.ascii", "--sim", "80x24:1"]);
     assert!(!ok);
     assert!(stderr.contains("opening"), "unexpected stderr: {stderr}");
 
-    // Not a SLPY file.
-    let junk = TmpFile::new("junk.slpy");
-    fs::write(&junk.0, b"definitely not a slpy asset, but long enough to mmap")
+    // Not a ASCI file.
+    let junk = TmpFile::new("junk.ascii");
+    fs::write(&junk.0, b"definitely not a ascii asset, but long enough to mmap")
         .unwrap();
     let (ok, _, stderr) = run_player(&[junk.0.to_str().unwrap(), "--sim", "80x24:1"]);
     assert!(!ok);
-    assert!(stderr.contains("not a valid SLPY asset"), "unexpected stderr: {stderr}");
+    assert!(stderr.contains("not a valid ASCI asset"), "unexpected stderr: {stderr}");
 
     // Bad --sim spec.
-    let asset = TmpFile::new("spec.slpy");
+    let asset = TmpFile::new("spec.ascii");
     write_test_asset(&asset.0, 1);
     let (ok, _, _) = run_player(&[asset.0.to_str().unwrap(), "--sim", "80x24"]);
     assert!(!ok);

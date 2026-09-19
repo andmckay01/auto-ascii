@@ -1,0 +1,33 @@
+---
+source: crates/auto-ascii-eval/tests/golden_grids.rs
+expression: s
+---
+hard-cut frame 40
+term: 80x24  viewport: 80x23  pads: L0 R0 T0 B1
+palette: mono  fg: none (glyph-only)
++--------------------------------------------------------------------------------+
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|@@@@@@@@@@88888888888OOOOOOOOOOOooooooooooccccccccccc::::::::::...........      |
+|                                                                                |
++--------------------------------------------------------------------------------+

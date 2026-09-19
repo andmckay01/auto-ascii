@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tools/soak.py — M5 resize-storm soak harness (PLAN §7 M5 item A).
 
-Forks the release `sleepy-player` onto a fresh pty via `pty.fork()` — the
+Forks the release `auto-ascii-player` onto a fresh pty via `pty.fork()` — the
 pty becomes the child's *controlling* terminal, so TIOCSWINSZ on the master
 delivers real SIGWINCHes to the player, exactly like a user dragging a
 terminal corner — then plays the asset with `--loop` and storms randomized
@@ -25,7 +25,7 @@ key), drains until EOF, and records the exit status. Escalation if the
 player ignores `q`: SIGTERM after 15 s, SIGKILL after 20 s — both count
 as failures. `summary.json` records exit status, byte totals, resize
 counts, whether the RESTORE_SEQ bytes (`ESC[0m ESC[?25h ESC[?7h
-ESC[?1049l`, slpy-term/src/restore.rs) appear in the tail, a post-warmup
+ESC[?1049l`, auto-ascii-term/src/restore.rs) appear in the tail, a post-warmup
 least-squares RSS slope in MB/h, a short escaped tail preview, and the
 **structural escape-stream check** (M5 acceptance A: "no desync in
 captured output — final frames still parse as valid escape streams"):
@@ -103,7 +103,7 @@ PROGRESS_IVL_S = 60.0
 QUIT_GRACE_S = 15.0
 KILL_GRACE_S = 5.0
 
-# slpy-term/src/restore.rs RESTORE_SEQ: SGR reset, cursor show, autowrap on,
+# auto-ascii-term/src/restore.rs RESTORE_SEQ: SGR reset, cursor show, autowrap on,
 # leave alt screen. Emitted by shutdown/atexit/signal/Drop paths.
 RESTORE_SEQ = b"\x1b[0m\x1b[?25h\x1b[?7h\x1b[?1049l"
 
@@ -226,7 +226,7 @@ def rss_slope_mb_per_h(samples: list[tuple[float, int]], warmup_s: float) -> flo
 # A strict VT parser over the captured pty bytes, in the spirit of the
 # byte-exact interpreter in crates/auto-ascii/tests/scrub_overlay.rs: it
 # accepts EXACTLY the sequences the player is specified to emit and reports
-# anything else. The player's full output vocabulary (slpy-term/src/{ansi,
+# anything else. The player's full output vocabulary (auto-ascii-term/src/{ansi,
 # render,restore,probe}.rs):
 #
 #   * probe volley:  CSI > 0 q | CSI ? 2026 $ p | DCS + q 524742 ST |
@@ -506,8 +506,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--duration", type=float, default=3600.0,
                     help="soak length in seconds (default 3600; 60 = smoke mode)")
-    ap.add_argument("--asset", type=Path, default=REPO / "assets/grass-field-windy-mirror.slpy")
-    ap.add_argument("--player", type=Path, default=REPO / "target/release/sleepy-player")
+    ap.add_argument("--asset", type=Path, default=REPO / "assets/grass-field-windy-mirror.ascii")
+    ap.add_argument("--player", type=Path, default=REPO / "target/release/auto-ascii-player")
     ap.add_argument("--outdir", type=Path,
                     help="directory for head.log/tail.log/rss.csv/resizes.csv/summary.json")
     ap.add_argument("--seed", type=int, default=None,

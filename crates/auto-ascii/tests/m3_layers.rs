@@ -7,18 +7,18 @@
 use std::io::Cursor;
 
 use auto_ascii::pipeline::Player;
-use slpy_core::{ColorDepth, GlyphTier, layer};
-use slpy_eval::fixtures::{Fixture, build_fixture};
-use slpy_format::header::plane_id;
-use slpy_format::{Meta, PlaneRef, SlpyReader, SlpyWriter, WriterOptions};
-use slpy_term::{Event, Key, SimBackend};
+use auto_ascii_core::{ColorDepth, GlyphTier, layer};
+use auto_ascii_eval::fixtures::{Fixture, build_fixture};
+use auto_ascii_format::header::plane_id;
+use auto_ascii_format::{Meta, PlaneRef, AsciiReader, AsciiWriter, WriterOptions};
+use auto_ascii_term::{Event, Key, SimBackend};
 
 fn meta() -> Meta {
     Meta { factory_version: "m3-test".into(), source: "synthetic".into(), palette_hints: vec![] }
 }
 
 fn player<'a>(bytes: &'a [u8], depth: ColorDepth, tier: GlyphTier) -> Player<'a> {
-    Player::new(SlpyReader::open(bytes).unwrap(), 2.0, true, depth, tier).unwrap()
+    Player::new(AsciiReader::open(bytes).unwrap(), 2.0, true, depth, tier).unwrap()
 }
 
 /// PLAN §4 back-compat (M3 acceptance 13): an M1-era Y+C asset — exactly
@@ -70,7 +70,7 @@ fn six_plane_asset() -> Vec<u8> {
         zstd_level: 3,
         ..WriterOptions::default()
     };
-    let mut writer = SlpyWriter::new(Cursor::new(Vec::new()), opts, &meta()).unwrap();
+    let mut writer = AsciiWriter::new(Cursor::new(Vec::new()), opts, &meta()).unwrap();
     let luma = vec![100u8; W * H]; // flat mid-gray, identity LUT (no NORM)
     let chroma = vec![0u8; (W / 2) * (H / 2) * 2];
     for &e_mag in &[200u8, 24, 10] {
@@ -260,7 +260,7 @@ fn tier_palettes_select_and_subcell_structure_fires() {
     mono.render_present(&mut backend, 7).unwrap();
     backend.take_output();
     // Palette 8 + the ASCII subposition triplet — all of it printable ASCII
-    // (`slpy_core::palette::every_ascii_tier_glyph_is_ascii` is the data-side
+    // (`auto_ascii_core::palette::every_ascii_tier_glyph_is_ascii` is the data-side
     // pin; this is the same guarantee observed through the shipping player).
     let allowed: Vec<char> = " .:coO8@\"_-".chars().collect();
     for c in mono.grid().as_slice() {

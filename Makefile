@@ -1,9 +1,9 @@
-# Sleepytime — convenience targets. The real gates live in scripts/
+# auto-ascii — convenience targets. The real gates live in scripts/
 # (scripts/eval.sh is what "green" means; scripts/release.sh ships binaries).
 
 .PHONY: build release dist test eval clean
 
-# The player binary for THIS machine (target/release/sleepy-player).
+# The player binary for THIS machine (target/release/auto-ascii-player).
 build:
 	cargo build --release -p auto-ascii --features bin
 
@@ -28,7 +28,7 @@ clean:
 # a Mac instead. Both Apple Silicon and Intel work from source:
 #
 #     make build          # or: cargo build --release -p auto-ascii --features bin
-#     strip target/release/sleepy-player
+#     strip target/release/auto-ascii-player
 #
 # The player uses only crossterm + POSIX termios/ioctl (the same unix session
 # layer as Linux), ffmpeg is not needed at playback time, and Terminal.app /

@@ -6,7 +6,7 @@
 //! a box with no TTY at all. Colors are dropped here; `cell.fg` / `cell.bg`
 //! carry them if you want them.
 //!
-//! Run: `cargo run --example headless-dump -- asset.slpy [FRAMES] [COLSxROWS]`
+//! Run: `cargo run --example headless-dump -- asset.ascii [FRAMES] [COLSxROWS]`
 //!
 //! [`RenderSession`]: auto_ascii::RenderSession
 
@@ -14,7 +14,7 @@ use std::io::Write;
 
 use auto_ascii::{Cell, Grid, PaletteChoice, RenderSession};
 
-const USAGE: &str = "usage: headless-dump <asset.slpy> [FRAMES] [COLSxROWS]";
+const USAGE: &str = "usage: headless-dump <asset.ascii> [FRAMES] [COLSxROWS]";
 
 /// `"100x28"` → `(100, 28)`.
 fn parse_dims(s: &str) -> (u16, u16) {
@@ -24,7 +24,7 @@ fn parse_dims(s: &str) -> (u16, u16) {
 
 /// Write one frame as text. Returns the underlying `io::Error` instead of
 /// panicking (M5 fix 7): Rust ignores SIGPIPE, so when the reader goes away
-/// (`headless-dump a.slpy | head`) every write fails with `BrokenPipe` —
+/// (`headless-dump a.ascii | head`) every write fails with `BrokenPipe` —
 /// `println!` would panic on it; `main` treats it as a normal early exit.
 fn dump_frame(
     out: &mut impl Write,

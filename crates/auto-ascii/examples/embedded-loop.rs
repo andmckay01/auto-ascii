@@ -14,7 +14,7 @@
 //! 4. seeks backwards at the end, which resets temporal state automatically
 //!    so the landing frame has no ghosts from before the seek.
 //!
-//! Run: `cargo run --example embedded-loop -- asset.slpy`
+//! Run: `cargo run --example embedded-loop -- asset.ascii`
 //!
 //! [`RenderSession`]: auto_ascii::RenderSession
 
@@ -39,7 +39,7 @@ fn draw(grid: &Grid<Cell>) -> (usize, u8) {
 }
 
 fn main() -> Result<(), auto_ascii::Error> {
-    let path = std::env::args().nth(1).expect("usage: embedded-loop <asset.slpy>");
+    let path = std::env::args().nth(1).expect("usage: embedded-loop <asset.ascii>");
 
     let mut session = RenderSession::open(&path)?;
     session.set_palette(PaletteChoice::Unicode);

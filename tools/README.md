@@ -74,7 +74,7 @@ minimize this). Fine for short loops like the 6.5 s grass clip (~190 MB);
 do not boomerang multi-minute 1080p sources. The tool refuses more than 64
 segments.
 
-### Portrait-source policy & relationship to sleepy-factory
+### Portrait-source policy & relationship to auto-ascii-factory
 
 This tool resolves the "portrait source" open question from
 `corpus/README.md`: portrait (or any off-aspect) sources are **preprocessed
@@ -84,7 +84,7 @@ never needs per-aspect logic. The filtergraph construction in
 `prep_video.py` (contain-fit scale → odd-length alternately-flipped
 hstack/vstack strips → centered crop) is deliberately kept as small, pure,
 documented functions (`contain_fit`, `build_mirror_axis`, `build_concat`,
-`build_boomerang`) so the same logic can be absorbed into the `sleepy-factory`
+`build_boomerang`) so the same logic can be absorbed into the `auto-ascii-factory`
 ingest stage (PLAN.md §5, stage 1) when it lands. Until then, run this tool
 first and point the factory at `corpus/prepared/`.
 

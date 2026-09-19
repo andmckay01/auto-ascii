@@ -3,7 +3,7 @@
 prep_video.py — auto-ascii corpus-preparation front door.
 
 Normalizes any source video onto a consistent canvas (default 1920x1080) so the
-offline factory (PLAN.md §5; the future `sleepy-factory` ingest stage) always
+offline factory (PLAN.md §5; the future `auto-ascii-factory` ingest stage) always
 receives canvas-normalized input regardless of source aspect. Pure stdlib;
 shells out to ffmpeg/ffprobe. Originals are never modified.
 

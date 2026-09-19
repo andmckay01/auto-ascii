@@ -1,14 +1,14 @@
 # params.toml — every factory tunable (PLAN §5: "the agent socket").
 #
-# These are the embedded defaults: `sleepy-factory` compiles this exact file
+# These are the embedded defaults: `auto-ascii-factory` compiles this exact file
 # in via include_str! and uses it when --params is not given, so committed
 # edits here change the default build. A --params FILE may override any
-# subset (missing keys keep these values); `sleepy-factory params --dump`
+# subset (missing keys keep these values); `auto-ascii-factory params --dump`
 # prints the effective merged config. A unit test pins this file to the
 # in-code defaults — keep the two in sync deliberately.
 #
 # Determinism guard: building with defaults must stay byte-identical to the
-# committed pipeline output (crates/sleepy-factory/tests/m2_params_eval.rs);
+# committed pipeline output (crates/auto-ascii-factory/tests/m2_params_eval.rs);
 # editing [build]/[shots]/[levels]/[edges]/[highlights]/[temporal] is a
 # deliberate re-baselining act.
 
@@ -26,11 +26,11 @@ base_h = 270
 # more; anyone willing to pay L12's size should be at L9 instead.
 # zstd is LOSSLESS, so decoded planes are byte-identical at any level: SSIM,
 # edge F1, flicker and damage cannot move. Only size and build time do.
-# NOTE: slpy-format's `WriterOptions::default()` deliberately stays at 19 —
+# NOTE: auto-ascii-format's `WriterOptions::default()` deliberately stays at 19 —
 # the format crate's default is not the factory's policy.
 zstd_level = 15
 # Keyframe cadence for the temporal-delta filter (PLAN §4: 60).
-# Range 1..=255 — the SLPY header stores this as u8.
+# Range 1..=255 — the ASCI header stores this as u8.
 keyframe_ivl = 60
 
 [shots]
@@ -96,7 +96,7 @@ ema_alpha_c_milli = 700
 # The player's per-cell §3.5 compositor tunables (M3). RENDERER knobs:
 # the eval driver hands these to the Player, so tuning them never rebuilds
 # assets (excluded from the build fingerprint / eval cache key). Defaults
-# are pinned to slpy_core::ComposeParams::default() by unit test —
+# are pinned to auto_ascii_core::ComposeParams::default() by unit test —
 # interactive playback (no params.toml) starts from the same baseline.
 #
 # Edge gate on/hold thresholds (strict >) on the box-resampled E plane.
@@ -130,7 +130,7 @@ edge_strong = 96
 quad_e_on = 2
 quad_e_off = 1
 # Ramp-index hysteresis width, Q8 fractions of one ramp step. The §3.5 spec
-# nominal is "boundary +/- 0.35 step" = 90 (slpy_core::IDX_HYST_Q8); promoted
+# nominal is "boundary +/- 0.35 step" = 90 (auto_ascii_core::IDX_HYST_Q8); promoted
 # to a tunable at M3 Tune and RE-TUNED to 160 (0.625 step) by the committed
 # corpus sweep (sweeps/m3-axis3 + Tune-finish, composite score 0.4160 vs
 # 0.3932 @ 90): grass flicker 2.313 -> 1.651 (the <= 2 gate breach fixed),
@@ -160,7 +160,7 @@ ssim_every = 30
 contact_frames = 3
 
 [eval.tolerances]
-# Baseline-compare tolerances (slpy-eval Tolerances; any subset overridable).
+# Baseline-compare tolerances (auto-ascii-eval Tolerances; any subset overridable).
 ssim_max_drop = 0.02
 flicker_max_increase = 0.5
 # M3: edge F1 vs source Canny (absolute drop; higher F1 always passes). The

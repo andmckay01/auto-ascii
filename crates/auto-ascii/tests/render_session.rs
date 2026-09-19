@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use slpy_eval::fixtures::{FIXTURE_FRAMES, Fixture, build_fixture};
+use auto_ascii_eval::fixtures::{FIXTURE_FRAMES, Fixture, build_fixture};
 use auto_ascii::{Cell, Error, Grid, PaletteChoice, RenderSession};
 
 /// Self-cleaning temp file (no tempfile dep — pinned workspace dep set).
@@ -17,7 +17,7 @@ struct TmpFile(PathBuf);
 impl TmpFile {
     fn with_fixture(fixture: Fixture, tag: &str) -> TmpFile {
         let mut p = std::env::temp_dir();
-        p.push(format!("auto-ascii-session-{}-{tag}.slpy", std::process::id()));
+        p.push(format!("auto-ascii-session-{}-{tag}.ascii", std::process::id()));
         fs::write(&p, build_fixture(fixture)).expect("write fixture asset");
         TmpFile(p)
     }
@@ -116,12 +116,12 @@ fn palette_and_cell_aspect_knobs() {
 // an embedder sees: which columns/rows are blank pads vs inked picture.
 // ---------------------------------------------------------------------------
 
-/// Build a minimal Y-only SLPY asset with the given header aspect and base
+/// Build a minimal Y-only ASCI asset with the given header aspect and base
 /// dims, every luma byte bright (220) so every viewport cell renders inked
 /// (no NORM → identity levels LUT).
 fn aspect_asset(aspect_num: u16, aspect_den: u16, base_w: u16, base_h: u16) -> Vec<u8> {
-    use slpy_format::header::plane_id;
-    use slpy_format::{Meta, PlaneRef, SlpyWriter, WriterOptions};
+    use auto_ascii_format::header::plane_id;
+    use auto_ascii_format::{Meta, PlaneRef, AsciiWriter, WriterOptions};
     let opts = WriterOptions {
         base_w,
         base_h,
@@ -137,7 +137,7 @@ fn aspect_asset(aspect_num: u16, aspect_den: u16, base_w: u16, base_h: u16) -> V
         palette_hints: Vec::new(),
     };
     let mut writer =
-        SlpyWriter::new(std::io::Cursor::new(Vec::new()), opts, &meta).expect("writer options");
+        AsciiWriter::new(std::io::Cursor::new(Vec::new()), opts, &meta).expect("writer options");
     let luma = vec![220u8; usize::from(base_w) * usize::from(base_h)];
     for _ in 0..4 {
         writer.write_frame(&[PlaneRef { id: plane_id::Y, data: &luma }]).expect("frame");
@@ -148,7 +148,7 @@ fn aspect_asset(aspect_num: u16, aspect_den: u16, base_w: u16, base_h: u16) -> V
 impl TmpFile {
     fn with_bytes(bytes: &[u8], tag: &str) -> TmpFile {
         let mut p = std::env::temp_dir();
-        p.push(format!("auto-ascii-session-{}-{tag}.slpy", std::process::id()));
+        p.push(format!("auto-ascii-session-{}-{tag}.ascii", std::process::id()));
         fs::write(&p, bytes).expect("write synthetic asset");
         TmpFile(p)
     }
@@ -181,7 +181,7 @@ fn four_by_three_asset_letterboxes_to_its_own_aspect() {
     assert!((session.aspect() - 4.0 / 3.0).abs() < 1e-9, "aspect() reports 4:3");
 
     // 80×24 at the default cell aspect 2.0: R = (4/3)·2 ≈ 2.667 →
-    // height-limited 64×24, pads L8/R8 (slpy-core worked example). The old
+    // height-limited 64×24, pads L8/R8 (auto-ascii-core worked example). The old
     // hard-coded 16:9 math produced 80×23 here — a shape this test rejects.
     assert_letterbox(session.render(0, 80, 24).unwrap(), 8, 8, 0, 0);
 
@@ -226,9 +226,9 @@ fn error_surface_is_coherent() {
     let e = session.render(FIXTURE_FRAMES, 80, 24).unwrap_err();
     assert!(matches!(e, Error::Config(_)), "{e}");
     // Missing file.
-    let e = RenderSession::open("/no/such/asset.slpy").unwrap_err();
+    let e = RenderSession::open("/no/such/asset.ascii").unwrap_err();
     assert!(matches!(e, Error::Io { .. }), "{e}");
-    // Present but not SLPY.
+    // Present but not ASCI.
     let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
     let e = RenderSession::open(manifest).unwrap_err();
     assert!(matches!(e, Error::Format { .. }), "{e}");
@@ -279,7 +279,7 @@ fn font_table_path_spec_loads_and_vetoes() {
 
     // Full palette coverage except '╱' (and no other gaps): unicode vetoed.
     let mut table = String::from("name = \"custom\"\nmissing = [\"╱\"]\n");
-    for ch in slpy_core_glyphs() {
+    for ch in auto_ascii_core_glyphs() {
         let esc = match ch {
             '"' => "\\\"".to_string(),
             '\\' => "\\\\".to_string(),
@@ -322,6 +322,6 @@ fn font_table_error_surface() {
 
 /// Every glyph the compositor can emit, from the palette data (test helper —
 /// mirrors what the generator rasterizes).
-fn slpy_core_glyphs() -> Vec<char> {
-    slpy_core::palette::all_palette_glyphs()
+fn auto_ascii_core_glyphs() -> Vec<char> {
+    auto_ascii_core::palette::all_palette_glyphs()
 }

@@ -1,16 +1,16 @@
 //! The one coherent error type of the facade (M4 item A): thiserror-style
-//! layering over [`SlpyError`] and `std::io::Error`, hand-rolled to keep the
+//! layering over [`AsciiError`] and `std::io::Error`, hand-rolled to keep the
 //! embedder dependency tree at zero beyond the engine itself (matching the
-//! slpy-format convention).
+//! auto-ascii-format convention).
 
 use std::fmt;
 use std::path::PathBuf;
 
-use slpy_format::SlpyError;
+use auto_ascii_format::AsciiError;
 
 /// Everything a `Player` or [`crate::RenderSession`] can fail with.
 ///
-/// Layering: container-level failures carry the underlying [`SlpyError`]
+/// Layering: container-level failures carry the underlying [`AsciiError`]
 /// (reachable through [`std::error::Error::source`] for `anyhow`-style chain
 /// printing); OS failures carry the `std::io::Error`.
 ///
@@ -27,13 +27,13 @@ pub enum Error {
         /// The underlying OS error.
         source: std::io::Error,
     },
-    /// The file is not a valid SLPY container (bad magic, truncation,
+    /// The file is not a valid ASCI container (bad magic, truncation,
     /// unsupported version, CRC mismatch, ...).
     Format {
         /// The asset path as given.
         path: PathBuf,
         /// The container-level failure.
-        source: SlpyError,
+        source: AsciiError,
     },
     /// The container parsed but cannot be played (no luma plane, zero
     /// frames, corrupt fps).
@@ -42,10 +42,10 @@ pub enum Error {
     Decode {
         /// The asset frame index being decoded.
         frame: u32,
-        /// The SLPY plane id (PLAN §4 registry) being decoded.
+        /// The ASCI plane id (PLAN §4 registry) being decoded.
         plane: u8,
         /// The container-level failure.
-        source: SlpyError,
+        source: AsciiError,
     },
     /// Invalid builder/session configuration (e.g. an fps cap ≤ 0, a seek
     /// past the end of the asset, a frame index out of range).
@@ -64,7 +64,7 @@ impl fmt::Display for Error {
         match self {
             Error::Io { path, .. } => write!(f, "cannot open {}", path.display()),
             Error::Format { path, .. } => {
-                write!(f, "{} is not a valid SLPY asset", path.display())
+                write!(f, "{} is not a valid ASCI asset", path.display())
             }
             Error::Asset(msg) => write!(f, "unplayable asset: {msg}"),
             Error::Decode { frame, plane, .. } => {
@@ -98,9 +98,9 @@ mod tests {
 
     #[test]
     fn display_and_source_chain() {
-        let e = Error::Decode { frame: 7, plane: 2, source: SlpyError::BadFrameIndex(7) };
+        let e = Error::Decode { frame: 7, plane: 2, source: AsciiError::BadFrameIndex(7) };
         assert_eq!(e.to_string(), "decoding plane 2 of frame 7");
-        let src = e.source().expect("SlpyError must be reachable via source()");
+        let src = e.source().expect("AsciiError must be reachable via source()");
         assert_eq!(src.to_string(), "frame index 7 out of range");
         let e = Error::Asset("asset has zero frames");
         assert!(e.source().is_none());
@@ -114,11 +114,11 @@ mod tests {
     fn display_never_repeats_the_source() {
         let errors = [
             Error::Io {
-                path: "/tmp/x.slpy".into(),
+                path: "/tmp/x.ascii".into(),
                 source: std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
             },
-            Error::Format { path: "/tmp/x.slpy".into(), source: SlpyError::BadFrameIndex(3) },
-            Error::Decode { frame: 7, plane: 2, source: SlpyError::BadFrameIndex(7) },
+            Error::Format { path: "/tmp/x.ascii".into(), source: AsciiError::BadFrameIndex(3) },
+            Error::Decode { frame: 7, plane: 2, source: AsciiError::BadFrameIndex(7) },
             Error::Terminal(std::io::Error::other("not a tty")),
         ];
         for e in &errors {

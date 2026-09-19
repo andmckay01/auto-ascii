@@ -4,5 +4,9 @@
 corpus/*.mp4
 corpus/prepared/*.mp4
 corpus/prepared/samples/
+*.ascii
+# legacy pre-rename assets: still on disk locally until swept, and renaming
+# this pattern un-ignored them once already. Keep it so ~1.2 GB of stale
+# binaries can never be staged by accident.
 *.slpy
 __pycache__/

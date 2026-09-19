@@ -2,7 +2,7 @@
 //! tier byte checks through `--sim-dump`, seek-vs-sequential byte identity,
 //! runtime NORM application, chroma fg, and probe-related no-hang behavior.
 
-// These drive the real `sleepy-player` binary via CARGO_BIN_EXE_*, which
+// These drive the real `auto-ascii-player` binary via CARGO_BIN_EXE_*, which
 // only exists when the `bin` feature is on (its required-features).
 // Without this gate the harness silently reuses a stale binary left on
 // disk by an earlier default-feature build (M4 review).
@@ -12,8 +12,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use slpy_format::header::plane_id;
-use slpy_format::{Meta, PlaneLevels, PlaneRef, ShotRecord, SlpyWriter, WriterOptions, norm_flags};
+use auto_ascii_format::header::plane_id;
+use auto_ascii_format::{Meta, PlaneLevels, PlaneRef, ShotRecord, AsciiWriter, WriterOptions, norm_flags};
 
 /// Self-cleaning temp file (no tempfile dep — pinned workspace dep set).
 struct TmpFile(PathBuf);
@@ -21,7 +21,7 @@ struct TmpFile(PathBuf);
 impl TmpFile {
     fn new(name: &str) -> TmpFile {
         let mut p = std::env::temp_dir();
-        p.push(format!("sleepy-player-m1-{}-{name}", std::process::id()));
+        p.push(format!("auto-ascii-player-m1-{}-{name}", std::process::id()));
         TmpFile(p)
     }
 }
@@ -45,7 +45,7 @@ fn write_delta_asset(path: &PathBuf, frames: u32) {
     let opts = WriterOptions { zstd_level: 3, keyframe_ivl: 5, ..WriterOptions::default() };
     let (w, h) = (opts.base_w as usize, opts.base_h as usize);
     let file = fs::File::create(path).unwrap();
-    let mut writer = SlpyWriter::new(std::io::BufWriter::new(file), opts, &meta()).unwrap();
+    let mut writer = AsciiWriter::new(std::io::BufWriter::new(file), opts, &meta()).unwrap();
     let mut plane = vec![0u8; w * h];
     for f in 0..frames {
         for (i, px) in plane.iter_mut().enumerate() {
@@ -67,7 +67,7 @@ fn write_chroma_asset(path: &PathBuf, frames: u32) {
     };
     let (w, h) = (opts.base_w as usize, opts.base_h as usize);
     let file = fs::File::create(path).unwrap();
-    let mut writer = SlpyWriter::new(std::io::BufWriter::new(file), opts, &meta()).unwrap();
+    let mut writer = AsciiWriter::new(std::io::BufWriter::new(file), opts, &meta()).unwrap();
     let luma = vec![128u8; w * h];
     let chroma: Vec<u8> = 0xF800u16
         .to_le_bytes()
@@ -93,7 +93,7 @@ fn write_norm_asset(path: &PathBuf) {
     let opts = WriterOptions { zstd_level: 3, ..WriterOptions::default() };
     let (w, h) = (opts.base_w as usize, opts.base_h as usize);
     let file = fs::File::create(path).unwrap();
-    let mut writer = SlpyWriter::new(std::io::BufWriter::new(file), opts, &meta()).unwrap();
+    let mut writer = AsciiWriter::new(std::io::BufWriter::new(file), opts, &meta()).unwrap();
     let mk = |first_frame: u32, flags: u8, p98: u8| {
         let mut levels = [PlaneLevels::default(); 8];
         levels[0] = PlaneLevels { p2: 0, p98 };
@@ -110,10 +110,10 @@ fn write_norm_asset(path: &PathBuf) {
 }
 
 fn run_player(args: &[&str]) -> (bool, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_sleepy-player"))
+    let out = Command::new(env!("CARGO_BIN_EXE_auto-ascii-player"))
         .args(args)
         .output()
-        .expect("spawn sleepy-player");
+        .expect("spawn auto-ascii-player");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -172,7 +172,7 @@ fn split_frames(stream: &[u8]) -> Vec<Vec<u8>> {
 
 #[test]
 fn tier_256_emits_only_indexed_sgr() {
-    let asset = TmpFile::new("t256.slpy");
+    let asset = TmpFile::new("t256.ascii");
     write_chroma_asset(&asset.0, 3);
     let dump = TmpFile::new("t256.bin");
     let (ok, _, stderr) = run_player(&[
@@ -208,7 +208,7 @@ fn tier_256_emits_only_indexed_sgr() {
 
 #[test]
 fn tier_mono_emits_no_sgr_and_truecolor_uses_chroma_fg() {
-    let asset = TmpFile::new("tmono.slpy");
+    let asset = TmpFile::new("tmono.ascii");
     write_chroma_asset(&asset.0, 3);
 
     let dump = TmpFile::new("tmono.bin");
@@ -259,17 +259,17 @@ fn tier_mono_emits_no_sgr_and_truecolor_uses_chroma_fg() {
 #[test]
 fn seek_lands_on_identical_decoded_planes() {
     use auto_ascii::pipeline::Player;
-    use slpy_core::{ColorDepth, GlyphTier};
-    use slpy_format::SlpyReader;
-    use slpy_term::SimBackend;
+    use auto_ascii_core::{ColorDepth, GlyphTier};
+    use auto_ascii_format::AsciiReader;
+    use auto_ascii_term::SimBackend;
 
-    let asset = TmpFile::new("seek.slpy");
+    let asset = TmpFile::new("seek.ascii");
     write_delta_asset(&asset.0, 23); // keyframes at 0,5,10,15,20
     let bytes = fs::read(&asset.0).unwrap();
 
     let new_player = || {
         Player::new(
-            SlpyReader::open(&bytes).unwrap(),
+            AsciiReader::open(&bytes).unwrap(),
             2.0,
             true,
             ColorDepth::True,
@@ -310,7 +310,7 @@ fn seek_lands_on_identical_decoded_planes() {
 
 #[test]
 fn norm_levels_apply_per_shot_at_runtime() {
-    let asset = TmpFile::new("norm.slpy");
+    let asset = TmpFile::new("norm.ascii");
     write_norm_asset(&asset.0);
 
     let dump = TmpFile::new("norm.bin");
@@ -348,7 +348,7 @@ fn norm_levels_apply_per_shot_at_runtime() {
 
 #[test]
 fn seek_flag_validates_input() {
-    let asset = TmpFile::new("badseek.slpy");
+    let asset = TmpFile::new("badseek.ascii");
     write_delta_asset(&asset.0, 5);
 
     let (ok, _, stderr) =
@@ -367,7 +367,7 @@ fn seek_flag_validates_input() {
 
 #[test]
 fn probe_flags_never_hang_headless() {
-    let asset = TmpFile::new("probe.slpy");
+    let asset = TmpFile::new("probe.ascii");
     write_delta_asset(&asset.0, 3);
 
     // --help with piped stdio (M1 acceptance 4: never hangs piped output).
@@ -401,11 +401,11 @@ fn probe_flags_never_hang_headless() {
 /// M2 review fix 1 (player main.rs:202 low): an asset whose header claims a
 /// degenerate base width (base_w == 1 → C plane width 0) used to reach the
 /// resampler and PANIC at `Resampler::build`. The rule is now "base dims
-/// even and >= 2", enforced by the SLPY reader (and writer), so the player
-/// must fail with a clean "not a valid SLPY asset" error — never a panic.
+/// even and >= 2", enforced by the ASCI reader (and writer), so the player
+/// must fail with a clean "not a valid ASCI asset" error — never a panic.
 #[test]
 fn degenerate_base_dims_are_a_clean_player_error() {
-    let asset = TmpFile::new("degenerate.slpy");
+    let asset = TmpFile::new("degenerate.ascii");
     write_chroma_asset(&asset.0, 3);
 
     // Valid asset plays fine before tampering.
@@ -427,7 +427,7 @@ fn degenerate_base_dims_are_a_clean_player_error() {
         let (ok, _, stderr) = run_player(&[asset.0.to_str().unwrap(), "--sim", "80x24:1"]);
         assert!(!ok, "{what}: tampered asset must be rejected");
         assert!(
-            stderr.contains("not a valid SLPY asset"),
+            stderr.contains("not a valid ASCI asset"),
             "{what}: expected a clean reader error, got: {stderr}"
         );
         assert!(!stderr.contains("panicked"), "{what}: player panicked: {stderr}");

@@ -22,7 +22,7 @@ Received via Taildrop 2026-07-25; originals pristine, factory reads them read-on
   (`--fill mirror` or `--fill mirror-invert`; sample frames in
   `prepared/samples/`). The factory always receives canvas-normalized input and
   needs no per-aspect logic; the tool's filtergraph will be absorbed into the
-  `sleepy-factory` ingest stage later. See `tools/README.md`.
+  `auto-ascii-factory` ingest stage later. See `tools/README.md`.
 - **Clip 1 duration (13.8 min):** plan sizing assumed ~3-min clips (~122–350 MB/asset).
   At 13.8 min expect roughly 4.6× that. For iteration speed, cut a canonical 2–3 min
   excerpt (factory `--ss/--t` passthrough) and keep the full video for soak tests.

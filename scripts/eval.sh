@@ -18,7 +18,7 @@
 #              perf/thresholds.toml.
 #   5 corpus   only when the canonical 3-clip corpus (gitignored, local) is
 #              present: assemble target/eval-corpus symlinks, run
-#              `sleepy-factory eval` against runs/base.json (when present)
+#              `auto-ascii-factory eval` against runs/base.json (when present)
 #              writing runs/latest.{json,html}, with the real-corpus
 #              determinism guard (grass rebuild byte-identical to assets/)
 #              running concurrently — byte-identity is load-invariant, so
@@ -101,7 +101,7 @@ if $have_corpus; then
     # (guard builds fresh; eval reads runs/cache). cargo's target-dir lock
     # only serializes their already-warm no-op build steps.
     guard_log="target/eval-guard.log"
-    cargo test --quiet --release -p sleepy-factory --test m2_params_eval -- \
+    cargo test --quiet --release -p auto-ascii-factory --test m2_params_eval -- \
         --ignored grass_rebuild_matches_assets_copy >"$guard_log" 2>&1 &
     guard_pid=$!
     # EVAL_BASELINE overrides the committed baseline for one run (default
@@ -117,7 +117,7 @@ if $have_corpus; then
     else
         echo "NOTICE: $baseline missing — running eval without baseline compare"
     fi
-    if ! cargo run --quiet --release -p sleepy-factory -- eval \
+    if ! cargo run --quiet --release -p auto-ascii-factory -- eval \
         --corpus "$corpus_dir" "${baseline_args[@]}" \
         --out runs/latest.json --html runs/latest.html --cache-dir runs/cache
     then

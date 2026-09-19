@@ -1,8 +1,8 @@
 //! FixtureRenderer ⇄ Player parity (M2 review fix; re-keyed at M3).
 //!
-//! The committed goldens (36 insta cell-grid snapshots in slpy-eval, 4
-//! per-tier escape-stream goldens in slpy-term) render through
-//! `slpy_eval::fixtures::FixtureRenderer` — a replay of the player pipeline
+//! The committed goldens (36 insta cell-grid snapshots in auto-ascii-eval, 4
+//! per-tier escape-stream goldens in auto-ascii-term) render through
+//! `auto_ascii_eval::fixtures::FixtureRenderer` — a replay of the player pipeline
 //! on public APIs. That replica is only trustworthy if it provably matches
 //! the shipping renderer, so this test pins them cell-for-cell (glyph AND
 //! colors) across every fixture, every M3 palette config (ascii / unicode /
@@ -22,9 +22,9 @@
 //! goldens DELIBERATELY — never let them drift apart silently.
 
 use auto_ascii::pipeline::Player;
-use slpy_eval::fixtures::{Fixture, FixtureRenderer, GoldenPalette, build_fixture};
-use slpy_format::SlpyReader;
-use slpy_term::SimBackend;
+use auto_ascii_eval::fixtures::{Fixture, FixtureRenderer, GoldenPalette, build_fixture};
+use auto_ascii_format::AsciiReader;
+use auto_ascii_term::SimBackend;
 
 /// Terminal sweep: golden grids (48×12 / 80×24 / 206×58 / 320×90), a coarse
 /// mid-size (60×18), the PLAN worked example (213×58) and one below-minimum
@@ -46,10 +46,10 @@ const FRAMES: &[u32] = &[0, 1, 2, 36, 37, 12];
 
 fn assert_grid_parity(fixture: Fixture, palette: GoldenPalette) {
     let asset = build_fixture(fixture);
-    let reader = SlpyReader::open(&asset).expect("fixture asset is valid");
+    let reader = AsciiReader::open(&asset).expect("fixture asset is valid");
     let (tier, depth) = palette.config();
     // Diff mode; the color depth mirrors the tier (mono skips chroma).
-    let mut player = Player::new(reader, slpy_core::DEFAULT_CELL_ASPECT, false, depth, tier)
+    let mut player = Player::new(reader, auto_ascii_core::DEFAULT_CELL_ASPECT, false, depth, tier)
         .expect("player over the fixture");
     let mut backend = SimBackend::new(80, 24);
 

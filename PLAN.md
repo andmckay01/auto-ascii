@@ -1,12 +1,12 @@
-# SLEEPYTIME — Final Build Plan (PLAN.md)
+# AUTO-ASCII — Final Build Plan (PLAN.md)
 
 > **Scope amendment (2026-07-25, owner directive):** connectivity-oriented engineering is OUT of scope. No SSH/WAN-link tuning or testing, no tmux/ConPTY quirk-chasing, no adaptive throughput governor / downshift ladder, no throttled-link CI gates. The engine targets local terminals and stays abstract and simple to embed in another project. The backend abstraction and capability tiers (color depth, glyph repertoire) remain — those are about terminal features, not connectivity. The diff renderer remains as generic efficiency. Prose below that references SSH/tmux worst cases predates this amendment; where it conflicts, this note wins. M4 is re-scoped to "embeddable library API + local-terminal compatibility."
 
 ## 1. Executive summary
 
-**Sleepytime** is a realtime ASCII-art video engine: an offline **factory** distills reference video into a resolution-independent feature asset, and a terminal **player** maps that asset onto whatever grid the user has right now — 24–30 fps, letterboxed 16:9, live resize, from Kitty down to a Linux console over SSH. All-Rust, one Cargo workspace, two binaries.
+**auto-ascii** is a realtime ASCII-art video engine: an offline **factory** distills reference video into a resolution-independent feature asset, and a terminal **player** maps that asset onto whatever grid the user has right now — 24–30 fps, letterboxed 16:9, live resize, from Kitty down to a Linux console over SSH. All-Rust, one Cargo workspace, two binaries.
 
-**(a) Asset file format — direct answer.** We recommend a **custom RIFF-style chunked container ("SLPY v1"): per-frame zstd-compressed feature planes with a temporal byte-delta pre-pass, an explicit frame index, and a CBOR metadata chunk.** Why: it was benchmarked against mp4/ffmpeg, npz, flatbuffers, SQLite, and CBOR streams, and it is the only candidate that simultaneously hits every requirement — measured **14–25× compression** (temporal delta multiplies zstd's ratio 4–6×), **~0.2 ms/frame decode** (5× under our 1 ms budget), O(1) seek via the index, trivially mmap-able, single tiny dependency (libzstd, ~300 KB, vendorable), and a reader that is ~300 lines of Rust we fully own. Video codecs are disqualified outright: lossy coding and chroma subsampling corrupt feature planes, and ffmpeg is a dependency disaster for a runtime player. A 3-minute clip lands at ~122 MB on synthetic planes, ~190–350 MB conservatively on real footage — acceptable, with format-compatible shrink levers in reserve. We drop the SQLite fallback entirely: if index patching gets annoying we fix 30 lines, we don't adopt a second container. Crucially, the asset stores **feature planes only, never glyphs** — glyph choice happens at render time (requirement 4).
+**(a) Asset file format — direct answer.** We recommend a **custom RIFF-style chunked container ("ASCI v1"): per-frame zstd-compressed feature planes with a temporal byte-delta pre-pass, an explicit frame index, and a CBOR metadata chunk.** Why: it was benchmarked against mp4/ffmpeg, npz, flatbuffers, SQLite, and CBOR streams, and it is the only candidate that simultaneously hits every requirement — measured **14–25× compression** (temporal delta multiplies zstd's ratio 4–6×), **~0.2 ms/frame decode** (5× under our 1 ms budget), O(1) seek via the index, trivially mmap-able, single tiny dependency (libzstd, ~300 KB, vendorable), and a reader that is ~300 lines of Rust we fully own. Video codecs are disqualified outright: lossy coding and chroma subsampling corrupt feature planes, and ffmpeg is a dependency disaster for a runtime player. A 3-minute clip lands at ~122 MB on synthetic planes, ~190–350 MB conservatively on real footage — acceptable, with format-compatible shrink levers in reserve. We drop the SQLite fallback entirely: if index patching gets annoying we fix 30 lines, we don't adopt a second container. Crucially, the asset stores **feature planes only, never glyphs** — glyph choice happens at render time (requirement 4).
 
 **(b) "3–10 character configurations" — verdict: agree, with one refinement.** The count is right; the *key* is wrong. Configurations should be keyed by **charset tier × layer role**, not by resolution — density (cell count) selects ramp *length within* a config rather than multiplying the set. The full cross-product (3 tiers × 3 densities × 3 roles = 27) is over-engineering. **We will ship exactly 8 palettes** (concrete ramps in §3.4): two ASCII base ramps (coarse/fine), ASCII edge LUT, ASCII highlight, Unicode block base, Unicode edge, Unicode braille detail (verified-support only), and a mono/CP437-safe fallback. Truecolor tiers get shorter ramps (color carries luminance); mono tiers get the longest.
 
@@ -22,22 +22,22 @@
       | ffmpeg subprocess                                                  |
       | rawvideo rgb24 @ 480x270, fps-normalized                           v
       v                                                          +--------------------+
- +-----------------------------+                                 |  sleepy-player     |
- |  sleepy-factory             |                                 |  event loop, pacing|
+ +-----------------------------+                                 |  auto-ascii-player     |
+ |  auto-ascii-factory             |                                 |  event loop, pacing|
  |  shot detect (hist delta)   |                                 |  downshift governor|
  |  L* luma + p2/p98 levels    |                                 +---------+----------+
  |  Scharr -> orient smooth    |                                           |
- |    -> E, Ex, Ey (2-theta)   |      asset.slpy                 +---------v----------+
- |  top-hat highlights (H)     |      [HEADER|META|NORM|         |  slpy-core         |
+ |    -> E, Ex, Ey (2-theta)   |      asset.ascii                 +---------v----------+
+ |  top-hat highlights (H)     |      [HEADER|META|NORM|         |  auto-ascii-core         |
  |  temporal EMA               |       FRAM..|FIDX|TRLR]         |  viewport/letterbox|
  |  delta + zstd-15 encode     | ---> mmap + O(1) index seek --> |  separable resample|
  +-----------------------------+      0.2 ms/frame decode        |  layer compositor  |
               ^                                                  |  hysteresis        |
               |                                                  |  glyph+RGB Cells   |
  +------------+---------------+                                  +---------+----------+
- |  slpy-eval                 |                                            |
+ |  auto-ascii-eval                 |                                            |
  |  SSIM / edge F1 / flicker  |                                  +---------v----------+
- |  goldens, fuzz, perf gates |                                  |  slpy-term backend |
+ |  goldens, fuzz, perf gates |                                  |  auto-ascii-term backend |
  |  SimBackend @ 2 MB/s       |                                  |  quantize -> diff  |
  |  JSON + HTML contact sheet |                                  |  -> SGR-elide      |
  +----------------------------+                                  |  ?2026 wrap        |
@@ -49,7 +49,7 @@
                                                           / ssh / Linux console
 ```
 
-Crates: `slpy-format` (container, no I/O policy), `slpy-core` (pure engine: viewport, resampler, compositor, palettes, hysteresis — no terminal, no clock, fully golden-testable), `slpy-term` (Backend trait, `AnsiBackend`, `SimBackend`, capability probe), `sleepy-player` (bin), `sleepy-factory` (bin), `slpy-eval` (metrics/harness).
+Crates: `auto-ascii-format` (container, no I/O policy), `auto-ascii-core` (pure engine: viewport, resampler, compositor, palettes, hysteresis — no terminal, no clock, fully golden-testable), `auto-ascii-term` (Backend trait, `AnsiBackend`, `SimBackend`, capability probe), `auto-ascii-player` (bin), `auto-ascii-factory` (bin), `auto-ascii-eval` (metrics/harness).
 
 ## 3. Runtime engine spec
 
@@ -159,13 +159,13 @@ Per frame: **(1)** drain events; on resize flag (SIGWINCH handler only sets an a
 
 CPU is never the problem; **bytes are the budget**: slow-tier target ≤64 KB/frame (≈1.9 MB/s @30 fps); typical coherence + hysteresis yields 10–30% damage → 15–40 KB/frame in 256-color diff mode. Windows/ConPTY: consume `WINDOW_BUFFER_SIZE_EVENT`, enable VT processing, classify slow — make it work, don't optimize it.
 
-## 4. Asset format spec — SLPY v1
+## 4. Asset format spec — ASCI v1
 
 Custom chunked container. All integers little-endian. Only dependency: libzstd.
 
 ```
 HEADER (64 B fixed):
-  0  magic "SLPY" 4B          4  version_major u16 (reader rejects if > supported)
+  0  magic "ASCI" 4B          4  version_major u16 (reader rejects if > supported)
   6  version_minor u16 (additive only)   8  header_size u32 (=64)
  12  flags u32 (bit0 index present, bit1 CRCs present)
  16  fps_num/fps_den u16/u16  20  base_w,base_h u16/u16 (480,270)
@@ -185,7 +185,7 @@ CHUNKS (tag FourCC u32 | flags u8 (bit0=required) | pad u24 | size u64 | payload
         each plane subblock padded to 64-B alignment (SIMD/memadd-friendly decode targets).
         Per-plane subblocks let low tiers skip chroma entirely.
   FIDX  written last: frame_count × 16 B {offset u64, comp_size u32, flags u8, pad u24}.
-  TRLR  "SLPY_END" — absence ⇒ truncated ⇒ factory rerun (factory is idempotent).
+  TRLR  "ASCI_END" — absence ⇒ truncated ⇒ factory rerun (factory is idempotent).
 ```
 
 **Planes (6):** Y as L\* 480×270 u8; E = smoothed edge magnitude, unthinned (runtime max-pools so thin edges survive any grid); Ex/Ey doubled-angle u8 bias-128; H flags (bit0 highlight, bit1 deep shadow); C chroma RGB565 at 240×135 (half-res invisible at cell granularity).
@@ -214,15 +214,15 @@ CHUNKS (tag FourCC u32 | flags u8 (bit0=required) | pad u24 | size u64 | payload
 **CLI shape:**
 
 ```
-sleepy-factory build   <in.mp4> -o out.slpy --params params.toml
-sleepy-factory eval    --corpus clips/ --params params.toml --baseline runs/base.json
-sleepy-factory inspect <asset.slpy>          # header, chunks, sizes, CRC check
-sleepy-factory sweep   --params params.toml --grid sweeps/edge_thresholds.toml
+auto-ascii-factory build   <in.mp4> -o out.ascii --params params.toml
+auto-ascii-factory eval    --corpus clips/ --params params.toml --baseline runs/base.json
+auto-ascii-factory inspect <asset.ascii>          # header, chunks, sizes, CRC check
+auto-ascii-factory sweep   --params params.toml --grid sweeps/edge_thresholds.toml
 ```
 
 **Every tunable lives in `params.toml`** — edge thresholds, EMA constants, hysteresis δ, ramp definitions, highlight percentiles. **This is the agent socket:** an orchestrating agent runs `build → eval → read metrics JSON → edit params.toml → repeat`, hundreds of headless iterations with no terminal and no human in the loop; humans review only the HTML contact sheets. Palettes-as-TOML means taste iteration never touches code.
 
-## 6. Eval & iteration harness (`slpy-eval`)
+## 6. Eval & iteration harness (`auto-ascii-eval`)
 
 Built at **M2, before layer/quality work** — every subjective engineering decision afterward is measured. Deterministic core (fixed-point math, no per-frame RNG) makes all of this byte-exact.
 
@@ -234,7 +234,7 @@ Built at **M2, before layer/quality work** — every subjective engineering deci
 - **Frame time** per pipeline stage.
 
 **Golden tests (`insta`):**
-- **SLPY byte-level goldens (graft from C, lands M0/M1):** deterministic writer output for a fixed synthetic input; per-chunk CRC asserted. The synthetic plane generator from the format research is the regression baseline.
+- **ASCI byte-level goldens (graft from C, lands M0/M1):** deterministic writer output for a fixed synthetic input; per-chunk CRC asserted. The synthetic plane generator from the format research is the regression baseline.
 - Cell-grid snapshots: 3 fixture assets × grids 80×24 / 206×58 / 320×90 × 3 palettes.
 - **Per-palette golden escape-byte streams (graft from B):** degradation on fonts missing `╱╲` or braille is *tested* via `glyph_support` tiers, not assumed.
 
@@ -244,12 +244,12 @@ Built at **M2, before layer/quality work** — every subjective engineering deci
 
 **The human loop:** every `eval` run emits an HTML contact sheet (source vs render side-by-side, per-metric deltas vs baseline). Metrics catch regressions; contact sheets catch "metrics pass, art fails."
 
-**Enforced discipline:** `resize()` is the only allocation point in the hot path — asserted in `slpy-core` tests via a counting allocator, not aspiration.
+**Enforced discipline:** `resize()` is the only allocation point in the hot path — asserted in `auto-ascii-core` tests via a counting allocator, not aspiration.
 
 ## 7. Milestones
 
-- **M0 — visible end-to-end demo (~week 1).** ffmpeg → luma-only SLPY-lite → player: letterbox math, live resize, ASCII base ramp, truecolor fg, diff renderer with invalidate-every-frame default, kitty target. SLPY writer already byte-deterministic with CRC goldens. *Accept:* 3-min clip ≥24 fps on kitty; resize reflows next frame; Ctrl-C/SIGTERM/panic restores terminal (pty test); SLPY byte-golden green.
-- **M1 — real format + tiers.** Full SLPY v1 (delta+zstd, 64-B-aligned subblocks, FIDX, seek); caps probe with DA1 sentinel + cache + `--tier`/`--no-query`; truecolor/256/mono; ?2026; quantize-before-diff; one-write frames. *Accept:* asset ≤350 MB/3 min on real corpus; seek <50 ms; correct tier auto-detected on kitty, xterm-256color, linux console; probe never hangs piped output; CPU <8 ms/frame.
+- **M0 — visible end-to-end demo (~week 1).** ffmpeg → luma-only ASCI-lite → player: letterbox math, live resize, ASCII base ramp, truecolor fg, diff renderer with invalidate-every-frame default, kitty target. ASCI writer already byte-deterministic with CRC goldens. *Accept:* 3-min clip ≥24 fps on kitty; resize reflows next frame; Ctrl-C/SIGTERM/panic restores terminal (pty test); ASCI byte-golden green.
+- **M1 — real format + tiers.** Full ASCI v1 (delta+zstd, 64-B-aligned subblocks, FIDX, seek); caps probe with DA1 sentinel + cache + `--tier`/`--no-query`; truecolor/256/mono; ?2026; quantize-before-diff; one-write frames. *Accept:* asset ≤350 MB/3 min on real corpus; seek <50 ms; correct tier auto-detected on kitty, xterm-256color, linux console; probe never hangs piped output; CPU <8 ms/frame.
 - **M2 — harness online (before quality work).** Metrics JSON, goldens ×3 grids ×3 palettes, 10k fuzz cases with full invariant set, criterion gates, end-to-end SimBackend fps gate (unthrottled — throttled-link gate descoped per Scope amendment), HTML contact sheets. *Accept:* one command runs the loop <5 min; a deliberate 20% perf regression and a deliberate param regression both fail CI.
 - **M3 — layers.** Ex/Ey edge LUT + coherence suppression, highlight layer, luma at Vc×2Vr with half-block fills + subposition glyphs, full hysteresis + scene-cut + resize resets, all 8 palettes. *Accept:* flicker ≤2 switches/cell/s static; edge F1 ≥ tuned baseline vs source Canny; goldens re-approved deliberately; human sign-off on the fixed review reel.
 - **M4 — embeddable library API + local-terminal compatibility (re-scoped per Scope amendment).** Extract a clean library crate API so the engine drops into another project: `auto_ascii::Player::builder().asset(path).palette(p).build()?.run()` plus a low-level `render_frame(&asset, grid) -> Grid<Cell>` entry for callers who own their event loop; feature-gate the binary; docs.rs-quality API docs with an embedding example. *Accept:* a fresh 20-line example crate depending on the library plays an asset; local terminals verified: kitty, alacritty, wezterm, gnome-terminal, xterm; `TERM=linux` legible with palette 8; no connectivity-specific code paths anywhere.
@@ -260,12 +260,12 @@ Built at **M2, before layer/quality work** — every subjective engineering deci
 
 All-Rust workspace; ffmpeg strictly as CLI subprocess.
 
-- **`slpy-format`:** `zstd`, `crc32fast`, `ciborium` (META only — frame payloads are hand-rolled fixed layout, not serde).
-- **`slpy-core`:** no deps beyond `std` (pure, golden-testable).
-- **`slpy-term`:** `crossterm` (raw mode/alt screen/events ONLY — never per-cell commands), `libc` (ioctl/termios/self-pipe).
-- **`sleepy-player`:** `memmap2`, `clap`, `anyhow`.
-- **`sleepy-factory`:** `image`, `imageproc`, `rayon`, `ndarray`, `clap`, `indicatif`, `serde_json` (ffprobe), `std::process::Command` (ffmpeg).
-- **`slpy-eval` / dev:** `insta`, `proptest`, `criterion`.
+- **`auto-ascii-format`:** `zstd`, `crc32fast`, `ciborium` (META only — frame payloads are hand-rolled fixed layout, not serde).
+- **`auto-ascii-core`:** no deps beyond `std` (pure, golden-testable).
+- **`auto-ascii-term`:** `crossterm` (raw mode/alt screen/events ONLY — never per-cell commands), `libc` (ioctl/termios/self-pipe).
+- **`auto-ascii-player`:** `memmap2`, `clap`, `anyhow`.
+- **`auto-ascii-factory`:** `image`, `imageproc`, `rayon`, `ndarray`, `clap`, `indicatif`, `serde_json` (ffprobe), `std::process::Command` (ffmpeg).
+- **`auto-ascii-eval` / dev:** `insta`, `proptest`, `criterion`.
 - Rejected: libav bindings (`ffmpeg-next`), OpenCV, flatbuffers/capnproto, SQLite, ratatui-for-video (optional HUD only), Python anywhere in the shipping path.
 
 License hygiene: all deps MIT/Apache/BSD. chafa (LGPL), mpv/timg/jp2a (GPL) are concept-only sources — algorithms studied, zero code reuse.

@@ -1,7 +1,7 @@
 //! **auto-ascii** — realtime ASCII-art video for terminals and embedders.
 //!
 //! An offline factory distills reference video into a resolution-independent
-//! feature asset (`.slpy`); this crate maps that asset onto whatever cell
+//! feature asset (`.ascii`); this crate maps that asset onto whatever cell
 //! grid you have right now — glyph ramps, directional edge strokes,
 //! highlights and half-blocks, with temporal hysteresis so nothing flickers
 //! (PLAN §1). Assets never store glyphs; every glyph decision happens at
@@ -20,7 +20,7 @@
 #![cfg_attr(feature = "terminal", doc = "```no_run")]
 #![cfg_attr(not(feature = "terminal"), doc = "```no_run,ignore")]
 //! auto_ascii::Player::builder()
-//!     .asset("intro.slpy")
+//!     .asset("intro.ascii")
 //!     .looping(true)
 //!     .build()?
 //!     .run()?;
@@ -32,12 +32,12 @@
 //!
 //! ```
 //! use auto_ascii::RenderSession;
-//! # // The doctest renders a synthetic test asset instead of "intro.slpy".
-//! # let path = std::env::temp_dir().join("auto-ascii-doc-quickstart.slpy");
-//! # let fixture = slpy_eval::fixtures::Fixture::GradientMotion;
-//! # std::fs::write(&path, slpy_eval::fixtures::build_fixture(fixture)).unwrap();
+//! # // The doctest renders a synthetic test asset instead of "intro.ascii".
+//! # let path = std::env::temp_dir().join("auto-ascii-doc-quickstart.ascii");
+//! # let fixture = auto_ascii_eval::fixtures::Fixture::GradientMotion;
+//! # std::fs::write(&path, auto_ascii_eval::fixtures::build_fixture(fixture)).unwrap();
 //!
-//! let mut session = RenderSession::open(&path)?;     // "intro.slpy"
+//! let mut session = RenderSession::open(&path)?;     // "intro.ascii"
 //! let fps = session.fps();                           // drive your own clock
 //! // your loop, your canvas — ask for any frame at any grid size:
 //! let grid = session.render(/*frame*/ 0, /*cols*/ 120, /*rows*/ 40)?;
@@ -60,15 +60,15 @@
 //!
 //! | feature | default | provides |
 //! |---|---|---|
-//! | `bin` | **on** | the `sleepy-player` CLI binary (implies `terminal`) |
+//! | `bin` | **on** | the `auto-ascii-player` CLI binary (implies `terminal`) |
 //! | `terminal` | via `bin` | `Player`/`PlayerBuilder` — the blocking terminal session |
 //! | *(none)* | | [`RenderSession`] only: no crossterm, no clap — the pure-embedder build (`default-features = false`) |
 //!
 //! # What is deliberately NOT here
 //!
-//! Producing `.slpy` assets is the offline `sleepy-factory` binary's job
+//! Producing `.ascii` assets is the offline `auto-ascii-factory` binary's job
 //! (see the repository README); the player never links video codecs. The
-//! internal engine crates (`slpy-core`, `slpy-term`, `slpy-format`) are
+//! internal engine crates (`auto-ascii-core`, `auto-ascii-term`, `auto-ascii-format`) are
 //! implementation details — the types you need ([`Grid`], [`Cell`],
 //! [`Rgb`]) are re-exported here and nothing else is part of the public
 //! contract.
@@ -80,7 +80,7 @@
 #![deny(missing_docs)]
 
 // The engine room: the exact frame pipeline shared by the CLI binary, the
-// facade Player, RenderSession and the sleepy-factory eval harness (M2 item
+// facade Player, RenderSession and the auto-ascii-factory eval harness (M2 item
 // B: metrics must measure the real renderer). Hidden: it is the workspace
 // harness contract, not the embedding API, and is exempt from facade semver.
 #[doc(hidden)]
@@ -102,9 +102,9 @@ pub use player::{Dial, MIN_FPS_CAP, Player, PlayerBuilder, RepaintMode, SCRUB_ST
 // touches). Grid/Cell/Rgb are what RenderSession::render returns; ColorTier
 // is the PlayerBuilder::tier argument. Everything else in the internal
 // crates stays internal.
-pub use slpy_core::{Cell, Grid, Rgb};
+pub use auto_ascii_core::{Cell, Grid, Rgb};
 #[cfg(feature = "terminal")]
-pub use slpy_term::ColorTier;
+pub use auto_ascii_term::ColorTier;
 
 /// Glyph repertoire selection (PLAN §3.4 charset-tier axis of the 8 shipped
 /// palettes). The color axis is chosen separately (probed terminal tier for
@@ -129,9 +129,9 @@ pub enum PaletteChoice {
 /// Resolve a `--font-table NAME|PATH` spec into a parsed coverage table
 /// (PLAN §3.4, M5). Hidden: CLI/harness plumbing — embedders use
 /// [`RenderSession::set_font_table`] / `PlayerBuilder::font_table`, which
-/// wrap this and keep `slpy_core::FontTable` out of the facade surface.
+/// wrap this and keep `auto_ascii_core::FontTable` out of the facade surface.
 #[doc(hidden)]
-pub fn load_font_table(spec: &str) -> Result<slpy_core::FontTable, Error> {
+pub fn load_font_table(spec: &str) -> Result<auto_ascii_core::FontTable, Error> {
     session::load_font_table(spec)
 }
 
@@ -139,7 +139,7 @@ impl PaletteChoice {
     /// Resolve against probed terminal capabilities (the `Player` and
     /// `--sim` paths). Hidden: harness/CLI plumbing, not the embedding API.
     #[doc(hidden)]
-    pub fn resolve_for_caps(self, caps: &slpy_term::Caps) -> slpy_core::GlyphTier {
+    pub fn resolve_for_caps(self, caps: &auto_ascii_term::Caps) -> auto_ascii_core::GlyphTier {
         match self {
             PaletteChoice::Auto => pipeline::glyph_tier_from_caps(caps),
             _ => self.resolve_headless(),
@@ -148,11 +148,11 @@ impl PaletteChoice {
 
     /// Resolve with no terminal to probe (the [`RenderSession`] path):
     /// `Auto` means the Unicode-blocks tier.
-    pub(crate) fn resolve_headless(self) -> slpy_core::GlyphTier {
+    pub(crate) fn resolve_headless(self) -> auto_ascii_core::GlyphTier {
         match self {
-            PaletteChoice::Auto | PaletteChoice::Unicode => slpy_core::GlyphTier::UnicodeBlocks,
-            PaletteChoice::Ascii => slpy_core::GlyphTier::Ascii,
-            PaletteChoice::Braille => slpy_core::GlyphTier::BrailleVerified,
+            PaletteChoice::Auto | PaletteChoice::Unicode => auto_ascii_core::GlyphTier::UnicodeBlocks,
+            PaletteChoice::Ascii => auto_ascii_core::GlyphTier::Ascii,
+            PaletteChoice::Braille => auto_ascii_core::GlyphTier::BrailleVerified,
         }
     }
 }

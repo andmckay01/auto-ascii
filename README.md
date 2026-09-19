@@ -4,7 +4,7 @@ Realtime ASCII-art video for terminals — and a library you can drop into your
 own project.
 
 An offline **factory** distills a reference video into a resolution-independent
-feature asset (`.slpy`: luma, edge magnitude + orientation, highlights, chroma —
+feature asset (`.ascii`: luma, edge magnitude + orientation, highlights, chroma —
 never glyphs). A runtime **player** maps that asset onto whatever cell grid you
 have *right now*: glyph ramps, directional edge strokes, highlights and
 half-blocks, letterboxed to 16:9, reflowing live on resize, with temporal
@@ -13,7 +13,7 @@ asset looks right at 80×24 in a Linux console and at 320×90 in a GPU terminal 
 and equally right inside *your* renderer, if you'd rather draw the cells
 yourself.
 
-All Rust, one workspace, two binaries (`sleepy-factory`, `sleepy-player`) and one
+All Rust, one workspace, two binaries (`auto-ascii-factory`, `auto-ascii-player`) and one
 library crate (`auto-ascii`). ffmpeg is used by the factory as a subprocess; the
 player links no codecs.
 
@@ -28,20 +28,20 @@ cross-built Windows binaries live in `dist/`; macOS builds from source.
 
 ```bash
 # 1. distill a video into an asset (offline, minutes; needs ffmpeg on PATH)
-cargo run --release -p sleepy-factory -- build clip.mp4 -o intro.slpy
+cargo run --release -p auto-ascii-factory -- build clip.mp4 -o intro.ascii
 
 # 2. play it
-cargo run --release -p auto-ascii --bin sleepy-player -- intro.slpy
+cargo run --release -p auto-ascii --bin auto-ascii-player -- intro.ascii
 #    q / Esc quit · 0-9 seek to 0-90% · Left/Right scrub ±5 s · resize any time
 
 # 3. no terminal? render frames as text instead
-cargo run --release -p auto-ascii --example headless-dump -- intro.slpy 3 100x28
+cargo run --release -p auto-ascii --example headless-dump -- intro.ascii 3 100x28
 ```
 
 Useful player flags: `--loop`, `--fps-cap 30`, `--seek 1:30`, `--palette
 ascii|unicode|braille`, `--tier truecolor|256|16|mono`, `--no-query` (skip the
 capability probe), `--sim 213x58:300` (headless render + one JSON stats line).
-`sleepy-factory inspect intro.slpy` prints the container's header, chunks and
+`auto-ascii-factory inspect intro.ascii` prints the container's header, chunks and
 CRC status.
 
 ## Install
@@ -53,8 +53,8 @@ reference box, probe deadline included; the M5 acceptance budget is
 
 ```bash
 # from a release tarball / dist/ directory produced by scripts/release.sh:
-install -m 0755 sleepy-player-x86_64-unknown-linux-musl ~/.local/bin/sleepy-player
-sleepy-player intro.slpy        # the musl build is fully static: zero deps
+install -m 0755 auto-ascii-player-x86_64-unknown-linux-musl ~/.local/bin/auto-ascii-player
+auto-ascii-player intro.ascii        # the musl build is fully static: zero deps
 ```
 
 Building each flavor yourself (`scripts/release.sh` does all of this and
@@ -62,7 +62,7 @@ enforces the < 5 MB stripped-size gate):
 
 | target | how | notes |
 |---|---|---|
-| Linux (native) | `cargo build --release -p auto-ascii --features bin` | binary at `target/release/sleepy-player`; `strip` it |
+| Linux (native) | `cargo build --release -p auto-ascii --features bin` | binary at `target/release/auto-ascii-player`; `strip` it |
 | Linux (static musl) | `rustup target add x86_64-unknown-linux-musl` + `apt install musl-tools`, then `cargo build --release --target x86_64-unknown-linux-musl -p auto-ascii --features bin` | `ldd` reports "statically linked" — runs on any x86-64 Linux |
 | Windows (cross) | `rustup target add x86_64-pc-windows-gnu` + `apt install mingw-w64`, then `cargo build --release --target x86_64-pc-windows-gnu -p auto-ascii --features bin` | **untested-cross**: it compiles and links here (headless Linux CI, no wine); the session layer uses crossterm's Windows console API — report issues |
 | macOS | build **on a Mac**: `make build` or the native cargo line above (see the Makefile's macOS section) | no osxcross by policy; Apple Silicon and Intel both build from source |
@@ -71,20 +71,23 @@ A from-source build on a clean checkout (fresh `target/`, warm crates.io
 cache) measures ~29 s on this box (2 physical cores + SMT) — `time cargo build --release -p
 auto-ascii --features bin`.
 
-To embed the library, depend on it by git (turn the `bin` feature off if you
-only want `RenderSession`):
+To embed the library (turn the `bin` feature off if you only want
+`RenderSession`):
 
 ```toml
-auto-ascii = { git = "https://github.com/andmckay01/auto-ascii" }
+auto-ascii = "0.2"
 ```
 
-It is not on crates.io yet; once published, `auto-ascii = "0.1"` will work.
+The repo is private, so the git form needs access; the crates.io form does
+not. Note the **0.2**: `auto-ascii` 0.1.0 was published under the project's
+previous crate names and is yanked — 0.2.0 is the first release of the
+renamed engine, built on `auto-ascii-core` / `-format` / `-term` 0.1.0.
 
 ## Embedding it
 
 ```rust
-// Cargo.toml:  auto-ascii = { git = "https://github.com/andmckay01/auto-ascii" }   (crates.io: pending first publish)
-auto_ascii::Player::builder().asset("intro.slpy").looping(true).build()?.run()?;
+// Cargo.toml:  auto-ascii = "0.2"
+auto_ascii::Player::builder().asset("intro.ascii").looping(true).build()?.run()?;
 ```
 
 That is the whole player: capability probe, letterbox, live resize, terminal
@@ -94,7 +97,7 @@ a game engine, a GUI widget, a test — use the terminal-free entry instead:
 ```rust
 use auto_ascii::RenderSession;
 
-let mut session = RenderSession::open("intro.slpy")?;
+let mut session = RenderSession::open("intro.ascii")?;
 let grid = session.render(/*frame*/ 0, /*cols*/ 120, /*rows*/ 40)?; // -> &Grid<Cell>
 for row in 0..grid.rows() {
     for cell in grid.row(row) {
@@ -148,7 +151,7 @@ percentiles — lives in [`params.toml`](params.toml), never in code. The loop i
 `build → eval → read metrics → edit params → repeat`:
 
 ```bash
-sleepy-factory eval --corpus corpus/ --params params.toml \
+auto-ascii-factory eval --corpus corpus/ --params params.toml \
     --baseline runs/base.json --out runs/latest.json --html runs/latest.html
 ```
 
@@ -164,12 +167,12 @@ committed).
 
 | path | what |
 |---|---|
-| `crates/auto-ascii` | **the public library** + the `sleepy-player` binary |
-| `crates/slpy-format` | SLPY v1 container (zstd + temporal delta, O(1) seek) |
-| `crates/slpy-core` | pure engine: viewport, resampler, compositor, palettes, hysteresis |
-| `crates/slpy-term` | `Backend` trait, ANSI backend, capability probe, simulator |
-| `crates/sleepy-factory` | offline factory + the eval driver |
-| `crates/slpy-eval` | metrics, fixtures, report schema |
+| `crates/auto-ascii` | **the public library** + the `auto-ascii-player` binary |
+| `crates/auto-ascii-format` | ASCI v1 container (zstd + temporal delta, O(1) seek) |
+| `crates/auto-ascii-core` | pure engine: viewport, resampler, compositor, palettes, hysteresis |
+| `crates/auto-ascii-term` | `Backend` trait, ANSI backend, capability probe, simulator |
+| `crates/auto-ascii-factory` | offline factory + the eval driver |
+| `crates/auto-ascii-eval` | metrics, fixtures, report schema |
 | `scripts/eval.sh` | the one-command gate: tests, clippy, resize fuzz, perf gates, corpus eval |
 | `PLAN.md` / `INTERFACES.md` | the build plan and the API registry |
 

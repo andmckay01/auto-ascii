@@ -1,11 +1,11 @@
 //! The frame pipeline: decode → resample → NORM levels → compose → present
 //! (PLAN §3.4–§3.6). Extracted from the binary at M2 (item B decision) so
-//! `sleepy-factory eval` drives the EXACT player code path headlessly
+//! `auto-ascii-factory eval` drives the EXACT player code path headlessly
 //! against `SimBackend` — metrics measure the real renderer, not a
 //! reimplementation. The event loop, pacing and CLI stay above (`Player`
-//! / the `sleepy-player` bin); nothing here touches a clock or a tty.
+//! / the `auto-ascii-player` bin); nothing here touches a clock or a tty.
 //!
-//! M4: re-homed from `sleepy-player` into the `auto-ascii` facade and split
+//! M4: re-homed from `auto-ascii-player` into the `auto-ascii` facade and split
 //! along the backend seam — [`Player::reflow_grid`]/[`Player::render_grid`]
 //! carry everything up to the composed [`Grid<Cell>`] with NO backend in
 //! sight (the terminal-free [`crate::RenderSession`] path), and
@@ -27,14 +27,14 @@
 
 use std::time::Instant;
 
-use slpy_core::{
+use auto_ascii_core::{
     Cell, ColorDepth, ComposeParams, FramePlanes, GlyphTier, Grid, HysteresisState, PaletteSet,
     Resampler, Rgb, Viewport, compose_frame, compose_frame_masked, compute_viewport_for,
     select_palettes,
 };
-use slpy_format::header::plane_id;
-use slpy_format::{PlaneLevels, SlpyReader};
-use slpy_term::{Backend, Caps, ColorTier, Event, FrameStats, GlyphFlags, GlyphSupportTier, Key};
+use auto_ascii_format::header::plane_id;
+use auto_ascii_format::{PlaneLevels, AsciiReader};
+use auto_ascii_term::{Backend, Caps, ColorTier, Event, FrameStats, GlyphFlags, GlyphSupportTier, Key};
 
 use crate::error::Error;
 
@@ -69,7 +69,7 @@ pub fn glyph_tier_from_caps(caps: &Caps) -> GlyphTier {
 }
 
 /// Map a terminal color tier to the palette-selection color depth
-/// (slpy-core mirrors the variants without depending on slpy-term).
+/// (auto-ascii-core mirrors the variants without depending on auto-ascii-term).
 pub fn color_depth(tier: ColorTier) -> ColorDepth {
     match tier {
         ColorTier::True => ColorDepth::True,
@@ -118,7 +118,7 @@ pub struct Drained {
 /// term-sized grid. All buffers are (re)allocated only in `new`/`reflow` —
 /// the hot loop is allocation-free (PLAN §6 discipline).
 pub struct Player<'a> {
-    reader: SlpyReader<'a>,
+    reader: AsciiReader<'a>,
     frame_count: u32,
     src_w: u16,
     src_h: u16,
@@ -203,7 +203,7 @@ pub struct Player<'a> {
     loaded: Option<u32>,
     /// Full terminal grid (viewport + letterbox pads).
     grid: Grid<Cell>,
-    /// Winning-layer render metadata (`slpy_core::compose::layer` ids, same
+    /// Winning-layer render metadata (`auto_ascii_core::compose::layer` ids, same
     /// dims as `grid`), collected only when the eval driver asks
     /// ([`enable_layer_mask`](Player::enable_layer_mask)) — `None` keeps the
     /// interactive hot path untouched. M3: an enabled mask is filled by
@@ -227,7 +227,7 @@ pub struct Player<'a> {
 
 impl<'a> Player<'a> {
     pub fn new(
-        reader: SlpyReader<'a>,
+        reader: AsciiReader<'a>,
         cell_aspect: f64,
         repaint_full: bool,
         color: ColorDepth,
@@ -260,7 +260,7 @@ impl<'a> Player<'a> {
         };
         let src_len = src_w as usize * src_h as usize;
         // Overlay timekeeping (M5 scrub UX). Zero fps is rejected by
-        // SlpyReader::open since M1; the max(ε) is belt-and-braces only.
+        // AsciiReader::open since M1; the max(ε) is belt-and-braces only.
         let fps = (f64::from(header.fps_num) / f64::from(header.fps_den.max(1))).max(1e-9);
         let mut levels_lut = [0u8; 256];
         build_levels_lut(&mut levels_lut, None); // identity until NORM says otherwise
@@ -345,13 +345,13 @@ impl<'a> Player<'a> {
     /// this.
     pub fn enable_layer_mask(&mut self) {
         let mut mask = Grid::new(self.grid.cols(), self.grid.rows());
-        mask.fill(slpy_core::layer::BASE);
+        mask.fill(auto_ascii_core::layer::BASE);
         self.layer_mask = Some(mask);
     }
 
     /// The layer mask for the last rendered frame (`None` unless
     /// [`enable_layer_mask`](Player::enable_layer_mask) was called). Values
-    /// are `slpy_core::compose::layer` ids at full terminal dims; pads are
+    /// are `auto_ascii_core::compose::layer` ids at full terminal dims; pads are
     /// `layer::BASE`.
     pub fn layer_mask(&self) -> Option<&Grid<u8>> {
         self.layer_mask.as_ref()
@@ -526,7 +526,7 @@ impl<'a> Player<'a> {
 
     /// Sequential-roll or FIDX-seek one plane into its standing buffer.
     fn load_plane(
-        reader: &mut SlpyReader<'a>,
+        reader: &mut AsciiReader<'a>,
         sequential: bool,
         frame_idx: u32,
         id: u8,
@@ -660,8 +660,8 @@ impl<'a> Player<'a> {
                     // Bitflags don't box-average: expand each bit to a 0/255
                     // mask, resample, re-threshold (see H_HIGHLIGHT_MIN).
                     for (i, &h) in self.h_src.iter().enumerate() {
-                        self.hl_mask[i] = if h & slpy_core::h_flags::HIGHLIGHT != 0 { 255 } else { 0 };
-                        self.sh_mask[i] = if h & slpy_core::h_flags::DEEP_SHADOW != 0 { 255 } else { 0 };
+                        self.hl_mask[i] = if h & auto_ascii_core::h_flags::HIGHLIGHT != 0 { 255 } else { 0 };
+                        self.sh_mask[i] = if h & auto_ascii_core::h_flags::DEEP_SHADOW != 0 { 255 } else { 0 };
                     }
                     feat.apply(&self.hl_mask, &mut self.hl_dst);
                     feat.apply(&self.sh_mask, &mut self.sh_dst);
@@ -718,7 +718,7 @@ impl<'a> Player<'a> {
         } else {
             draw_enlarge_card(&mut self.grid);
             if let Some(mask) = &mut self.layer_mask {
-                mask.fill(slpy_core::layer::BASE);
+                mask.fill(auto_ascii_core::layer::BASE);
             }
         }
         if self.overlay_visible {
@@ -765,7 +765,7 @@ pub fn build_levels_lut(lut: &mut [u8; 256], levels: Option<PlaneLevels>) {
 }
 
 /// [`build_levels_lut`] with a shadow lift applied on top of the linear window
-/// ([`slpy_core::ComposeParams::shadow_lift`]). `shadow_lift == 0` reproduces
+/// ([`auto_ascii_core::ComposeParams::shadow_lift`]). `shadow_lift == 0` reproduces
 /// `build_levels_lut` byte for byte.
 ///
 /// The lift blends the normalized value `n` toward `sqrt(n · 255)` — the
@@ -846,7 +846,7 @@ pub fn draw_enlarge_card(grid: &mut Grid<Cell>) {
     if cols == 0 || rows == 0 {
         return;
     }
-    let lines: [&str; 2] = ["SLEEPYTIME", "enlarge terminal (min 32x9)"];
+    let lines: [&str; 2] = ["AUTO-ASCII", "enlarge terminal (min 32x9)"];
     let top = rows.saturating_sub(lines.len() as u16) / 2;
     for (i, line) in lines.iter().enumerate() {
         let row = top + i as u16;
@@ -1118,6 +1118,6 @@ mod tests {
         let mut g = Grid::new(40, 9);
         draw_enlarge_card(&mut g);
         let mid: String = (0..40).map(|col| g.get(col, 3).glyph()).collect();
-        assert!(mid.contains("SLEEPYTIME"), "card text missing: {mid:?}");
+        assert!(mid.contains("AUTO-ASCII"), "card text missing: {mid:?}");
     }
 }

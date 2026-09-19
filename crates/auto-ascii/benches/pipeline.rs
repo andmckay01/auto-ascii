@@ -18,13 +18,13 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use auto_ascii::pipeline::Player;
-use slpy_core::{
+use auto_ascii_core::{
     Cell, ColorDepth, ComposeParams, FramePlanes, GlyphTier, Grid, HysteresisState, Resampler,
     compose_frame, compute_viewport, h_flags, select_palettes,
 };
-use slpy_format::header::plane_id;
-use slpy_format::{Meta, PlaneRef, SlpyReader, SlpyWriter, WriterOptions};
-use slpy_term::{Backend, ColorTier, SimBackend};
+use auto_ascii_format::header::plane_id;
+use auto_ascii_format::{Meta, PlaneRef, AsciiReader, AsciiWriter, WriterOptions};
+use auto_ascii_term::{Backend, ColorTier, SimBackend};
 
 /// Production plane geometry (PLAN §4).
 const BASE_W: u16 = 480;
@@ -120,7 +120,7 @@ fn chroma_plane(frame: u32) -> Vec<u8> {
     plane
 }
 
-/// Build the in-memory SLPY asset (all six §4 planes). zstd level 3 (not the
+/// Build the in-memory ASCI asset (all six §4 planes). zstd level 3 (not the
 /// factory's 19) keeps bench setup fast; zstd DECODE speed is essentially
 /// level-independent and the thresholds are calibrated on this same input.
 fn build_synth_asset() -> Vec<u8> {
@@ -137,12 +137,12 @@ fn build_synth_asset() -> Vec<u8> {
         ..WriterOptions::default()
     };
     let meta = Meta {
-        factory_version: "sleepy-player-bench".to_owned(),
+        factory_version: "auto-ascii-player-bench".to_owned(),
         source: "synthetic-480x270-m3".to_owned(),
         palette_hints: Vec::new(),
     };
     let mut writer =
-        SlpyWriter::new(Cursor::new(Vec::new()), opts, &meta).expect("valid bench writer options");
+        AsciiWriter::new(Cursor::new(Vec::new()), opts, &meta).expect("valid bench writer options");
     for frame in 0..FRAMES {
         let y = luma_plane(frame);
         let (e, ex, ey, hp) = feature_planes(frame);
@@ -166,7 +166,7 @@ fn build_synth_asset() -> Vec<u8> {
 /// path; the 1-in-96 wrap goes through the keyframe-0 seek, like `--loop`).
 fn bench_decode(c: &mut Criterion) {
     let asset = build_synth_asset();
-    let mut reader = SlpyReader::open(&asset).expect("bench asset opens");
+    let mut reader = AsciiReader::open(&asset).expect("bench asset opens");
     let y_len = usize::from(BASE_W) * usize::from(BASE_H);
     const IDS: [u8; 5] = [plane_id::Y, plane_id::E, plane_id::EX, plane_id::EY, plane_id::H];
     let mut planes = vec![vec![0u8; y_len]; 5];
@@ -351,7 +351,7 @@ fn bench_present(c: &mut Criterion) {
 /// `--repaint full` mode — the per-frame cost the fps gate divides into.
 fn bench_e2e_frame(c: &mut Criterion) {
     let asset = build_synth_asset();
-    let reader = SlpyReader::open(&asset).expect("bench asset opens");
+    let reader = AsciiReader::open(&asset).expect("bench asset opens");
     let mut player =
         Player::new(reader, 2.0, true, ColorDepth::True, GlyphTier::UnicodeBlocks)
             .expect("bench player");

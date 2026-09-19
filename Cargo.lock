@@ -100,17 +100,78 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
+ "auto-ascii-core",
+ "auto-ascii-eval",
+ "auto-ascii-format",
+ "auto-ascii-term",
  "clap",
  "criterion",
  "memmap2",
  "proptest",
- "slpy-core",
- "slpy-eval",
- "slpy-format",
- "slpy-term",
+]
+
+[[package]]
+name = "auto-ascii-core"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
+name = "auto-ascii-eval"
+version = "0.1.0"
+dependencies = [
+ "auto-ascii-core",
+ "auto-ascii-format",
+ "auto-ascii-term",
+ "image",
+ "imageproc",
+ "insta",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "auto-ascii-factory"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "auto-ascii",
+ "auto-ascii-core",
+ "auto-ascii-eval",
+ "auto-ascii-format",
+ "auto-ascii-term",
+ "clap",
+ "gif",
+ "indicatif",
+ "memmap2",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
+name = "auto-ascii-format"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "crc32fast",
+ "rayon",
+ "serde",
+ "zstd",
+]
+
+[[package]]
+name = "auto-ascii-term"
+version = "0.1.0"
+dependencies = [
+ "auto-ascii-core",
+ "auto-ascii-eval",
+ "crossterm",
+ "libc",
 ]
 
 [[package]]
@@ -1328,67 +1389,6 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
-
-[[package]]
-name = "sleepy-factory"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "auto-ascii",
- "clap",
- "gif",
- "indicatif",
- "memmap2",
- "serde",
- "serde_json",
- "slpy-core",
- "slpy-eval",
- "slpy-format",
- "slpy-term",
- "toml",
-]
-
-[[package]]
-name = "slpy-core"
-version = "0.1.0"
-dependencies = [
- "proptest",
-]
-
-[[package]]
-name = "slpy-eval"
-version = "0.1.0"
-dependencies = [
- "image",
- "imageproc",
- "insta",
- "serde",
- "serde_json",
- "slpy-core",
- "slpy-format",
- "slpy-term",
-]
-
-[[package]]
-name = "slpy-format"
-version = "0.1.0"
-dependencies = [
- "ciborium",
- "crc32fast",
- "rayon",
- "serde",
- "zstd",
-]
-
-[[package]]
-name = "slpy-term"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "libc",
- "slpy-core",
- "slpy-eval",
-]
 
 [[package]]
 name = "smallvec"

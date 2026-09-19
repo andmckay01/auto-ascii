@@ -9,8 +9,8 @@ is "where things stand and how to pick them up."
 | Milestone | Commit | What landed |
 |---|---|---|
 | Baseline | `8aa2caf` | PLAN.md, research digests (`docs/research/`), corpus manifest, `tools/prep_video.py` |
-| M0 | `ee7d9e3` | Workspace, SLPY-lite, letterbox/resize player, diff renderer, pty-safe restore |
-| M1 | `564259d` | Full SLPY v1 (delta+zstd, FIDX seek, NORM, chroma), caps probe, color tiers |
+| M0 | `ee7d9e3` | Workspace, ASCI-lite, letterbox/resize player, diff renderer, pty-safe restore |
+| M1 | `564259d` | Full ASCI v1 (delta+zstd, FIDX seek, NORM, chroma), caps probe, color tiers |
 | M2 | `73e4434` | Eval harness: SSIM/flicker/damage metrics, goldens, fuzz, perf gates, `params.toml` |
 | M3 | `f5ff5d1` | Layer compositor (edges/highlights/half-blocks), 8 palettes, edge-F1, tuning sweep |
 | M4 | `e6170a6` | `auto-ascii` facade crate (Player + RenderSession), feature-gated bin, terminal matrix |
@@ -19,9 +19,9 @@ is "where things stand and how to pick them up."
 Tag `v0.1.0` marks the completed state. Working tree at save time: clean.
 
 **Off-box backup:** private GitHub repo `https://github.com/andmckay01/auto-ascii`
-(`origin`; main + all tags). Renamed there 2026-08-28 from `auto-ascii-memory`;
+(`origin`; main + all tags). Renamed there 2026-08-28 from `sleepytime-memory`;
 GitHub redirects the old URL. Two neighbours are DIFFERENT projects — do not
-push to either: `andmckay01/auto-ascii` ("Sleepytime for Mac") and
+push to either: `andmckay01/sleepytime` ("Sleepytime for Mac") and
 `andmckay01/auto-ascii-legacy` (a frame-based ASCII animation workspace that
 held the `auto-ascii` name until this rename, preserved untouched).
 
@@ -41,15 +41,17 @@ The facade crate was renamed `sleepytime` -> `auto-ascii` (Rust path `auto_ascii
 because a **different, incoming project owns the name `sleepytime`** — another agent is
 building it. **Never publish a crate named `sleepytime` from here.**
 
-Deliberately NOT renamed: the `slpy-*` crates, the `sleepy-player` / `sleepy-factory`
-binaries, and the **`SLPY` on-disk magic** — those four bytes open every `.slpy` asset, so
-changing the format name would invalidate ~1 GB of built assets for a cosmetic gain.
+That paragraph used to end by listing what was deliberately NOT renamed — the
+`slpy-*` crates, the `sleepy-*` binaries and the `SLPY` magic. **That exemption
+ended on 2026-09-19**: all of it was renamed, and the assets were rebuilt. See
+"Rename to `auto-ascii`" below. `auto-ascii` itself, the facade crate, is the
+one name that has not moved since 2026-08-28.
 
 ## Quick start (this box: hetzner, **2 physical cores + SMT** (4 logical, EPYC-Milan), Rust 1.97.1, ffmpeg installed)
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-./target/release/sleepy-player assets/sheep-counting-neroni.slpy   # the 13.8-min demo
+./target/release/auto-ascii-player assets/sheep-counting-neroni.ascii   # the 13.8-min demo
 ./scripts/eval.sh          # full quality/perf harness, ~4-10 min, must say ALL GREEN
 ./scripts/release.sh       # stripped native + musl-static + windows-gnu binaries -> dist/
 python3 tools/soak.py --duration 60   # resize-storm smoke (3600 = the real soak)
@@ -62,30 +64,54 @@ Embedding: `crates/auto-ascii/examples/simple-play.rs` (13 lines) and
 ## What is durable vs regenerable
 
 - **Durable (in git):** all code, PLAN.md, INTERFACES.md, params.toml,
-  perf/thresholds.toml, goldens, font tables (`crates/slpy-core/fonts/`),
+  perf/thresholds.toml, goldens, font tables (`crates/auto-ascii-core/fonts/`),
   eval baselines (`runs/base.json`), the M3 sign-off reel (`runs/m3-reel.html`),
   sweep records, docs.
-- **Regenerable:** `assets/*.slpy` — the factory is byte-deterministic; rebuild
-  with `sleepy-factory build corpus/<clip> -o assets/<name>.slpy` (the eval
+- **Regenerable:** `assets/*.ascii` — the factory is byte-deterministic; rebuild
+  with `auto-ascii-factory build corpus/<clip> -o assets/<name>.ascii` (the eval
   harness determinism guard proves rebuild == original). `dist/` via release.sh.
 - **External:** `corpus/*.mp4` originals are gitignored (large). Sources live on
   the owner's Mac (`~/Downloads`, see corpus/README.md); re-send via Taildrop
   (`tailscale file cp` to hetzner, then `sudo tailscale file get <dir>`).
 
-## NEXT UP — a full rename is planned but NOT started
+## Rename to `auto-ascii` — DONE 2026-09-19
 
-Read **`RENAME-PLAN.md`** at the repo root before touching anything. The owner
-wants `slpy`/`sleepy` gone entirely: crates -> `auto-ascii-*`, binaries ->
-`auto-ascii-player`/`auto-ascii-factory`, magic `SLPY` -> `ASCI`, extension
-`.slpy` -> `.ascii`. ~1376 occurrences. The owner **accepted that every
-existing asset dies** — all 12 corpus sources are present, so everything is
-rebuildable.
+The `slpy`/`sleepy` tokens are gone from live code and docs. `RENAME-PLAN.md`
+records the procedure, the *verified* crates.io mechanics and the checklist; it
+deliberately still uses the old names, as do `docs/research/` and `runs/`
+(historical record), and so does the naming section above, which names the
+OTHER projects.
 
-The plan carries the mappings, the ordering, what must be re-pinned, the
-crates.io delete/republish constraints, and a verification checklist. The one
-invariant worth repeating here: **the rename must not change a rendered
-pixel** — if a render golden or a corpus metric moves, something load-bearing
-got renamed, so stop and find it rather than re-pinning.
+| | from | to |
+|---|---|---|
+| crates | `slpy-core` / `-format` / `-term` / `-eval`, `sleepy-factory` | `auto-ascii-core` / `-format` / `-term` / `-eval` / `-factory` |
+| binaries | `sleepy-player`, `sleepy-factory` | `auto-ascii-player`, `auto-ascii-factory` |
+| magic | `SLPY` | `ASCI` |
+| trailer payload | `SLPY_END` | `ASCI_END` |
+| extension | `.slpy` | `.ascii` |
+| enlarge-card text | `SLEEPYTIME` | `AUTO-ASCII` |
+
+**The load-bearing invariant held.** Every render golden and all 36 insta
+snapshots passed **unchanged**. Stronger than that: reverting exactly 16 bytes
+in a rebuilt asset — 4 magic, 8 trailer payload, 4 trailer CRC — reproduces the
+*previous* byte-pin `e5bc340e…` exactly, so every compressed plane byte is
+bit-identical. `FIXTURE_SLPY_SHA` became `FIXTURE_ASSET_SHA` and was re-pinned
+to `b00e3ecb…` for that container-identity change alone (three consecutive
+identical builds verified first, per the constant's own convention).
+
+Two on-disk constants the original plan had missed were caught by a survey
+before the sweep: the `TRLR_PAYLOAD` trailer, and the `SLEEPYTIME` text the
+"enlarge terminal" card actually renders. Both replacements are the same width
+as what they replaced, so neither moved a byte offset nor a glyph position.
+
+A **second** byte pin — `GOLDEN_SHA256` in `auto-ascii-format/tests/container.rs`
+— surfaced only after the first was fixed, because `cargo test` stops at the
+first failing target. **Use `--no-fail-fast` when hunting pins.** Its delta is
+not purely format identity: the fixture's own META label lengthened, shifting
+every FIDX offset by +7. Checked against a pre-rename worktree chunk by chunk —
+all six FRAM (compressed plane) payloads byte-identical.
+
+All six `assets/*.ascii` were rebuilt from `corpus/`.
 
 ## Open items (owner)
 
@@ -99,27 +125,42 @@ got renamed, so stop and find it rather than re-pinning.
    each terminal on the Mac — the probe reads the *local* terminal, so color,
    fonts and aspect are faithful. Judge **tearing locally only**; link latency
    confounds that one signal.
-3. ~~**crates.io publish**~~ — **DONE 2026-09-19:** `slpy-core`, `slpy-format`, `slpy-term`, `auto-ascii` all live at 0.1.0, verified consumable from the registry. The pending rename deletes and republishes these under the new names (RENAME-PLAN.md §5). Original note follows.
+3. **crates.io — publish the renamed crates, then yank the old ones.**
+   OWNER-GATED (irreversible, and the AI does not publish). What is live right
+   now is still the PRE-rename set: `slpy-core`, `slpy-format`, `slpy-term`
+   and `auto-ascii`, all 0.1.0, published 2026-09-19 with 0 downloads.
 
-   *prepped, awaiting owner's token.* All four
-   publishable crates now carry `repository`/`keywords`/`categories`/`readme`
-   and pass `cargo package` **with `--verify`** (a real build from each
-   tarball); the "no documentation, homepage or repository" warning is gone.
-   `slpy-eval` and `sleepy-factory` are deliberately NOT published. As of
-   2026-08-28 all four names were free on crates.io. No token exists on this
-   box and a publish is permanent (yank-only), so the owner runs:
+   **Decision (owner, 2026-09-19): keep the `auto-ascii` name, yank the rest.**
+   Nothing is deleted. Deleting `auto-ascii` would cost a 24-hour lockout in
+   which *nobody* — the owner included — can republish that name, and after
+   that window it is claimable by anyone; the only thing deletion would buy is
+   removing three unused pages. The mechanics behind that are verified against
+   the crates.io source in `RENAME-PLAN.md` §5 — including that the 72-hour
+   "window" is a shortcut, not a deadline, so nothing about this expires.
 
    ```bash
-   cargo login <token>
-   cargo publish -p slpy-format     # no internal deps
-   cargo publish -p slpy-core       # no internal deps
-   cargo publish -p slpy-term       # needs slpy-core
-   cargo publish -p auto-ascii      # needs all three
+   # target/package/ must be empty first — stale tarballs caused a false
+   # failure last time. Wait for the index between each; a first publish of
+   # interdependent crates cannot be --dry-run validated.
+   cargo publish -p auto-ascii-core      # no internal deps
+   cargo publish -p auto-ascii-format    # no internal deps
+   cargo publish -p auto-ascii-term      # needs core
+   cargo publish -p auto-ascii           # 0.2.0 — needs all three
+   # only once the above are live:
+   cargo yank --version 0.1.0 auto-ascii   # it points at the old crates
+   cargo yank --version 0.1.0 slpy-term
+   cargo yank --version 0.1.0 slpy-core
+   cargo yank --version 0.1.0 slpy-format
    ```
 
-   Order matters — each crate must be live on the index before the next
-   resolves it (allow a minute between). Afterwards, swap the README's git
-   dependency for `auto-ascii = "0.1"`.
+   `auto-ascii` goes out at **0.2.0**, not 0.1.0: its 0.1.0 is already spent
+   and crates.io never reuses a version number. The three libraries are first
+   publishes under names that have never existed, so they are 0.1.0 — the
+   workspace therefore carries two version numbers on purpose.
+   `auto-ascii-eval` and `auto-ascii-factory` stay unpublished.
+
+   The README already states `auto-ascii = "0.2"`; that line only becomes true
+   at step 4 above, so publish before pointing anyone at it.
 4. ~~**Flicker gate breach on `terminator-flaming-wreckage`**~~ — **RESOLVED
    2026-08-28: the metric is wrong, not the renderer.** The clip measures 2.856
    glyph switches/cell/s against the PLAN §6 gate of &le;2 (43 % over), but the
@@ -135,7 +176,7 @@ got renamed, so stop and find it rather than re-pinning.
 5. **macOS binaries** — build on a Mac (`Makefile` macOS section; no osxcross).
    Cannot be done from this box at all. On the Mac:
    `git clone https://github.com/andmckay01/auto-ascii && cd auto-ascii &&
-   make build && strip target/release/sleepy-player`. Needs Rust; ffmpeg
+   make build && strip target/release/auto-ascii-player`. Needs Rust; ffmpeg
    (`brew install ffmpeg`) only if building assets, not for playback.
 
 ## Measurement hygiene — read before trusting any timing here
@@ -159,13 +200,13 @@ contended reps.**
 Two changes, audited, together taking a 63 s clip from ~7 min to ~2.5 min:
 
 - **zstd 19 -> 15** (`params.toml [build]`, and the factory's in-code default,
-  which now DIVERGES from `slpy_format::WriterOptions::default()` at 19 on
+  which now DIVERGES from `auto_ascii_format::WriterOptions::default()` at 19 on
   purpose — level is encoder policy, not a container property). +0.91 % asset
   bytes, 2.84x faster. zstd is lossless: L15 and L19 assets were verified to
-  render byte-identically. `FIXTURE_SLPY_SHA` re-pinned; `assets/*.slpy`
+  render byte-identically. `FIXTURE_ASSET_SHA` re-pinned; `assets/*.ascii`
   regenerated (a stale asset still PLAYS fine — only byte-reproducibility
   breaks, which is what the corpus determinism guard checks).
-- **Per-plane parallel compression** kept (`slpy-format/parallel`). Worth
+- **Per-plane parallel compression** kept (`auto-ascii-format/parallel`). Worth
   **1.85x** on this box, NOT the 1.04x an early contended measurement claimed
   — see the measurement-hygiene note above; commit `fe10e2c`'s mechanism
   paragraph is WRONG and superseded. Keyframes are ~1.4 % of compression time,
@@ -191,7 +232,7 @@ nits: `--no-quirks` help text mentions only the cache-write bypass; README's
   via the documented median-of-3-runs ×1.15 procedure, never casually. (It was
   once silently reverted by a drill cleanup — check it if the gate misbehaves.)
 - **Goldens re-pin only deliberately**, with justification and a visual
-  spot-check through the slpy-eval rasterizer.
+  spot-check through the auto-ascii-eval rasterizer.
 - **Never bake glyphs into assets** (PLAN §4 hard rule) — glyph choice is
   runtime-only; that is what makes resize correct.
 - The asset cache keys on the **effective** params + pipeline fingerprint;
@@ -204,5 +245,5 @@ Built via multi-agent workflows (research panel → per-milestone build/verify/
 adversarial-review loops), ~60 agents total. Every milestone was independently
 re-verified by a fresh-eyes agent and adversarially reviewed; 9 serious bugs
 were caught pre-commit this way. Claude session memory for this project lives
-at `~/.claude/projects/-home-mckay-personal-auto-ascii-ascii/memory/` and is
+at `~/.claude/projects/-home-mckay-personal-sleepytime-auto-ascii/memory/` and is
 auto-loaded by future sessions in this directory.

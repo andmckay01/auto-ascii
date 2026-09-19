@@ -6,8 +6,8 @@ The build box is headless: kitty, alacritty, wezterm, gnome-terminal and xterm
 `TIOCGWINSZ` it sets and the exact bytes it answers our capability volley with
 are replayed through the real probe on a real pty, and the resulting `Caps` are
 asserted per terminal
-(`crates/slpy-term/tests/terminal_identity.rs`, seven fixtures; byte-level
-parser coverage in `crates/slpy-term/tests/probe_parser.rs`; the console render
+(`crates/auto-ascii-term/tests/terminal_identity.rs`, seven fixtures; byte-level
+parser coverage in `crates/auto-ascii-term/tests/probe_parser.rs`; the console render
 floor in `crates/auto-ascii/tests/linux_console_golden.rs`).
 
 What a machine cannot check is what this document is for: **fonts, real colors,
@@ -20,8 +20,8 @@ terminal.
 
 ```bash
 cargo build --release -p auto-ascii           # the player
-ASSET=assets/sheep-counting-neroni-clips.slpy # any .slpy you have
-PLAY="./target/release/sleepy-player $ASSET"
+ASSET=assets/sheep-counting-neroni-clips.ascii # any .ascii you have
+PLAY="./target/release/auto-ascii-player $ASSET"
 ```
 
 Keys during playback: `q`/`Esc` quit · `0`–`9` seek to 0–90 % · `←`/`→`
@@ -33,7 +33,7 @@ with the caps the shipping probe concluded — color tier, sync 2026, cell px,
 glyph tier, and whether any reply bytes leaked):
 
 ```bash
-cargo run -q -p slpy-term --bin slpy-term-harness -- caps
+cargo run -q -p auto-ascii-term --bin auto-ascii-term-harness -- caps
 # PROBE-DONE ms=6 color=True sync=true can_query=true cellpx=10x20 support=UnicodeCore glyphs=7 stray=0
 ```
 
@@ -78,7 +78,7 @@ letterbox pads that stay exactly centered while you drag the window edge.
   entry in its capability tables (it advertises `Tc` instead). Truecolor there
   is concluded from `COLORTERM=truecolor`, which kitty exports — and since M5
   also from kitty's own XTVERSION reply: the identity-keyed quirk table
-  (`slpy-term/src/quirks.rs`, entry `kitty-rgbless-xtgettcap`) restores
+  (`auto-ascii-term/src/quirks.rs`, entry `kitty-rgbless-xtgettcap`) restores
   truecolor even when a launcher strips `COLORTERM`. `--no-quirks` shows the
   raw conclusion; `--tier truecolor` still forces everything.
 - kitty's `CSI 16 t` answer wins over the kernel's winsize pixels, so font-size
@@ -112,7 +112,7 @@ through the query path (`XTGETTCAP RGB` → `8/8/8`), so it should reach
 truecolor even in a COLORTERM-stripped environment — worth a spot check:
 
 ```bash
-env -u COLORTERM cargo run -q -p slpy-term --bin slpy-term-harness -- caps
+env -u COLORTERM cargo run -q -p auto-ascii-term --bin auto-ascii-term-harness -- caps
 # expect: color=True
 ```
 
@@ -173,7 +173,7 @@ $PLAY --palette ascii       # same thing, forced
 should look like in glyph terms. Sub-cell structure shows up as the `"` / `_`
 subposition pair; nothing on this tier leaves printable ASCII, which is what
 makes the "no boxes" expectation enforceable rather than hopeful (see
-`every_glyph_is_console_printable` and slpy-core's
+`every_glyph_is_console_printable` and auto-ascii-core's
 `every_ascii_tier_glyph_is_ascii`). Cell aspect falls back to 2.0 (the console
 reports no pixel geometry), which is correct for the standard 8×16 console
 font.
@@ -192,7 +192,7 @@ skips even that.
 | Boxes / question marks instead of glyphs | `--palette ascii` (font lacks the block or box-drawing repertoire) |
 | Picture too tall or too wide | `--cell-aspect 2.0` (or measure: `cellpx=WxH` → aspect = H/W) |
 | Terminal hangs on start, or garbage keys | `--no-query` (never writes the volley) |
-| A quirk-table correction looks wrong for your terminal | `--no-quirks` (re-runs the volley, bypassing the probe cache, and takes the replies at face value; the table is `slpy-term/src/quirks.rs`, keyed on the XTVERSION reply) |
+| A quirk-table correction looks wrong for your terminal | `--no-quirks` (re-runs the volley, bypassing the probe cache, and takes the replies at face value; the table is `auto-ascii-term/src/quirks.rs`, keyed on the XTVERSION reply) |
 | Stale caps after changing terminal config | `--no-cache` (the probe cache lives at `$XDG_CACHE_HOME/auto-ascii/caps`) |
 
 ---
@@ -201,11 +201,11 @@ skips even that.
 
 | Check | Where |
 |---|---|
-| Per-terminal `Caps` from canned reply streams (7 identities) | `crates/slpy-term/tests/terminal_identity.rs` |
-| Reply-byte parsing incl. the `RGB` *value* rule and DECRPM 3/4 | `crates/slpy-term/tests/probe_parser.rs`, `src/probe.rs` unit tests |
-| Probe never hangs, never leaks reply bytes into the app | `crates/slpy-term/tests/pty_probe.rs` |
-| Terminal always restored (drop / panic / SIGINT / SIGTERM) | `crates/slpy-term/tests/pty_restore.rs` |
-| Per-tier escape streams (truecolor / 256 / 16 / mono) | `crates/slpy-term/tests/tier_goldens.rs` |
+| Per-terminal `Caps` from canned reply streams (7 identities) | `crates/auto-ascii-term/tests/terminal_identity.rs` |
+| Reply-byte parsing incl. the `RGB` *value* rule and DECRPM 3/4 | `crates/auto-ascii-term/tests/probe_parser.rs`, `src/probe.rs` unit tests |
+| Probe never hangs, never leaks reply bytes into the app | `crates/auto-ascii-term/tests/pty_probe.rs` |
+| Terminal always restored (drop / panic / SIGINT / SIGTERM) | `crates/auto-ascii-term/tests/pty_restore.rs` |
+| Per-tier escape streams (truecolor / 256 / 16 / mono) | `crates/auto-ascii-term/tests/tier_goldens.rs` |
 | `TERM=linux` render golden + legibility floor | `crates/auto-ascii/tests/linux_console_golden.rs` |
 
 Not covered by any of them, and hence this document: font coverage, actual
@@ -225,14 +225,14 @@ rg -n -i -e 'SSH_CONNECTION|SSH_TTY|\bssh\b|conpty|tmux|telnet|downshift|governo
 ```
 
 **Result (M4): zero connectivity code paths.** The only hits are in
-`crates/slpy-term/src/probe.rs`, all of them the multiplexer flag in the
+`crates/auto-ascii-term/src/probe.rs`, all of them the multiplexer flag in the
 *cache key* — `(TERM, TERM_PROGRAM, COLORTERM, tmux?)` — which exists so an
 inner session cannot inherit the outer terminal's proven capabilities. It
 branches nothing: `probe.rs`'s
 `multiplexer_flag_only_partitions_the_cache` test asserts the detected `Caps`
 are byte-identical with the flag set and unset, and only the cache slot
 differs. (The M4 pass also removed the last stale prose references to a
-ConPTY backend and the descoped throughput governor from `slpy-term`'s docs.)
+ConPTY backend and the descoped throughput governor from `auto-ascii-term`'s docs.)
 
 Related, deliberately kept, and *not* connectivity code:
 `SimBackend::set_throughput` — an in-memory writer that reports a simulated

@@ -1,0 +1,47 @@
+[package]
+name = "auto-ascii-term"
+description = "Terminal backends for auto-ascii: Backend trait, ANSI backend, capability probe, headless simulator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["terminal", "ansi", "tui", "ascii", "capabilities"]
+categories = ["command-line-interface", "rendering"]
+readme = "../../README.md"
+
+[dependencies]
+auto-ascii-core = { workspace = true }
+# PLAN §8: crossterm for raw mode / alt screen / events ONLY — never per-cell commands.
+crossterm = { workspace = true, optional = true }
+
+# PLAN §8: ioctl (TIOCGWINSZ), termios, SIGWINCH self-pipe, atexit — all
+# unix-only, so the dep is target-scoped (M5 item E: the windows-gnu cross
+# build of the player links crossterm's WinAPI layer instead; `dep:libc` in
+# the `session` feature activates it only where it is declared).
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true, optional = true }
+
+# M4 (item B): the real-terminal session layer (AnsiBackend, probe volley,
+# restore hooks) sits behind `session` so a pure-embedder build of the
+# `auto-ascii` facade carries no crossterm/libc. Default ON — every existing
+# consumer (player bin, factory eval, pty tests) is unchanged. The Backend
+# trait, Caps/ColorTier data types, EventQueue, quantizer, diff renderer and
+# SimBackend are capability DATA + pure code and stay unconditional.
+[features]
+default = ["session"]
+session = ["dep:crossterm", "dep:libc"]
+
+# Test-only pty harness for the M0 acceptance-(3) restore tests
+# (tests/pty_restore.rs spawns it under an openpty pair). Not shipped.
+[[bin]]
+name = "auto-ascii-term-harness"
+path = "src/bin/harness.rs"
+doc = false
+required-features = ["session"]
+
+# M2 item C: per-tier escape-stream goldens (tests/tier_goldens.rs) render a
+# deterministic synthetic fixture frame through auto-ascii-eval's fixture module.
+# This is a dev-dependency CYCLE (auto-ascii-eval depends on auto-ascii-term's lib) —
+# legal in cargo: dev-deps are not part of the package's own dep graph.
+[dev-dependencies]
+auto-ascii-eval = { workspace = true }

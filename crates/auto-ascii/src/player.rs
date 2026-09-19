@@ -3,7 +3,7 @@
 //! whole M0–M3 machinery behind two calls:
 //!
 //! ```no_run
-//! auto_ascii::Player::builder().asset("intro.slpy").build()?.run()?;
+//! auto_ascii::Player::builder().asset("intro.ascii").build()?.run()?;
 //! # Ok::<(), auto_ascii::Error>(())
 //! ```
 
@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use memmap2::Mmap;
-use slpy_core::ComposeParams;
-use slpy_format::SlpyReader;
-use slpy_term::{AnsiBackend, Backend, ColorTier, ProbeOptions, probe_caps};
+use auto_ascii_core::ComposeParams;
+use auto_ascii_format::AsciiReader;
+use auto_ascii_term::{AnsiBackend, Backend, ColorTier, ProbeOptions, probe_caps};
 
 use crate::error::Error;
 use crate::{PaletteChoice, pipeline};
@@ -150,7 +150,7 @@ pub struct PlayerBuilder {
 }
 
 impl PlayerBuilder {
-    /// Path of the SLPY asset to play. Required.
+    /// Path of the ASCI asset to play. Required.
     pub fn asset(mut self, path: impl Into<PathBuf>) -> Self {
         self.asset = Some(path.into());
         self
@@ -247,7 +247,7 @@ impl PlayerBuilder {
     /// Assert which font the terminal renders with, by ink-coverage table
     /// (PLAN §3.4 `--font-table`): a built-in name — `conservative`,
     /// `dejavu-sans-mono`, `liberation-mono`, `ubuntu-mono`,
-    /// `noto-sans-mono` — or a path to a `sleepy-factory font-table` TOML.
+    /// `noto-sans-mono` — or a path to a `auto-ascii-factory font-table` TOML.
     /// Terminals cannot be queried for their font, so this is user-asserted
     /// truth: the table's recorded repertoire vetoes the palette selection
     /// (a tier whose glyphs the font is missing degrades braille → unicode
@@ -286,10 +286,10 @@ impl PlayerBuilder {
         // assumption every mmap'd reader makes).
         let map = unsafe { Mmap::map(&file) }
             .map_err(|source| Error::Io { path: path.clone(), source })?;
-        let reader = SlpyReader::open(&map)
+        let reader = AsciiReader::open(&map)
             .map_err(|source| Error::Format { path: path.clone(), source })?;
         let header = reader.header();
-        // Belt-and-braces: SlpyReader::open rejects zero fps since M1, but a
+        // Belt-and-braces: AsciiReader::open rejects zero fps since M1, but a
         // zero here would reach Duration::from_secs_f64(1/0.0) and panic.
         if header.fps_num == 0 || header.fps_den == 0 {
             return Err(Error::Asset("corrupt header: fps_num or fps_den == 0"));
@@ -334,7 +334,7 @@ pub struct Player {
     start_frame: u32,
     /// Parsed §3.4 font coverage table (repertoire veto), from
     /// [`PlayerBuilder::font_table`].
-    font_table: Option<slpy_core::FontTable>,
+    font_table: Option<auto_ascii_core::FontTable>,
 }
 
 /// Cell aspect: explicit override > terminal-reported cell pixel size > 2.0
@@ -345,7 +345,7 @@ fn resolve_cell_aspect(flag: Option<f64>, cell_px: Option<(u16, u16)>) -> f64 {
     }
     match cell_px {
         Some((w, h)) if w > 0 && h > 0 => f64::from(h) / f64::from(w),
-        _ => slpy_core::DEFAULT_CELL_ASPECT,
+        _ => auto_ascii_core::DEFAULT_CELL_ASPECT,
     }
 }
 
@@ -388,9 +388,9 @@ impl Player {
 
         // AnsiBackend::new arms restore + installs panic/SIGINT/SIGTERM/
         // atexit hooks before touching the terminal (M0 acceptance 3,
-        // pty-tested in slpy-term). Errors cleanly if stdout is not a TTY.
+        // pty-tested in auto-ascii-term). Errors cleanly if stdout is not a TTY.
         let mut backend = AnsiBackend::new(caps).map_err(Error::Terminal)?;
-        let reader = SlpyReader::open(&self.map)
+        let reader = AsciiReader::open(&self.map)
             .map_err(|source| Error::Format { path: self.path.clone(), source })?;
         let aspect = resolve_cell_aspect(self.cfg.cell_aspect, backend.caps().cell_px);
         // Palette selection inputs from Caps (PLAN §3.4 key: charset tier ×
@@ -536,22 +536,22 @@ mod tests {
     fn build_validates_before_touching_the_terminal() {
         let e = Player::builder().build().unwrap_err();
         assert!(matches!(e, Error::Config(_)), "missing asset: {e}");
-        let e = Player::builder().asset("/no/such/file.slpy").build().unwrap_err();
+        let e = Player::builder().asset("/no/such/file.ascii").build().unwrap_err();
         assert!(matches!(e, Error::Io { .. }), "missing file: {e}");
         let e = Player::builder()
-            .asset("/no/such/file.slpy")
+            .asset("/no/such/file.ascii")
             .fps_cap(0.0)
             .build()
             .unwrap_err();
         assert!(matches!(e, Error::Config(_)), "fps cap checked first: {e}");
         let e = Player::builder()
-            .asset("/no/such/file.slpy")
+            .asset("/no/such/file.ascii")
             .fps_cap(f64::NAN)
             .build()
             .unwrap_err();
         assert!(matches!(e, Error::Config(_)), "NaN fps cap: {e}");
         let e = Player::builder()
-            .asset("/no/such/file.slpy")
+            .asset("/no/such/file.ascii")
             .cell_aspect(f64::NAN)
             .build()
             .unwrap_err();
@@ -567,7 +567,7 @@ mod tests {
     fn fps_cap_floor_is_enforced_at_build() {
         for bad in [1e-9, f64::MIN_POSITIVE, 0.5, 0.999] {
             let e = Player::builder()
-                .asset("/no/such/file.slpy")
+                .asset("/no/such/file.ascii")
                 .fps_cap(bad)
                 .build()
                 .unwrap_err();
@@ -577,7 +577,7 @@ mod tests {
         // At the floor exactly, validation passes — the missing file (Io) is
         // the next check, proving the cap itself was accepted.
         let e = Player::builder()
-            .asset("/no/such/file.slpy")
+            .asset("/no/such/file.ascii")
             .fps_cap(MIN_FPS_CAP)
             .build()
             .unwrap_err();
@@ -590,10 +590,10 @@ mod tests {
     #[test]
     fn build_resolves_font_table_before_the_terminal() {
         let mut path = std::env::temp_dir();
-        path.push(format!("auto-ascii-player-font-{}.slpy", std::process::id()));
+        path.push(format!("auto-ascii-player-font-{}.ascii", std::process::id()));
         std::fs::write(
             &path,
-            slpy_eval::fixtures::build_fixture(slpy_eval::fixtures::Fixture::GradientMotion),
+            auto_ascii_eval::fixtures::build_fixture(auto_ascii_eval::fixtures::Fixture::GradientMotion),
         )
         .unwrap();
 
@@ -614,15 +614,15 @@ mod tests {
         // The veto input is the parsed repertoire (researched: Liberation
         // Mono has no ╱╲) — the run()-time tier degrade consumes this.
         assert_eq!(
-            p.font_table.unwrap().veto_tier(slpy_core::GlyphTier::UnicodeBlocks),
-            slpy_core::GlyphTier::Ascii
+            p.font_table.unwrap().veto_tier(auto_ascii_core::GlyphTier::UnicodeBlocks),
+            auto_ascii_core::GlyphTier::Ascii
         );
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn build_rejects_non_slpy_files() {
-        // This manifest exists but is not an SLPY container.
+    fn build_rejects_non_ascii_files() {
+        // This manifest exists but is not an ASCI container.
         let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
         let e = Player::builder().asset(manifest).build().unwrap_err();
         assert!(matches!(e, Error::Format { .. }), "{e}");

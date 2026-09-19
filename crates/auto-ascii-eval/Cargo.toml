@@ -1,0 +1,31 @@
+[package]
+name = "auto-ascii-eval"
+description = "auto-ascii eval harness: ink-coverage rasterizer, downscale-SSIM, flicker score, damage/stage metrics, versioned JSON reports, baseline compare (PLAN §6)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# PLAN §8: metrics library. auto-ascii-core for Grid/Cell/Resampler, auto-ascii-term for
+# FrameStats (the SimBackend damage/bytes source), serde/serde_json for the
+# versioned report schema. auto-ascii-format arrived with M2 item C: the
+# deterministic synthetic fixture builders (`fixtures` module) write ASCI
+# assets through AsciiWriter so committed goldens never depend on the corpus.
+[dependencies]
+auto-ascii-core = { workspace = true }
+auto-ascii-term = { workspace = true }
+auto-ascii-format = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# M3 edge-F1 (PLAN §6): Canny ground truth on the downscaled source frame.
+# Both codec-less — the metric consumes raw luma buffers; file I/O stays out
+# of this crate (ffmpeg subprocess in auto-ascii-factory).
+image = { workspace = true }
+imageproc = { workspace = true }
+
+# M2 item C: cell-grid goldens (insta). The resize storm fuzz (item D)
+# lives in the auto-ascii crate (ex auto-ascii-player) since the M2 review fix — the §6 invariants gate
+# the real Player, and tests/pipeline_parity.rs there pins FixtureRenderer
+# to it.
+[dev-dependencies]
+insta = { workspace = true }

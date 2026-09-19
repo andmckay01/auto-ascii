@@ -9,14 +9,14 @@
 use std::path::Path;
 
 use memmap2::Mmap;
-use slpy_core::{Cell, ColorDepth, FontTable, Grid};
-use slpy_format::SlpyReader;
+use auto_ascii_core::{Cell, ColorDepth, FontTable, Grid};
+use auto_ascii_format::AsciiReader;
 
 use crate::error::Error;
 use crate::{PaletteChoice, pipeline};
 
 /// Resolve a `--font-table NAME|PATH` spec (PLAN §3.4, M5): a committed
-/// built-in table by name, else a path to a `sleepy-factory font-table`
+/// built-in table by name, else a path to a `auto-ascii-factory font-table`
 /// TOML. Shared by [`RenderSession::set_font_table`] and
 /// `PlayerBuilder::font_table`.
 pub(crate) fn load_font_table(spec: &str) -> Result<FontTable, Error> {
@@ -27,7 +27,7 @@ pub(crate) fn load_font_table(spec: &str) -> Result<FontTable, Error> {
     if !path.is_file() {
         return Err(Error::Config(format!(
             "font table {spec:?} is neither a built-in table ({}) nor a file",
-            slpy_core::BUILTIN_FONT_TABLES.join(", ")
+            auto_ascii_core::BUILTIN_FONT_TABLES.join(", ")
         )));
     }
     let text = std::fs::read_to_string(path)
@@ -35,19 +35,19 @@ pub(crate) fn load_font_table(spec: &str) -> Result<FontTable, Error> {
     FontTable::parse(&text).map_err(|e| Error::Config(format!("font table {spec}: {e}")))
 }
 
-/// A terminal-free render session over one SLPY asset.
+/// A terminal-free render session over one ASCI asset.
 ///
 /// Opens the asset once (memory-mapped, decoded lazily per frame) and turns
 /// `(frame_idx, cols, rows)` into a composed cell grid:
 ///
 /// ```
 /// use auto_ascii::RenderSession;
-/// # // The doctest renders a synthetic test asset instead of "intro.slpy".
-/// # let path = std::env::temp_dir().join("auto-ascii-doc-session.slpy");
-/// # let fixture = slpy_eval::fixtures::Fixture::GradientMotion;
-/// # std::fs::write(&path, slpy_eval::fixtures::build_fixture(fixture)).unwrap();
+/// # // The doctest renders a synthetic test asset instead of "intro.ascii".
+/// # let path = std::env::temp_dir().join("auto-ascii-doc-session.ascii");
+/// # let fixture = auto_ascii_eval::fixtures::Fixture::GradientMotion;
+/// # std::fs::write(&path, auto_ascii_eval::fixtures::build_fixture(fixture)).unwrap();
 ///
-/// let mut session = RenderSession::open(&path)?;     // "intro.slpy"
+/// let mut session = RenderSession::open(&path)?;     // "intro.ascii"
 /// let grid = session.render(0, 120, 40)?;
 /// for row in 0..grid.rows() {
 ///     let line: String = grid.row(row).iter().map(|c| c.glyph()).collect();
@@ -110,7 +110,7 @@ impl std::fmt::Debug for RenderSession {
 }
 
 impl RenderSession {
-    /// Open an SLPY asset for terminal-free rendering.
+    /// Open an ASCI asset for terminal-free rendering.
     ///
     /// The file is memory-mapped read-only and validated (header, chunk
     /// structure); frames are decoded on demand in [`render`](Self::render).
@@ -137,7 +137,7 @@ impl RenderSession {
         let bytes: &'static [u8] =
             unsafe { std::slice::from_raw_parts(map.as_ptr(), map.len()) };
 
-        let reader = SlpyReader::open(bytes)
+        let reader = AsciiReader::open(bytes)
             .map_err(|source| Error::Format { path: path.into(), source })?;
         let header = reader.header();
         if header.fps_num == 0 || header.fps_den == 0 {
@@ -157,7 +157,7 @@ impl RenderSession {
         // Caps to consult, so it resolves to the Unicode-blocks tier.
         let inner = pipeline::Player::new(
             reader,
-            slpy_core::DEFAULT_CELL_ASPECT,
+            auto_ascii_core::DEFAULT_CELL_ASPECT,
             false, // repaint mode is a terminal concern; unused here
             ColorDepth::True,
             PaletteChoice::Auto.resolve_headless(),
@@ -230,7 +230,7 @@ impl RenderSession {
     }
 
     /// The asset's intended picture aspect ratio, width / height, from the
-    /// SLPY header's `aspect_num/den` (16:9 assets return ≈1.778; degenerate
+    /// ASCI header's `aspect_num/den` (16:9 assets return ≈1.778; degenerate
     /// zero fields fall back to 16:9). This is the exact ratio the letterbox
     /// inside [`render`](Self::render) targets (M5 fix 2: the viewport
     /// tracks the asset's aspect, not a hard-coded 16:9); it is exposed for
@@ -251,7 +251,7 @@ impl RenderSession {
     /// Assert which font the output medium renders with, by ink-coverage
     /// table (PLAN §3.4 `--font-table`): a built-in name — `conservative`,
     /// `dejavu-sans-mono`, `liberation-mono`, `ubuntu-mono`,
-    /// `noto-sans-mono` — or a path to a `sleepy-factory font-table` TOML.
+    /// `noto-sans-mono` — or a path to a `auto-ascii-factory font-table` TOML.
     /// `None` clears it.
     ///
     /// The table's recorded repertoire then *vetoes* the palette choice:

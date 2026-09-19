@@ -4,7 +4,7 @@
 //! The Linux console is the worst terminal we ship to and the one the owner
 //! can least easily inspect from a desktop session: 16 ANSI colors, a CP437
 //! font, no `CSI 16 t` (so cell aspect falls back to 2.0), no synchronized
-//! output. `crates/slpy-term/tests/terminal_identity.rs` pins what the probe
+//! output. `crates/auto-ascii-term/tests/terminal_identity.rs` pins what the probe
 //! must *conclude* there; this file pins what we then *draw*:
 //!
 //! 1. a committed glyph-grid golden, rendered through the real
@@ -13,16 +13,16 @@
 //!    repertoire (CP437-safe: no glyph the console font lacks), ink coverage,
 //!    tonal range, and a 16-color escape stream with no truecolor SGR in it.
 //!
-//! Re-bless deliberately: `SLPY_UPDATE_GOLDENS=1 cargo test -p auto-ascii
+//! Re-bless deliberately: `ASCII_UPDATE_GOLDENS=1 cargo test -p auto-ascii
 //! --test linux_console_golden`, then review the diff.
 
 use std::path::PathBuf;
 
 use auto_ascii::pipeline::{Player, color_depth};
 use auto_ascii::{Cell, Grid, PaletteChoice};
-use slpy_eval::fixtures::{Fixture, build_fixture};
-use slpy_format::SlpyReader;
-use slpy_term::{
+use auto_ascii_eval::fixtures::{Fixture, build_fixture};
+use auto_ascii_format::AsciiReader;
+use auto_ascii_term::{
     Backend, Caps, ColorTier, GlyphFlags, GlyphSupportTier, SimBackend,
 };
 
@@ -33,7 +33,7 @@ const ROWS: u16 = 24;
 const FRAME: u32 = 10;
 
 /// Exactly what `probe_caps` concludes for `TERM=linux` (pinned by
-/// `slpy-term/tests/terminal_identity.rs::linux_console_identity`): 16
+/// `auto-ascii-term/tests/terminal_identity.rs::linux_console_identity`): 16
 /// colors, CP437 repertoire, no synchronized output, no cell-pixel report.
 fn linux_console_caps() -> Caps {
     Caps {
@@ -61,15 +61,15 @@ fn console_grids(fixture: Fixture, frames: &[u32]) -> Vec<Grid<Cell>> {
     let glyph_tier = PaletteChoice::Auto.resolve_for_caps(&caps);
     assert_eq!(
         glyph_tier,
-        slpy_core::GlyphTier::Ascii,
+        auto_ascii_core::GlyphTier::Ascii,
         "CP437 support must resolve to the ASCII floor (palette 8 base ramp)"
     );
 
     let asset = build_fixture(fixture);
-    let reader = SlpyReader::open(&asset).expect("fixture asset is valid");
+    let reader = AsciiReader::open(&asset).expect("fixture asset is valid");
     let mut player = Player::new(
         reader,
-        slpy_core::DEFAULT_CELL_ASPECT, // no CSI 16 t on the console → 2.0
+        auto_ascii_core::DEFAULT_CELL_ASPECT, // no CSI 16 t on the console → 2.0
         false,
         color_depth(caps.color),
         glyph_tier,
@@ -122,13 +122,13 @@ fn render_text(grid: &Grid<Cell>) -> String {
 fn linux_console_golden() {
     let text = render_text(&console_grid());
     let path = golden_path("linux_console_80x24_f10.txt");
-    if std::env::var_os("SLPY_UPDATE_GOLDENS").is_some() {
+    if std::env::var_os("ASCII_UPDATE_GOLDENS").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &text).unwrap();
         return;
     }
     let want = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!("missing golden {} ({e}); bless with SLPY_UPDATE_GOLDENS=1", path.display())
+        panic!("missing golden {} ({e}); bless with ASCII_UPDATE_GOLDENS=1", path.display())
     });
     assert_eq!(text, want, "console render diverged from {}", path.display());
 }
@@ -144,7 +144,7 @@ fn linux_console_golden() {
 /// gradient frame happened to contain no subposition cells, while the
 /// shipping ASCII path was emitting U+203E OVERLINE (not a CP437 code point:
 /// CP437's 0xEE is U+00AF MACRON) wherever the branch did fire. The data-side
-/// pin is `slpy_core::palette`'s `every_ascii_tier_glyph_is_ascii`; this is
+/// pin is `auto_ascii_core::palette`'s `every_ascii_tier_glyph_is_ascii`; this is
 /// the same guarantee observed through the real player at real console caps.
 #[test]
 fn every_glyph_is_console_printable() {
@@ -163,7 +163,7 @@ fn every_glyph_is_console_printable() {
                         fixture.name()
                     );
                     // M5 fix 6: the witness must be '"' SPECIFICALLY — the
-                    // Top slot of `slpy_core::palette::SUBPOS_GLYPHS`, which
+                    // Top slot of `auto_ascii_core::palette::SUBPOS_GLYPHS`, which
                     // ONLY the subposition branch emits. '_' is ambiguous:
                     // the ASCII edge LUT emits it too (PLAN §3.4 palette 3),
                     // so a '_' witness could come entirely from edge cells

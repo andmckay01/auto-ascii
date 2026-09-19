@@ -2,7 +2,7 @@
 //! 1×1..=1000×1000 — including mid-playback storms — driven through
 //! `SimBackend` and the REAL `auto_ascii::pipeline::Player` (M2 review
 //! fix: the §6 invariants gate the shipping renderer, not a test-harness
-//! replica; the fuzz moved here from slpy-eval and now goes through
+//! replica; the fuzz moved here from auto-ascii-eval and now goes through
 //! `Player::drain_events`/`reflow`/`render_present` — the exact code the
 //! interactive loop runs). Invariant set:
 //!
@@ -34,10 +34,10 @@ use std::time::{Duration, Instant};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestCaseError, TestError, TestRunner};
 use auto_ascii::pipeline::Player;
-use slpy_core::{Resampler, Viewport};
-use slpy_eval::fixtures::{FIXTURE_BASE_H, FIXTURE_BASE_W, Fixture, build_fixture};
-use slpy_format::SlpyReader;
-use slpy_term::{Backend, Event, SimBackend};
+use auto_ascii_core::{Resampler, Viewport};
+use auto_ascii_eval::fixtures::{FIXTURE_BASE_H, FIXTURE_BASE_W, Fixture, build_fixture};
+use auto_ascii_format::AsciiReader;
+use auto_ascii_term::{Backend, Event, SimBackend};
 
 /// One storm step.
 #[derive(Clone, Debug)]
@@ -85,10 +85,10 @@ static WORST_TAP_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 /// FIXTURE ASSET's header aspect, not a global constant: since M5 fix 2 the
 /// player letterboxes to the asset's `aspect_num/den`, so the replication
 /// must use the same ratio — `run_storm` asserts the fixture header is 16:9
-/// (non-16:9 targeting is covered by `slpy-core` viewport tests and the
+/// (non-16:9 targeting is covered by `auto-ascii-core` viewport tests and the
 /// `render_session` letterbox tests).
 fn check_viewport(cols: u16, rows: u16, vp: Option<Viewport>) -> Result<(), TestCaseError> {
-    let a = slpy_core::DEFAULT_CELL_ASPECT;
+    let a = auto_ascii_core::DEFAULT_CELL_ASPECT;
     let Some(v) = vp else {
         prop_assert!(cols < 32 || rows < 9, "None for viable {cols}x{rows}");
         return Ok(());
@@ -154,7 +154,7 @@ fn drain_and_check(
             prop_assert_eq!(dst, (vp.cols, 2 * vp.rows), "luma resampler dst == Vc x 2Vr");
             // M3 hysteresis invariant (§3.5): state realloc'd to the new
             // viewport on every resize (reset is guaranteed by
-            // HysteresisState::resize, unit-tested in slpy-core).
+            // HysteresisState::resize, unit-tested in auto-ascii-core).
             prop_assert_eq!(
                 player.hysteresis_dims(),
                 (vp.cols, vp.rows),
@@ -230,7 +230,7 @@ fn render_present(
 }
 
 fn run_storm(ops: &[Op]) -> Result<(), TestCaseError> {
-    let reader = SlpyReader::open(asset()).expect("fixture asset is valid");
+    let reader = AsciiReader::open(asset()).expect("fixture asset is valid");
     // check_viewport replicates the spec candidates at 16:9 — valid only
     // because THIS asset's header says 16:9 (see check_viewport docs).
     let header = reader.header();
@@ -245,10 +245,10 @@ fn run_storm(ops: &[Op]) -> Result<(), TestCaseError> {
     // M3 half-block/quadrant compose paths run under the storm.
     let mut player = Player::new(
         reader,
-        slpy_core::DEFAULT_CELL_ASPECT,
+        auto_ascii_core::DEFAULT_CELL_ASPECT,
         false,
-        slpy_core::ColorDepth::True,
-        slpy_core::GlyphTier::UnicodeBlocks,
+        auto_ascii_core::ColorDepth::True,
+        auto_ascii_core::GlyphTier::UnicodeBlocks,
     )
     .expect("player over the fixture");
     let mut backend = SimBackend::new(80, 24);

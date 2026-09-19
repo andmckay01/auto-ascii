@@ -4,7 +4,7 @@ Realtime ASCII-art video for terminals — and a library you can draw the cells
 with yourself.
 
 An offline factory distills a reference video into a resolution-independent
-feature asset (`.slpy`: luma, edge magnitude and orientation, highlights,
+feature asset (`.ascii`: luma, edge magnitude and orientation, highlights,
 chroma — never glyphs). A runtime player maps that asset onto whatever cell
 grid you have right now: glyph ramps, directional edge strokes, highlights and
 half-blocks, letterboxed, reflowing live on resize, with temporal hysteresis so
@@ -33,8 +33,8 @@ The implementation is Rust, in the repository linked above:
 
 - **`auto-ascii`** — the library crate (the terminal `Player`, and a
   terminal-free `RenderSession` that hands back a grid of glyphs and RGB colors
-  for your own renderer), plus the `sleepy-player` CLI binary.
-- **`sleepy-factory`** — the offline factory that turns video into `.slpy`
+  for your own renderer), plus the `auto-ascii-player` CLI binary.
+- **`auto-ascii-factory`** — the offline factory that turns video into `.ascii`
   assets (uses ffmpeg as a subprocess).
 
 Prebuilt Linux (glibc and static musl) and cross-built Windows player binaries

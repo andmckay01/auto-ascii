@@ -16,9 +16,9 @@ use std::io::Cursor;
 use std::time::Instant;
 
 use auto_ascii::pipeline::Player;
-use slpy_format::header::plane_id;
-use slpy_format::{Meta, PlaneRef, SlpyReader, SlpyWriter, WriterOptions};
-use slpy_term::SimBackend;
+use auto_ascii_format::header::plane_id;
+use auto_ascii_format::{Meta, PlaneRef, AsciiReader, AsciiWriter, WriterOptions};
+use auto_ascii_term::SimBackend;
 
 const BASE_W: u16 = 480;
 const BASE_H: u16 = 270;
@@ -73,12 +73,12 @@ fn build_synth_asset() -> Vec<u8> {
         ..WriterOptions::default()
     };
     let meta = Meta {
-        factory_version: "sleepy-player-perf-test".to_owned(),
+        factory_version: "auto-ascii-player-perf-test".to_owned(),
         source: "synthetic-480x270".to_owned(),
         palette_hints: Vec::new(),
     };
     let mut writer =
-        SlpyWriter::new(Cursor::new(Vec::new()), opts, &meta).expect("valid writer options");
+        AsciiWriter::new(Cursor::new(Vec::new()), opts, &meta).expect("valid writer options");
     for frame in 0..FRAMES {
         let y = luma_plane(frame);
         let c = chroma_plane(frame);
@@ -98,13 +98,13 @@ fn build_synth_asset() -> Vec<u8> {
 #[test]
 fn unthrottled_sim_sustains_24fps_at_300x80() {
     let asset = build_synth_asset();
-    let reader = SlpyReader::open(&asset).expect("synthetic asset opens");
+    let reader = AsciiReader::open(&asset).expect("synthetic asset opens");
     let mut player = Player::new(
         reader,
         2.0,
         true,
-        slpy_core::ColorDepth::True,
-        slpy_core::GlyphTier::UnicodeBlocks,
+        auto_ascii_core::ColorDepth::True,
+        auto_ascii_core::GlyphTier::UnicodeBlocks,
     )
     .expect("player");
     let mut backend = SimBackend::new(300, 80);

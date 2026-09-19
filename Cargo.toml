@@ -1,13 +1,13 @@
-# Sleepytime workspace — PLAN.md §2 (crate layout), §8 (dependencies).
+# auto-ascii workspace — PLAN.md §2 (crate layout), §8 (dependencies).
 
 [workspace]
 resolver = "3"
 members = [
-    "crates/slpy-format",
-    "crates/slpy-core",
-    "crates/slpy-term",
-    "crates/slpy-eval",
-    "crates/sleepy-factory",
+    "crates/auto-ascii-format",
+    "crates/auto-ascii-core",
+    "crates/auto-ascii-term",
+    "crates/auto-ascii-eval",
+    "crates/auto-ascii-factory",
     "crates/auto-ascii",
 ]
 
@@ -22,41 +22,41 @@ repository = "https://github.com/andmckay01/auto-ascii"
 # hygiene): `cargo package` replaces path deps with their version req, so a
 # path-only dep fails the manifest check — `cargo package -p auto-ascii
 # --no-verify` must pass (PLAN §7 M5; nothing is actually published).
-slpy-core = { path = "crates/slpy-core", version = "0.1.0" }
-slpy-term = { path = "crates/slpy-term", version = "0.1.0" }
-slpy-format = { path = "crates/slpy-format", version = "0.1.0" }
-# slpy-eval stays path-ONLY (no version req), deliberately: it is used solely
-# as a dev-dependency (goldens/fixtures) and it dev-dep-cycles with slpy-term.
+auto-ascii-core = { path = "crates/auto-ascii-core", version = "0.1.0" }
+auto-ascii-term = { path = "crates/auto-ascii-term", version = "0.1.0" }
+auto-ascii-format = { path = "crates/auto-ascii-format", version = "0.1.0" }
+# auto-ascii-eval stays path-ONLY (no version req), deliberately: it is used solely
+# as a dev-dependency (goldens/fixtures) and it dev-dep-cycles with auto-ascii-term.
 # Cargo strips path-only dev-deps when packaging, which is exactly what lets
-# the closure `cargo package -p slpy-core -p slpy-format -p slpy-term
+# the closure `cargo package -p auto-ascii-core -p auto-ascii-format -p auto-ascii-term
 # -p auto-ascii --no-verify` pass its manifest check (M5 item F).
-slpy-eval = { path = "crates/slpy-eval" }
-# M4: the facade crate replaced the sleepy-player lib target (the pipeline
-# moved into it; the `sleepy-player` binary now lives there behind the
+auto-ascii-eval = { path = "crates/auto-ascii-eval" }
+# M4: the facade crate replaced the auto-ascii-player lib target (the pipeline
+# moved into it; the `auto-ascii-player` binary now lives there behind the
 # default-on `bin` feature). default-features = false here: consumers of the
-# workspace dep (sleepy-factory eval, slpy-eval dev) need only the pipeline —
+# workspace dep (auto-ascii-factory eval, auto-ascii-eval dev) need only the pipeline —
 # no clap/terminal-session deps.
 auto-ascii = { path = "crates/auto-ascii", default-features = false }
-# slpy-format (PLAN §8): zstd + crc32fast + ciborium (META only; frame payloads hand-rolled)
+# auto-ascii-format (PLAN §8): zstd + crc32fast + ciborium (META only; frame payloads hand-rolled)
 zstd = "0.13"
-# slpy-format `parallel` feature: a frame's plane subblocks compress
+# auto-ascii-format `parallel` feature: a frame's plane subblocks compress
 # independently, so they fan out across cores. OPTIONAL and off by default —
 # the player only ever READS assets and must not pull in a thread pool.
 rayon = "1"
 crc32fast = "1.4"
 ciborium = "0.2"
 serde = { version = "1", features = ["derive"] } # META struct only (ciborium is serde-based)
-# slpy-term (PLAN §8): crossterm for raw mode/alt screen/events ONLY, libc for ioctl/termios/self-pipe
+# auto-ascii-term (PLAN §8): crossterm for raw mode/alt screen/events ONLY, libc for ioctl/termios/self-pipe
 crossterm = "0.29"
 libc = "0.2"
 # bins
 clap = { version = "4", features = ["derive"] }
-toml = "0.8"                                     # sleepy-factory params.toml (M2 item B)
+toml = "0.8"                                     # auto-ascii-factory params.toml (M2 item B)
 indicatif = "0.18"
 serde_json = "1"
 memmap2 = "0.9"
 anyhow = "1"
-# slpy-eval / dev (PLAN §8): goldens + resize fuzzing (M2 items C/D).
+# auto-ascii-eval / dev (PLAN §8): goldens + resize fuzzing (M2 items C/D).
 insta = "1"
 proptest = "1"
 # M2 item E: criterion perf gates (thresholds committed at perf/thresholds.toml,
@@ -72,7 +72,7 @@ imageproc = { version = "0.25", default-features = false }
 # M3 review reel: per-clip animated GIF of the rasterized render (PLAN §7 M3
 # human sign-off artifact), embedded base64 in the reel HTML.
 gif = "0.13"
-# M5 item B: offline font ink-coverage table generator (`sleepy-factory
+# M5 item B: offline font ink-coverage table generator (`auto-ascii-factory
 # font-table`) — pure-Rust glyph rasterization at §3.4's 64×128 cell. Already
 # in the tree transitively via imageproc; this makes it a direct factory dep.
 ab_glyph = "0.2"
@@ -85,13 +85,13 @@ opt-level = 3
 # per-cell hot loops live in these crates, so optimize them even under dev.
 # debug-assertions stay ON (only codegen opt changes); the zstd crates are
 # included so the fixture builders' zstd-19 encode stays fast at test time.
-[profile.dev.package.slpy-core]
+[profile.dev.package.auto-ascii-core]
 opt-level = 3
-[profile.dev.package.slpy-term]
+[profile.dev.package.auto-ascii-term]
 opt-level = 3
-[profile.dev.package.slpy-format]
+[profile.dev.package.auto-ascii-format]
 opt-level = 3
-[profile.dev.package.slpy-eval]
+[profile.dev.package.auto-ascii-eval]
 opt-level = 3
 [profile.dev.package.zstd]
 opt-level = 3
@@ -99,11 +99,11 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.zstd-sys]
 opt-level = 3
-# M2 item B: `sleepy-factory eval` runs the player pipeline + the factory
+# M2 item B: `auto-ascii-factory eval` runs the player pipeline + the factory
 # extract loops over whole corpus clips under `cargo test`/debug — same
 # rationale as above (hot per-pixel/per-cell loops; debug-assertions stay on).
-# M4: sleepy-player's pipeline moved into the auto-ascii facade.
+# M4: auto-ascii-player's pipeline moved into the auto-ascii facade.
 [profile.dev.package.auto-ascii]
 opt-level = 3
-[profile.dev.package.sleepy-factory]
+[profile.dev.package.auto-ascii-factory]
 opt-level = 3

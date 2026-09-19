@@ -11,15 +11,15 @@
 //!   full repaint (the diff baseline cannot keep describing overlay cells).
 
 use auto_ascii::pipeline::Player;
-use slpy_core::{ColorDepth, GlyphTier};
-use slpy_eval::fixtures::{Fixture, build_fixture};
-use slpy_format::SlpyReader;
-use slpy_term::{Event, Key, SimBackend};
+use auto_ascii_core::{ColorDepth, GlyphTier};
+use auto_ascii_eval::fixtures::{Fixture, build_fixture};
+use auto_ascii_format::AsciiReader;
+use auto_ascii_term::{Event, Key, SimBackend};
 
 fn player(bytes: &[u8], repaint_full: bool) -> Player<'_> {
     // Ascii tier keeps every emitted glyph single-byte, so the screen model
     // below can be strict about what it accepts.
-    Player::new(SlpyReader::open(bytes).unwrap(), 2.0, repaint_full, ColorDepth::True, GlyphTier::Ascii)
+    Player::new(AsciiReader::open(bytes).unwrap(), 2.0, repaint_full, ColorDepth::True, GlyphTier::Ascii)
         .unwrap()
 }
 
