@@ -72,6 +72,21 @@ Embedding: `crates/auto-ascii/examples/simple-play.rs` (13 lines) and
   the owner's Mac (`~/Downloads`, see corpus/README.md); re-send via Taildrop
   (`tailscale file cp` to hetzner, then `sudo tailscale file get <dir>`).
 
+## NEXT UP — a full rename is planned but NOT started
+
+Read **`RENAME-PLAN.md`** at the repo root before touching anything. The owner
+wants `slpy`/`sleepy` gone entirely: crates -> `auto-ascii-*`, binaries ->
+`auto-ascii-player`/`auto-ascii-factory`, magic `SLPY` -> `ASCI`, extension
+`.slpy` -> `.ascii`. ~1376 occurrences. The owner **accepted that every
+existing asset dies** — all 12 corpus sources are present, so everything is
+rebuildable.
+
+The plan carries the mappings, the ordering, what must be re-pinned, the
+crates.io delete/republish constraints, and a verification checklist. The one
+invariant worth repeating here: **the rename must not change a rendered
+pixel** — if a render golden or a corpus metric moves, something load-bearing
+got renamed, so stop and find it rather than re-pinning.
+
 ## Open items (owner)
 
 1. ~~**M3 human sign-off**~~ — **DONE 2026-08-28.** Owner reviewed the reel and
@@ -84,7 +99,9 @@ Embedding: `crates/auto-ascii/examples/simple-play.rs` (13 lines) and
    each terminal on the Mac — the probe reads the *local* terminal, so color,
    fonts and aspect are faithful. Judge **tearing locally only**; link latency
    confounds that one signal.
-3. **crates.io publish** — *prepped, awaiting owner's token.* All four
+3. ~~**crates.io publish**~~ — **DONE 2026-09-19:** `slpy-core`, `slpy-format`, `slpy-term`, `auto-ascii` all live at 0.1.0, verified consumable from the registry. The pending rename deletes and republishes these under the new names (RENAME-PLAN.md §5). Original note follows.
+
+   *prepped, awaiting owner's token.* All four
    publishable crates now carry `repository`/`keywords`/`categories`/`readme`
    and pass `cargo package` **with `--verify`** (a real build from each
    tarball); the "no documentation, homepage or repository" warning is gone.
