@@ -29,9 +29,17 @@ impl Drop for Pty {
 fn spawn_harness(mode: &str) -> (Pty, Child) {
     let mut master: libc::c_int = 0;
     let mut slave: libc::c_int = 0;
-    let ws = libc::winsize { ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0 };
+    let mut ws = libc::winsize { ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0 };
     let rc = unsafe {
-        libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), &ws)
+        // termp/winp are `*mut` in the macOS libc binding (`*const` on Linux);
+        // `&mut` coerces to either.
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut ws,
+        )
     };
     assert_eq!(rc, 0, "openpty failed: {}", io::Error::last_os_error());
 

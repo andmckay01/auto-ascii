@@ -136,7 +136,9 @@ pub(crate) fn restore_now() {
         while !rem.is_empty() {
             let n = libc::write(fd, rem.as_ptr().cast(), rem.len());
             if n < 0 {
-                if *libc::__errno_location() == libc::EINTR {
+                // errno via std: `libc::__errno_location` is glibc-only (macOS
+                // exposes `__error`). Allocation-free, so still signal-safe.
+                if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
                     continue;
                 }
                 break;

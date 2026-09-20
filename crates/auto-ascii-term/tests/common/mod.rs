@@ -66,13 +66,21 @@ pub fn spawn_harness(mode: &str) -> (Pty, Child) {
 /// does *not* export `COLORTERM` is as much a fixture as one that does).
 pub fn spawn_harness_with(
     mode: &str,
-    ws: libc::winsize,
+    mut ws: libc::winsize,
     env: &[(&str, Option<&str>)],
 ) -> (Pty, Child) {
     let mut master: libc::c_int = 0;
     let mut slave: libc::c_int = 0;
     let rc = unsafe {
-        libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), &ws)
+        // termp/winp are `*mut` in the macOS libc binding (`*const` on Linux);
+        // `&mut` coerces to either.
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut ws,
+        )
     };
     assert_eq!(rc, 0, "openpty failed: {}", io::Error::last_os_error());
 
