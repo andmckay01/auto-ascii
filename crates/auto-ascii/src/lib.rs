@@ -89,6 +89,10 @@ pub mod pipeline;
 mod error;
 mod session;
 
+/// Timestamp parsing/formatting shared by every entry point that takes a
+/// time (PLAN-M6-M8 §2) — `--seek`, `auto-ascii import --ss/--t`.
+pub mod timecode;
+
 #[cfg(feature = "terminal")]
 mod player;
 

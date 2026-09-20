@@ -28,6 +28,10 @@
 //! [`snapshot`] is the compact text serialization the
 //! insta goldens store: the glyph grid verbatim plus one FNV-1a 64 hash of
 //! the fg bytes per row (compact, and a mismatch pinpoints the row).
+//!
+//! [`write_bgr24_avi`] (M7) is the mirror image of all of the above: an
+//! INPUT fixture — uncompressed video the factory's ffmpeg ingest can read
+//! — rather than an asset. See its docs for why it is written from Rust.
 
 use std::io::Cursor;
 
@@ -577,6 +581,159 @@ pub fn snapshot(
     s
 }
 
+// ---------------------------------------------------------------------------
+// Raw BGR24 AVI input fixtures (M7, PLAN-M6-M8 §2)
+// ---------------------------------------------------------------------------
+//
+// The rest of this module writes ASCI assets — the factory's OUTPUT. This
+// section writes the factory's INPUT: a minimal RIFF AVI of uncompressed
+// 24-bit BGR frames, so a test can exercise the whole ffmpeg ingest without
+// the corpus and without depending on how any particular ffmpeg build
+// renders and encodes a lavfi source. It is the one file-writing helper in
+// an otherwise I/O-free crate, and it exists so the factory's byte-pinned
+// determinism guard and `auto-ascii import`'s integration tests share ONE
+// container writer (a second copy would drift and silently move the pin).
+
+/// Little-endian `u32` into a byte buffer.
+fn le32(out: &mut Vec<u8>, n: u32) {
+    out.extend_from_slice(&n.to_le_bytes());
+}
+
+/// Little-endian `u16` into a byte buffer.
+fn le16(out: &mut Vec<u8>, n: u16) {
+    out.extend_from_slice(&n.to_le_bytes());
+}
+
+/// `fourcc` + little-endian payload size + payload.
+fn riff_chunk(out: &mut Vec<u8>, fourcc: &[u8; 4], payload: &[u8]) {
+    out.extend_from_slice(fourcc);
+    le32(out, payload.len() as u32);
+    out.extend_from_slice(payload);
+}
+
+/// Write `frames` as a minimal RIFF AVI of uncompressed 24-bit BGR
+/// (`BI_RGB`) video at `width`x`height`, `fps`/1.
+///
+/// Each item of `frames` is ONE frame already in DIB order: rows
+/// **bottom-up** (last image row first), pixels **B,G,R** — exactly the
+/// bytes that land in its `00db` chunk. `width` must be a multiple of 4 so
+/// the row stride is 4-byte aligned (no DIB row padding) and every chunk is
+/// even-sized (no RIFF pad byte), which is what keeps this writer a
+/// straight-line byte layout.
+///
+/// Every ffmpeg build decodes these frames identically — there is no codec,
+/// no colour conversion beyond a byte permutation and no scaler in the way
+/// — which is the whole point: `auto-ascii-factory`'s determinism guard
+/// pins the sha256 of this file (`FIXTURE_AVI_SHA`), and an ffmpeg upgrade
+/// must not move it.
+pub fn write_bgr24_avi(
+    path: &std::path::Path,
+    width: u32,
+    height: u32,
+    fps: u32,
+    frames: impl Iterator<Item = Vec<u8>>,
+) -> std::io::Result<()> {
+    if width == 0 || height == 0 || !width.is_multiple_of(4) || fps == 0 {
+        return Err(std::io::Error::other(format!(
+            "write_bgr24_avi: bad geometry {width}x{height} @ {fps} fps \
+             (width must be a nonzero multiple of 4)"
+        )));
+    }
+    let frame_bytes = width * height * 3;
+
+    // movi: one `00db` chunk per frame, each with an idx1 entry. idx1
+    // offsets are relative to the `movi` fourcc itself (4 for the first).
+    let mut movi = Vec::new();
+    movi.extend_from_slice(b"movi");
+    let mut idx1 = Vec::new();
+    let mut frame_count = 0u32;
+    for frame in frames {
+        if frame.len() != frame_bytes as usize {
+            return Err(std::io::Error::other(format!(
+                "write_bgr24_avi: frame {frame_count} is {} bytes, expected {frame_bytes}",
+                frame.len()
+            )));
+        }
+        let offset = movi.len() as u32;
+        riff_chunk(&mut movi, b"00db", &frame);
+        idx1.extend_from_slice(b"00db");
+        le32(&mut idx1, 0x10); // dwFlags = AVIIF_KEYFRAME
+        le32(&mut idx1, offset);
+        le32(&mut idx1, frame_bytes);
+        frame_count += 1;
+    }
+    if frame_count == 0 {
+        return Err(std::io::Error::other("write_bgr24_avi: no frames"));
+    }
+
+    // hdrl { avih, LIST strl { strh, strf } }.
+    let mut avih = Vec::with_capacity(56); // MainAVIHeader
+    le32(&mut avih, 1_000_000 / fps); // dwMicroSecPerFrame
+    le32(&mut avih, frame_bytes * fps); // dwMaxBytesPerSec
+    le32(&mut avih, 0); // dwPaddingGranularity
+    le32(&mut avih, 0x10); // dwFlags = AVIF_HASINDEX
+    le32(&mut avih, frame_count); // dwTotalFrames
+    le32(&mut avih, 0); // dwInitialFrames
+    le32(&mut avih, 1); // dwStreams
+    le32(&mut avih, frame_bytes); // dwSuggestedBufferSize
+    le32(&mut avih, width); // dwWidth
+    le32(&mut avih, height); // dwHeight
+    for _ in 0..4 {
+        le32(&mut avih, 0); // dwReserved[4]
+    }
+
+    let mut strh = Vec::with_capacity(56); // AVIStreamHeader
+    strh.extend_from_slice(b"vids"); // fccType
+    strh.extend_from_slice(b"DIB "); // fccHandler = uncompressed DIB
+    le32(&mut strh, 0); // dwFlags
+    le16(&mut strh, 0); // wPriority
+    le16(&mut strh, 0); // wLanguage
+    le32(&mut strh, 0); // dwInitialFrames
+    le32(&mut strh, 1); // dwScale
+    le32(&mut strh, fps); // dwRate => fps/1
+    le32(&mut strh, 0); // dwStart
+    le32(&mut strh, frame_count); // dwLength
+    le32(&mut strh, frame_bytes); // dwSuggestedBufferSize
+    le32(&mut strh, 0xFFFF_FFFF); // dwQuality = default
+    le32(&mut strh, 0); // dwSampleSize
+    for v in [0, 0, width as u16, height as u16] {
+        le16(&mut strh, v); // rcFrame, four i16
+    }
+
+    let mut strf = Vec::with_capacity(40); // BITMAPINFOHEADER
+    le32(&mut strf, 40); // biSize
+    le32(&mut strf, width); // biWidth
+    le32(&mut strf, height); // biHeight > 0 => bottom-up rows
+    le16(&mut strf, 1); // biPlanes
+    le16(&mut strf, 24); // biBitCount
+    le32(&mut strf, 0); // biCompression = BI_RGB
+    le32(&mut strf, frame_bytes); // biSizeImage
+    for _ in 0..4 {
+        le32(&mut strf, 0); // bi{X,Y}PelsPerMeter, biClrUsed, biClrImportant
+    }
+
+    let mut strl = Vec::new();
+    strl.extend_from_slice(b"strl");
+    riff_chunk(&mut strl, b"strh", &strh);
+    riff_chunk(&mut strl, b"strf", &strf);
+    let mut hdrl = Vec::new();
+    hdrl.extend_from_slice(b"hdrl");
+    riff_chunk(&mut hdrl, b"avih", &avih);
+    riff_chunk(&mut hdrl, b"LIST", &strl);
+
+    // RIFF `AVI ` { LIST hdrl, LIST movi, idx1 }.
+    let mut body = Vec::with_capacity(4 + 8 + hdrl.len() + 8 + movi.len() + 8 + idx1.len());
+    body.extend_from_slice(b"AVI ");
+    riff_chunk(&mut body, b"LIST", &hdrl);
+    riff_chunk(&mut body, b"LIST", &movi);
+    riff_chunk(&mut body, b"idx1", &idx1);
+    let mut avi = Vec::with_capacity(8 + body.len());
+    riff_chunk(&mut avi, b"RIFF", &body);
+
+    std::fs::write(path, &avi)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,6 +802,38 @@ mod tests {
         assert!(r.viewport().is_none());
         let grid = r.render(0);
         assert!(grid.as_slice().iter().all(|c| *c == Cell::BLANK));
+    }
+
+    /// The AVI writer's layout is arithmetic, so pin the arithmetic: the
+    /// RIFF size field, the fourccs and the exact file length. The BYTES
+    /// are pinned end to end by auto-ascii-factory's `FIXTURE_AVI_SHA`.
+    #[test]
+    fn bgr24_avi_layout_is_exact() {
+        let (w, h, fps, n) = (8u32, 4u32, 25u32, 3u32);
+        let frame_bytes = (w * h * 3) as usize;
+        let dir = std::env::temp_dir().join(format!("auto-ascii-eval-avi-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tiny.avi");
+        write_bgr24_avi(&path, w, h, fps, (0..n).map(|f| vec![f as u8; frame_bytes])).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize, bytes.len() - 8);
+        assert_eq!(&bytes[8..12], b"AVI ");
+        // LIST hdrl { avih(56), LIST strl { strh(56), strf(40) } }
+        let hdrl = 8 + 4 + (8 + 56) + (8 + 4 + (8 + 56) + (8 + 40));
+        let movi = 8 + 4 + n as usize * (8 + frame_bytes);
+        let idx1 = 8 + n as usize * 16;
+        assert_eq!(bytes.len(), 8 + 4 + hdrl + movi + idx1);
+        // Frames land verbatim, in order, right after their chunk header.
+        let first = 8 + 4 + hdrl + 8 + 4 + 8;
+        assert_eq!(&bytes[first..first + frame_bytes], &vec![0u8; frame_bytes][..]);
+
+        // Geometry and frame size are checked, not trusted.
+        assert!(write_bgr24_avi(&path, 6, h, fps, std::iter::once(vec![0u8; 72])).is_err());
+        assert!(write_bgr24_avi(&path, w, h, fps, std::iter::empty()).is_err());
+        assert!(write_bgr24_avi(&path, w, h, fps, std::iter::once(vec![0u8; 95])).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

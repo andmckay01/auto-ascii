@@ -27,7 +27,7 @@
 //! stream to the writer, never accumulate (features.rs memory note).
 
 use std::fs::{self, File};
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -52,6 +52,26 @@ pub struct BuildArgs {
     /// Effective tunables (params.toml + CLI overrides, validated) —
     /// fps/res/encode profile/shot detection/levels all live here (PLAN §5).
     pub params: Params,
+}
+
+/// What a finished build produced (PLAN-M6-M8 §2): the numbers
+/// `auto-ascii import` records in its sidecar and prints as JSON, read off
+/// the same values the human "wrote …" line reports. Nothing here needs the
+/// asset reopened.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BuildReport {
+    /// Frames encoded (== the ASCI header's `frame_count`).
+    pub frames: u32,
+    /// Output frame rate (the header stores it as `fps`/1).
+    pub fps: f64,
+    /// `frames / fps`.
+    pub duration_secs: f64,
+    /// Stored plane width (`[build].base_w` after CLI overrides).
+    pub base_w: u16,
+    /// Stored plane height.
+    pub base_h: u16,
+    /// Size of the written `.ascii` file.
+    pub bytes: u64,
 }
 
 /// Run one full decode pass, feeding every frame to `on_frame`. Returns the
@@ -119,7 +139,12 @@ fn shot_records(shots: &[Shot]) -> Vec<ShotRecord> {
         .collect()
 }
 
-pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
+/// Run the two-pass build. Every human progress/info line goes to `info`
+/// (the bin hands it `stderr`, so its bytes are unchanged; a `--json`
+/// caller hands it stderr too and keeps stdout for the JSON object —
+/// PLAN-M6-M8 §2). The indicatif bars stay on stderr, where they have
+/// always been, and are cleared before any line is written.
+pub fn run(args: &BuildArgs, info: &mut dyn Write) -> Result<BuildReport, BoxErr> {
     if !args.input.is_file() {
         return Err(format!("input not found: {}", args.input.display()).into());
     }
@@ -128,17 +153,18 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
     let fps = args.params.build.fps;
 
     // Stage 1 (PLAN §5): validate via ffprobe before spending a decode pass.
-    let info = probe(&args.input)?;
-    eprintln!(
+    let probed = probe(&args.input)?;
+    writeln!(
+        info,
         "input: {} ({}x{}, {}) -> {}x{} @ {} fps, ASCI v1 Y+E+Ex+Ey+H+C (delta+zstd, NORM per-shot levels)",
         args.input.display(),
-        info.width,
-        info.height,
-        info.duration_secs.map_or_else(|| "unknown duration".into(), |d| format!("{d:.2}s")),
+        probed.width,
+        probed.height,
+        probed.duration_secs.map_or_else(|| "unknown duration".into(), |d| format!("{d:.2}s")),
         w,
         h,
         fps
-    );
+    )?;
 
     let params = DecodeParams { input: &args.input, ss: args.ss, t: args.t, fps, w, h };
     let extractor = Extractor::new(w, h);
@@ -175,12 +201,13 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
     }
     let shots = detector.finish();
     let cuts = shots.iter().filter(|s| s.cut).count();
-    eprintln!(
+    writeln!(
+        info,
         "pass 1/2: {frames} frames, {} shot{} ({cuts} cut{}), Y levels per shot -> NORM",
         shots.len(),
         if shots.len() == 1 { "" } else { "s" },
         if cuts == 1 { "" } else { "s" },
-    );
+    )?;
 
     // ---- pass 2: extract + encode -------------------------------------------
     // Write to `<out>.part`, rename on success.
@@ -190,21 +217,29 @@ pub fn run(args: &BuildArgs) -> Result<(), BoxErr> {
         PathBuf::from(os)
     };
     let result = encode_pass(args, &params, &shots, frames, &part);
-    if result.is_err() {
+    if let Err(e) = result {
         let _ = fs::remove_file(&part);
-        return result;
+        return Err(e);
     }
     fs::rename(&part, &args.output)
         .map_err(|e| format!("rename {} -> {}: {e}", part.display(), args.output.display()))?;
 
     let size = fs::metadata(&args.output).map(|m| m.len()).unwrap_or(0);
-    eprintln!(
+    writeln!(
+        info,
         "wrote {} ({frames} frames, {:.1} KiB, {:.1} KiB/frame)",
         args.output.display(),
         size as f64 / 1024.0,
         size as f64 / 1024.0 / frames as f64
-    );
-    Ok(())
+    )?;
+    Ok(BuildReport {
+        frames: u32::try_from(frames).map_err(|_| "frame count exceeds the u32 wire field")?,
+        fps: f64::from(fps),
+        duration_secs: frames as f64 / f64::from(fps),
+        base_w: w,
+        base_h: h,
+        bytes: size,
+    })
 }
 
 fn encode_pass(

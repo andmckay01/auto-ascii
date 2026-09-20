@@ -44,6 +44,27 @@ capability probe), `--sim 213x58:300` (headless render + one JSON stats line).
 `auto-ascii-factory inspect intro.ascii` prints the container's header, chunks and
 CRC status.
 
+## The `auto-ascii` CLI
+
+One command that takes a video from anywhere, processes it, and files the
+result in `~/auto-ascii/library/` (override with `AUTO_ASCII_HOME`) beside a
+JSON sidecar recording where it came from:
+
+```bash
+cargo install --path crates/auto-ascii-cli   # or: cargo run -p auto-ascii-cli --
+
+auto-ascii import ~/Desktop/clip.mp4   # ffmpeg-ingest -> library/clip.ascii
+auto-ascii list                        # name, duration, fps, frames, bytes, source
+auto-ascii play clip                   # the player above, on a library clip
+```
+
+`import` also takes `--name`, `--ss`/`--t` (`SS`, `MM:SS` or `HH:MM:SS`),
+`--fps`, `--res WxH` and `--force`; `info <clip>` prints one clip's header
+plus sidecar, and `home` prints the folder. Every command accepts `--json`,
+which makes stdout exactly one JSON value so an agent can parse it — see
+[docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md), which `auto-ascii agent-guide`
+prints verbatim.
+
 ## Install
 
 The fast path is a prebuilt player binary — copy it, run it, done (measured

@@ -198,24 +198,6 @@ fn parse_sim_spec(s: &str) -> Result<((u16, u16), u64)> {
     Ok((size, nframes))
 }
 
-/// Parse a `--seek` timestamp: plain seconds ("42.5") or colon form
-/// ("1:30", "0:01:30.5") — up to H:M:S, fractions allowed anywhere.
-fn parse_timestamp(s: &str) -> Result<f64> {
-    let parts: Vec<&str> = s.split(':').collect();
-    if parts.is_empty() || parts.len() > 3 {
-        bail!("expected SECONDS, MM:SS or HH:MM:SS");
-    }
-    let mut secs = 0.0f64;
-    for p in &parts {
-        let v: f64 = p.trim().parse().with_context(|| format!("bad timestamp component {p:?}"))?;
-        if !v.is_finite() || v < 0.0 {
-            bail!("timestamp components must be finite and >= 0");
-        }
-        secs = secs * 60.0 + v;
-    }
-    Ok(secs)
-}
-
 /// Canonical tier tag for the `--sim` JSON line.
 fn tier_tag(t: ColorTier) -> &'static str {
     match t {
@@ -360,10 +342,12 @@ fn run_bench_seek(mut player: Player<'_>, seeks: u32) -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // M7: the timestamp grammar lives in the facade (auto_ascii::timecode),
+    // shared with `auto-ascii import --ss/--t` — PLAN-M6-M8 §2.
     let seek_secs = cli
         .seek
         .as_deref()
-        .map(|ts| parse_timestamp(ts).with_context(|| format!("--seek {ts:?}")))
+        .map(|ts| auto_ascii::timecode::parse(ts).with_context(|| format!("--seek {ts:?}")))
         .transpose()?;
 
     if cli.sim.is_some() || cli.bench_seek.is_some() {
@@ -466,16 +450,19 @@ mod tests {
         assert!(parse_sim_spec("213x58:0").is_err());
     }
 
+    /// `--seek` moved onto `auto_ascii::timecode` at M7; this pins that the
+    /// SET of strings the flag accepts did not change with it.
     #[test]
     fn timestamp_parsing() {
-        assert_eq!(parse_timestamp("42").unwrap(), 42.0);
-        assert_eq!(parse_timestamp("42.5").unwrap(), 42.5);
-        assert_eq!(parse_timestamp("1:30").unwrap(), 90.0);
-        assert_eq!(parse_timestamp("0:01:30.5").unwrap(), 90.5);
-        assert_eq!(parse_timestamp("2:00:00").unwrap(), 7200.0);
-        assert!(parse_timestamp("").is_err());
-        assert!(parse_timestamp("1:2:3:4").is_err());
-        assert!(parse_timestamp("-5").is_err());
-        assert!(parse_timestamp("abc").is_err());
+        use auto_ascii::timecode::parse;
+        assert_eq!(parse("42").unwrap(), 42.0);
+        assert_eq!(parse("42.5").unwrap(), 42.5);
+        assert_eq!(parse("1:30").unwrap(), 90.0);
+        assert_eq!(parse("0:01:30.5").unwrap(), 90.5);
+        assert_eq!(parse("2:00:00").unwrap(), 7200.0);
+        assert!(parse("").is_err());
+        assert!(parse("1:2:3:4").is_err());
+        assert!(parse("-5").is_err());
+        assert!(parse("abc").is_err());
     }
 }

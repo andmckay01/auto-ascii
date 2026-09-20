@@ -9,6 +9,7 @@ members = [
     "crates/auto-ascii-eval",
     "crates/auto-ascii-factory",
     "crates/auto-ascii",
+    "crates/auto-ascii-cli",
 ]
 
 [workspace.package]

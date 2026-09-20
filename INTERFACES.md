@@ -23,10 +23,14 @@ crates/
   auto-ascii-eval       lib   deps: auto-ascii-core, auto-ascii-term, auto-ascii-format, serde, serde_json
                         dev: insta, proptest   (NEW at M2; auto-ascii-format added
                         at item C for the synthetic fixture builders)
-  auto-ascii-factory  bin   deps: auto-ascii-format, auto-ascii-core, auto-ascii-term, auto-ascii-eval,
+  auto-ascii-factory lib+bin deps: auto-ascii-format, auto-ascii-core,
+                        auto-ascii-term, auto-ascii-eval,
                         auto-ascii(default-features=false — pipeline only),
                         clap, indicatif, serde, serde_json,
                         toml, memmap2               (M2 item B additions)
+                        M7: lib + THIN bin — src/lib.rs owns the modules and
+                        the build entry; src/main.rs is the clap surface and
+                        `inspect`. Unpublished (ffmpeg subprocess).
   auto-ascii      lib+bin  THE public facade (M4 item A; absorbed the
                         auto-ascii-player crate — pipeline, tests, benches, bin).
                         deps: auto-ascii-core, auto-ascii-format, memmap2,
@@ -38,6 +42,16 @@ crates/
                         --no-default-features = pure embedder: RenderSession
                         only; dep tree has NO clap/anyhow/crossterm
                         (M4 acceptance 4)
+  auto-ascii-cli      bin   the `auto-ascii` binary (NEW at M7; unpublished).
+                        deps: auto-ascii(path, DEFAULT features — `play`
+                        needs the terminal Player, and the workspace entry
+                        sets default-features=false), auto-ascii-factory(path,
+                        the lib), auto-ascii-format, clap, memmap2, serde,
+                        serde_json; dev: auto-ascii-eval (AVI fixtures).
+                        No new external dependency entered the workspace.
+                        It is a THIRD crate because the factory already
+                        depends on the facade, so the binary needing both
+                        cannot live in either.
 ```
 
 - Root workspace: resolver 3, edition 2024, `license = "MIT OR Apache-2.0"`,
@@ -761,6 +775,16 @@ pub enum PaletteChoice { Auto, Ascii, Unicode, Braille }  // §3.4 charset axis
 pub use auto_ascii_core::{Cell, Grid, Rgb};  // what render() hands back — nothing
     // else from auto-ascii-core is re-exported (resampler, palettes, viewport,
     // hysteresis: engine internals a simple project never touches)
+pub mod timecode;  // M7 (PLAN-M6-M8 §2): the project's ONE timestamp grammar
+    // pub fn parse(&str) -> Result<f64, TimecodeError>   // SS[.f] | MM:SS[.f]
+    //     | HH:MM:SS[.f]; fields trimmed, NOT range-checked against the unit
+    //     above them (0:90 == 90 s), negatives/inf/NaN rejected
+    // pub fn format_mmss(f64) -> String                  // M:SS, H:MM:SS past
+    //     the hour — the progress overlay's shape; <0/NaN print 0:00
+    // pub enum TimecodeError { TooManyFields, BadField(String),
+    //     OutOfRange(String) }   // Display text is user-facing verbatim
+    // Core tier: no deps, no features. `auto-ascii-player --seek` and
+    // `auto-ascii import --ss/--t` are both this function.
 
 // session.rs — the terminal-free embedder entry (always available)
 pub struct RenderSession;   // owns the mmap + decode state + hysteresis
@@ -1086,6 +1110,60 @@ facade surface + this hidden module.)
   `--sim-resize` (default value 100x40, requires `--sim`) injects a
   `Event::Resize` at frame NFRAMES/2 through the same event path the
   interactive loop uses, proving next-frame reflow.
+- `auto-ascii` (PLAN-M6-M8 §2) — M7, the agent-first CLI, built from
+  `crates/auto-ascii-cli` (package `auto-ascii-cli`, binary `auto-ascii`;
+  unpublished, like the factory it depends on). CLI as of M7:
+  `[--json] import <video> [--name N] [--ss T] [--t T] [--fps N]
+  [--res WxH] [--force] | list | info <clip> | play <clip> | agent-guide |
+  home`. `--json` is global (accepted before or after the subcommand).
+  **Home folder:** `~/auto-ascii`, or `$AUTO_ASCII_HOME` when set and
+  non-empty, with `library/` + `compositions/` + `exports/` created on
+  demand by `home` and by `import` (NOT by `agent-guide`, which resolves no
+  home at all and works with `HOME` unset). **`<clip>` resolves** as an
+  existing path first, else `library/<clip>.ascii`, else
+  `library/<kebab(clip)>.ascii`. **Names are kebab-case on the WAY IN:**
+  lowercase, every run of non-ASCII-alphanumerics collapsed to one `-`,
+  ends trimmed — applied by `import` to `--name` as well as to the derived
+  file stem, which also makes a name incapable of holding a path separator
+  or `..`. Readers (`list`, `info`) report the file stem VERBATIM instead,
+  so they cannot disagree about a file a human dropped in by hand; the
+  kebab step in `resolve_clip` is the bridge between the two.
+  **Timestamps** (`--ss`, `--t`) go through `auto_ascii::timecode::parse`,
+  the facade's one grammar (`SS[.f]`, `MM:SS[.f]`, `HH:MM:SS[.f]`), shared
+  with `auto-ascii-player --seek`; they are parsed by the command, not by a
+  clap `value_parser`, so a bad one is an `auto-ascii` error in the chosen
+  output mode rather than a clap usage error.
+  **Output contract:** humans get aligned text on stdout (the factory's
+  `inspect` column style: two spaces, a 14-wide label); `--json` puts
+  EXACTLY one JSON value there and nothing else, and every error becomes
+  `{"error": "..."}` on stderr with exit code 1. `play` is the one command
+  that REFUSES `--json` (`{"error": "play is interactive; run it without
+  --json"}`, exit 1, checked before the home folder is even resolved): the
+  player owns stdout for its whole run, so no value printed around it could
+  be the only one there. Everything chatty —
+  ffmpeg progress, the factory's `input:`/`pass 1/2:`/`wrote` lines —
+  goes to stderr in BOTH modes, which is what makes that keepable.
+  **The sidecar** (`library/<name>.json`) is the one JSON shape: `import`
+  prints exactly what it wrote, `info` prints one, `list` prints an array
+  of them —
+  `{"name", "source": {"path","sha256","bytes"} | null,
+  "asset": {"path","bytes","frames","fps","duration_secs","base_w",
+  "base_h"} | null, "created_unix": u64|null, "created": RFC-3339-UTC|null,
+  "error": String (ABSENT when the clip read cleanly)}`.
+  The `asset` block is re-read from the ASCI header (mmap + `AsciiReader`)
+  on every `list`/`info`, so it cannot go stale; only provenance comes from
+  the file, and an asset with no sidecar still lists, with the three
+  nullable fields `null`. Sidecars are parsed through a provenance-only
+  struct (source + created fields, all optional, unknown keys ignored), so
+  a hand-written `{"source": {...}}` loads. `list` NEVER aborts on one bad
+  entry — a truncated file, a directory, a non-UTF-8 name or an unparseable
+  sidecar becomes an entry carrying `error` (and `?` columns in the human
+  table), exit 0 — while `info`/`play`, which name ONE clip, stay strict. `home --json` prints
+  `{"home","library","compositions","exports"}`. `agent-guide` prints
+  `docs/AGENT-GUIDE.md` via `include_str!`, so the command and the file
+  cannot drift (`--json`: `{"guide": "..."}`).
+  **M8 seams:** `play` rejects a `.toml` argument by name, saying
+  compositions land with M8; `cut` and `compose …` are not implemented.
 
 ## M0 scope notes & deviations from PLAN
 
@@ -1842,3 +1920,66 @@ facade surface + this hidden module.)
     the readout on the dial already selected instead of cycling past shadow
     lift — `dial_after_cycle(idx, presses, readout_up)` in player.rs, unit
     tested — and every `d` while the readout is up cycles as before.
+28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
+    should take a video from anywhere on the desktop, process it, and land
+    it in the folder where the user's processed videos live"). The shape of
+    the new binary is in the Binaries section above; these are the
+    decisions behind it.
+    (a) **The factory became lib + thin bin.** `auto-ascii-factory/src/lib.rs`
+    owns all sixteen modules (every one `pub` — the crate is unpublished
+    workspace plumbing, and making them private would have turned
+    cross-module helpers into dead code) and adds the supported entry
+    points: `build(&BuildRequest, &mut dyn Write) -> Result<BuildReport>`,
+    `effective_params`, `parse_res` and the re-exported `sha256*`.
+    `main.rs` kept the clap surface and `inspect`. The `Write` argument is
+    the whole point of the split: `build::run` no longer `eprintln!`s its
+    `input:`/`pass 1/2:`/`wrote` lines, it writes them to a caller's sink,
+    so the factory bin passes `stderr` (bytes unchanged) and the CLI passes
+    stderr too while keeping stdout for one JSON value. The indicatif bars
+    stayed on stderr, where they always were. Proof the split moved
+    nothing: `tests/build_e2e.rs` and `tests/m2_params_eval.rs` pass
+    untouched, including both byte pins.
+    (b) **One timestamp grammar**, `auto_ascii::timecode` (core tier, no
+    deps): `parse` + `format_mmss` + `TimecodeError`. The player binary's
+    private `parse_timestamp` is gone; its unit test now calls the shared
+    parser and pins that `--seek` accepts exactly the same set of strings.
+    `format_mmss` matches the progress overlay's shape, which keeps its own
+    closure (M6 pins those bytes; nothing in `pipeline.rs` was touched).
+    (c) **The AVI fixture writer moved** to
+    `auto_ascii_eval::fixtures::write_bgr24_avi(path, w, h, fps, frames)` —
+    frames are DIB-order (rows bottom-up, pixels B,G,R), `w` must be a
+    multiple of 4 so no row or chunk needs padding. The factory's pin test
+    kept its pattern generator and calls the shared writer;
+    `FIXTURE_AVI_SHA` did not move, which is the proof the container bytes
+    are identical. This is the one file-writing helper in an otherwise
+    I/O-free crate, and it exists so the determinism guard and the CLI's
+    tests cannot drift apart.
+    (d) **Nullable provenance, authoritative headers.** `list`/`info`
+    rebuild the `asset` block from the ASCI header every time (mmap +
+    `AsciiReader`) and take only `source`/`created_unix`/`created` from the
+    sidecar, so a stale or absent sidecar can never misreport what will
+    play. An asset with no sidecar lists with those three fields `null` —
+    never a missing key, which is what an agent's schema check needs. A
+    clip that cannot be read at all keeps its row too, with `asset` null
+    and an `error` string; the listing's job is to show the folder, and one
+    bad file hiding the other twenty is the worse failure. `--force`
+    deletes the old sidecar BEFORE the rebuild starts, so a build that
+    fails leaves a clip visibly unrecorded rather than one described by
+    bytes that were never written, and any failure after the asset is
+    renamed into place names the orphaned path in its message.
+    (e) **Kebab-casing is applied to `--name`, not just to the default —
+    on the way IN only.** It is the documented naming rule (agent guide
+    rule 1) and it doubles as the containment check: a kebab name cannot
+    hold `/` or `..`, so no `--name` can write outside `library/`. Readers
+    report the file stem verbatim, and `resolve_clip` falls back to the
+    kebab form, so an agent can ask for `My Clip` and get `my-clip`.
+    (f) **Tests:** `crates/auto-ascii-cli/tests/cli.rs` runs the real binary
+    with `AUTO_ASCII_HOME` pointed at a per-test temp dir — `home` creates
+    the three folders; `import` of a 12-frame 160x90 30 fps AVI produces the
+    clip and a sidecar with every field checked (human AND `--json`, with
+    the printed object asserted equal to the file on disk); the name
+    collision fails before ffmpeg runs and `--force` rebuilds
+    byte-identically; `list --json` covers a sidecar-less asset; `info`
+    resolves by name and by path; `agent-guide` is asserted equal to the
+    committed file; a bad `--ss` exits 1 with `{"error": ...}` on stderr,
+    empty stdout and no asset written.
