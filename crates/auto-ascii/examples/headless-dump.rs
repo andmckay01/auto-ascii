@@ -28,7 +28,7 @@ const USAGE: &str =
 /// fails as the non-asset it is.
 fn open(path: &str) -> Result<RenderSession, auto_ascii::Error> {
     #[cfg(feature = "compose")]
-    if std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("toml")) {
+    if auto_ascii::Composition::is_toml_path(std::path::Path::new(path)) {
         let library = auto_ascii::Composition::default_library_dir();
         return RenderSession::open_composition(path, library.as_deref());
     }

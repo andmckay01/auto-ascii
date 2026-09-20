@@ -110,7 +110,9 @@ pub mod timecode;
 #[cfg(feature = "terminal")]
 mod player;
 
-pub use composition::{Clip, ClipSpan, Composition, Located, SCHEMA_VERSION};
+pub use composition::{
+    Clip, ClipMark, ClipSpan, Composition, Located, Overlap, SCHEMA_VERSION, Span,
+};
 pub use error::Error;
 pub use session::RenderSession;
 

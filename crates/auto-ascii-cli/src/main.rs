@@ -27,14 +27,57 @@ use std::process::ExitCode;
 use auto_ascii::compose::ExportOptions;
 use auto_ascii::timecode;
 use auto_ascii_factory::BuildRequest;
+use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 
-use home::{Home, Target, cut_name, kebab_case, name_for, rfc3339_utc, stem_of};
+use home::{Home, Target, cut_name, kebab_case, library_name, name_for, rfc3339_utc, stem_of};
 use library::{AssetInfo, Sidecar, Source, absolute, clip_ref};
 
 /// The error type the whole CLI funnels into — the factory's, so its errors
 /// pass through unwrapped and read the same in both binaries.
 pub type BoxErr = Box<dyn std::error::Error>;
+
+/// Every byte this CLI puts on stdout goes through here.
+///
+/// Rust ignores SIGPIPE, so when the reader goes away — `auto-ascii list |
+/// head -1`, a quit pager — the next write fails with `BrokenPipe`, and
+/// `outln!` PANICS on that: a stack trace and exit 101 where the user
+/// did something completely ordinary. Ending quietly with 0 is the shell
+/// convention and this repo's precedent (`examples/headless-dump.rs`, M5
+/// fix 7).
+fn emit(text: &str) {
+    let mut out = std::io::stdout().lock();
+    if let Err(e) = out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        // A full disk, a closed descriptor: stdout IS the product here, so
+        // say so where anyone can still see it and fail.
+        emit_err(&format!("auto-ascii: write to stdout failed: {e}\n"));
+        std::process::exit(1);
+    }
+}
+
+/// The same for stderr, where a failed write has nowhere left to report
+/// itself — the exit code still carries the outcome, so it is dropped.
+fn emit_err(text: &str) {
+    let mut err = std::io::stderr().lock();
+    let _ = err.write_all(text.as_bytes()).and_then(|()| err.flush());
+}
+
+/// `outln!` for this CLI: the same formatting, through [`emit`].
+macro_rules! outln {
+    ($($arg:tt)*) => {{
+        let mut line = std::fmt::format(format_args!($($arg)*));
+        line.push('\n');
+        emit(&line);
+    }};
+}
+
+/// [`outln!`] without the newline, for text that carries its own.
+macro_rules! out {
+    ($($arg:tt)*) => { emit(&std::fmt::format(format_args!($($arg)*))) };
+}
 
 /// The agent guide, embedded so `auto-ascii agent-guide` and the committed
 /// file cannot drift (PLAN-M6-M8 §2).
@@ -185,21 +228,59 @@ enum ComposeCmd {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    // `--json` is read out of argv, not out of the parsed `Cli`: a usage
+    // error means there IS no parsed `Cli`, and an agent that asked for
+    // JSON must not get clap's usage block on stderr instead of an object.
+    let json = std::env::args_os().any(|arg| arg == "--json");
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => return usage_exit(&e, json),
+    };
     match run(&cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            if cli.json {
-                // serde_json owns the escaping; an error text with a quote
-                // or a newline in it must not break the contract.
-                let obj = serde_json::json!({ "error": e.to_string() });
-                eprintln!("{obj}");
-            } else {
-                eprintln!("auto-ascii: {e}");
-            }
+            fail(&e.to_string(), cli.json);
             ExitCode::FAILURE
         }
     }
+}
+
+/// One error in the caller's chosen shape. Under `--json` serde_json owns
+/// the escaping, so a message with a quote or a newline in it still leaves
+/// exactly one value on stderr.
+fn fail(message: &str, json: bool) {
+    if json {
+        let obj = serde_json::json!({ "error": message });
+        emit_err(&format!("{obj}\n"));
+    } else {
+        emit_err(&format!("auto-ascii: {message}\n"));
+    }
+}
+
+/// What clap produced instead of a `Cli`.
+///
+/// `--help` and `--version` are OUTPUT, not failures: they print where
+/// clap wanted them and exit 0. Everything else is a usage error, and
+/// under `--json` it goes through the same one-object contract as every
+/// other error — an agent that typo'd a flag gets a document it can read
+/// rather than a usage block it cannot. Without `--json` a human keeps
+/// clap's own rendering and clap's own exit code (2), which stays
+/// distinguishable from the exit 1 of a command that ran and failed.
+fn usage_exit(e: &clap::Error, json: bool) -> ExitCode {
+    if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
+        let _ = e.print();
+        return ExitCode::SUCCESS;
+    }
+    if !json {
+        let _ = e.print();
+        return ExitCode::from(2);
+    }
+    // `render()` is the unstyled text (`print` is what paints it), and its
+    // leading `error: ` label is what the JSON key already says.
+    let rendered = e.render().to_string();
+    let message = rendered.trim();
+    fail(message.strip_prefix("error: ").unwrap_or(message), true);
+    ExitCode::FAILURE
 }
 
 /// The home folder is resolved by the commands that need one, not up
@@ -279,36 +360,13 @@ fn cmd_import(cli: &Cli, home: &Home, args: &ImportArgs<'_>) -> Result<(), BoxEr
     if !args.video.is_file() {
         return Err(format!("input not found: {}", args.video.display()).into());
     }
-    let name = match args.name {
-        Some(n) => {
-            let kebab = kebab_case(n);
-            if kebab.is_empty() {
-                return Err(format!("--name {n:?} has no alphanumerics to name a clip").into());
-            }
-            kebab
-        }
-        None => name_for(args.video)?,
-    };
+    let name = clip_name(args.name, || name_for(args.video))?;
     let asset = home.clip_path(&name);
-    if asset.exists() && !args.force {
-        return Err(format!(
-            "clip {name:?} already exists at {} — pass --force to replace it",
-            asset.display()
-        )
-        .into());
-    }
+    refuse_existing(&name, &asset, args.force)?;
 
     let ss = parse_time(args.ss, "--ss")?;
     let t = parse_time(args.t, "--t")?;
     let res = args.res.map(auto_ascii_factory::parse_res).transpose()?;
-
-    // Drop the old provenance BEFORE building over its asset: a build that
-    // fails halfway must not leave a sidecar describing bytes that are no
-    // longer there. Missing provenance is visible (`list` says so); wrong
-    // provenance is not.
-    if args.force {
-        library::remove_sidecar(&asset)?;
-    }
 
     // The factory's human lines go to stderr in BOTH modes: under --json
     // stdout carries the sidecar and nothing else.
@@ -325,51 +383,35 @@ fn cmd_import(cli: &Cli, home: &Home, args: &ImportArgs<'_>) -> Result<(), BoxEr
         &mut std::io::stderr(),
     )?;
 
-    // Everything from here on happens AFTER the asset was renamed into
-    // place, so a failure leaves a real clip with no provenance. Say which
-    // file that is: the next import would otherwise just hit the name
-    // collision with no idea why.
-    let (sidecar, sidecar_path) = match record_provenance(&name, args.video, &asset, &report) {
-        Ok(pair) => pair,
-        Err(e) => {
-            return Err(format!(
-                "{e} (the asset landed at {} but has no sidecar; \
-                 re-run the import with --force)",
-                asset.display()
-            )
-            .into());
-        }
-    };
-
-    if cli.json {
-        println!("{}", serde_json::to_string(&sidecar)?);
-    } else {
-        println!("imported {name}");
-        print_clip_body(&sidecar);
-        println!("  {:<14}{}", "sidecar:", sidecar_path.display());
-    }
-    Ok(())
+    // Only NOW does the old provenance go (see `retire_provenance`).
+    retire_provenance(&asset)?;
+    let (sidecar, sidecar_path) = record_import(&name, args.video, &asset, &report)
+        .map_err(|e| orphaned(&e, &asset, "import"))?;
+    finish_clip(cli, &format!("imported {name}"), &sidecar, &sidecar_path)
 }
 
-/// Hash the source, stamp the time and write `library/<name>.json`.
-/// Split out so `import` can name the asset it just orphaned when any of
-/// these three steps fails.
-fn record_provenance(
+/// Hash the source, describe what the factory wrote, and record it. Split
+/// out so `import` can name the clip it just orphaned when any of these
+/// steps fails.
+fn record_import(
     name: &str,
-    video: &std::path::Path,
-    asset: &std::path::Path,
+    video: &Path,
+    asset: &Path,
     report: &auto_ascii_factory::BuildReport,
-) -> Result<(Sidecar, std::path::PathBuf), BoxErr> {
+) -> Result<(Sidecar, PathBuf), BoxErr> {
     let source_bytes = std::fs::metadata(video)
         .map_err(|e| format!("stat {}: {e}", video.display()))?
         .len();
     let sha256 = auto_ascii_factory::sha256_file(video)
         .map_err(|e| format!("hash {}: {e}", video.display()))?;
-    let created_unix = now_unix();
-    let sidecar = Sidecar {
-        name: name.to_string(),
-        source: Some(Source::Video { path: absolute(video), sha256, bytes: source_bytes }),
-        asset: Some(AssetInfo {
+    record(
+        name,
+        Source::Video {
+            path: absolute(video),
+            sha256: Some(sha256),
+            bytes: Some(source_bytes),
+        },
+        AssetInfo {
             path: absolute(asset),
             bytes: report.bytes,
             frames: report.frames,
@@ -377,13 +419,120 @@ fn record_provenance(
             duration_secs: report.duration_secs,
             base_w: report.base_w,
             base_h: report.base_h,
-        }),
+        },
+        asset,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// The steps `import` and `cut` share (PLAN-M6-M8 §2, §3): both name a clip,
+// refuse to overwrite one, retire the provenance the old bytes had, record
+// the new bytes and print the result. Only what they PUT in the library
+// differs — an ffmpeg ingest or a one-clip export.
+// ---------------------------------------------------------------------------
+
+/// The library name a writing command will use: `--name` kebab-cased (the
+/// documented rule, and the reason a name can hold neither a separator nor
+/// `..`), else the caller's own default.
+fn clip_name(
+    flag: Option<&str>,
+    default: impl FnOnce() -> Result<String, BoxErr>,
+) -> Result<String, BoxErr> {
+    let Some(given) = flag else { return default() };
+    let kebab = kebab_case(given);
+    if kebab.is_empty() {
+        return Err(format!("--name {given:?} has no alphanumerics to name a clip").into());
+    }
+    Ok(kebab)
+}
+
+/// Refuse to write over a clip that is already there, unless `--force`.
+fn refuse_existing(name: &str, asset: &Path, force: bool) -> Result<(), BoxErr> {
+    if asset.exists() && !force {
+        return Err(format!(
+            "clip {name:?} already exists at {} — pass --force to replace it",
+            asset.display()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Drop the sidecar describing the bytes that were just replaced.
+///
+/// Called only once the NEW asset is in place, which is the whole point:
+/// before that moment a failed rebuild must leave the old clip AND its
+/// provenance exactly as they were, and after it any sidecar still on disk
+/// describes the wrong file. Missing provenance is visible (`list` says
+/// so); wrong provenance is not.
+fn retire_provenance(asset: &Path) -> Result<(), BoxErr> {
+    library::remove_sidecar(asset)
+}
+
+/// Stamp the time and write `library/<name>.json` for bytes that have
+/// already landed.
+fn record(
+    name: &str,
+    source: Source,
+    info: AssetInfo,
+    asset: &Path,
+) -> Result<(Sidecar, PathBuf), BoxErr> {
+    let created_unix = now_unix();
+    let sidecar = Sidecar {
+        name: name.to_string(),
+        source: Some(source),
+        asset: Some(info),
         created_unix: Some(created_unix),
         created: Some(rfc3339_utc(created_unix)),
         error: None,
     };
     let path = library::write_sidecar(asset, &sidecar)?;
     Ok((sidecar, path))
+}
+
+/// The failure both writers share: a clip is on disk and the provenance
+/// beside it is not. Name the file — the next run would otherwise just hit
+/// the name collision with no idea why.
+fn orphaned(e: &BoxErr, asset: &Path, cmd: &str) -> BoxErr {
+    format!(
+        "{e} (the clip landed at {} but has no sidecar; re-run the {cmd} with --force)",
+        asset.display()
+    )
+    .into()
+}
+
+/// The tail both writers share: one JSON value, or a headline over the
+/// aligned body.
+fn finish_clip(
+    cli: &Cli,
+    headline: &str,
+    sidecar: &Sidecar,
+    sidecar_path: &Path,
+) -> Result<(), BoxErr> {
+    if cli.json {
+        outln!("{}", serde_json::to_string(sidecar)?);
+    } else {
+        outln!("{headline}");
+        print_clip_body(sidecar);
+        outln!("  {:<14}{}", "sidecar:", sidecar_path.display());
+    }
+    Ok(())
+}
+
+/// The encode knobs `cut` and `compose export` write with: the factory's
+/// committed `params.toml` `[build]` section, read through the merge the
+/// factory itself uses. A slice or a flattened composition is the same
+/// kind of asset `import` produces, so its cadence and level come from the
+/// same place rather than from a constant that can drift away from it.
+fn export_options() -> Result<ExportOptions, BoxErr> {
+    let params = auto_ascii_factory::effective_params(None, None, None)?;
+    let keyframe_ivl = u8::try_from(params.build.keyframe_ivl).map_err(|_| {
+        format!(
+            "params build.keyframe_ivl {} does not fit the ASCI header",
+            params.build.keyframe_ivl
+        )
+    })?;
+    Ok(ExportOptions { keyframe_ivl, zstd_level: params.build.zstd_level })
 }
 
 /// `cut`'s flags, borrowed out of the clap enum for the same reason
@@ -401,7 +550,7 @@ struct CutArgs<'a> {
 /// copied out of the source, never re-derived, and no ffmpeg is involved.
 fn cmd_cut(cli: &Cli, home: &Home, args: &CutArgs<'_>) -> Result<(), BoxErr> {
     home.create()?;
-    let source = home.resolve_clip(args.clip)?;
+    let from_path = home.resolve_clip(args.clip)?;
     let in_secs = parse_one_time(args.in_spec, "--in")?;
     let out_secs = parse_one_time(args.out_spec, "--out")?;
     if out_secs <= in_secs {
@@ -411,25 +560,11 @@ fn cmd_cut(cli: &Cli, home: &Home, args: &CutArgs<'_>) -> Result<(), BoxErr> {
         )
         .into());
     }
-    let name = match args.name {
-        Some(n) => {
-            let kebab = kebab_case(n);
-            if kebab.is_empty() {
-                return Err(format!("--name {n:?} has no alphanumerics to name a clip").into());
-            }
-            kebab
-        }
-        None => cut_name(&stem_of(&source), in_secs, out_secs),
-    };
+    let name = clip_name(args.name, || Ok(cut_name(&stem_of(&from_path), in_secs, out_secs)))?;
     let asset = home.clip_path(&name);
-    if asset.exists() && !args.force {
-        return Err(format!(
-            "clip {name:?} already exists at {} — pass --force to replace it",
-            asset.display()
-        )
-        .into());
-    }
-    let mut clip = auto_ascii::Clip::new(&source);
+    refuse_existing(&name, &asset, args.force)?;
+
+    let mut clip = auto_ascii::Clip::new(&from_path);
     clip.in_secs = in_secs;
     clip.out_secs = Some(out_secs);
     let mut comp = auto_ascii::Composition::from_clips(name.clone(), vec![clip]);
@@ -437,81 +572,43 @@ fn cmd_cut(cli: &Cli, home: &Home, args: &CutArgs<'_>) -> Result<(), BoxErr> {
     // asset must leave the clip it would have replaced exactly as it was,
     // provenance included.
     comp.resolve()?;
-
-    // Then the same order `import` keeps (note 28d): the old provenance
-    // goes before the new bytes land, so a build that fails leaves a clip
-    // visibly unrecorded rather than one described by bytes that were
-    // never written.
-    if args.force {
-        library::remove_sidecar(&asset)?;
-    }
+    let opts = export_options()?;
     // `export` is atomic (`<out>.part` + rename), which is what makes this
     // safe to point straight at `library/`: a failed `--force` leaves the
     // clip already there intact, and a half-written file never shows up in
     // `list`.
-    auto_ascii::compose::export(&comp, &asset, &ExportOptions::default())?;
+    auto_ascii::compose::export(&comp, &asset, &opts)?;
 
-    let from = clip_ref(home, &source);
-    let (sidecar, sidecar_path) = match record_cut(&name, &from, in_secs, out_secs, &asset) {
-        Ok(pair) => pair,
-        Err(e) => {
-            return Err(format!(
-                "{e} (the slice landed at {} but has no sidecar; \
-                 re-run the cut with --force)",
-                asset.display()
-            )
-            .into());
-        }
-    };
-
-    if cli.json {
-        println!("{}", serde_json::to_string(&sidecar)?);
-    } else {
-        println!("cut {name} from {from}");
-        print_clip_body(&sidecar);
-        println!("  {:<14}{}", "sidecar:", sidecar_path.display());
-    }
-    Ok(())
-}
-
-/// Stamp the time and write `library/<name>.json` for a cut. The `asset`
-/// block is read back off the header, exactly like `list` and `info` read
-/// it, so it describes the file that actually landed.
-fn record_cut(
-    name: &str,
-    from: &str,
-    in_secs: f64,
-    out_secs: f64,
-    asset: &Path,
-) -> Result<(Sidecar, PathBuf), BoxErr> {
-    let created_unix = now_unix();
-    let sidecar = Sidecar {
-        name: name.to_string(),
-        source: Some(Source::cut(from.to_string(), in_secs, out_secs)),
-        asset: Some(library::asset_info(asset)?),
-        created_unix: Some(created_unix),
-        created: Some(rfc3339_utc(created_unix)),
-        error: None,
-    };
-    let path = library::write_sidecar(asset, &sidecar)?;
-    Ok((sidecar, path))
+    // Only NOW does the old provenance go (see `retire_provenance`).
+    retire_provenance(&asset)?;
+    let from = clip_ref(home, &from_path);
+    // The `asset` block is read back off the header, exactly like `list`
+    // and `info` read it, so it describes the file that actually landed.
+    let (sidecar, sidecar_path) = record(
+        &name,
+        Source::cut(from.clone(), in_secs, out_secs),
+        library::asset_info(&asset)?,
+        &asset,
+    )
+    .map_err(|e| orphaned(&e, &asset, "cut"))?;
+    finish_clip(cli, &format!("cut {name} from {from}"), &sidecar, &sidecar_path)
 }
 
 fn cmd_list(cli: &Cli, home: &Home) -> Result<(), BoxErr> {
     let clips = library::list(home)?;
     if cli.json {
-        println!("{}", serde_json::to_string(&clips)?);
+        outln!("{}", serde_json::to_string(&clips)?);
         return Ok(());
     }
     if clips.is_empty() {
-        println!(
+        outln!(
             "no clips in {} (import one: auto-ascii import <video>)",
             home.library().display()
         );
         return Ok(());
     }
     let w = clips.iter().map(|c| c.name.len()).max().unwrap_or(4).max(4);
-    println!(
+    outln!(
         "{:<w$}  {:>8}  {:>5}  {:>7}  {:>10}  source",
         "name", "duration", "fps", "frames", "bytes"
     );
@@ -532,7 +629,7 @@ fn cmd_list(cli: &Cli, home: &Home) -> Result<(), BoxErr> {
             (None, Some(src)) => src.summary(),
             (None, None) => "-".to_string(),
         };
-        println!("{:<w$}  {duration:>8}  {fps:>5}  {frames:>7}  {bytes:>10}  {last}", c.name);
+        outln!("{:<w$}  {duration:>8}  {fps:>5}  {frames:>7}  {bytes:>10}  {last}", c.name);
     }
     Ok(())
 }
@@ -543,9 +640,9 @@ fn cmd_info(cli: &Cli, home: &Home, clip: &str) -> Result<(), BoxErr> {
     // way; naming one clip is strict, unlike listing all of them.
     let sidecar = library::describe(&stem_of(&path), &path)?;
     if cli.json {
-        println!("{}", serde_json::to_string(&sidecar)?);
+        outln!("{}", serde_json::to_string(&sidecar)?);
     } else {
-        println!("{}", sidecar.name);
+        outln!("{}", sidecar.name);
         print_clip_body(&sidecar);
     }
     Ok(())
@@ -555,7 +652,10 @@ fn cmd_compose_new(cli: &Cli, home: &Home, name: &str) -> Result<(), BoxErr> {
     home.create()?;
     // Kebab-cased on the way in, like `import --name`: it is the naming
     // rule, and it is also why no name can write outside `compositions/`.
-    let name = kebab_case(name);
+    // The folder's own extension comes off first, so `compose new
+    // demo.toml` starts `demo.toml` rather than `demo-toml.toml` — the
+    // same rule the resolvers apply on the way back.
+    let name = kebab_case(library_name(name, "toml"));
     if name.is_empty() {
         return Err("a composition name needs at least one alphanumeric".into());
     }
@@ -563,11 +663,11 @@ fn cmd_compose_new(cli: &Cli, home: &Home, name: &str) -> Result<(), BoxErr> {
     composition::create(&path, &name)?;
     if cli.json {
         let obj = serde_json::json!({ "name": name, "path": absolute(&path) });
-        println!("{obj}");
+        outln!("{obj}");
     } else {
-        println!("created {name}");
-        println!("  {:<14}{}", "path:", absolute(&path));
-        println!("  {:<14}auto-ascii compose add {name} <clip>", "next:");
+        outln!("created {name}");
+        outln!("  {:<14}{}", "path:", absolute(&path));
+        outln!("  {:<14}auto-ascii compose add {name} <clip>", "next:");
     }
     Ok(())
 }
@@ -600,6 +700,22 @@ fn cmd_compose_add(cli: &Cli, home: &Home, args: &AddArgs<'_>) -> Result<(), Box
         .into());
     }
     let asset = clip_ref(home, &clip);
+    // Resolve the composition this WOULD be before touching the file: a
+    // trim the timeline rejects, a `<clip>` that is not an ASCI asset, or
+    // a table above that no longer parses must fail with the file exactly
+    // as it was. An `add` that exits 1 having appended anyway is the one
+    // way this command could lie to an agent.
+    let existing = auto_ascii::Composition::from_toml_file(&path, Some(&home.library()))?;
+    let mut clips = existing.clips().to_vec();
+    clips.push(auto_ascii::Clip {
+        name: asset.clone(),
+        path: clip.clone(),
+        in_secs: in_secs.unwrap_or(0.0),
+        out_secs,
+        at_secs,
+    });
+    auto_ascii::Composition::from_clips(existing.name(), clips).resolve()?;
+
     let times: Vec<(&str, &str)> = [
         ("in", args.in_spec),
         ("out", args.out_spec),
@@ -609,17 +725,6 @@ fn cmd_compose_add(cli: &Cli, home: &Home, args: &AddArgs<'_>) -> Result<(), Box
     .filter_map(|(key, spec)| spec.map(|spec| (key, spec)))
     .collect();
     composition::append_clip(&path, &composition::clip_table(&asset, &times))?;
-    // The append is a text edit, so the only proof it left a file anything
-    // can load is loading it. Exiting 0 on a composition that no longer
-    // parses is the one way this command could lie to an agent — and the
-    // file it edits may have been hand-written, so the breakage is not
-    // always the table we just added.
-    if let Err(e) = auto_ascii::Composition::from_toml_file(&path, Some(&home.library())) {
-        return Err(format!(
-            "{e} (the clip WAS appended, so fix the file rather than re-running `add`)"
-        )
-        .into());
-    }
 
     let name = stem_of(&path);
     if cli.json {
@@ -634,16 +739,16 @@ fn cmd_compose_add(cli: &Cli, home: &Home, args: &AddArgs<'_>) -> Result<(), Box
                 "at_secs": at_secs,
             },
         });
-        println!("{obj}");
+        outln!("{obj}");
     } else {
-        println!("added {asset} to {name}");
-        println!("  {:<14}{}", "path:", absolute(&path));
-        println!("  {:<14}{}", "clip:", absolute(&clip));
+        outln!("added {asset} to {name}");
+        outln!("  {:<14}{}", "path:", absolute(&path));
+        outln!("  {:<14}{}", "clip:", absolute(&clip));
         for (label, spec) in
             [("in:", args.in_spec), ("out:", args.out_spec), ("at:", args.at_spec)]
         {
             if let Some(spec) = spec {
-                println!("  {label:<14}{spec}");
+                outln!("  {label:<14}{spec}");
             }
         }
     }
@@ -655,7 +760,7 @@ fn cmd_compose_show(cli: &Cli, home: &Home, name: &str) -> Result<(), BoxErr> {
     let comp = open_composition(home, &path)?;
     let report = composition::report(&comp);
     if cli.json {
-        println!("{}", serde_json::to_string(&report)?);
+        outln!("{}", serde_json::to_string(&report)?);
     } else {
         print_timeline(&report);
     }
@@ -695,7 +800,7 @@ fn cmd_compose_export(cli: &Cli, home: &Home, args: &ExportArgs<'_>) -> Result<(
         )
         .into());
     }
-    let report = auto_ascii::compose::export(&comp, &out, &ExportOptions::default())?;
+    let report = auto_ascii::compose::export(&comp, &out, &export_options()?)?;
     if cli.json {
         let obj = serde_json::json!({
             "path": absolute(&out),
@@ -705,19 +810,19 @@ fn cmd_compose_export(cli: &Cli, home: &Home, args: &ExportArgs<'_>) -> Result<(
             "shots": report.shots,
             "cuts": report.cuts,
         });
-        println!("{obj}");
+        outln!("{obj}");
     } else {
-        println!("exported {name}");
-        println!("  {:<14}{}", "path:", absolute(&out));
-        println!("  {:<14}{} ({})", "bytes:", report.bytes, human_bytes(report.bytes));
-        println!(
+        outln!("exported {name}");
+        outln!("  {:<14}{}", "path:", absolute(&out));
+        outln!("  {:<14}{} ({})", "bytes:", report.bytes, human_bytes(report.bytes));
+        outln!(
             "  {:<14}{} ({:.2}s @ {} fps)",
             "frames:",
             report.frames,
             f64::from(report.frames) / report.fps,
             fps_text(report.fps)
         );
-        println!(
+        outln!(
             "  {:<14}{} ({} cut{})",
             "shots:",
             report.shots,
@@ -758,9 +863,11 @@ fn cmd_play(cli: &Cli, target: &str) -> Result<(), BoxErr> {
     let home = Home::resolve()?;
     match home.resolve_playable(target)? {
         Target::Clip(path) => {
-            // Read the header before taking over the terminal: a bad asset
+            // Read the HEADER before taking over the terminal: a bad asset
             // should fail as a plain error, not as a dead alternate screen.
-            library::describe(&stem_of(&path), &path)?;
+            // Only the header — a clip whose sidecar is truncated or
+            // hand-written still plays, because provenance is not the film.
+            library::asset_info(&path)?;
             auto_ascii::Player::builder().asset(&path).build()?.run()?;
             Ok(())
         }
@@ -770,11 +877,10 @@ fn cmd_play(cli: &Cli, target: &str) -> Result<(), BoxErr> {
 
 fn cmd_agent_guide(cli: &Cli) -> Result<(), BoxErr> {
     if cli.json {
-        println!("{}", serde_json::json!({ "guide": AGENT_GUIDE }));
+        outln!("{}", serde_json::json!({ "guide": AGENT_GUIDE }));
     } else {
-        // print!, not println!: the file ends with its own newline.
-        print!("{AGENT_GUIDE}");
-        std::io::stdout().flush()?;
+        // out!, not outln!: the file ends with its own newline.
+        out!("{AGENT_GUIDE}");
     }
     Ok(())
 }
@@ -788,9 +894,9 @@ fn cmd_home(cli: &Cli, home: &Home) -> Result<(), BoxErr> {
             "compositions": home.compositions().display().to_string(),
             "exports": home.exports().display().to_string(),
         });
-        println!("{obj}");
+        outln!("{obj}");
     } else {
-        println!("{}", home.root().display());
+        outln!("{}", home.root().display());
     }
     Ok(())
 }
@@ -820,7 +926,7 @@ fn now_unix() -> u64 {
 /// `OVERLAP` note on a clip that covers an earlier one.
 fn print_timeline(report: &composition::Report) {
     let clips = report.clips.len();
-    println!(
+    outln!(
         "{}  {clips} clip{}  {:.2}s  {} frames @ {} fps",
         report.name,
         if clips == 1 { "" } else { "s" },
@@ -829,14 +935,15 @@ fn print_timeline(report: &composition::Report) {
         fps_text(report.fps)
     );
     let w = report.clips.iter().map(|c| c.asset.len()).max().unwrap_or(4).max(4);
-    println!(
+    outln!(
         "  {:>3}  {:<w$}  {:>7}  {:>7}  {:>7}  {:>7}  {:>5}",
         "#", "clip", "start", "end", "in", "out", "fps"
     );
     for row in report.rows() {
         match row {
-            composition::Row::Clip(c, marks) => {
-                let note: String = marks
+            composition::Row::Clip(c) => {
+                let note: String = c
+                    .marks
                     .iter()
                     .map(|mark| match mark {
                         composition::Mark::Over(idx) => format!("  OVERLAP #{idx}"),
@@ -844,7 +951,7 @@ fn print_timeline(report: &composition::Report) {
                         composition::Mark::Hidden(idx) => format!("  HIDDEN #{idx}"),
                     })
                     .collect();
-                println!(
+                outln!(
                     "  {:>3}  {:<w$}  {:>7.2}  {:>7.2}  {:>7.2}  {:>7.2}  {:>5}{note}",
                     c.index,
                     c.asset,
@@ -856,7 +963,7 @@ fn print_timeline(report: &composition::Report) {
                 );
             }
             // A gap has no clip, no trim and no rate: it plays black.
-            composition::Row::Gap(gap) => println!(
+            composition::Row::Gap(gap) => outln!(
                 "  {:>3}  {:<w$}  {:>7.2}  {:>7.2}",
                 "-", "GAP", gap.start_secs, gap.end_secs
             ),
@@ -868,32 +975,37 @@ fn print_timeline(report: &composition::Report) {
 /// column style: two spaces, a 14-wide label, the value).
 fn print_clip_body(sidecar: &Sidecar) {
     if let Some(a) = &sidecar.asset {
-        println!("  {:<14}{}", "asset:", a.path);
-        println!("  {:<14}{} ({})", "bytes:", a.bytes, human_bytes(a.bytes));
-        println!(
+        outln!("  {:<14}{}", "asset:", a.path);
+        outln!("  {:<14}{} ({})", "bytes:", a.bytes, human_bytes(a.bytes));
+        outln!(
             "  {:<14}{} ({:.2}s @ {} fps)",
             "frames:",
             a.frames,
             a.duration_secs,
             fps_text(a.fps)
         );
-        println!("  {:<14}{}x{}", "base res:", a.base_w, a.base_h);
+        outln!("  {:<14}{}x{}", "base res:", a.base_w, a.base_h);
     }
     if let Some(e) = &sidecar.error {
-        println!("  {:<14}{e}", "error:");
+        outln!("  {:<14}{e}", "error:");
     }
     match &sidecar.source {
         Some(Source::Video { path, sha256, bytes }) => {
-            println!("  {:<14}{}", "source:", path);
-            println!("  {:<14}{} ({})", "source bytes:", bytes, human_bytes(*bytes));
-            println!("  {:<14}{}", "source sha:", sha256);
+            outln!("  {:<14}{}", "source:", path);
+            // A partial sidecar describes what it knows; the rest says so
+            // rather than going missing.
+            match bytes {
+                Some(n) => outln!("  {:<14}{n} ({})", "source bytes:", human_bytes(*n)),
+                None => outln!("  {:<14}{}", "source bytes:", library::UNKNOWN),
+            }
+            outln!("  {:<14}{}", "source sha:", sha256.as_deref().unwrap_or(library::UNKNOWN));
         }
         // A cut's provenance is the slice, so it fits on the one line.
-        Some(cut @ Source::Cut { .. }) => println!("  {:<14}{}", "source:", cut.summary()),
-        None => println!("  {:<14}(none: no sidecar beside this asset)", "source:"),
+        Some(cut @ Source::Cut { .. }) => outln!("  {:<14}{}", "source:", cut.summary()),
+        None => outln!("  {:<14}(none: no sidecar beside this asset)", "source:"),
     }
     if let Some(created) = &sidecar.created {
-        println!("  {:<14}{}", "created:", created);
+        outln!("  {:<14}{}", "created:", created);
     }
 }
 
@@ -931,6 +1043,17 @@ mod tests {
         let err = parse_time(Some("nope"), "--ss").unwrap_err().to_string();
         assert!(err.starts_with("--ss \"nope\": "), "{err}");
         assert!(err.contains("bad timestamp component"), "{err}");
+    }
+
+    /// The knobs a slice is written with come from the factory's params,
+    /// not from a constant beside them: `cut`, `compose export` and
+    /// `import` are all supposed to produce the same kind of asset.
+    #[test]
+    fn export_knobs_come_from_the_factory_params() {
+        let opts = export_options().expect("the committed params load");
+        let params = auto_ascii_factory::effective_params(None, None, None).unwrap();
+        assert_eq!(u32::from(opts.keyframe_ivl), params.build.keyframe_ivl);
+        assert_eq!(opts.zstd_level, params.build.zstd_level);
     }
 
     #[test]

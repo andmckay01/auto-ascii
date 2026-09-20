@@ -2,7 +2,8 @@
 
 `auto-ascii` distills video into `.ascii` assets — feature files that play as
 ASCII art in any terminal — kept in one folder you can list, trim and stitch.
-`--json` makes stdout one JSON value; errors are `{"error": "..."}` on stderr, exit 1.
+`--json` makes stdout one JSON value; every error, a mistyped command line
+included, is `{"error": "..."}` on stderr with exit 1.
 
 ## Home folder
 
@@ -15,20 +16,19 @@ with `library/` (the `<name>.ascii` clips, each with a `<name>.json` sidecar),
 1. **import** — `auto-ascii import ~/Desktop/clip.mp4` ffmpeg-ingests into
    `library/clip.ascii` (needs `ffmpeg` on PATH). Flags `--name N`, `--ss T`,
    `--t T`, `--fps N`, `--res WxH`, `--force`; times are `SS`/`MM:SS`/`HH:MM:SS`.
+   `--force` replaces a clip only if the rebuild succeeds.
 2. **list / info** — `auto-ascii list`, `auto-ascii info <clip>`. A `<clip>`
    is a path if one exists, else `library/<clip>.ascii`.
 3. **cut** — `auto-ascii cut <clip> --in T --out T [--name N] [--force]` slices
    one clip into a new one (default name `<clip>-0m05s-0m20s`, nothing re-encoded).
 4. **compose** — `compose new <name>` starts a timeline, `compose add <name>
-   <clip> [--in T] [--out T] [--at T]` appends one clip, and `compose show
-   <name>` prints the resolved timeline with its gaps and overlaps. A `<name>`
-   is a path to a `.toml` if one exists, else `compositions/<name>.toml`.
+   <clip> [--in T] [--out T] [--at T]` appends one clip, `compose show <name>`
+   prints the resolved timeline with gaps and overlaps; `<name>` may be a path.
 5. **play / export** — `auto-ascii play <clip | composition>` and `compose play
-   <name>` are interactive, so they refuse `--json`: `q` quits, `?` lists the
-   keys, and a timeline switches clips at their boundaries without re-encoding.
-   A bare name is a library clip BEFORE `compositions/<name>.toml`, so pass the
-   `.toml` path (or use `compose play`) to force the composition. `compose
-   export <name> [-o path] [--force]` flattens one into `exports/<name>.ascii`.
+   <name>` are interactive, so they refuse `--json`: `q` quits and `?` lists the
+   keys; clips switch at their boundaries with no re-encode. A bare name means
+   the library clip first, so pass the `.toml` path to force a composition.
+   `compose export <name> [-o path]` flattens one into `exports/<name>.ascii`.
 
 ## Composition schema
 

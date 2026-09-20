@@ -9,6 +9,12 @@
 //! answer": a frame from a clip must equal what a fresh session on that
 //! clip alone renders for the corresponding local frame.
 
+// Every test here starts from a composition FILE, so the whole file needs
+// the `compose` feature — the same whole-file gate tests/sim_e2e.rs uses
+// for `bin`. Without it a `--no-default-features` build would fail to
+// compile a test binary rather than simply having nothing to run.
+#![cfg(feature = "compose")]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

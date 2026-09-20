@@ -1069,13 +1069,9 @@ pub fn draw_progress_overlay_clips(
     let fg = Rgb::gray(235);
     let bg = Rgb::new(24, 24, 40);
 
-    let mmss = |secs: u64| -> String {
-        if secs >= 3600 {
-            format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
-        } else {
-            format!("{}:{:02}", secs / 60, secs % 60)
-        }
-    };
+    // The project's one timecode shape (M7, core tier): the row and
+    // `auto-ascii list` cannot drift apart because there is one formatter.
+    let mmss = crate::timecode::format_mmss;
     let pos = f64::from(frame) / fps;
     let total = f64::from(frame_count) / fps;
     // frame_count > 0 is enforced at Player::new; percent of the LAST frame
@@ -1093,7 +1089,7 @@ pub fn draw_progress_overlay_clips(
     } else {
         String::new()
     };
-    let mut left = format!(" {} / {} ", mmss(pos as u64), mmss(total as u64));
+    let mut left = format!(" {} / {} ", mmss(pos), mmss(total));
     // M8 (PLAN-M6-M8 §3): which clip of how many, right after the time
     // block — only for a real stitch, and only where the row can spare it.
     if let Some((c, n)) = clip

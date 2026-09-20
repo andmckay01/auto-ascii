@@ -5,18 +5,21 @@
 //! the same bytes. So both are TEXT operations — `new` writes a header and
 //! a comment block naming the clip keys, `add` APPENDS one `[[clip]]`
 //! table — and nothing here ever re-serializes a file, which is what keeps
-//! an agent's (or a human's) comments and ordering intact.
+//! an agent's (or a human's) comments and ordering intact. The append is
+//! one `O_APPEND` write, so concurrent adds cannot overwrite each other;
+//! it is not a transaction, and a process killed mid-write can still leave
+//! a partial table for its author to finish.
 //!
-//! Reading is the facade's job ([`Composition::from_toml_file`]); what
-//! this module adds on top is the `compose show` report: the resolved
-//! timeline plus the two things a timeline has that a clip list does not —
-//! gaps (nothing plays; the frames are black) and overlaps (two clips own
-//! one instant; the later-listed one is on top).
+//! Reading a composition and analysing it are both the facade's job
+//! ([`Composition::from_toml_file`], then `gaps`/`overlaps`/`mark_for`,
+//! which work on the FRAME GRID so a 1e-16 s sliver between abutting clips
+//! cannot exist). What this module adds is the `compose show` report: the
+//! facade's answers in the shape the CLI prints and serializes.
 
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use auto_ascii::Composition;
+use auto_ascii::{ClipMark, Composition};
 use serde::Serialize;
 
 use crate::BoxErr;
@@ -77,18 +80,42 @@ pub fn create(path: &Path, name: &str) -> Result<(), BoxErr> {
 }
 
 /// Append `table` to the composition at `path`, leaving every byte above
-/// it exactly as it was. Read-then-write rather than an append handle: a
-/// file that does not end in a newline gets one first, so a table can
-/// never land glued to the last line someone typed.
+/// it exactly as it was.
+///
+/// ONE `O_APPEND` write of a few dozen bytes: two agents adding clips at
+/// the same moment both land, and neither can lose the other's table the
+/// way a read-modify-write would. What is already in the file is read only
+/// to the extent of its LAST BYTE, which is all that decides whether the
+/// table needs a newline in front of it.
 pub fn append_clip(path: &Path, table: &str) -> Result<(), BoxErr> {
-    let mut text =
-        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    if !text.is_empty() && !text.ends_with('\n') {
+    let mut text = String::with_capacity(table.len() + 1);
+    if !ends_with_newline(path)? {
         text.push('\n');
     }
     text.push_str(table);
-    std::fs::write(path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    file.write_all(text.as_bytes())
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(())
+}
+
+/// Whether the file already ends in a newline — an empty file counts, so
+/// nothing leads with a blank line. Seeks to the last byte rather than
+/// reading a composition that may be thousands of clips long.
+fn ends_with_newline(path: &Path) -> Result<bool, BoxErr> {
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let len = file.metadata().map_err(|e| format!("stat {}: {e}", path.display()))?.len();
+    if len == 0 {
+        return Ok(true);
+    }
+    file.seek(SeekFrom::End(-1)).map_err(|e| format!("seek {}: {e}", path.display()))?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last).map_err(|e| format!("read {}: {e}", path.display()))?;
+    Ok(last[0] == b'\n')
 }
 
 /// Quote `s` as a TOML basic string — the form the schema is documented
@@ -158,6 +185,12 @@ pub struct ClipRow {
     /// this is the fastest clip — the column that makes a mixed-fps
     /// composition readable.
     pub fps: f64,
+    /// What this clip does to earlier ones and what later ones do to it,
+    /// from [`Composition::overlaps`] and [`Composition::mark_for`]. Not
+    /// part of the JSON shape — `overlaps` already carries every pair, and
+    /// this is the table's last column.
+    #[serde(skip)]
+    pub marks: Vec<Mark>,
 }
 
 /// A `[start, end)` stretch of composition time.
@@ -199,8 +232,8 @@ pub enum Mark {
 
 /// One line of the `compose show` table, in timeline order.
 pub enum Row<'a> {
-    /// A clip and every overlap it takes part in, in time order.
-    Clip(&'a ClipRow, Vec<Mark>),
+    /// A clip, with the marks it already carries.
+    Clip(&'a ClipRow),
     /// A stretch nothing covers.
     Gap(&'a Span),
 }
@@ -209,7 +242,7 @@ impl Row<'_> {
     /// Where this row starts on the timeline — what the table sorts by.
     pub fn start_secs(&self) -> f64 {
         match self {
-            Row::Clip(clip, _) => clip.start_secs,
+            Row::Clip(clip) => clip.start_secs,
             Row::Gap(gap) => gap.start_secs,
         }
     }
@@ -224,42 +257,34 @@ impl Report {
         let mut rows: Vec<Row<'_>> = self
             .clips
             .iter()
-            .map(|clip| Row::Clip(clip, self.marks(clip)))
+            .map(Row::Clip)
             .chain(self.gaps.iter().map(Row::Gap))
             .collect();
         rows.sort_by(|a, b| a.start_secs().total_cmp(&b.start_secs()));
         rows
-    }
-
-    /// Every overlap `clip` takes part in, from its own side.
-    fn marks(&self, clip: &ClipRow) -> Vec<Mark> {
-        self.overlaps
-            .iter()
-            .filter_map(|o| {
-                if o.over == clip.index {
-                    return Some(Mark::Over(o.under));
-                }
-                if o.under != clip.index {
-                    return None;
-                }
-                // Exact comparison, deliberately: the intersection's bounds
-                // are this clip's own numbers when the cover swallows it
-                // whole, so there is nothing for a tolerance to absorb.
-                let whole = o.start_secs == clip.start_secs && o.end_secs == clip.end_secs;
-                Some(if whole { Mark::Hidden(o.over) } else { Mark::Under(o.over) })
-            })
-            .collect()
     }
 }
 
 /// The `compose show` report for a RESOLVED composition (an unresolved one
 /// has no timeline, so its report is empty rather than wrong).
 pub fn report(comp: &Composition) -> Report {
-    let spans = comp.timeline();
+    // Both questions are the facade's, answered on the frame grid: two
+    // clips that abut cannot report a sliver of overlap, and a gap shorter
+    // than one frame cannot exist to be printed.
+    let overlaps: Vec<Overlap> = comp
+        .overlaps()
+        .iter()
+        .map(|o| Overlap {
+            start_secs: o.span.start_secs,
+            end_secs: o.span.end_secs,
+            under: o.under,
+            over: o.over,
+        })
+        .collect();
     let clips = comp
         .clips()
         .iter()
-        .zip(spans)
+        .zip(comp.timeline())
         .enumerate()
         .map(|(index, (clip, span))| ClipRow {
             index,
@@ -271,57 +296,39 @@ pub fn report(comp: &Composition) -> Report {
             start_secs: span.start_secs,
             end_secs: span.end_secs,
             fps: span.fps(),
+            marks: marks_for(comp, index, &overlaps),
         })
         .collect();
-    // The two timeline questions are asked of the bounds alone, which is
-    // all they are about — and which makes them testable without assets.
-    let bounds: Vec<(f64, f64)> = spans.iter().map(|s| (s.start_secs, s.end_secs)).collect();
     Report {
         name: comp.name().to_string(),
         fps: comp.fps(),
         duration_secs: comp.duration_secs(),
         frame_count: comp.frame_count(),
         clips,
-        gaps: gaps(&bounds),
-        overlaps: overlaps(&bounds),
+        gaps: comp
+            .gaps()
+            .iter()
+            .map(|g| Span { start_secs: g.start_secs, end_secs: g.end_secs })
+            .collect(),
+        overlaps,
     }
 }
 
-/// The stretches of `[0, duration)` no clip covers — a sweep over the
-/// spans sorted by start, which is the only order that survives an `at`
-/// placing clip 3 before clip 1. There is never a trailing gap: the
-/// composition ends at the latest clip end.
-fn gaps(bounds: &[(f64, f64)]) -> Vec<Span> {
-    let mut sorted = bounds.to_vec();
-    sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut out = Vec::new();
-    let mut covered_to = 0.0f64;
-    for (start, end) in sorted {
-        if start > covered_to {
-            out.push(Span { start_secs: covered_to, end_secs: start });
-        }
-        covered_to = covered_to.max(end);
+/// The table's last column for one clip: what it covers, then how much of
+/// it survives. The verdict is [`Composition::mark_for`] — whether a clip
+/// is merely under something or never seen at all is a question about
+/// FRAMES, and summing covered stretches is how it is answered; the first
+/// overlap that covers this clip names the culprit for the reader.
+fn marks_for(comp: &Composition, index: usize, overlaps: &[Overlap]) -> Vec<Mark> {
+    let mut marks: Vec<Mark> =
+        overlaps.iter().filter(|o| o.over == index).map(|o| Mark::Over(o.under)).collect();
+    let culprit = overlaps.iter().find(|o| o.under == index).map(|o| o.over);
+    match (comp.mark_for(index), culprit) {
+        (Some(ClipMark::Partial), Some(over)) => marks.push(Mark::Under(over)),
+        (Some(ClipMark::Hidden), Some(over)) => marks.push(Mark::Hidden(over)),
+        _ => {}
     }
-    out
-}
-
-/// Every pair of clips that share an instant, later-listed on top.
-/// Quadratic in the clip count and deliberately so: it is exact for the
-/// unbounded, out-of-order placements the schema allows, and `show` runs
-/// once per invocation on a file a human wrote.
-fn overlaps(bounds: &[(f64, f64)]) -> Vec<Overlap> {
-    let mut out = Vec::new();
-    for (under, a) in bounds.iter().enumerate() {
-        for (over, b) in bounds.iter().enumerate().skip(under + 1) {
-            let start = a.0.max(b.0);
-            let end = a.1.min(b.1);
-            if start < end {
-                out.push(Overlap { start_secs: start, end_secs: end, under, over });
-            }
-        }
-    }
-    out.sort_by(|a, b| a.start_secs.total_cmp(&b.start_secs).then(a.over.cmp(&b.over)));
-    out
+    marks
 }
 
 #[cfg(test)]
@@ -358,114 +365,49 @@ mod tests {
         assert_eq!(toml_string("bell\u{7}"), "\"bell\\u0007\"");
     }
 
-    /// A report over hand-built clips: `rows()` and its marks are table
-    /// logic, so they are tested without assets, like the two sweeps are.
-    fn report_of(bounds: &[(f64, f64)]) -> Report {
-        let clips = bounds
-            .iter()
-            .enumerate()
-            .map(|(index, &(start, end))| ClipRow {
-                index,
-                asset: format!("clip-{index}"),
-                path: format!("/tmp/clip-{index}.ascii"),
-                in_secs: 0.0,
-                out_secs: end - start,
-                at_secs: Some(start),
-                start_secs: start,
-                end_secs: end,
-                fps: 30.0,
-            })
-            .collect();
-        Report {
+    /// Rows are the report's own rows plus its gaps, in TIMELINE order —
+    /// the only thing left in this module once the facade answers what a
+    /// gap and an overlap are. Built by hand: no composition, no assets.
+    fn row(index: usize, start: f64, end: f64, marks: Vec<Mark>) -> ClipRow {
+        ClipRow {
+            index,
+            asset: format!("clip-{index}"),
+            path: format!("/tmp/clip-{index}.ascii"),
+            in_secs: 0.0,
+            out_secs: end - start,
+            at_secs: Some(start),
+            start_secs: start,
+            end_secs: end,
+            fps: 30.0,
+            marks,
+        }
+    }
+
+    #[test]
+    fn rows_are_the_timeline_in_order() {
+        let report = Report {
             name: "t".into(),
             fps: 30.0,
-            duration_secs: bounds.iter().fold(0.0f64, |acc, &(_, e)| acc.max(e)),
-            frame_count: 1,
-            clips,
-            gaps: gaps(bounds),
-            overlaps: overlaps(bounds),
-        }
-    }
-
-    fn marks_of(rows: &[Row<'_>], index: usize) -> Vec<Mark> {
-        rows.iter()
-            .find_map(|row| match row {
-                Row::Clip(clip, marks) if clip.index == index => Some(marks.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("clip {index} has no row"))
-    }
-
-    /// Both sides of an overlap are marked: the covering clip and the one
-    /// being covered. A table that only marked the coverer would leave the
-    /// clip you cannot see looking perfectly ordinary.
-    #[test]
-    fn an_overlap_marks_both_clips() {
-        let report = report_of(&[(0.0, 3.0), (2.0, 4.0)]);
+            duration_secs: 9.0,
+            frame_count: 270,
+            // File order puts the later clip first; the table must not.
+            clips: vec![
+                row(0, 6.0, 9.0, vec![Mark::Over(1)]),
+                row(1, 0.0, 2.0, vec![Mark::Under(0)]),
+            ],
+            gaps: vec![Span { start_secs: 2.0, end_secs: 6.0 }],
+            overlaps: Vec::new(),
+        };
         let rows = report.rows();
-        assert_eq!(marks_of(&rows, 0), [Mark::Under(1)]);
-        assert_eq!(marks_of(&rows, 1), [Mark::Over(0)]);
-    }
-
-    /// Clip 0 at 5–6 sits entirely inside clip 1 at 0–20: not one of its
-    /// frames ever plays, which is the mistake start/end columns hide.
-    #[test]
-    fn a_swallowed_clip_is_hidden() {
-        let report = report_of(&[(5.0, 6.0), (0.0, 20.0)]);
-        let rows = report.rows();
-        assert_eq!(marks_of(&rows, 0), [Mark::Hidden(1)]);
-        assert_eq!(marks_of(&rows, 1), [Mark::Over(0)]);
-        // Timeline order, not file order: clip 1 starts first.
-        match (&rows[0], &rows[1]) {
-            (Row::Clip(first, _), Row::Clip(second, _)) => {
-                assert_eq!((first.index, second.index), (1, 0));
+        assert_eq!(rows.len(), 3);
+        match (&rows[0], &rows[1], &rows[2]) {
+            (Row::Clip(first), Row::Gap(gap), Row::Clip(last)) => {
+                assert_eq!(first.index, 1);
+                assert_eq!(first.marks, [Mark::Under(0)]);
+                assert_eq!((gap.start_secs, gap.end_secs), (2.0, 6.0));
+                assert_eq!(last.index, 0);
             }
-            _ => panic!("two clip rows, no gap"),
+            _ => panic!("clip, gap, clip"),
         }
-        // Abutting ends are exclusive, so touching is not covering.
-        assert!(marks_of(&report_of(&[(0.0, 2.0), (2.0, 4.0)]).rows(), 0).is_empty());
-    }
-
-    /// One clip can be on both sides of two different overlaps, and the
-    /// marks come in the overlaps' own time order.
-    #[test]
-    fn marks_accumulate_per_clip() {
-        let report = report_of(&[(0.0, 3.0), (2.0, 6.0), (1.0, 5.0)]);
-        let rows = report.rows();
-        assert_eq!(marks_of(&rows, 0), [Mark::Under(2), Mark::Under(1)]);
-        assert_eq!(marks_of(&rows, 1), [Mark::Over(0), Mark::Under(2)]);
-        assert_eq!(marks_of(&rows, 2), [Mark::Over(0), Mark::Over(1)]);
-    }
-
-    #[test]
-    fn gaps_are_what_nothing_covers() {
-        assert!(gaps(&[(0.0, 2.0)]).is_empty());
-        // A leading gap (first clip placed past 0) and one between clips.
-        let found = gaps(&[(1.0, 2.0), (4.0, 5.0)]);
-        assert_eq!(found.len(), 2);
-        assert_eq!((found[0].start_secs, found[0].end_secs), (0.0, 1.0));
-        assert_eq!((found[1].start_secs, found[1].end_secs), (2.0, 4.0));
-        // Abutting clips leave nothing, and a clip swallowed by a longer
-        // earlier one cannot open a gap behind it.
-        assert!(gaps(&[(0.0, 2.0), (2.0, 4.0)]).is_empty());
-        assert!(gaps(&[(0.0, 9.0), (1.0, 2.0)]).is_empty());
-        // Out-of-order placement is sorted before the sweep.
-        let found = gaps(&[(4.0, 5.0), (0.0, 1.0)]);
-        assert_eq!(found.len(), 1);
-        assert_eq!((found[0].start_secs, found[0].end_secs), (1.0, 4.0));
-    }
-
-    #[test]
-    fn overlaps_name_the_clip_on_top() {
-        assert!(overlaps(&[(0.0, 2.0), (2.0, 4.0)]).is_empty(), "ends are exclusive");
-        let found = overlaps(&[(0.0, 3.0), (2.0, 4.0)]);
-        assert_eq!(found.len(), 1);
-        assert_eq!((found[0].start_secs, found[0].end_secs), (2.0, 3.0));
-        assert_eq!((found[0].under, found[0].over), (0, 1), "the later clip is on top");
-        // Three clips, two pairs: 0 under 1 and 1 under 2.
-        let found = overlaps(&[(0.0, 3.0), (2.0, 6.0), (5.0, 7.0)]);
-        assert_eq!(found.len(), 2);
-        assert_eq!((found[0].under, found[0].over), (0, 1));
-        assert_eq!((found[1].under, found[1].over), (1, 2));
     }
 }

@@ -218,6 +218,19 @@ fn sixteen_by_nine_assets_are_unchanged() {
     assert!(grid.row(0).iter().any(|c| c.glyph() != ' '), "top row is picture");
 }
 
+/// A corrupt container is rejected by `open`, not by the first render.
+/// The header of this one parses perfectly — only the tail (FIDX, TRLR) is
+/// gone — so nothing short of opening the container catches it. M8 routes
+/// `open` through `Composition::single`, which opens every clip for
+/// exactly this reason.
+#[test]
+fn open_rejects_a_valid_header_with_a_broken_chunk_table() {
+    let bytes = build_fixture(Fixture::GradientMotion);
+    let f = TmpFile::with_bytes(&bytes[..bytes.len() * 3 / 4], "truncated");
+    let e = RenderSession::open(&f.0).unwrap_err();
+    assert!(matches!(e, Error::Format { .. }), "{e}");
+}
+
 #[test]
 fn error_surface_is_coherent() {
     // Out-of-range frame index.

@@ -200,16 +200,10 @@ fn parse_sim_spec(s: &str) -> Result<((u16, u16), u64)> {
     Ok((size, nframes))
 }
 
-/// A `.toml` argument is a composition, anything else is one asset
-/// (PLAN-M6-M8 §3 — the same rule `auto-ascii play` follows).
-fn is_composition(path: &Path) -> bool {
-    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("toml"))
-}
-
 /// Resolve the positional argument into a resolved timeline: a plain asset
 /// is a one-clip composition, so every path below has one frame mapping.
 fn open_timeline(path: &Path) -> Result<Composition> {
-    let mut comp = if is_composition(path) {
+    let mut comp = if Composition::is_toml_path(path) {
         Composition::from_toml_file(path, Composition::default_library_dir().as_deref())
             .with_context(|| format!("reading composition {}", path.display()))?
     } else {
@@ -280,13 +274,7 @@ fn run_sim(
         let frame_idx = ((u64::from(start_frame) + i) % u64::from(comp.frame_count())) as u32;
         // Composition frame → clip + local frame (the identity for a plain
         // asset); a gap presents black and contributes no layer counts.
-        let stats = match comp.locate_frame(frame_idx) {
-            Some(loc) => {
-                deck.activate(loc.clip_idx)?;
-                deck.render_present(&mut backend, loc.local_frame)?
-            }
-            None => deck.present_gap(&mut backend),
-        };
+        let stats = deck.present_at(&mut backend, comp.locate_frame(frame_idx))?;
         bytes_total += u64::from(stats.bytes);
         if let Some(mask) = deck.layer_mask() {
             for &l in mask.as_slice() {
@@ -329,27 +317,6 @@ fn run_sim(
     Ok(())
 }
 
-/// Present one COMPOSITION frame: the clip on top at its own local frame,
-/// or a black gap frame (M8). A plain asset is one clip mapping frame to
-/// frame, so this is the pre-M8 `render_present` call for it.
-fn render_at(
-    comp: &Composition,
-    deck: &mut ClipDeck,
-    backend: &mut SimBackend,
-    frame_idx: u32,
-) -> Result<()> {
-    match comp.locate_frame(frame_idx) {
-        Some(loc) => {
-            deck.activate(loc.clip_idx)?;
-            deck.render_present(backend, loc.local_frame)?;
-        }
-        None => {
-            deck.present_gap(backend);
-        }
-    }
-    Ok(())
-}
-
 /// M5 scrub-latency benchmark: N deterministic random seeks through the
 /// EXACT interactive scrub machinery — hysteresis reset (the drain_events
 /// discontinuity rule) + FIDX keyframe bsearch + ≤ keyframe_ivl−1 delta
@@ -366,7 +333,7 @@ fn run_bench_seek(comp: &Composition, mut deck: ClipDeck, seeks: u32) -> Result<
     deck.set_size(COLS, ROWS);
     // One warmup render: builds tap tables' caches and pages in the header/
     // FIDX region; every timed seek below still decodes cold frame data.
-    render_at(comp, &mut deck, &mut backend, 0)?;
+    deck.present_at(&mut backend, comp.locate_frame(0))?;
     backend.take_output();
 
     let frames = u64::from(comp.frame_count());
@@ -380,7 +347,7 @@ fn run_bench_seek(comp: &Composition, mut deck: ClipDeck, seeks: u32) -> Result<
         let frame = ((rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) % frames) as u32;
         let t = Instant::now();
         deck.reset_active(); // scrub = temporal discontinuity
-        render_at(comp, &mut deck, &mut backend, frame)?;
+        deck.present_at(&mut backend, comp.locate_frame(frame))?;
         lat_ms.push(t.elapsed().as_secs_f64() * 1e3);
         backend.take_output();
     }
@@ -414,18 +381,9 @@ fn main() -> Result<()> {
         // loop with more clips in it (PLAN-M6-M8 §3).
         let comp = open_timeline(&cli.asset)
             .with_context(|| format!("opening {}", cli.asset.display()))?;
-        let asset_fps = comp.fps();
+        // Same bound check the interactive path uses — the timeline owns it.
         let start_frame: u32 = match seek_secs {
-            Some(secs) => {
-                let frame = (secs * asset_fps).floor();
-                if frame >= f64::from(comp.frame_count()) {
-                    bail!(
-                        "--seek is past the end of the asset ({} frames @ {asset_fps} fps)",
-                        comp.frame_count()
-                    );
-                }
-                frame as u32
-            }
+            Some(secs) => comp.frame_at_secs(secs)?,
             None => 0,
         };
 
@@ -456,7 +414,7 @@ fn main() -> Result<()> {
     // Interactive path: argv → PlayerBuilder, then the facade owns the
     // probe, the session, the pacing loop and the restore (no logic here).
     let source = auto_ascii::Player::builder();
-    let source = if is_composition(&cli.asset) {
+    let source = if Composition::is_toml_path(&cli.asset) {
         source.composition(&cli.asset)
     } else {
         source.asset(&cli.asset)

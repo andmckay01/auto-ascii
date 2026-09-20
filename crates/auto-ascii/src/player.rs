@@ -178,8 +178,8 @@ impl Transport {
         self.clock = now;
     }
 
-    /// Space: freeze at `frozen` (the frame currently on screen), or resume
-    /// from wherever the freeze left us.
+    /// Space: freeze at `frozen` (see [`freeze_target`]), or resume from
+    /// wherever the freeze left us.
     fn toggle_pause(&mut self, frozen: u64, now: Instant) {
         if self.paused {
             self.clock = now; // the wall clock ran; asset time did not
@@ -189,6 +189,20 @@ impl Transport {
             self.paused = true;
         }
     }
+}
+
+/// Which frame Space freezes on: the one last PRESENTED, when there is one
+/// (M6 pause).
+///
+/// The clock's answer is the wrong one. The run loop presents at
+/// `--fps-cap` and only then sleeps, so at a 1 fps cap on a 30 fps asset
+/// the clock has moved ~30 frames past the picture by the time the next
+/// drain sees the press — and freezing there would jump the picture
+/// forward a second at the exact moment the viewer asked it to stop.
+/// Before the first present there is nothing on screen yet, so the clock
+/// is all we have.
+fn freeze_target(presented: Option<u64>, clock_frame: u64) -> u64 {
+    presented.unwrap_or(clock_frame)
 }
 
 /// When the bottom-row progress overlay is on screen (M5 scrub UX + M6
@@ -219,6 +233,34 @@ impl ProgressTimer {
             self.until = None;
         }
         self.until.is_some()
+    }
+}
+
+/// Whether a frozen picture has to be painted again (M6 pause).
+///
+/// A paused loop still ticks — it has to, or it would stop answering the
+/// keyboard — but the frame on screen is already correct. Re-running
+/// resample → compose → present for it costs most of a core and, under
+/// `RepaintMode::Full`, tens of megabytes a second of escape stream for a
+/// picture that is not moving. So while paused, a tick paints only if
+/// something actually changed: a key, a seek, a resize, an overlay
+/// appearing or timing out. Playing always paints, because the picture is
+/// moving by definition.
+#[derive(Debug, Default)]
+struct RepaintGate {
+    /// Consecutive ticks skipped — diagnostics, and what the test reads to
+    /// prove the loop is idling rather than spinning.
+    skipped: u64,
+}
+
+impl RepaintGate {
+    fn should_paint(&mut self, paused: bool, dirty: bool) -> bool {
+        if paused && !dirty {
+            self.skipped += 1;
+            return false;
+        }
+        self.skipped = 0;
+        true
     }
 }
 
@@ -253,20 +295,30 @@ impl HintState {
     /// progress or dial overlay is visible — the hints ride along with them,
     /// since a viewer touching those keys is exactly who wants the legend.
     ///
-    /// A press toggles against what is ON SCREEN, not against `sticky`
-    /// alone: pressing `?` while the start-up row (or an overlay's
-    /// ride-along) is up must dismiss it rather than silently pin it for the
-    /// rest of playback and leave the next press reading inverted. The
-    /// overlays keep their veto either way — the row cannot be dismissed out
-    /// from under the bar it belongs to, it just does not stick once that
-    /// bar goes.
+    /// A press reads the PIN first, the start-up window second: pinned →
+    /// unpin, start-up freebie → dismiss it, anything else → pin. Toggling
+    /// against "is the row on screen" instead looks right until an overlay
+    /// is up for a long time — during a pause the progress row never goes
+    /// away, so `?` could only ever unpin, and a press would silently take
+    /// down a legend the viewer had pinned. The overlays keep their veto
+    /// either way: the row cannot be dismissed out from under the bar it
+    /// belongs to, it just stops riding along once that bar goes.
     fn visible(&mut self, now: Instant, toggle: bool, overlays_up: bool) -> bool {
-        let showing = self.sticky || overlays_up || now < self.startup_until;
+        let in_startup = now < self.startup_until;
         if !toggle {
-            return showing;
+            return self.sticky || overlays_up || in_startup;
         }
         self.startup_until = now; // a deliberate press ends the start-up window
-        self.sticky = !showing;
+        self.sticky = if self.sticky {
+            false // pinned: the press takes it down
+        } else {
+            // Not pinned. The start-up row is a freebie, so a press there
+            // means "go away". Anything else — an overlay's ride-along, or
+            // nothing on screen at all — means "stay up", which the old
+            // rule could not express: during a pause the progress row is up
+            // for minutes, so `?` could only ever fail to pin.
+            !in_startup
+        };
         self.sticky || overlays_up
     }
 }
@@ -417,10 +469,16 @@ impl PlayerBuilder {
         self
     }
 
-    /// Open and validate the asset (memory-mapped) and check the
-    /// configuration. Does NOT touch the terminal — that happens in
-    /// [`Player::run`], so a bad path or corrupt file fails cleanly before
-    /// any screen state changes.
+    /// Check the configuration and open every asset that will play — one
+    /// for [`asset`](PlayerBuilder::asset), all of a
+    /// [`composition`](PlayerBuilder::composition)'s clips — as a
+    /// container, through a read-only mapping.
+    ///
+    /// Does NOT touch the terminal: that happens in [`Player::run`], so a
+    /// bad path, a corrupt or truncated file, a clip with no picture in it,
+    /// an impossible trim or a seek past the end all fail cleanly here,
+    /// before any screen state changes. The decoders themselves are built
+    /// in `run`, per clip, as the timeline reaches them.
     pub fn build(self) -> Result<Player, Error> {
         let path = match (&self.asset, &self.composition) {
             (Some(_), Some(_)) => {
@@ -453,7 +511,6 @@ impl PlayerBuilder {
         // timeline, one time→frame function, no second code path. Resolving
         // reads every clip's header — an unreadable, empty or luma-less clip
         // fails HERE, before the terminal is touched.
-        let composed = self.composition.is_some();
         let mut comp = match &self.composition {
             None => Composition::single(&path),
             Some(file) => Composition::from_toml_file(
@@ -462,22 +519,10 @@ impl PlayerBuilder {
             )?,
         };
         comp.resolve()?;
-        let asset_fps = comp.fps();
+        // One bound check for every entry point (`--seek` here, in `--sim`
+        // and in `--bench-seek`): the timeline owns it.
         let start_frame = match self.seek_secs {
-            Some(secs) if secs.is_finite() && secs >= 0.0 => {
-                let frame = (secs * asset_fps).floor();
-                if frame >= f64::from(comp.frame_count()) {
-                    let what = if composed { "composition" } else { "asset" };
-                    return Err(Error::Config(format!(
-                        "seek {secs}s is past the end of the {what} ({} frames @ {asset_fps} fps)",
-                        comp.frame_count()
-                    )));
-                }
-                frame as u32
-            }
-            Some(secs) => {
-                return Err(Error::Config(format!("seek must be finite and >= 0 (got {secs}s)")));
-            }
+            Some(secs) => comp.frame_at_secs(secs)?,
             None => 0,
         };
         // Resolve --font-table early (M5 §3.4): a bad name/path/table is a
@@ -486,22 +531,18 @@ impl PlayerBuilder {
             None => None,
             Some(spec) => Some(crate::session::load_font_table(spec)?),
         };
-        Ok(Player { comp, composed, cfg: self, start_frame, font_table })
+        Ok(Player { comp, cfg: self, start_frame, font_table })
     }
 }
 
-/// A ready-to-run terminal player: asset opened and validated, terminal not
-/// yet touched. Created by [`Player::builder`]; consumed by
-/// [`Player::run`].
+/// A ready-to-run terminal player: every clip validated and its timeline
+/// resolved, terminal not yet touched. Created by [`Player::builder`];
+/// consumed by [`Player::run`].
 #[derive(Debug)]
 pub struct Player {
     /// The timeline, resolved. A plain asset is a one-clip composition, so
     /// the run loop has exactly one time→frame path (PLAN-M6-M8 §3).
     comp: Composition,
-    /// Built from a composition FILE — the only difference it makes is that
-    /// the progress row reports composition time and ` c/N `; a plain asset
-    /// keeps the M6 row byte for byte.
-    composed: bool,
     cfg: PlayerBuilder,
     start_frame: u32,
     /// Parsed §3.4 font coverage table (repertoire veto), from
@@ -623,6 +664,12 @@ impl Player {
         let mut dial_until: Option<Instant> = None;
         // M6 key hints: the legend row above the overlay row (PLAN-M6-M8 §1).
         let mut hints = HintState::new(t0);
+        // M6 pause: a frozen picture is painted once, not every tick.
+        let mut gate = RepaintGate::default();
+        let mut presented: Option<u64> = None; // last frame actually painted
+        let (mut was_progress, mut was_hints) = (false, false);
+        let mut was_dial = false;
+        let mut was_size = deck.size();
 
         loop {
             let drained = deck.drain_events(&mut backend);
@@ -636,9 +683,11 @@ impl Player {
             if drained.toggle_pause {
                 let now = Instant::now();
                 let elapsed = transport.elapsed_secs(now);
-                let frozen = self.comp.frame_after(transport.base_frame, elapsed);
-                let frozen = if self.cfg.looping { frozen % frame_count } else { frozen };
-                transport.toggle_pause(frozen, now);
+                let clock_frame = self.comp.frame_after(transport.base_frame, elapsed);
+                let clock_frame =
+                    if self.cfg.looping { clock_frame % frame_count } else { clock_frame };
+                // Freeze on the picture, not on the clock (see freeze_target).
+                transport.toggle_pause(freeze_target(presented, clock_frame), now);
                 resumed = !transport.paused;
                 deck.set_paused(transport.paused);
             }
@@ -717,7 +766,7 @@ impl Player {
             // Composition time → the clip on top and its own frame. A plain
             // asset is one clip and maps frame to frame.
             let located = self.comp.locate_frame(target as u32);
-            if self.composed {
+            if self.comp.is_stitch() {
                 // Only a composition retimes the row: a plain asset keeps
                 // the M6 overlay, printed from its own frame counter.
                 deck.set_progress_context(Some(ProgressContext {
@@ -728,15 +777,28 @@ impl Player {
                     clip: located.map(|l| (l.clip_idx + 1, clip_count)),
                 }));
             }
-            match located {
-                Some(loc) => {
-                    deck.activate(loc.clip_idx)?;
-                    deck.render_present(&mut backend, loc.local_frame)?;
-                }
-                // A gap between clips: black, overlays still on top.
-                None => {
-                    deck.present_gap(&mut backend);
-                }
+            // Anything that can change what is on screen. While playing
+            // the picture moves on its own, so this only decides whether a
+            // FROZEN frame has to be painted again.
+            let dial_up = dial_until.is_some();
+            let dirty = drained.toggle_pause
+                || sought
+                || drained.dial_cycle > 0
+                || drained.dial_delta != 0
+                || drained.toggle_hints
+                || show_progress != was_progress
+                || show_hints != was_hints
+                || dial_up != was_dial
+                || deck.size() != was_size;
+            (was_progress, was_hints, was_dial, was_size) =
+                (show_progress, show_hints, dial_up, deck.size());
+
+            if gate.should_paint(transport.paused, dirty) {
+                // One call for both cases: the clip on top at its own
+                // frame, or a gap painted black with the overlays still on
+                // it.
+                deck.present_at(&mut backend, located)?;
+                presented = Some(target);
             }
 
             next_tick += tick;
@@ -860,6 +922,24 @@ mod tests {
         assert!(matches!(e, Error::Format { .. }), "{e}");
     }
 
+    /// A structurally corrupt asset must fail at `build()`, not once the
+    /// terminal session is up: the header of this one parses perfectly and
+    /// only the tail (FIDX, TRLR) is gone, so nothing short of opening the
+    /// container catches it.
+    #[test]
+    fn build_rejects_a_truncated_asset() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("auto-ascii-player-truncated-{}.ascii", std::process::id()));
+        let bytes = auto_ascii_eval::fixtures::build_fixture(
+            auto_ascii_eval::fixtures::Fixture::GradientMotion,
+        );
+        std::fs::write(&path, &bytes[..bytes.len() * 3 / 4]).unwrap();
+
+        let e = Player::builder().asset(&path).build().unwrap_err();
+        assert!(matches!(e, Error::Format { .. }), "{e}");
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// M6 key hints (PLAN-M6-M8 §1): the run loop's visibility policy —
     /// start-up window, ride-along with the overlays, sticky `?`/`h`. Driven
     /// with synthetic instants because `run()` owns the only clock and
@@ -889,14 +969,11 @@ mod tests {
         assert!(!hints.visible(late, true, false), "a second ? unpins it");
     }
 
-    /// M6 review fix: `?`/`h` toggles against what is ON SCREEN. A press
-    /// inside the start-up window dismisses the row and ends the window,
-    /// instead of silently pinning it for the rest of playback and leaving
-    /// the next press reading inverted; a press while an overlay is up
-    /// cannot dismiss the ride-along, but must not leave the row pinned once
-    /// that overlay lapses.
+    /// `?`/`h` reads the pin first, then the start-up window: a press
+    /// inside the start-up window dismisses that freebie and ends it,
+    /// while a press with an overlay up (or nothing up) pins the row.
     #[test]
-    fn hint_toggle_reads_what_is_on_screen_not_the_pin() {
+    fn hint_press_dismisses_the_start_up_row_and_pins_otherwise() {
         let t0 = Instant::now();
         let mut hints = HintState::new(t0);
         assert!(hints.visible(t0, false, false), "the start-up row is up");
@@ -905,13 +982,36 @@ mod tests {
         assert!(!hints.visible(tick, false, false), "and the window does not bring it back");
         assert!(hints.visible(tick, true, false), "the next ? summons it again");
 
-        // A press while an overlay is up: the ride-along still wins for as
-        // long as the overlay lives, but the pin left behind is "hidden".
+        // A press while an overlay is up PINS (addendum 3b): the press
+        // cannot mean "dismiss" — the overlay keeps the row up regardless —
+        // so the only useful reading is "keep it once the bar goes".
         let mut hints = HintState::new(t0);
         let late = t0 + HINT_STARTUP_SHOW_FOR + Duration::from_secs(60);
         assert!(hints.visible(late, false, true), "an overlay pulls the row up");
-        assert!(hints.visible(late, true, true), "? cannot dismiss the ride-along");
-        assert!(!hints.visible(late, false, false), "and it does not stick after it");
+        assert!(hints.visible(late, true, true), "? pins it while the bar is up");
+        assert!(hints.visible(late, false, false), "and it stays after the bar goes");
+        assert!(!hints.visible(late, true, false), "the next press unpins");
+    }
+
+    /// Addendum 3b regression: a pause holds the progress row up for as
+    /// long as the viewer likes, so "toggle against what is on screen"
+    /// left `?` unable to EVER pin the legend — and a press would silently
+    /// unpin one that was already pinned. The pin is read first now.
+    #[test]
+    fn hints_can_be_pinned_while_the_progress_row_is_up() {
+        let t0 = Instant::now();
+        let mut hints = HintState::new(t0);
+        let late = t0 + HINT_STARTUP_SHOW_FOR + Duration::from_secs(60);
+        // Paused: the progress row is up indefinitely (ProgressTimer).
+        assert!(hints.visible(late, true, true), "? pins during a pause");
+        assert!(hints.visible(late, false, true), "and stays pinned");
+        // A second press unpins — the row is still on screen only because
+        // the paused progress row is, and it leaves with it.
+        assert!(hints.visible(late, true, true), "a second ? unpins");
+        assert!(!hints.visible(late, false, false), "gone once the bar goes");
+        // Nothing on screen at all: a press pins, as it always did.
+        assert!(hints.visible(late, true, false), "? pins with nothing up");
+        assert!(hints.visible(late, false, false), "and it stays");
     }
 
     /// M6 pause (run-loop transport): freezing parks the frame on screen and
@@ -995,6 +1095,71 @@ mod tests {
         assert!(row.visible(long_after, true, false), "resume keeps it up");
         assert!(row.visible(long_after + nearly, false, false), "for a full timeout");
         assert!(!row.visible(long_after + OVERLAY_HIDE_AFTER, false, false), "then hides");
+    }
+
+    /// Addendum 2: a frozen picture is painted once. Ticking is how the
+    /// loop keeps answering the keyboard, but re-composing and re-sending
+    /// an unchanged frame at the cap rate is most of a core and tens of
+    /// MB/s of escape stream for nothing.
+    #[test]
+    fn a_frozen_frame_is_painted_once_until_something_changes() {
+        let mut gate = RepaintGate::default();
+        // Playing: every tick paints, dirty or not — the picture moves.
+        for _ in 0..5 {
+            assert!(gate.should_paint(false, false));
+        }
+        assert_eq!(gate.skipped, 0);
+
+        // The press that pauses is itself a change, so it paints...
+        assert!(gate.should_paint(true, true));
+        // ...and then the loop idles, however long the pause lasts.
+        for _ in 0..1000 {
+            assert!(!gate.should_paint(true, false));
+        }
+        assert_eq!(gate.skipped, 1000);
+
+        // A seek, a resize, an overlay appearing or timing out: one paint
+        // each, then idle again.
+        assert!(gate.should_paint(true, true));
+        assert_eq!(gate.skipped, 0);
+        assert!(!gate.should_paint(true, false));
+        // Resuming paints and keeps painting.
+        assert!(gate.should_paint(false, true));
+        assert!(gate.should_paint(false, false));
+    }
+
+    /// Addendum 3a: Space freezes on the frame the viewer is LOOKING at.
+    /// With `--fps-cap 1` on a 30 fps asset the loop presents a frame and
+    /// then sleeps a whole second, so the clock is ~30 frames ahead by the
+    /// time the press is drained — freezing there jumped the picture
+    /// forward a second at the moment it was asked to stop.
+    #[test]
+    fn pause_freezes_on_the_presented_frame_not_the_clock() {
+        const FPS: f64 = 30.0;
+        let t0 = Instant::now();
+        let mut transport = Transport::new(0, t0);
+
+        // One tick of a 1 fps cap: frame 0 was presented, then a second
+        // passed before the next drain saw Space.
+        let press = t0 + Duration::from_secs(1);
+        let clock_frame = (transport.elapsed_secs(press) * FPS) as u64;
+        assert_eq!(clock_frame, 30, "the clock really is 30 frames ahead");
+        transport.toggle_pause(freeze_target(Some(0), clock_frame), press);
+        assert!(transport.paused);
+        assert_eq!(transport.base_frame, 0, "frozen on what was on screen");
+        assert_eq!(transport.elapsed_secs(press + Duration::from_secs(9)), 0.0);
+
+        // Resuming continues from the frozen frame, not from the clock.
+        let resume = press + Duration::from_secs(9);
+        transport.toggle_pause(freeze_target(Some(0), 0), resume);
+        assert!(!transport.paused);
+        assert_eq!(transport.base_frame, 0);
+        let tick = resume + Duration::from_secs(1);
+        assert_eq!((transport.elapsed_secs(tick) * FPS) as u64, 30, "one second on");
+
+        // Before the first present there is nothing on screen, so the
+        // clock is all there is to freeze on.
+        assert_eq!(freeze_target(None, 17), 17);
     }
 
     /// M6 review fix: the first `d` REVEALS the dial readout rather than

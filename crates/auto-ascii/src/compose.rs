@@ -138,9 +138,10 @@ pub fn export(
         })
         .collect::<Result<Vec<usize>, Error>>()?;
 
-    // One mapping + one reader per clip, all live for the whole walk: the
-    // decode order follows the timeline, not the clip list, so a clip may
-    // be returned to at any point.
+    // One mapping per clip — address space, not memory, and it proves
+    // every clip is there before a byte is written. The decoders behind
+    // them are built on demand (see `SourcePool`), because a decoder is
+    // where the megabytes are.
     let mut maps: Vec<Mmap> = Vec::with_capacity(spans.len());
     for clip in comp.clips() {
         let file = std::fs::File::open(&clip.path)
@@ -151,21 +152,20 @@ pub fn export(
             .map_err(|source| Error::Io { path: clip.path.clone(), source })?;
         maps.push(map);
     }
-    let mut sources: Vec<ClipSource<'_>> = Vec::with_capacity(spans.len());
+
+    let frames = comp.frame_count();
+    // The NORM pre-pass reads shot tables and nothing else, so it opens
+    // each clip, copies its handful of 24-byte records and lets the reader
+    // (and its frame index) go again.
+    let mut clip_shots: Vec<Vec<ShotRecord>> = Vec::with_capacity(maps.len());
     for (idx, map) in maps.iter().enumerate() {
         let reader = AsciiReader::open(map).map_err(|source| Error::Format {
             path: comp.clips()[idx].path.clone(),
             source,
         })?;
-        sources.push(ClipSource {
-            reader,
-            planes: raw_sizes.iter().map(|&n| vec![0u8; n]).collect(),
-            loaded: None,
-        });
+        clip_shots.push(reader.shots().to_vec());
     }
-
-    let frames = comp.frame_count();
-    let shots = norm_records(comp, &sources, frames);
+    let shots = norm_records(comp, &clip_shots, frames);
     let cuts = shots.iter().filter(|s| s.is_cut()).count() as u32;
 
     let (fps_num, fps_den) = comp.fps_ratio();
@@ -194,16 +194,8 @@ pub fn export(
     // 0) must never replace a good one, and a failed export must leave
     // nothing behind to be mistaken for one.
     let part = part_path(out);
-    let written = write_asset(
-        &part,
-        wopts,
-        &meta,
-        &shots,
-        comp,
-        &mut sources,
-        &plane_ids,
-        &raw_sizes,
-    );
+    let mut pool = SourcePool::new(maps.len(), raw_sizes);
+    let written = write_asset(&part, wopts, &meta, &shots, comp, &mut pool, &maps, &plane_ids);
     let bytes = match written {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -232,15 +224,15 @@ fn part_path(out: &Path) -> PathBuf {
 /// recoverable in place.
 #[allow(clippy::too_many_arguments)] // one call site; the alternative is a
 // struct that exists only to be destructured back into these eight
-fn write_asset(
+fn write_asset<'a>(
     path: &Path,
     wopts: WriterOptions,
     meta: &Meta,
     shots: &[ShotRecord],
     comp: &Composition,
-    sources: &mut [ClipSource<'_>],
+    pool: &mut SourcePool<'a>,
+    maps: &'a [Mmap],
     plane_ids: &[u8],
-    raw_sizes: &[usize],
 ) -> Result<u64, Error> {
     let file = std::fs::File::create(path)
         .map_err(|source| Error::Io { path: path.into(), source })?;
@@ -256,11 +248,11 @@ fn write_asset(
 
     // Black planes for gap frames: zero is black luma, and zero RGB565 is
     // black chroma, so one zeroed buffer per plane serves.
-    let black: Vec<Vec<u8>> = raw_sizes.iter().map(|&n| vec![0u8; n]).collect();
+    let black: Vec<Vec<u8>> = pool.raw_sizes.iter().map(|&n| vec![0u8; n]).collect();
     for frame in 0..comp.frame_count() {
         match comp.locate_frame(frame) {
             Some(loc) => {
-                let source = &mut sources[loc.clip_idx];
+                let source = pool.front(loc.clip_idx, maps, comp)?;
                 source.load(loc.local_frame, plane_ids)?;
                 let refs: Vec<PlaneRef<'_>> = plane_ids
                     .iter()
@@ -288,6 +280,84 @@ fn write_asset(
         .metadata()
         .map_err(|source| Error::Io { path: path.into(), source })?
         .len())
+}
+
+/// How many clip decoders an export keeps live at once. Each one holds a
+/// full set of plane buffers (roughly a megabyte for a 480×270 six-plane
+/// clip) plus that asset's frame index, and a composition may stitch an
+/// unbounded number of clips — so, as the player's deck does, the export
+/// keeps the most recently used few. Four is enough that no realistic cut
+/// pattern thrashes: an export walks the timeline in order, so at any
+/// moment it needs the clip on top and, at an overlap, the ones around it.
+/// Re-opening costs one FIDX parse and one keyframe seek.
+const MAX_LIVE_SOURCES: usize = 4;
+
+/// The export's clip decoders, opened on first use and capped at
+/// [`MAX_LIVE_SOURCES`] (LRU). Memory is bounded by how many clips are
+/// live, not by how many the composition names.
+struct SourcePool<'a> {
+    sources: Vec<Option<ClipSource<'a>>>,
+    /// `clock` when each clip was last used — the LRU key.
+    used: Vec<u64>,
+    clock: u64,
+    /// Raw plane sizes, shared by every decoder (one shape per export).
+    raw_sizes: Vec<usize>,
+}
+
+impl<'a> SourcePool<'a> {
+    fn new(clips: usize, raw_sizes: Vec<usize>) -> SourcePool<'a> {
+        SourcePool {
+            sources: (0..clips).map(|_| None).collect(),
+            used: vec![0; clips],
+            clock: 0,
+            raw_sizes,
+        }
+    }
+
+    /// The decoder for clip `idx`, opened over `maps[idx]` if it is not
+    /// live, evicting the least recently used one to make room.
+    fn front(
+        &mut self,
+        idx: usize,
+        maps: &'a [Mmap],
+        comp: &Composition,
+    ) -> Result<&mut ClipSource<'a>, Error> {
+        if self.sources[idx].is_none() {
+            while self.live() >= MAX_LIVE_SOURCES && self.evict(idx) {}
+            let reader = AsciiReader::open(&maps[idx]).map_err(|source| Error::Format {
+                path: comp.clips()[idx].path.clone(),
+                source,
+            })?;
+            let planes = self.raw_sizes.iter().map(|&n| vec![0u8; n]).collect();
+            self.sources[idx] = Some(ClipSource { reader, planes, loaded: None });
+        }
+        self.clock += 1;
+        self.used[idx] = self.clock;
+        Ok(self.sources[idx].as_mut().expect("just opened"))
+    }
+
+    fn live(&self) -> usize {
+        self.sources.iter().filter(|s| s.is_some()).count()
+    }
+
+    /// Drop the least recently used decoder (never `keep`); `false` when
+    /// there was nothing to drop.
+    fn evict(&mut self, keep: usize) -> bool {
+        let victim = self
+            .sources
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| *i != keep && s.is_some())
+            .min_by_key(|(i, _)| self.used[*i])
+            .map(|(i, _)| i);
+        match victim {
+            Some(i) => {
+                self.sources[i] = None; // reader + plane buffers go together
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// One clip's reader plus the standing plane buffers the delta filter needs
@@ -336,14 +406,18 @@ enum Segment {
 /// levels copied from the source shot (the plane registries are identical,
 /// so the position-indexed levels transfer verbatim), cut-flagged at every
 /// clip boundary and gap edge. No frame payload is touched.
-fn norm_records(comp: &Composition, sources: &[ClipSource<'_>], frames: u32) -> Vec<ShotRecord> {
+fn norm_records(
+    comp: &Composition,
+    clip_shots: &[Vec<ShotRecord>],
+    frames: u32,
+) -> Vec<ShotRecord> {
     let mut records: Vec<ShotRecord> = Vec::new();
     let mut prev: Option<Segment> = None;
     for frame in 0..frames {
         let (segment, levels, source_cut) = match comp.locate_frame(frame) {
             None => (Segment::Gap, [PlaneLevels::default(); 8], false),
             Some(loc) => {
-                let shot = sources[loc.clip_idx].reader.shot_for_frame(loc.local_frame);
+                let shot = shot_at(&clip_shots[loc.clip_idx], loc.local_frame);
                 (
                     Segment::Clip { idx: loc.clip_idx, shot: shot.map(|s| s.first_frame) },
                     shot.map_or([PlaneLevels::default(); 8], |s| s.levels),
@@ -364,6 +438,14 @@ fn norm_records(comp: &Composition, sources: &[ClipSource<'_>], frames: u32) -> 
         prev = Some(segment);
     }
     records
+}
+
+/// The shot covering `frame` in a clip's own NORM table (`None` when the
+/// clip carries none) — `AsciiReader::shot_for_frame` over the copy the
+/// pre-pass kept.
+fn shot_at(shots: &[ShotRecord], frame: u32) -> Option<&ShotRecord> {
+    let p = shots.partition_point(|s| s.first_frame <= frame);
+    (p > 0).then(|| &shots[p - 1])
 }
 
 /// The clip a segment belongs to (`None` for a gap) — what a boundary is

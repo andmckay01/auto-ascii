@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use auto_ascii_format::{AsciiHeader, HEADER_SIZE};
+use auto_ascii_format::AsciiHeader;
 use memmap2::Mmap;
 
 use crate::error::Error;
@@ -38,6 +38,29 @@ const FRAME_EPS: f64 = 1e-6;
 fn snap(raw: f64) -> f64 {
     let n = raw.round();
     if (raw - n).abs() <= FRAME_EPS { n } else { raw }
+}
+
+/// A (snapped) float frame position as the first whole frame at or after
+/// it, or `None` when it does not fit a `u32` frame index.
+fn frame_ceil(raw: f64) -> Option<u32> {
+    let n = raw.ceil();
+    (n.is_finite() && (0.0..=f64::from(u32::MAX)).contains(&n)).then_some(n as u32)
+}
+
+/// One clip as pass 1 of [`Composition::resolve`] read it: the validated
+/// header plus the trim, still in seconds because the composition rate is
+/// not known until every clip has been read.
+struct Part {
+    header: AsciiHeader,
+    in_secs: f64,
+    out_secs: f64,
+    at_secs: Option<f64>,
+}
+
+impl Part {
+    fn fps(&self) -> f64 {
+        f64::from(self.header.fps_num) / f64::from(self.header.fps_den)
+    }
 }
 
 /// One clip placed on a composition timeline, exactly as written in the
@@ -77,12 +100,24 @@ impl Clip {
 /// facts [`Composition::resolve`] read from its asset. Parallel to
 /// [`Composition::clips`] — index `i` of one describes index `i` of the
 /// other. This is what `compose show` prints and what `export` validates.
+///
+/// The timeline is kept in FRAMES at the composition rate, and the seconds
+/// are derived from them. Seconds alone cannot express a boundary: a clip
+/// whose length is 0.3 s lands on 0.30000000000000004 in binary floating
+/// point, and the frame that starts at exactly 0.3 s would fall to the
+/// wrong clip — or leave a 1e-16 s "gap" for `compose show` to print.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClipSpan {
-    /// Start on the composition timeline, seconds (inclusive).
+    /// First composition frame this clip owns.
+    pub start_frame: u32,
+    /// One past the last — EXCLUSIVE, so abutting clips never both own a
+    /// frame and a sequential composition has no gaps at all.
+    pub end_frame: u32,
+    /// Start on the composition timeline, seconds: `start_frame` at the
+    /// composition rate (exact on the frame grid, by construction).
     pub start_secs: f64,
-    /// End on the composition timeline, seconds — EXCLUSIVE, so abutting
-    /// clips never both own the same instant.
+    /// End on the composition timeline, seconds — exclusive, and exactly
+    /// the next clip's `start_secs` when they abut.
     pub end_secs: f64,
     /// Trim start inside the asset, seconds.
     pub in_secs: f64,
@@ -102,6 +137,12 @@ pub struct ClipSpan {
     pub aspect_num: u16,
     /// Asset picture aspect denominator.
     pub aspect_den: u16,
+    /// First SOURCE frame shown — the `in` trim on the clip's own grid.
+    in_frame: u32,
+    /// Source frames per composition frame, `None` when the clip runs at
+    /// the composition rate — then a composition frame step IS a source
+    /// frame step and no float arithmetic happens at all.
+    rate: Option<f64>,
     /// Plane registry of the asset; only the first `plane_count` matter.
     plane_ids: [u8; 8],
     /// Length of the meaningful prefix of `plane_ids`.
@@ -112,6 +153,11 @@ impl ClipSpan {
     /// Source asset frame rate.
     pub fn fps(&self) -> f64 {
         f64::from(self.fps_num) / f64::from(self.fps_den)
+    }
+
+    /// Length of this clip on the composition timeline, frames.
+    pub fn len_frames(&self) -> u32 {
+        self.end_frame - self.start_frame
     }
 
     /// Length of this clip on the composition timeline, seconds.
@@ -129,18 +175,83 @@ impl ClipSpan {
         &self.plane_ids[..usize::from(self.plane_count)]
     }
 
-    /// Whether composition time `t_secs` falls in `[start, end)`.
-    pub fn contains(&self, t_secs: f64) -> bool {
-        t_secs >= self.start_secs && t_secs < self.end_secs
+    /// Whether this clip owns composition frame `frame`.
+    pub fn contains_frame(&self, frame: u32) -> bool {
+        frame >= self.start_frame && frame < self.end_frame
     }
 
-    /// Frame of the SOURCE asset showing at composition time `t_secs`
-    /// (callers check [`contains`](ClipSpan::contains) first).
-    fn local_frame(&self, t_secs: f64) -> u32 {
-        let local_secs = self.in_secs + (t_secs - self.start_secs);
-        let raw = snap(local_secs * self.fps()).floor().max(0.0);
-        (raw as u32).min(self.frame_count.saturating_sub(1))
+    /// The SOURCE frame showing at composition frame `frame` (callers check
+    /// [`contains_frame`](ClipSpan::contains_frame) first).
+    fn local_frame(&self, frame: u32) -> u32 {
+        let offset = frame - self.start_frame;
+        let offset = match self.rate {
+            // Same rate: one composition frame is one source frame. No
+            // float touches the common path.
+            None => offset,
+            Some(rate) => snap(f64::from(offset) * rate).floor().max(0.0) as u32,
+        };
+        self.in_frame.saturating_add(offset).min(self.frame_count.saturating_sub(1))
     }
+}
+
+/// A `[start, end)` stretch of the composition timeline, on the frame grid
+/// with the seconds derived from it — what [`Composition::gaps`] reports
+/// and what an [`Overlap`] covers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Span {
+    /// First composition frame in the stretch.
+    pub start_frame: u32,
+    /// One past the last (exclusive).
+    pub end_frame: u32,
+    /// `start_frame` at the composition rate.
+    pub start_secs: f64,
+    /// `end_frame` at the composition rate.
+    pub end_secs: f64,
+}
+
+impl Span {
+    /// Frames in the stretch.
+    pub fn len_frames(&self) -> u32 {
+        self.end_frame - self.start_frame
+    }
+}
+
+/// Two clips sharing a stretch of timeline: `over` is listed later, so it
+/// is the one on screen ([`Composition::overlaps`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Overlap {
+    /// The shared stretch.
+    pub span: Span,
+    /// Index of the clip underneath (listed first).
+    pub under: usize,
+    /// Index of the clip on top (listed later).
+    pub over: usize,
+}
+
+/// What clips listed after it do to a clip ([`Composition::mark_for`]) —
+/// `compose show`'s verdict column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipMark {
+    /// Every frame of it reaches the screen.
+    Clear,
+    /// Some frames are covered by a later clip.
+    Partial,
+    /// None of it is ever on top: every frame is covered.
+    Hidden,
+}
+
+/// Merge `[start, end)` ranges into ascending, non-overlapping ones.
+fn merge_spans(ranges: impl Iterator<Item = (u32, u32)>) -> Vec<(u32, u32)> {
+    let mut ranges: Vec<(u32, u32)> = ranges.filter(|(s, e)| s < e).collect();
+    ranges.sort_unstable();
+    let mut merged: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
 }
 
 /// Where a composition time landed: which clip is on top, and which of its
@@ -192,6 +303,10 @@ pub struct Composition {
     duration_secs: f64,
     frame_count: u32,
     aspect: f64,
+    /// Whether this stands for a STITCH (a `.toml`, or clips assembled by
+    /// hand) rather than one plain asset wrapped for the render path —
+    /// what error messages and the progress row's ` c/N ` call it.
+    stitch: bool,
 }
 
 impl Composition {
@@ -200,7 +315,9 @@ impl Composition {
     /// (PLAN-M6-M8 §3).
     pub fn single(path: impl Into<PathBuf>) -> Composition {
         let clip = Clip::new(path);
-        Composition::from_clips(clip.name.clone(), vec![clip])
+        let mut comp = Composition::from_clips(clip.name.clone(), vec![clip]);
+        comp.stitch = false; // it IS an asset; the wrapper is an implementation detail
+        comp
     }
 
     /// A composition over clips built by hand — `auto-ascii cut` is exactly
@@ -217,6 +334,7 @@ impl Composition {
             duration_secs: 0.0,
             frame_count: 0,
             aspect: 16.0 / 9.0,
+            stitch: true,
         }
     }
 
@@ -235,18 +353,23 @@ impl Composition {
         self.resolved
     }
 
-    /// Read every clip's header and compute the timeline (PLAN-M6-M8 §3).
+    /// Validate every clip and compute the timeline (PLAN-M6-M8 §3).
     ///
     /// Clips are placed in file order; `at` overrides the default position
     /// (the end of the previous clip); the composition ends at the latest
-    /// clip end; the composition fps is the highest clip fps. Idempotent —
-    /// re-reads the headers and recomputes.
+    /// clip end; the composition fps is the highest clip fps. Each clip is
+    /// opened as a container, not just header-parsed, so a truncated or
+    /// structurally corrupt asset fails HERE — before a `Player` has
+    /// touched the terminal. Idempotent: re-reads and recomputes.
+    ///
+    /// The placement itself is done in FRAMES at the composition rate (see
+    /// [`ClipSpan`]), which is what makes a boundary exact.
     ///
     /// # Errors
     /// [`Error::Io`]/[`Error::Format`] when a clip cannot be opened or is
-    /// not an ASCI asset, and [`Error::Config`] — naming the clip index —
-    /// for an empty composition or a trim that is not `0 <= in < out <=
-    /// asset duration`.
+    /// not a valid ASCI asset, and [`Error::Config`] — naming the clip
+    /// index — for an empty composition, an unplayable clip or a trim that
+    /// is not `0 <= in < out <= asset duration`.
     pub fn resolve(&mut self) -> Result<(), Error> {
         self.resolved = false;
         self.spans.clear();
@@ -256,45 +379,94 @@ impl Composition {
                 self.name
             )));
         }
-        let mut cursor = 0.0f64; // end of the previous clip
+
+        // Pass 1: read the clips and validate the trims, in seconds — the
+        // composition rate is not known until every clip's is.
+        let mut parts: Vec<Part> = Vec::with_capacity(self.clips.len());
         for (idx, clip) in self.clips.iter().enumerate() {
-            let header = read_header(&clip.path)?;
+            let bad = |what: String| Error::Config(format!("clip {idx} ({}): {what}", clip.name));
+            let header = read_clip(&clip.path).map_err(|e| match e {
+                // Unplayable-asset messages carry no path of their own;
+                // give them the clip that named the file.
+                Error::Asset(msg) => bad(msg.to_owned()),
+                other => other,
+            })?;
             let fps = f64::from(header.fps_num) / f64::from(header.fps_den);
             let source_secs = f64::from(header.frame_count) / fps;
             let in_secs = clip.in_secs;
             let out_secs = clip.out_secs.unwrap_or(source_secs);
-            let bad = |what: String| Error::Config(format!("clip {idx} ({}): {what}", clip.name));
             if !in_secs.is_finite() || in_secs < 0.0 {
                 return Err(bad(format!("in {in_secs} must be finite and >= 0")));
             }
             if !out_secs.is_finite() || out_secs <= in_secs {
                 return Err(bad(format!("out {out_secs} must be greater than in {in_secs}")));
             }
-            // The asset's own end is the ceiling; snap first so `out` may be
-            // written as the duration the header implies without tripping on
-            // a last-ULP difference.
-            if snap(out_secs * fps) > snap(source_secs * fps) {
+            // Half a frame of slack at the end, then clamp: a duration
+            // printed to the hundredth (`4.17s` for 100 frames at 24 fps)
+            // must be usable as `out`, and rejecting the very number the
+            // tools print would be a contradiction. Beyond that it is a
+            // real mistake, and the message speaks the same precision.
+            if out_secs * fps > f64::from(header.frame_count) + 0.5 {
                 return Err(bad(format!(
-                    "out {out_secs}s is past the end of the asset ({source_secs:.3}s, \
+                    "out {out_secs:.2}s is past the end of the asset ({source_secs:.2}s, \
                      {} frames @ {fps} fps)",
                     header.frame_count
                 )));
             }
-            let start_secs = match clip.at_secs {
-                Some(at) if at.is_finite() && at >= 0.0 => at,
-                Some(at) => return Err(bad(format!("at {at} must be finite and >= 0"))),
+            let out_secs = out_secs.min(source_secs);
+            if let Some(at) = clip.at_secs
+                && !(at.is_finite() && at >= 0.0)
+            {
+                return Err(bad(format!("at {at} must be finite and >= 0")));
+            }
+            parts.push(Part { header, in_secs, out_secs, at_secs: clip.at_secs });
+        }
+
+        // Composition fps = the highest clip fps, kept as that clip's exact
+        // header rational so an export writes the same fps fields back.
+        let fastest = parts
+            .iter()
+            .max_by(|a, b| a.fps().total_cmp(&b.fps()))
+            .expect("clips are non-empty");
+        self.fps_num = fastest.header.fps_num;
+        self.fps_den = fastest.header.fps_den;
+        self.fps = fastest.fps();
+        let comp_fps = self.fps;
+
+        // Pass 2: place everything on the composition's frame grid. A frame
+        // belongs to a clip when its own instant does, so a start is the
+        // first frame at or after it (`ceil`) and a length is how many
+        // frames the slice covers (`ceil` again) — which makes abutment
+        // exact: the end of one clip IS the start of the next.
+        let mut cursor: u32 = 0; // first free frame after the previous clip
+        for (idx, part) in parts.iter().enumerate() {
+            let name = &self.clips[idx].name;
+            let bad = |what: String| Error::Config(format!("clip {idx} ({name}): {what}"));
+            let len_frames = frame_ceil(snap((part.out_secs - part.in_secs) * comp_fps))
+                .ok_or_else(|| bad("is longer than a composition can hold".into()))?;
+            let start_frame = match part.at_secs {
+                Some(at) => frame_ceil(snap(at * comp_fps))
+                    .ok_or_else(|| bad(format!("at {at}s is past what a timeline can hold")))?,
                 None => cursor,
             };
+            let end_frame = start_frame
+                .checked_add(len_frames.max(1)) // a slice always shows one frame
+                .ok_or_else(|| bad("ends past what a timeline can hold".into()))?;
+            cursor = end_frame;
+            let clip_fps = part.fps();
+            let header = &part.header;
             let (aspect_num, aspect_den) = if header.aspect_num == 0 || header.aspect_den == 0 {
                 (16, 9) // same degenerate-header fallback as RenderSession::aspect
             } else {
                 (header.aspect_num, header.aspect_den)
             };
-            let span = ClipSpan {
-                start_secs,
-                end_secs: start_secs + (out_secs - in_secs),
-                in_secs,
-                out_secs,
+            self.spans.push(ClipSpan {
+                start_frame,
+                end_frame,
+                start_secs: f64::from(start_frame) / comp_fps,
+                end_secs: f64::from(end_frame) / comp_fps,
+                in_secs: part.in_secs,
+                out_secs: part.out_secs,
                 fps_num: header.fps_num,
                 fps_den: header.fps_den,
                 frame_count: header.frame_count,
@@ -302,32 +474,18 @@ impl Composition {
                 base_h: header.base_h,
                 aspect_num,
                 aspect_den,
+                in_frame: snap(part.in_secs * clip_fps).floor().max(0.0) as u32,
+                // Exact rational comparison: 30/1 and 60/2 are one rate.
+                rate: (u32::from(header.fps_num) * u32::from(self.fps_den)
+                    != u32::from(self.fps_num) * u32::from(header.fps_den))
+                .then(|| clip_fps / comp_fps),
                 plane_ids: header.plane_ids,
                 plane_count: header.plane_count.min(8),
-            };
-            cursor = span.end_secs;
-            self.spans.push(span);
+            });
         }
 
-        // Composition fps = the highest clip fps, kept as that clip's exact
-        // header rational so an export writes the same fps fields back.
-        let fastest = self
-            .spans
-            .iter()
-            .max_by(|a, b| a.fps().total_cmp(&b.fps()))
-            .expect("clips are non-empty");
-        self.fps_num = fastest.fps_num;
-        self.fps_den = fastest.fps_den;
-        self.fps = fastest.fps();
-        self.duration_secs = self.spans.iter().fold(0.0f64, |acc, s| acc.max(s.end_secs));
-        let raw = snap(self.duration_secs * self.fps).ceil();
-        if !(1.0..=f64::from(u32::MAX)).contains(&raw) {
-            return Err(Error::Config(format!(
-                "composition {:?} is {:.3}s at {} fps — not a playable frame count",
-                self.name, self.duration_secs, self.fps
-            )));
-        }
-        self.frame_count = raw as u32;
+        self.frame_count = self.spans.iter().map(|s| s.end_frame).max().unwrap_or(0);
+        self.duration_secs = f64::from(self.frame_count) / comp_fps;
         // Picture aspect: the first clip's. Playback letterboxes per clip
         // anyway (each clip player reads its own header); this is what an
         // embedder sizing ONE viewport for the whole composition wants.
@@ -374,26 +532,139 @@ impl Composition {
     /// Which clip is on top at composition time `t_secs`, and which of its
     /// frames shows (PLAN-M6-M8 §3).
     ///
-    /// `None` is a gap — a black frame, not an error. Clip ends are
-    /// EXCLUSIVE, so abutting clips hand over cleanly, and where clips
-    /// overlap the LATER-listed one is on top.
+    /// `None` is a gap — a black frame, not an error. The time is resolved
+    /// to the composition frame that covers it and answered from the frame
+    /// grid, so a boundary belongs to exactly one clip no matter how the
+    /// seconds round.
     pub fn locate(&self, t_secs: f64) -> Option<Located> {
-        if !t_secs.is_finite() || t_secs < 0.0 {
+        if !t_secs.is_finite() || t_secs < 0.0 || self.fps <= 0.0 {
             return None;
         }
-        // Reverse order: later-listed wins an overlap (§3 semantics).
-        self.spans.iter().enumerate().rev().find(|(_, s)| s.contains(t_secs)).map(
-            |(clip_idx, s)| Located { clip_idx, local_frame: s.local_frame(t_secs) },
-        )
+        let frame = snap(t_secs * self.fps).floor();
+        if !(0.0..=f64::from(u32::MAX)).contains(&frame) {
+            return None;
+        }
+        self.locate_frame(frame as u32)
     }
 
     /// [`locate`](Composition::locate) for a composition FRAME — the form
-    /// every render path uses (`t = frame / fps`).
+    /// every render path uses, and pure integer arithmetic.
+    ///
+    /// Clip ends are EXCLUSIVE, so abutting clips hand over cleanly, and
+    /// where clips overlap the LATER-listed one is on top.
     pub fn locate_frame(&self, frame_idx: u32) -> Option<Located> {
-        if self.fps <= 0.0 {
-            return None;
+        // Reverse order: later-listed wins an overlap (§3 semantics).
+        self.spans
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, s)| s.contains_frame(frame_idx))
+            .map(|(clip_idx, s)| Located { clip_idx, local_frame: s.local_frame(frame_idx) })
+    }
+
+    /// Whether this is a STITCH of clips rather than one plain asset
+    /// wrapped for the render path ([`single`](Composition::single)).
+    /// Only presentation depends on it: what an error message calls the
+    /// thing, and whether the progress row prints ` c/N `.
+    pub fn is_stitch(&self) -> bool {
+        self.stitch
+    }
+
+    /// The composition frame playing at `secs` — the one bound check every
+    /// `--seek` goes through (`auto-ascii-player`, `--sim`, `--bench-seek`).
+    ///
+    /// # Errors
+    /// [`Error::Config`] for a negative, infinite or NaN time, and for one
+    /// past the end — naming the composition or the asset as appropriate.
+    pub fn frame_at_secs(&self, secs: f64) -> Result<u32, Error> {
+        if !secs.is_finite() || secs < 0.0 {
+            return Err(Error::Config(format!("seek must be finite and >= 0 (got {secs}s)")));
         }
-        self.locate(f64::from(frame_idx) / self.fps)
+        let frame = snap(secs * self.fps).floor();
+        if !(0.0..f64::from(self.frame_count)).contains(&frame) {
+            let what = if self.stitch { "composition" } else { "asset" };
+            return Err(Error::Config(format!(
+                "seek {secs}s is past the end of the {what} ({} frames @ {} fps)",
+                self.frame_count, self.fps
+            )));
+        }
+        Ok(frame as u32)
+    }
+
+    /// The stretches of timeline no clip covers — black frames, on the
+    /// frame grid so a sliver shorter than one frame cannot exist
+    /// (PLAN-M6-M8 §3). This is what `compose show` lists as gaps.
+    pub fn gaps(&self) -> Vec<Span> {
+        let mut gaps = Vec::new();
+        let mut cursor = 0u32; // first frame not yet accounted for
+        for span in merge_spans(self.spans.iter().map(|s| (s.start_frame, s.end_frame))) {
+            if span.0 > cursor {
+                gaps.push(self.span(cursor, span.0));
+            }
+            cursor = cursor.max(span.1);
+        }
+        if cursor < self.frame_count {
+            gaps.push(self.span(cursor, self.frame_count));
+        }
+        gaps
+    }
+
+    /// Every pair of clips that share frames, later-listed one on top
+    /// (PLAN-M6-M8 §3). Computed on the frame grid, so two clips that abut
+    /// never report a one-ULP overlap; three-deep coverage reports each
+    /// pair, which is what makes a per-clip verdict a sum rather than a
+    /// special case.
+    pub fn overlaps(&self) -> Vec<Overlap> {
+        let mut out = Vec::new();
+        for (over, top) in self.spans.iter().enumerate() {
+            for (under, below) in self.spans.iter().enumerate().take(over) {
+                let start = top.start_frame.max(below.start_frame);
+                let end = top.end_frame.min(below.end_frame);
+                if start < end {
+                    out.push(Overlap { span: self.span(start, end), under, over });
+                }
+            }
+        }
+        out.sort_by_key(|o| (o.span.start_frame, o.under, o.over));
+        out
+    }
+
+    /// How much of clip `clip_idx` ever reaches the screen — `compose
+    /// show`'s OVERLAP / UNDER / HIDDEN column as a lookup, not an
+    /// analysis. `None` for an index the composition does not have.
+    pub fn mark_for(&self, clip_idx: usize) -> Option<ClipMark> {
+        let span = self.spans.get(clip_idx)?;
+        let covered: u32 = merge_spans(
+            self.spans
+                .iter()
+                .skip(clip_idx + 1)
+                .filter_map(|later| {
+                    let start = span.start_frame.max(later.start_frame);
+                    let end = span.end_frame.min(later.end_frame);
+                    (start < end).then_some((start, end))
+                })
+                .collect::<Vec<_>>()
+                .into_iter(),
+        )
+        .iter()
+        .map(|(start, end)| end - start)
+        .sum();
+        Some(match covered {
+            0 => ClipMark::Clear,
+            n if n >= span.len_frames() => ClipMark::Hidden,
+            _ => ClipMark::Partial,
+        })
+    }
+
+    /// A `[start, end)` frame range with its seconds filled in from the
+    /// composition rate.
+    fn span(&self, start_frame: u32, end_frame: u32) -> Span {
+        Span {
+            start_frame,
+            end_frame,
+            start_secs: f64::from(start_frame) / self.fps,
+            end_secs: f64::from(end_frame) / self.fps,
+        }
     }
 
     /// The run loop's one time→frame expression (PLAN-M6-M8 §3): the
@@ -402,6 +673,14 @@ impl Composition {
     /// (`base + elapsed * asset_fps`) unchanged.
     pub fn frame_after(&self, base_frame: u64, elapsed_secs: f64) -> u64 {
         base_frame + (elapsed_secs * self.fps) as u64
+    }
+
+    /// Whether `path` names a composition rather than an asset: a `.toml`
+    /// extension, case-insensitively (PLAN-M6-M8 §3). Every entry point
+    /// that takes "a clip or a composition" — `auto-ascii-player`,
+    /// `auto-ascii play`, the examples — decides it exactly this way.
+    pub fn is_toml_path(path: &Path) -> bool {
+        path.extension().is_some_and(|e| e.eq_ignore_ascii_case("toml"))
     }
 
     /// The library folder a bare `asset` name resolves against when the
@@ -421,10 +700,15 @@ impl Composition {
     }
 }
 
-/// Read and validate one asset's 64-byte header (PLAN §4) through a
-/// read-only mapping — the cheapest way to learn fps/frames/geometry
-/// without building the FIDX a full `AsciiReader::open` would.
-pub(crate) fn read_header(path: &Path) -> Result<AsciiHeader, Error> {
+/// Open one clip through a read-only mapping and return its header.
+///
+/// This is a full [`AsciiReader::open`] — header, TRLR tail anchor, the
+/// pre-frame chunk roll and the whole FIDX — not just a header parse: a
+/// truncated or structurally corrupt asset has to fail here, because this
+/// is the last point before `PlayerBuilder::build` returns and the terminal
+/// session starts. The reader (and its index) is dropped on the way out;
+/// playback builds its own.
+pub(crate) fn read_clip(path: &Path) -> Result<AsciiHeader, Error> {
     let file = std::fs::File::open(path)
         .map_err(|source| Error::Io { path: path.into(), source })?;
     // SAFETY: read-only private map of a file we never mutate through this
@@ -432,15 +716,10 @@ pub(crate) fn read_header(path: &Path) -> Result<AsciiHeader, Error> {
     // here. The mapping dies at the end of this function.
     let map = unsafe { Mmap::map(&file) }
         .map_err(|source| Error::Io { path: path.into(), source })?;
-    let head: &[u8; 64] = map
-        .get(..HEADER_SIZE as usize)
-        .and_then(|b| b.try_into().ok())
-        .ok_or_else(|| Error::Format {
-            path: path.into(),
-            source: auto_ascii_format::AsciiError::Truncated,
-        })?;
-    let header = AsciiHeader::from_bytes(head)
-        .map_err(|source| Error::Format { path: path.into(), source })?;
+    let header = auto_ascii_format::AsciiReader::open(&map)
+        .map_err(|source| Error::Format { path: path.into(), source })?
+        .header()
+        .clone();
     if header.fps_num == 0 || header.fps_den == 0 {
         return Err(Error::Asset("corrupt header: fps_num or fps_den == 0"));
     }
@@ -730,6 +1009,182 @@ mod tests {
         assert_eq!(comp.locate(4.0), Some(Located { clip_idx: 1, local_frame: 0 }));
         assert_eq!(comp.locate(-1.0), None, "before the timeline");
         assert_eq!(comp.locate(6.4), None, "the composition end is exclusive");
+    }
+
+    /// The timeline lives on the frame grid, not in seconds: a 0.3 s slice
+    /// is 0.30000000000000004 s in binary floating point, and asking
+    /// seconds who owns the frame at exactly 0.3 s gives the WRONG clip —
+    /// the first one, at a source frame its own `out` already trimmed away.
+    #[test]
+    fn a_boundary_frame_belongs_to_exactly_one_clip() {
+        let a = Assets::new("boundary");
+        let mut first = a.clip(Fixture::GradientMotion);
+        first.in_secs = 0.1;
+        first.out_secs = Some(0.4); // 9 frames at 30 fps, source 3..11
+        let comp = resolved("boundary", vec![first, a.clip(Fixture::HardCut)]);
+
+        assert_eq!(comp.timeline()[0].len_frames(), 9);
+        assert_eq!(comp.locate_frame(8), Some(Located { clip_idx: 0, local_frame: 11 }));
+        assert_eq!(
+            comp.locate_frame(9),
+            Some(Located { clip_idx: 1, local_frame: 0 }),
+            "the frame at 0.3 s is the SECOND clip's first frame"
+        );
+        // And nothing between them: the spans meet on the frame grid, so
+        // `compose show` has no 1e-16 s gap to print.
+        assert_eq!(comp.timeline()[0].end_frame, comp.timeline()[1].start_frame);
+        assert_eq!(comp.timeline()[0].end_secs, comp.timeline()[1].start_secs);
+    }
+
+    /// The same, swept across every one-decimal trim at 30 fps: whatever
+    /// the seconds round to, every frame has exactly one owner and the
+    /// second clip always gets to show its frame 0.
+    #[test]
+    fn one_decimal_placements_never_lose_a_frame() {
+        let a = Assets::new("sweep");
+        for tenth in 0..10 {
+            let in_secs = f64::from(tenth) / 10.0;
+            let mut first = a.clip(Fixture::GradientMotion);
+            first.in_secs = in_secs;
+            first.out_secs = Some(in_secs + 0.3);
+            let comp = resolved("sweep", vec![first, a.clip(Fixture::HardCut)]);
+
+            let boundary = comp.timeline()[0].end_frame;
+            assert_eq!(boundary, 9, "in {in_secs}: a 0.3 s slice is 9 frames");
+            let last_of_first = comp.locate_frame(boundary - 1).expect("owned");
+            assert_eq!(last_of_first.clip_idx, 0, "in {in_secs}");
+            assert!(
+                f64::from(last_of_first.local_frame) < (in_secs + 0.3) * 30.0,
+                "in {in_secs}: frame {} is past the trim",
+                last_of_first.local_frame
+            );
+            assert_eq!(
+                comp.locate_frame(boundary),
+                Some(Located { clip_idx: 1, local_frame: 0 }),
+                "in {in_secs}: the second clip must show its first frame"
+            );
+            assert!(
+                (0..comp.frame_count()).all(|f| comp.locate_frame(f).is_some()),
+                "in {in_secs}: a sequential composition has no gaps"
+            );
+        }
+    }
+
+    /// Gaps and overlaps come off the frame grid, so clips that abut have
+    /// neither — however the seconds round. Both cases the CLI's own
+    /// float analysis got wrong: a 0.3 s clip placed at 0.3 s reported an
+    /// overlap ending at 0.30000000000000004, and a 0.2 s one placed at
+    /// 0.2 s reported a `GAP 0.20 0.20` of no frames at all.
+    #[test]
+    fn abutting_clips_have_no_phantom_gap_or_overlap() {
+        let a = Assets::new("abut");
+        for (in_secs, out_secs, at) in [(0.7, 1.0, 0.3), (0.1, 0.3, 0.2)] {
+            let mut first = a.clip(Fixture::GradientMotion);
+            first.in_secs = in_secs;
+            first.out_secs = Some(out_secs);
+            let mut second = a.clip(Fixture::HardCut);
+            second.at_secs = Some(at);
+            let comp = resolved("abut", vec![first, second]);
+
+            let label = format!("in {in_secs} out {out_secs} at {at}");
+            assert_eq!(comp.timeline()[0].end_frame, comp.timeline()[1].start_frame, "{label}");
+            assert!(comp.gaps().is_empty(), "{label}: phantom gap {:?}", comp.gaps());
+            assert!(comp.overlaps().is_empty(), "{label}: phantom overlap");
+            assert_eq!(comp.mark_for(0), Some(ClipMark::Clear), "{label}");
+            assert_eq!(comp.mark_for(1), Some(ClipMark::Clear), "{label}");
+        }
+    }
+
+    /// A real gap and a real overlap are reported once, on the frame grid,
+    /// with the verdict per clip that `compose show` prints.
+    #[test]
+    fn gaps_and_overlaps_are_reported_on_the_frame_grid() {
+        let a = Assets::new("marks");
+        // Clip A [0,72); clip B hidden entirely under a window of A;
+        // clip C after a 1 s gap.
+        let mut hidden = a.clip(Fixture::HardCut);
+        hidden.at_secs = Some(1.0);
+        hidden.out_secs = Some(0.5); // [30, 45)
+        let mut covering = a.clip(Fixture::GradientMotion);
+        covering.at_secs = Some(0.5); // [15, 87) — over B for all of it
+        let mut after = a.clip(Fixture::HardCut);
+        after.at_secs = Some(3.9); // 117: a gap from 87
+        let comp =
+            resolved("marks", vec![a.clip(Fixture::GradientMotion), hidden, covering, after]);
+
+        let gaps = comp.gaps();
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert_eq!((gaps[0].start_frame, gaps[0].end_frame), (87, 117));
+        assert!((gaps[0].start_secs - 2.9).abs() < 1e-9);
+        assert_eq!(gaps[0].len_frames(), 30);
+
+        // Pairs, later clip on top, in timeline order: C over A from 15,
+        // then B under A and B under C from 30. D starts after everything.
+        let overlaps = comp.overlaps();
+        assert_eq!(
+            overlaps.iter().map(|o| (o.under, o.over)).collect::<Vec<_>>(),
+            vec![(0, 2), (0, 1), (1, 2)]
+        );
+        assert_eq!((overlaps[0].span.start_frame, overlaps[0].span.end_frame), (15, 72));
+        assert_eq!((overlaps[1].span.start_frame, overlaps[1].span.end_frame), (30, 45));
+
+        assert_eq!(comp.mark_for(0), Some(ClipMark::Partial), "A shows either side");
+        assert_eq!(comp.mark_for(1), Some(ClipMark::Hidden), "B never reaches the screen");
+        assert_eq!(comp.mark_for(2), Some(ClipMark::Clear));
+        assert_eq!(comp.mark_for(3), Some(ClipMark::Clear));
+        assert_eq!(comp.mark_for(4), None, "no such clip");
+        // The hidden clip really never wins a frame.
+        assert!(
+            (0..comp.frame_count()).all(|f| comp.locate_frame(f).map(|l| l.clip_idx) != Some(1)),
+            "a HIDDEN clip must never be located"
+        );
+    }
+
+    /// `frame_at_secs` is the one `--seek` bound check, and it names the
+    /// thing it is talking about.
+    #[test]
+    fn frame_at_secs_is_the_one_seek_bound() {
+        let a = Assets::new("seekbound");
+        let mut asset = Composition::single(a.path(Fixture::GradientMotion));
+        asset.resolve().unwrap();
+        assert_eq!(asset.frame_at_secs(0.0).unwrap(), 0);
+        assert_eq!(asset.frame_at_secs(1.0).unwrap(), 30);
+        assert_eq!(asset.frame_at_secs(2.4 - 1.0 / 30.0).unwrap(), 71);
+        let e = asset.frame_at_secs(2.4).unwrap_err().to_string();
+        assert!(e.contains("past the end of the asset"), "{e}");
+        assert!(asset.frame_at_secs(-1.0).is_err() && asset.frame_at_secs(f64::NAN).is_err());
+
+        let mut second = a.clip(Fixture::HardCut);
+        second.at_secs = Some(4.0);
+        let stitch = resolved("stitch", vec![a.clip(Fixture::GradientMotion), second]);
+        assert_eq!(stitch.frame_at_secs(4.0).unwrap(), 120);
+        let e = stitch.frame_at_secs(99.0).unwrap_err().to_string();
+        assert!(e.contains("past the end of the composition"), "{e}");
+    }
+
+    /// `out` may be the duration the tools PRINT: rounding a 10.2857 s
+    /// asset to 10.29 s must not be rejected by the very number `info`
+    /// shows. Beyond half a frame it is a real mistake, said in the same
+    /// precision.
+    #[test]
+    fn out_accepts_the_duration_the_tools_print() {
+        let a = Assets::new("outslack");
+        let odd = a.0.join("odd.ascii");
+        let mut bytes = build_fixture(Fixture::GradientMotion);
+        bytes[16..18].copy_from_slice(&7u16.to_le_bytes()); // fps_num @16: 72 frames at 7 fps
+        std::fs::write(&odd, bytes).unwrap();
+
+        let mut clip = Clip::new(&odd);
+        clip.out_secs = Some(10.29); // prints as the asset's duration
+        let comp = resolved("slack", vec![clip]);
+        assert_eq!(comp.frame_count(), 72, "clamped to the asset end, not a frame past it");
+
+        let mut past = Clip::new(&odd);
+        past.out_secs = Some(10.5);
+        let mut comp = Composition::from_clips("past", vec![past]);
+        let e = comp.resolve().unwrap_err().to_string();
+        assert!(e.contains("10.50s is past the end"), "{e}");
+        assert!(e.contains("10.29s"), "the message prints what the tools print: {e}");
     }
 
     #[test]

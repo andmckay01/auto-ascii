@@ -9,7 +9,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use auto_ascii::timecode;
+use auto_ascii::{Composition, timecode};
 
 use crate::BoxErr;
 
@@ -27,9 +27,18 @@ impl Home {
         {
             return Ok(Home { root: PathBuf::from(dir) });
         }
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .ok_or("cannot find your home directory (set AUTO_ASCII_HOME)")?;
+        // An EMPTY `HOME` is no home, the same way an empty
+        // `AUTO_ASCII_HOME` is none: `PathBuf::from("").join("auto-ascii")`
+        // is the relative path `auto-ascii`, which would quietly build a
+        // library in whatever directory the agent happened to run in.
+        let home = [
+            std::env::var_os("HOME"),
+            std::env::var_os("USERPROFILE"),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|dir| !dir.is_empty())
+        .ok_or("cannot find your home directory (set AUTO_ASCII_HOME)")?;
         Ok(Home { root: PathBuf::from(home).join("auto-ascii") })
     }
 
@@ -147,9 +156,14 @@ impl Home {
     pub fn resolve_playable(&self, spec: &str) -> Result<Target, BoxErr> {
         let as_path = Path::new(spec);
         if as_path.is_file() {
-            return Ok(match as_path.extension() {
-                Some(ext) if ext == "toml" => Target::Composition(as_path.to_path_buf()),
-                _ => Target::Clip(as_path.to_path_buf()),
+            // The facade decides what a composition file looks like, so
+            // the player, `headless-dump` and this agree — including that
+            // `Demo.TOML` is one, which the file systems this ships to
+            // would hand us either way.
+            return Ok(if Composition::is_toml_path(as_path) {
+                Target::Composition(as_path.to_path_buf())
+            } else {
+                Target::Clip(as_path.to_path_buf())
             });
         }
         // Each folder strips only the extension IT adds, so `demo.toml`
@@ -207,7 +221,7 @@ pub fn sidecar_path(asset: &Path) -> PathBuf {
 /// Only that one extension is stripped, and only as a SUFFIX — a clip
 /// really called `clip.final` keeps its dot, and `demo.toml` never asks
 /// the folder for `demo.toml.toml`.
-fn library_name<'a>(spec: &'a str, ext: &str) -> &'a str {
+pub fn library_name<'a>(spec: &'a str, ext: &str) -> &'a str {
     spec.strip_suffix(&format!(".{ext}")).unwrap_or(spec)
 }
 

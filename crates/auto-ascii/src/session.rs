@@ -10,7 +10,7 @@ use std::path::Path;
 
 use auto_ascii_core::{Cell, ColorDepth, FontTable, Grid};
 
-use crate::composition::{Composition, Located};
+use crate::composition::Composition;
 use crate::deck::{ClipDeck, DeckConfig};
 use crate::error::Error;
 use crate::PaletteChoice;
@@ -92,13 +92,10 @@ pub struct RenderSession {
     /// The clip decks' render state. Declared first so its borrows die
     /// before anything it depends on.
     deck: ClipDeck,
-    /// `None` for a single asset — composition frame IS asset frame, so
-    /// that path keeps the identity mapping it has had since M4 rather than
-    /// a float round trip through seconds.
-    comp: Option<Composition>,
-    fps: f64,
-    aspect: f64,
-    frame_count: u32,
+    /// The timeline. A plain asset is a one-clip composition whose frame
+    /// mapping is the identity (integer, exact) — one path, one source of
+    /// truth for fps, aspect and frame count.
+    comp: Composition,
     /// Frame index of the last successful render (backward-jump detection).
     last_frame: Option<u32>,
     /// The chosen repertoire, kept so the font-table veto can re-resolve it.
@@ -110,9 +107,9 @@ pub struct RenderSession {
 impl std::fmt::Debug for RenderSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RenderSession")
-            .field("fps", &self.fps)
-            .field("aspect", &self.aspect)
-            .field("frame_count", &self.frame_count)
+            .field("fps", &self.comp.fps())
+            .field("aspect", &self.comp.aspect())
+            .field("frame_count", &self.comp.frame_count())
             .field("clips", &self.deck.len())
             .field("last_frame", &self.last_frame)
             .finish_non_exhaustive()
@@ -122,38 +119,19 @@ impl std::fmt::Debug for RenderSession {
 impl RenderSession {
     /// Open an ASCI asset for terminal-free rendering.
     ///
-    /// The file is memory-mapped read-only and validated (header, chunk
-    /// structure); frames are decoded on demand in [`render`](Self::render).
-    /// Defaults: [`PaletteChoice::Auto`] (Unicode blocks — there is no
-    /// terminal to probe) and cell aspect 2.0 (see
+    /// The file is memory-mapped read-only and opened as a container
+    /// (header, TRLR, chunk roll, frame index), so a corrupt or truncated
+    /// asset fails HERE rather than at the first frame; frames are decoded
+    /// on demand in [`render`](Self::render). Defaults:
+    /// [`PaletteChoice::Auto`] (Unicode blocks — there is no terminal to
+    /// probe) and cell aspect 2.0 (see
     /// [`set_cell_aspect`](Self::set_cell_aspect)).
+    ///
+    /// One asset is a one-clip composition internally, so this and
+    /// [`from_composition`](Self::from_composition) are the same code path
+    /// — the clip's frames map to composition frames one for one.
     pub fn open(path: impl AsRef<Path>) -> Result<RenderSession, Error> {
-        let path = path.as_ref();
-        let header = crate::composition::read_header(path)?;
-        let fps = f64::from(header.fps_num) / f64::from(header.fps_den);
-        // Degenerate (zero) header aspect fields fall back to 16:9 — the
-        // same normalization pipeline::Player::new applies for the viewport,
-        // so aspect() always reports the ratio render() letterboxes to.
-        let aspect = if header.aspect_num == 0 || header.aspect_den == 0 {
-            16.0 / 9.0
-        } else {
-            f64::from(header.aspect_num) / f64::from(header.aspect_den)
-        };
-        let mut session = RenderSession {
-            deck: ClipDeck::new(vec![path.to_path_buf()], headless_deck_config()),
-            comp: None,
-            fps,
-            aspect,
-            frame_count: header.frame_count,
-            last_frame: None,
-            palette: PaletteChoice::Auto,
-            font_table: None,
-        };
-        // Open the one clip now: a bad container, a missing luma plane or a
-        // zero-frame asset is an error from `open`, not a surprise at the
-        // first render (the M4 contract).
-        session.deck.activate(0)?;
-        Ok(session)
+        RenderSession::from_composition(Composition::single(path.as_ref()))
     }
 
     /// Open a composition TOML for terminal-free rendering (PLAN-M6-M8 §3).
@@ -190,10 +168,7 @@ impl RenderSession {
         let paths = comp.clips().iter().map(|c| c.path.clone()).collect();
         Ok(RenderSession {
             deck: ClipDeck::new(paths, headless_deck_config()),
-            fps: comp.fps(),
-            aspect: comp.aspect(),
-            frame_count: comp.frame_count(),
-            comp: Some(comp),
+            comp,
             last_frame: None,
             palette: PaletteChoice::Auto,
             font_table: None,
@@ -227,43 +202,39 @@ impl RenderSession {
         cols: u16,
         rows: u16,
     ) -> Result<&Grid<Cell>, Error> {
-        if frame_idx >= self.frame_count {
+        if frame_idx >= self.comp.frame_count() {
             return Err(Error::Config(format!(
                 "frame index {frame_idx} out of range (asset has {} frames)",
-                self.frame_count
+                self.comp.frame_count()
             )));
         }
-        // A single asset maps frame to frame; a composition asks its
-        // timeline which clip is on top and which of ITS frames that is.
-        let located = match &self.comp {
-            None => Some(Located { clip_idx: 0, local_frame: frame_idx }),
-            Some(comp) => comp.locate_frame(frame_idx),
-        };
+        // The timeline says which clip is on top and which of ITS frames
+        // that is — for one asset, frame f, exactly.
+        let located = self.comp.locate_frame(frame_idx);
         let backward = self.last_frame.is_some_and(|last| frame_idx < last);
-        self.last_frame = Some(frame_idx);
         self.deck.set_size(cols, rows);
-        let Some(loc) = located else {
-            return Ok(self.deck.gap_grid()); // a gap is black (PLAN-M6-M8 §3)
-        };
-        // activate() reflows on a size change and resets on a clip switch.
-        self.deck.activate(loc.clip_idx)?;
         if backward {
             self.deck.reset_active(); // backward jump: no ghosting
         }
-        self.deck.render_grid(loc.local_frame)?;
-        Ok(self.deck.grid().expect("the clip just rendered is active"))
+        // render_at reflows on a size change, switches clips (which resets
+        // the one it fronts) and paints a gap black.
+        self.deck.render_at(located)?;
+        // Only now: a failed render must not move the cursor a later
+        // backward-jump test reads.
+        self.last_frame = Some(frame_idx);
+        Ok(self.deck.showing())
     }
 
     /// Frames per second the asset was authored at — drive your clock with
     /// this (frame to show at time `t` is `(t * fps()) as u32`).
     pub fn fps(&self) -> f64 {
-        self.fps
+        self.comp.fps()
     }
 
     /// Total frames in the asset — or on the composition's timeline at
     /// [`fps`](RenderSession::fps) (always > 0).
     pub fn frame_count(&self) -> u32 {
-        self.frame_count
+        self.comp.frame_count()
     }
 
     /// The asset's intended picture aspect ratio, width / height, from the
@@ -273,7 +244,7 @@ impl RenderSession {
     /// tracks the asset's aspect, not a hard-coded 16:9); it is exposed for
     /// embedders sizing their own viewport.
     pub fn aspect(&self) -> f64 {
-        self.aspect
+        self.comp.aspect()
     }
 
     /// Set the glyph repertoire for subsequent renders. [`PaletteChoice::Auto`]

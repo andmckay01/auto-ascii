@@ -793,13 +793,23 @@ pub const SCHEMA_VERSION: i64 = 1;    // the only `schema` this build reads
 pub struct Clip { pub name: String, pub path: PathBuf, pub in_secs: f64,
                   pub out_secs: Option<f64>, pub at_secs: Option<f64> }
     // as written in the file; `Clip::new(path)` = untrimmed, sequential
-pub struct ClipSpan { pub start_secs, end_secs, in_secs, out_secs: f64,
+pub struct ClipSpan { pub start_frame, end_frame: u32,
+                      pub start_secs, end_secs, in_secs, out_secs: f64,
                       pub fps_num, fps_den: u16, pub frame_count: u32,
                       pub base_w, base_h, aspect_num, aspect_den: u16 }
-    // + fps() / len_secs() / source_secs() / planes() -> &[u8] / contains(t)
+    // + fps() / len_frames() / len_secs() / source_secs() / planes()
+    // -> &[u8] / contains_frame(u32)
     // one per clip, parallel to clips(): the resolved `[start, end)` table
-    // `compose show` prints and `export` validates
+    // `compose show` prints and `export` validates. The timeline is FRAMES
+    // at the composition rate and the seconds are derived from them —
+    // seconds cannot express a boundary (a 0.3 s slice is
+    // 0.30000000000000004), which used to hand the frame at exactly 0.3 s
+    // to the wrong clip at an already-trimmed source frame
 pub struct Located { pub clip_idx: usize, pub local_frame: u32 }
+pub struct Span { pub start_frame, end_frame: u32,
+                  pub start_secs, end_secs: f64 }   // + len_frames()
+pub struct Overlap { pub span: Span, pub under: usize, pub over: usize }
+pub enum ClipMark { Clear, Partial, Hidden }   // `compose show`'s verdict
 pub struct Composition;
 impl Composition {
   pub fn single(path: impl Into<PathBuf>) -> Composition;     // one clip, no I/O
@@ -817,10 +827,14 @@ impl Composition {
   pub fn default_library_dir() -> Option<PathBuf>;
       // $AUTO_ASCII_HOME/library, else ~/auto-ascii/library, only if it exists
   pub fn resolve(&mut self) -> Result<(), Error>;
-      // THE I/O step: reads each clip's 64-byte header through a mapping
-      // (fps/frames/base res/aspect/plane ids), validates 0 <= in < out <=
-      // asset duration and rejects an empty composition, a zero-frame or
-      // luma-less clip — errors name the clip index. Idempotent; everything
+      // THE I/O step: OPENS each clip as a container through a mapping
+      // (`AsciiReader::open` — header, TRLR anchor, chunk roll, FIDX; a
+      // truncated asset must fail here, not once the session is up), takes
+      // fps/frames/base res/aspect/plane ids from its header, validates
+      // 0 <= in < out <= asset duration (with half a frame of slack at the
+      // end, then clamped — the duration the tools PRINT must be usable as
+      // `out`) and rejects an empty composition, a zero-frame or luma-less
+      // clip — every error names the clip index. Idempotent; everything
       // below is defined only after it succeeds (unresolved reports zeros)
   pub fn is_resolved(&self) -> bool;
   pub fn name(&self) -> &str;              pub fn clips(&self) -> &[Clip];
@@ -829,14 +843,34 @@ impl Composition {
   pub fn fps_ratio(&self) -> (u16, u16);   // that clip's exact header rational
   pub fn duration_secs(&self) -> f64;      // the latest clip end
   pub fn frame_count(&self) -> u32;        // duration × fps, snapped
-  pub fn locate(&self, t_secs: f64) -> Option<Located>;
+  pub fn locate(&self, t_secs: f64) -> Option<Located>;   // = locate_frame(t·fps)
   pub fn locate_frame(&self, frame_idx: u32) -> Option<Located>;
       // THE time→frame function (§3 semantics): file order, `at` overrides,
       // ends EXCLUSIVE, overlap → the LATER-listed clip, gap → None (black,
-      // not an error). Float frame positions are snapped to the exact
-      // integer within 1e-6, so a single asset maps frame f to frame f
+      // not an error). Pure integer over the frame grid; float positions
+      // are snapped to the exact integer within 1e-6 frames (absolute), so
+      // a single asset maps frame f to frame f and a boundary frame has
+      // exactly one owner
+  pub fn is_toml_path(path: &Path) -> bool;   // `.toml`, case-insensitive:
+      // the one rule for "clip or composition?" (player bin, examples, CLI)
   pub fn frame_after(&self, base_frame: u64, elapsed_secs: f64) -> u64;
       // the run loop's one pacing expression, unchanged from M5
+  pub fn frame_at_secs(&self, secs: f64) -> Result<u32, Error>;
+      // THE `--seek` bound check (PlayerBuilder, --sim, --bench-seek): one
+      // copy, and the past-the-end message names the composition or the
+      // asset per is_stitch()
+  pub fn is_stitch(&self) -> bool;   // a real stitch, vs one asset wrapped
+      // by single() — what messages call it, and whether the progress row
+      // prints ` c/N `
+  pub fn gaps(&self) -> Vec<Span>;               // stretches no clip covers
+  pub fn overlaps(&self) -> Vec<Overlap>;        // every sharing PAIR,
+      // later-listed clip `over`, timeline order
+  pub fn mark_for(&self, clip_idx: usize) -> Option<ClipMark>;
+      // Clear / Partial / Hidden (whole span covered by later clips)
+      // All three are computed on the FRAME grid, so abutting clips can
+      // never report a sliver gap or a one-ULP overlap — which is what a
+      // float analysis of the same timeline does (`GAP 0.20 0.20`,
+      // `end_secs: 0.30000000000000004`). `compose show` is a lookup.
 }
 
 // compose.rs — M8 export (always available; no TOML needed)
@@ -850,7 +884,10 @@ pub mod compose {
       // ATOMIC (as the factory's build pass is): frames go to `<out>.part`,
       // renamed over `out` only once FIDX + TRLR + the patched header are
       // down; any failure removes the part and leaves an existing `out`
-      // untouched.
+      // untouched. One mapping per clip, but decoders (plane buffers +
+      // FIDX) are opened on demand and capped LRU at MAX_LIVE_SOURCES (4),
+      // so memory tracks live clips, not clip count; the NORM pre-pass
+      // copies shot tables and drops its readers.
       // Flatten to one asset: every clip must share ONE base resolution and
       // ONE plane registry (the error names the offending clip and suggests
       // `import --res`). Planes are copied verbatim from the top clip
@@ -864,7 +901,9 @@ pub mod compose {
 pub struct RenderSession;   // owns the mmap + decode state + hysteresis
 impl RenderSession {
   pub fn open(path: impl AsRef<Path>) -> Result<RenderSession, Error>;
-      // mmap read-only + validate; defaults: Unicode palette, truecolor
+      // = from_composition(Composition::single(path)): ONE path, and
+      // resolving opens the container (so a truncated asset fails here,
+      // not at the first frame). Defaults: Unicode palette, truecolor
       // cells (embedder owns quantization), cell aspect 2.0.
       // Internally a one-clip `deck::ClipDeck` (M8) holding
       // Player<'static> over the owned map (encapsulated self-reference;
@@ -958,8 +997,12 @@ Error>` (M5: the bin's `--sim` path applies the same repertoire veto as
 run(); embedders use the wrapped forms above) — CLI/--sim plumbing — plus
 `auto_ascii::deck` (M8): `ClipDeck::new(Vec<PathBuf>, DeckConfig)` and the
 render/overlay forwarders `activate`/`render_grid`/`render_present`/
-`present_gap`/`gap_grid`/`drain_events`/`set_*`/`stage`/`layer_mask`, plus
-`MAX_LIVE_CLIPS` (8) and `live_clips()`. It is the ONE clip-switch
+`drain_events`/`set_*`/`stage`/`layer_mask`, plus `MAX_LIVE_CLIPS` (8) and
+`live_clips()`. The render surface is exactly three calls —
+`render_at(Option<Located>)`, `present_at(backend, Option<Located>)` and
+`showing()` — so the locate→activate→render dispatch exists ONCE rather
+than at each of the four call sites; `stage()` carries evicted clips' time
+and times gap presents, so a composition's budget still adds up. It is the ONE clip-switch
 implementation — `RenderSession`, the terminal `Player` and `--sim` all
 drive it — and it never hands out the `Player<'static>` it holds, which is
 what keeps the fake `'static` inside the module. At most `MAX_LIVE_CLIPS`
@@ -1266,26 +1309,54 @@ facade surface + this hidden module.)
   **Output contract:** humans get aligned text on stdout (the factory's
   `inspect` column style: two spaces, a 14-wide label); `--json` puts
   EXACTLY one JSON value there and nothing else, and every error becomes
-  `{"error": "..."}` on stderr with exit code 1. `play` is the one command
+  `{"error": "..."}` on stderr with exit code 1 — INCLUDING clap's own
+  usage errors (M8 review), which the binary takes from `try_parse` and
+  re-renders through that one path, because an agent that typo'd a flag can
+  read an object and cannot read a usage block. `--json` is looked for in
+  argv rather than in the parsed `Cli`, which a usage error means there is
+  none of. `--help`/`--version` stay OUTPUT (clap's own stream, exit 0) and
+  a usage error WITHOUT `--json` keeps clap's rendering and clap's exit
+  code 2, so "you typed it wrong" stays distinguishable from "it ran and
+  failed". `play` is the one command
   that REFUSES `--json` (`{"error": "play is interactive; run it without
   --json"}`, exit 1, checked before the home folder is even resolved): the
   player owns stdout for its whole run, so no value printed around it could
   be the only one there. Everything chatty —
   ffmpeg progress, the factory's `input:`/`pass 1/2:`/`wrote` lines —
   goes to stderr in BOTH modes, which is what makes that keepable.
+  **Every byte of output goes through one `emit`/`outln!` pair** (M8
+  review) that writes to a locked handle and treats `BrokenPipe` as the
+  end of the job: `auto-ascii list | head -1` exits 0 quietly where
+  `println!` would have panicked with exit 101 (the same rule as
+  `examples/headless-dump.rs`, M5 fix 7).
   **The sidecar** (`library/<name>.json`) is the one JSON shape: `import`
-  prints exactly what it wrote, `info` prints one, `list` prints an array
-  of them —
+  and `cut` print exactly what they wrote, `info` prints one, `list` prints
+  an array of them —
   `{"name", "source": {"path","sha256","bytes"} | null,
   "asset": {"path","bytes","frames","fps","duration_secs","base_w",
   "base_h"} | null, "created_unix": u64|null, "created": RFC-3339-UTC|null,
   "error": String (ABSENT when the clip read cleanly)}`.
+  **Provenance is retired only once the new bytes are in place** (M8
+  review): both writers validate, build (or export), and only THEN delete
+  the old sidecar and write the new one — so a rebuild that fails leaves
+  the clip it did not replace fully described, and a failure between the
+  rename and the sidecar leaves a clip visibly unrecorded (which `list`
+  says) rather than one described by bytes that were never written. The
+  four steps `import` and `cut` share — name, refuse-existing, retire +
+  record, print — are one set of functions in `main.rs`; only what they put
+  in the library differs.
   The `asset` block is re-read from the ASCI header (mmap + `AsciiReader`)
   on every `list`/`info`, so it cannot go stale; only provenance comes from
   the file, and an asset with no sidecar still lists, with the three
   nullable fields `null`. Sidecars are parsed through a provenance-only
   struct (source + created fields, all optional, unknown keys ignored), so
-  a hand-written `{"source": {...}}` loads. `list` NEVER aborts on one bad
+  a hand-written `{"source": {...}}` loads, and INSIDE `source` only a
+  video's `path` is required (M8 review): `"kind": "cut"` makes it a cut
+  with `from`/`in`/`out` optional, anything else is a video source with
+  `sha256`/`bytes` optional, and what is missing reads back as `null` or
+  prints as `(unknown)` rather than sinking the whole sidecar. A `source`
+  that is neither — no `path`, no `kind` — is the malformed case, and the
+  message names the file it is in. `list` NEVER aborts on one bad
   entry — a truncated file, a directory, a non-UTF-8 name or an unparseable
   sidecar becomes an entry carrying `error` (and `?` columns in the human
   table), exit 0 — while `info`/`play`, which name ONE clip, stay strict. `home --json` prints
@@ -1299,11 +1370,13 @@ facade surface + this hidden module.)
   with its colons spelled `h`/`m` and a trailing `s`, so a sub-second
   distinction collides by name and wants `--name`). `export` is itself
   atomic (note 29(i)), so it points straight at `library/` and a failed
-  `--force` leaves the clip already there intact; `--force` drops the old
-  sidecar in `import`'s order — after `Composition::resolve` has accepted
-  the slice, before the new bytes land — so a rejected `--out` leaves the
-  old clip whole, provenance included, and only a failure PAST validation
-  leaves a clip visibly unrecorded. Its sidecar is the same object with a
+  `--force` leaves the clip already there intact; the slice is validated
+  (`Composition::resolve`) BEFORE anything on disk moves and the old
+  sidecar goes only once the new bytes have landed, so a rejected `--out`
+  leaves the old clip whole, provenance included. Its encode knobs are the
+  factory's `params.toml` `[build]` pair read through `effective_params`,
+  shared with `compose export`, so a slice is the kind of asset `import`
+  writes rather than a third profile. Its sidecar is the same object with a
   different `source`: `{"kind": "cut", "from": <library name or path>,
   "in": secs, "out": secs}`. The `Source` enum is UNTAGGED — a
   video source carries no `kind` and never did, so every sidecar `import`
@@ -1317,19 +1390,22 @@ facade surface + this hidden module.)
   `[[clip]]` table whose `asset` is the LIBRARY NAME when the clip lives
   in `library/` and its absolute path otherwise, with the timestamps
   written back VERBATIM (the schema takes a string anywhere it takes
-  seconds) and then re-parsed through `Composition::from_toml_file`, so
-  `add` cannot exit 0 on a file nothing can load — the error says the clip
-  WAS appended, since the breakage may be a hand-written table above it;
+  seconds). The composition the file WOULD become is parsed and RESOLVED
+  first (M8 review), so a table above that no longer loads, a trim the
+  timeline rejects or a `<clip>` that is not an ASCI asset fails with the
+  file byte for byte as it was; the append itself is one `O_APPEND` write,
+  so two agents adding at once both land where a read-modify-write would
+  have lost one;
   `show <name>` prints the resolved timeline; `play <name>` runs the
   player on it and refuses `--json` for the same reason `play` does;
   `export <name> [-o path] [--force]` flattens it to
   `exports/<name>.ascii`. **A `<name>` resolves** like a `<clip>` does —
   an existing path (a `.toml` anywhere), else `compositions/<name>.toml`,
-  else the kebab form — and in BOTH resolvers the extension the folder
-  itself adds is stripped from the argument first (`demo.toml` and `demo`
-  are one composition, `clip.ascii` and `clip` one clip; never
-  `demo.toml.toml`), which is also the name the "does not exist" error
-  suggests. `play` resolves EITHER kind, clips first (so every M7 spelling
+  else the kebab form — and everywhere a name meets its folder the
+  extension THAT folder adds is stripped from the argument first (both
+  resolvers and `compose new`: `demo.toml` and `demo` are one composition,
+  `clip.ascii` and `clip` one clip; never `demo.toml.toml`), which is also
+  the name the "does not exist" error suggests. `play` resolves EITHER kind, clips first (so every M7 spelling
   still means what it meant), with a `.toml` path always a composition.
   **`compose show --json`:** `{"name", "fps", "duration_secs",
   "frame_count", "clips": [{"index","asset","path","in_secs","out_secs",
@@ -1338,13 +1414,16 @@ facade surface + this hidden module.)
   [{"start_secs","end_secs","under","over"}]}` — `at_secs` is the `at` AS
   WRITTEN (null when the clip simply follows the one before it), while
   `in_secs`/`out_secs` are RESOLVED (an absent `out` reports the asset's
-  own end); `gaps` is the sweep over `[0, duration)` that nothing covers
-  and `overlaps` is the pairwise intersections with `over` the
-  later-listed clip that plays there. The human table is those rows in
+  own end); `gaps` and `overlaps` are `Composition::gaps()` /
+  `Composition::overlaps()` verbatim (the FRAME GRID, so abutting clips
+  cannot report a 1e-16 s sliver either way), with `over` the later-listed
+  clip that plays there. The human table is those rows in
   TIMELINE order with `GAP` rows interleaved and BOTH sides of every
-  overlap marked: `OVERLAP #k` on the covering clip, `UNDER #k` on the
-  covered one, and `HIDDEN #k` when the cover spans it whole — a clip not
-  one frame of which ever plays is exactly what start/end columns hide.
+  overlap marked: `OVERLAP #k` on the covering clip, and on the covered
+  one `UNDER #k` or `HIDDEN #k` — `Composition::mark_for` decides which by
+  summing covered FRAMES, so a clip hidden by two later clips between them
+  is `HIDDEN` even though neither covers it alone. A clip not one frame of
+  which ever plays is exactly what start/end columns hide.
   **`compose export --json`** is the `ExportReport` plus where it landed:
   `{"path","frames","fps","bytes","shots","cuts"}`.
 
@@ -1546,7 +1625,11 @@ facade surface + this hidden module.)
     interactive default (`--repaint full`) is unchanged;
     (g) eval cache under `runs/cache/` (gitignored via `*.ascii`), key
     `(input sha256, build-params sha256)` with a hand-rolled tested SHA-256
-    (`sha256.rs`) — no new hashing dependency; PNGs for the contact sheet
+    (`sha256.rs`; INCREMENTAL as of the M8 review — a `Sha256` of eight
+    words plus a <64-byte tail, full blocks compressed straight out of the
+    caller's slice, and `sha256_file` streaming 64 KiB at a time, so
+    hashing a 4 GB source costs 64 KiB rather than twice the file) — no new
+    hashing dependency; PNGs for the contact sheet
     come from the ffmpeg subprocess (rawvideo→png and
     scale/fps/select→png), so no image crate either; `toml` is the one new
     workspace dependency.
@@ -2165,10 +2248,11 @@ facade surface + this hidden module.)
     clip that cannot be read at all keeps its row too, with `asset` null
     and an `error` string; the listing's job is to show the folder, and one
     bad file hiding the other twenty is the worse failure. `--force`
-    deletes the old sidecar BEFORE the rebuild starts, so a build that
-    fails leaves a clip visibly unrecorded rather than one described by
-    bytes that were never written, and any failure after the asset is
-    renamed into place names the orphaned path in its message.
+    deleted the old sidecar BEFORE the rebuild started — REVERSED at M8
+    review (note 29(j)): the delete now follows the successful build, so
+    the clip a failed rebuild did not replace keeps its provenance, while
+    a failure between the rename and the sidecar still leaves the clip
+    visibly unrecorded and names the orphaned path in its message.
     (e) **Kebab-casing is applied to `--name`, not just to the default —
     on the way IN only.** It is the documented naming rule (agent guide
     rule 1) and it doubles as the containment check: a kebab name cannot
@@ -2304,14 +2388,28 @@ facade surface + this hidden module.)
     rather than the environment sniff `default_library_dir` does, because
     the CLI always knows which home it is in. `compose show` adds the only
     two things a timeline has that a clip list does not, both computed off
-    `Composition::timeline()`: gaps (a sweep over the spans sorted by
-    START, so an out-of-order `at` cannot fake one) and overlaps (pairwise
-    intersections). The sidecar's `source` became an untagged enum so a
+    the facade: `gaps()`, `overlaps()` and `mark_for()` on the frame
+    grid, so a clip 0.3 s long (0.30000000000000004 in binary) abutting one
+    placed at 0.3 shows neither a gap nor an overlap — the CLI's own float
+    versions were deleted when that surface landed. The sidecar's `source` became an untagged enum so a
     cut's provenance shares the shape without invalidating one sidecar
     `import` had already written, and `play` now takes either kind of
     argument. `docs/AGENT-GUIDE.md` grew to 79 lines for the new commands
     and the two-clip-with-a-gap example; its pinned cap moved 60 → 80.
-    **Tests:** eight cases in `crates/auto-ascii-cli/tests/cli.rs`, over
+    **Review fixes (same round).** clap's usage errors go through
+    `try_parse` and the one `{"error": ...}` path (Binaries above);
+    provenance is retired only after the build/export succeeds, reversing
+    note 28(d) and keeping a failed `--force` non-destructive; `play`
+    checks the HEADER only, so a clip with a truncated sidecar still plays
+    while `info`, which is about the sidecar, still refuses; an EMPTY
+    `HOME`/`USERPROFILE` is no home rather than a relative `auto-ascii/` in
+    the working directory; the `.toml` extension test ignores ASCII case
+    (`Demo.TOML` is a composition on the file systems this ships to); the
+    export knobs come from `auto_ascii_factory::effective_params` instead
+    of a third hard-coded 60/15; and the four steps `import` and `cut`
+    share are one set of functions rather than two copies.
+    **Tests:** seventeen cases added to `crates/auto-ascii-cli/tests/cli.rs`
+    (31 in the suite), over
     `auto_ascii_eval` fixture clips written straight into `library/` with
     no sidecars (no ffmpeg anywhere in the M8 half) — `cut` writes frames =
     round((out−in)·fps) with the cut provenance and no `.part` left behind;
@@ -2324,4 +2422,62 @@ facade surface + this hidden module.)
     folder resolves and exports; and every error path — unknown clip,
     missing composition, `new` on an existing name, `cut` with `out <= in`,
     a clipless `show` — is one `{"error": ...}` on stderr with empty stdout
-    and exit 1.
+    and exit 1. The review round added: the four usage-error kinds as JSON
+    objects (with `--help`/`--version` still exit 0) and clap's own text at
+    exit 2 without `--json`; a failed `--force` rebuild keeping its
+    provenance and a successful one replacing it; `play` over a truncated
+    sidecar; an empty `HOME`; an uppercase `.TOML` path resolving as a
+    composition; and a unit test tying the export knobs to the factory's
+    params.
+    (j) **Code-review fixes.** (1) The timeline is INTEGER frames at the
+    composition rate — `ClipSpan { start_frame, end_frame }`, `locate_frame`
+    pure integer, `locate(t)` = `locate_frame(t·fps)`, seconds derived from
+    the frames. Seconds could not express a boundary: a 0.3 s slice ends at
+    0.30000000000000004, so the frame at exactly 0.3 s went to the FIRST
+    clip at a source frame its own `out` had trimmed away, and the second
+    clip never showed its frame 0 (swept over every one-decimal placement
+    at 30 fps now). Derived seconds also kill the 1e-16 s "gaps" `compose
+    show` would otherwise print between abutting clips. (2) `out` gets half
+    a frame of slack and is then clamped, so the duration the tools PRINT
+    (`4.17s` for 100 frames at 24 fps) is a usable `out` instead of a
+    self-contradicting rejection; past that the message speaks the same
+    `{:.2}s`. (3) `resolve` runs `AsciiReader::open` per clip, not a header
+    parse, so `PlayerBuilder::build` keeps its documented promise to reject
+    a corrupt asset before the terminal is touched (truncated-asset test);
+    its unplayable-asset messages now name the clip index like every other
+    resolve error. (4) `export` opens clip decoders lazily, LRU-capped at
+    `MAX_LIVE_SOURCES` (4), and the NORM pre-pass keeps shot tables rather
+    than readers — memory tracks live clips, not clip count. (5)
+    `RenderSession::render` records the frame cursor only after a
+    successful render, so a failed frame cannot corrupt backward-jump
+    detection. (6) `ClipDeck::stage()` carries evicted players' time and
+    times gap presents; the dispatch collapsed into `render_at`/
+    `present_at`/`showing` (four pasted copies gone, `activate` private,
+    `clip_frame_count`/`active` deleted). (7) The progress row prints
+    through `timecode::format_mmss` instead of its own closure, and
+    `Composition::is_toml_path` is the one "clip or composition?" rule.
+    (k) **Addenda to the review batch.** (1) `Composition::gaps()`,
+    `overlaps()` and `mark_for(clip_idx)` expose the timeline analysis
+    `compose show` was doing in floats: gaps as `Span`s, overlaps as PAIRS
+    (`under`/`over`, later-listed on top, so three-deep coverage is three
+    facts rather than a special case) and a per-clip `ClipMark`
+    (Clear/Partial/Hidden, Hidden = every frame covered). All on the frame
+    grid, so abutting clips report neither a sliver gap nor a one-ULP
+    overlap — the two cases the float version got wrong. (2) A paused run
+    loop no longer re-composes and re-presents the frozen frame every tick:
+    `RepaintGate` paints only when something changed (key, seek, resize,
+    overlay edge including a timeout) and the loop idles otherwise, which
+    is most of a core and tens of MB/s of escape stream saved on a picture
+    that is not moving. (3) Space freezes on the frame last PRESENTED
+    (`freeze_target`), not on where the clock has reached — at `--fps-cap
+    1` on a 30 fps asset those were ~30 frames apart, so the picture jumped
+    forward a second at the moment it was asked to stop. (4) `HintState`
+    reads the PIN before the start-up window: pinned → unpin, start-up
+    freebie → dismiss, anything else (including an overlay's ride-along) →
+    pin. Under the old "toggle against what is on screen" rule a pause held
+    the progress row up forever, so `?` could never pin the legend and
+    would silently unpin one that was. (5) `RenderSession::open` is
+    `from_composition(Composition::single(path))` — no second mapping path,
+    no cached fps/aspect/frame_count, one 16:9 degenerate-aspect fallback
+    (in `resolve`); single-asset output is unchanged (goldens, parity and
+    the render-session suite unblessed).

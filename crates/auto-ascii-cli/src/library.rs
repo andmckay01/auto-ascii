@@ -8,10 +8,13 @@
 //! sidecar is still a clip, so `source`/`created_unix`/`created` are
 //! nullable and that case is `null`, never a missing key.
 //!
-//! Reads are deliberately forgiving in two directions. Sidecars are parsed
-//! through [`Provenance`], which wants nothing but the fields it uses, so a
-//! hand-written `{"source": {...}}` loads. And [`list`] never aborts on one
-//! bad entry: a truncated file, a directory, a name that is not UTF-8 or an
+//! Reads are deliberately forgiving in three directions. Sidecars are
+//! parsed through [`Provenance`], which wants nothing but the fields it
+//! uses, so a hand-written `{"source": {...}}` loads. Inside `source`
+//! only a video's `path` is required — `{"source": {"path": "/a.mp4"}}`
+//! describes a clip partially rather than failing, and what is missing
+//! reads back as `null`/`(unknown)`. And [`list`] never aborts on one bad
+//! entry: a truncated file, a directory, a name that is not UTF-8 or an
 //! unparseable sidecar becomes an entry carrying an `error` string, and the
 //! rest of the library still lists. `info` and `play`, which name ONE clip,
 //! stay strict — there the failure is the answer.
@@ -46,23 +49,30 @@ pub struct Sidecar {
     pub error: Option<String>,
 }
 
+/// What a reader prints where a sidecar said nothing.
+pub const UNKNOWN: &str = "(unknown)";
+
 /// Where a clip came from: the video `import` ingested, or the slice
 /// `cut` took out of another clip (PLAN-M6-M8 §3).
 ///
-/// Untagged, so every sidecar `import` has ever written still loads
-/// unchanged — a video source carries no `kind` and never did; `kind` is
-/// what an agent reads to tell the two apart, and only a cut has one.
+/// `kind` is what tells the two apart, and only a cut carries one — a
+/// video source has none and never did, so every sidecar `import` has
+/// ever written still loads. Everything except a video's `path` is
+/// OPTIONAL on the way in: a sidecar an agent wrote by hand, or one a
+/// future version trimmed, describes a clip PARTIALLY rather than not at
+/// all, and the missing fields read back as `null` (JSON) or
+/// `(unknown)` (the human tables).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(try_from = "RawSource", untagged)]
 pub enum Source {
     /// `import`: the source video.
     Video {
         /// Absolute path at import time (the file may since have moved).
         path: String,
         /// SHA-256 of the source bytes — the honest "is this the same video".
-        sha256: String,
+        sha256: Option<String>,
         /// Source file size in bytes.
-        bytes: u64,
+        bytes: Option<u64>,
     },
     /// `cut`: the slice, and the clip it came out of.
     Cut {
@@ -70,20 +80,68 @@ pub enum Source {
         kind: String,
         /// The clip this is a slice of: its library name, or its path when
         /// it lives outside `library/` (see [`clip_ref`]).
-        from: String,
+        from: Option<String>,
         /// Slice start inside that clip, seconds.
         #[serde(rename = "in")]
-        in_secs: f64,
+        in_secs: Option<f64>,
         /// Slice end inside that clip, seconds (exclusive).
         #[serde(rename = "out")]
-        out_secs: f64,
+        out_secs: Option<f64>,
     },
+}
+
+/// A `source` object as it comes off disk: every key optional (serde
+/// treats an absent `Option` field as `None`), unknown keys ignored.
+/// [`Source`] is the same object with the rules applied.
+#[derive(Deserialize)]
+struct RawSource {
+    kind: Option<String>,
+    path: Option<String>,
+    sha256: Option<String>,
+    bytes: Option<u64>,
+    from: Option<String>,
+    #[serde(rename = "in")]
+    in_secs: Option<f64>,
+    #[serde(rename = "out")]
+    out_secs: Option<f64>,
+}
+
+impl TryFrom<RawSource> for Source {
+    type Error = String;
+
+    /// The one rule: `"kind": "cut"` makes it a cut, anything else is a
+    /// video source and needs a `path` to be about anything at all.
+    fn try_from(raw: RawSource) -> Result<Source, String> {
+        if raw.kind.as_deref() == Some("cut") {
+            return Ok(Source::Cut {
+                kind: "cut".to_string(),
+                from: raw.from,
+                in_secs: raw.in_secs,
+                out_secs: raw.out_secs,
+            });
+        }
+        match raw.path {
+            Some(path) => Ok(Source::Video { path, sha256: raw.sha256, bytes: raw.bytes }),
+            None => Err(format!(
+                "source needs a \"path\" (a video) or \"kind\": \"cut\"{}",
+                match raw.kind {
+                    Some(kind) => format!(" — this one says \"kind\": {kind:?}"),
+                    None => String::new(),
+                }
+            )),
+        }
+    }
 }
 
 impl Source {
     /// A cut's provenance, with the `kind` discriminator set in one place.
     pub fn cut(from: String, in_secs: f64, out_secs: f64) -> Source {
-        Source::Cut { kind: "cut".to_string(), from, in_secs, out_secs }
+        Source::Cut {
+            kind: "cut".to_string(),
+            from: Some(from),
+            in_secs: Some(in_secs),
+            out_secs: Some(out_secs),
+        }
     }
 
     /// The one line `list` puts in its last column.
@@ -91,7 +149,14 @@ impl Source {
         match self {
             Source::Video { path, .. } => path.clone(),
             Source::Cut { from, in_secs, out_secs, .. } => {
-                format!("cut of {from} [{in_secs:.2}s, {out_secs:.2}s)")
+                let from = from.as_deref().unwrap_or(UNKNOWN);
+                match (in_secs, out_secs) {
+                    (Some(start), Some(end)) => {
+                        format!("cut of {from} [{start:.2}s, {end:.2}s)")
+                    }
+                    // A cut that forgot its own slice is still a cut.
+                    _ => format!("cut of {from} (slice {UNKNOWN})"),
+                }
             }
         }
     }
