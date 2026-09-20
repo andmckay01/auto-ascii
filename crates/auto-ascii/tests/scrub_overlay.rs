@@ -33,15 +33,14 @@ fn grid_row(p: &Player<'_>, row: u16) -> String {
 }
 
 // The key-hints row exactly as PLAN-M6-M8 §1 specifies it, at the widths the
-// milestone calls out plus the 32-column floor: the full list down to the
-// 64-column threshold, then items leaving in drop order — `[ ] adjust`, then
-// `d dial`, then `<- -> 5s` — while `? keys` survives all of them, because
-// how to summon the legend back is what a cramped screen must still say.
-// Written out in full rather than assembled, so a wording change has to be
-// deliberate.
+// milestone calls out plus the 32-column floor: the full list at 80, then
+// items leaving in drop order — `[ ] adjust`, `d dial`, `space pause`,
+// `<- -> 5s` — while `? keys` survives all of them, because how to summon
+// the legend back is what a cramped screen must still say. Written out in
+// full rather than assembled, so a wording change has to be deliberate.
 const HINTS_80: &str =
-    " q quit   0-9 jump   <- -> 5s   d dial   [ ] adjust   ? keys                    ";
-const HINTS_64: &str = " q quit   0-9 jump   <- -> 5s   d dial   [ ] adjust   ? keys    ";
+    " q quit   space pause   0-9 jump   <- -> 5s   d dial   [ ] adjust   ? keys      ";
+const HINTS_64: &str = " q quit   space pause   0-9 jump   <- -> 5s   d dial   ? keys   ";
 const HINTS_40: &str = " q quit   0-9 jump   <- -> 5s   ? keys  ";
 const HINTS_32: &str = " q quit   0-9 jump   ? keys     ";
 
@@ -235,10 +234,10 @@ fn overlay_show_hide_never_corrupts_diff_output() {
 }
 
 /// The hints row at four widths (PLAN-M6-M8 §1 + the M6 review fix): the
-/// full list fits at 80 and at the 64-column threshold; a 40-column terminal
-/// has dropped `[ ] adjust` and `d dial`, and a 32-column one (the minimum
-/// playable width) has also dropped the arrows — but `? keys` is still there
-/// at every width, so the legend can always be summoned back. The row is
+/// full list fits at 80; 64 has dropped `[ ] adjust`; a 40-column terminal
+/// has also dropped `d dial` and `space pause`, and a 32-column one (the
+/// minimum playable width) the arrows too — but `? keys` is still there at
+/// every width, so the legend can always be summoned back. The row is
 /// painted to its full width throughout, so no stale picture cell survives
 /// underneath it.
 #[test]
@@ -343,6 +342,93 @@ fn question_mark_and_h_report_the_hints_toggle() {
     // Unbound keys still report nothing.
     backend.push_event(Event::Key(Key::Char('x')));
     assert!(!p.drain_events(&mut backend).toggle_hints);
+}
+
+/// Space through the REAL event queue (M6 pause): one flag per drain,
+/// collapsed like `?`, and it moves nothing else — pausing is a transport
+/// change, not a seek or a dial.
+#[test]
+fn space_reports_the_pause_toggle() {
+    let asset = build_fixture(Fixture::GradientMotion);
+    let mut backend = SimBackend::new(80, 24);
+    let mut p = player(&asset, true);
+    p.reflow(&mut backend, 80, 24);
+
+    backend.push_event(Event::Key(Key::Char(' ')));
+    let d = p.drain_events(&mut backend);
+    assert!(d.toggle_pause, "space must report the pause toggle");
+    assert_eq!((d.jump_digit, d.seek_steps, d.dial_cycle, d.dial_delta), (None, 0, 0, 0));
+    assert!(!d.toggle_hints);
+
+    // A key repeat inside one drain is one intent, not a pause/resume stutter.
+    backend.push_event(Event::Key(Key::Char(' ')));
+    backend.push_event(Event::Key(Key::Char(' ')));
+    assert!(p.drain_events(&mut backend).toggle_pause);
+
+    // Quit still wins over a queued space.
+    backend.push_event(Event::Key(Key::Char(' ')));
+    backend.push_event(Event::Quit);
+    let d = p.drain_events(&mut backend);
+    assert!(d.quit);
+    assert!(!d.toggle_pause);
+}
+
+/// M6 pause on screen: the progress row reads ` PAUSED ` where the
+/// percentage goes and `|` where the bar head goes, in printable ASCII the
+/// strict screen model above accepts. The row is a pure function of the
+/// paused flag, so it persists frame after frame with zero damage in diff
+/// mode — nothing in the render path can time it out, which is what lets the
+/// run loop suspend the 1 s deadline (`ProgressTimer`, unit-tested in
+/// player.rs). Resuming restores the percentage, and hiding the row still
+/// forces the full repaint.
+#[test]
+fn paused_progress_row_reads_paused_and_persists() {
+    let asset = build_fixture(Fixture::GradientMotion);
+    let (cols, rows) = (80u16, 24u16);
+    let mut backend = SimBackend::new(cols, rows);
+    let mut p = player(&asset, false); // pure diff — the corruptible mode
+    p.reflow(&mut backend, cols, rows);
+    let mut screen = Screen::new(cols, rows);
+
+    p.set_progress_overlay(true);
+    p.set_paused(true);
+    p.render_present(&mut backend, 12).unwrap();
+    screen.apply(&backend.take_output()); // panics on any invalid byte
+    let paused = screen.row_string(rows - 1);
+    assert!(paused.ends_with(" PAUSED "), "the percent block reads PAUSED: {paused:?}");
+    assert!(paused.contains("=|"), "the bar head is a bar, not an arrow: {paused:?}");
+    assert!(!paused.contains('%'), "no percentage while frozen: {paused:?}");
+
+    // Frozen: the same frame, the same row, no damage at all — the row
+    // cannot age out on its own however long the pause lasts.
+    for _ in 0..4 {
+        let stats = p.render_present(&mut backend, 12).unwrap();
+        screen.apply(&backend.take_output());
+        assert_eq!(stats.cells_damaged, 0, "a frozen frame redraws nothing");
+        assert_eq!(screen.row_string(rows - 1), paused, "and the row does not move");
+    }
+
+    // A seek while frozen: the row follows the new frame, still PAUSED.
+    p.render_present(&mut backend, 40).unwrap();
+    screen.apply(&backend.take_output());
+    let moved = screen.row_string(rows - 1);
+    assert!(moved.ends_with(" PAUSED "), "still frozen after a seek: {moved:?}");
+    assert_ne!(moved, paused, "but the timecode moved with the frame");
+
+    // Resume: the percentage is back, and the hide still repaints in full.
+    p.set_paused(false);
+    p.render_present(&mut backend, 40).unwrap();
+    screen.apply(&backend.take_output());
+    let playing = screen.row_string(rows - 1);
+    assert!(playing.contains('%') && playing.contains("=>"), "resumed row: {playing:?}");
+    p.set_progress_overlay(false);
+    let stats = p.render_present(&mut backend, 40).unwrap();
+    screen.apply(&backend.take_output());
+    assert_eq!(
+        stats.cells_damaged,
+        u32::from(cols) * u32::from(rows),
+        "hiding the row after a pause still forces the full repaint"
+    );
 }
 
 /// Arrow keys through the REAL event queue: coalesced net steps, quit

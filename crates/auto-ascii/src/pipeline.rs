@@ -71,8 +71,10 @@ const HINT_SEP: &str = "   ";
 /// Drop order for [`hint_line`] (M6 review fix), as indices into the display
 /// list — first to go first. `? keys` is deliberately absent: how to summon
 /// the legend back is the one hint a narrow terminal must keep, so it is the
-/// last item standing.
-const HINT_DROP_ORDER: [usize; 5] = [4, 3, 2, 1, 0];
+/// last item standing. `space pause` goes early for its width: eleven
+/// columns is the most any one hint costs, and space is the binding people
+/// try without being told.
+const HINT_DROP_ORDER: [usize; 6] = [5, 4, 1, 3, 2, 0];
 
 /// Map the probed terminal capabilities to the palette-selection charset
 /// tier (PLAN §3.4: `Caps.glyph_support` records the trusted repertoire).
@@ -139,6 +141,10 @@ pub struct Drained {
     /// caller flips the sticky key-hints row. Coalesced to a flag like the
     /// arrows: holding the key must not race the row on and off.
     pub toggle_hints: bool,
+    /// Space pressed this drain (M6 pause) — the caller freezes or resumes
+    /// playback. Coalesced to a flag for the same reason as `toggle_hints`:
+    /// a key repeat is one intent, not a pause/resume stutter.
+    pub toggle_pause: bool,
 }
 
 /// What the progress overlay prints instead of this clip's own numbers
@@ -182,6 +188,7 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
     let mut dial_cycle: u32 = 0;
     let mut dial_delta: i32 = 0;
     let mut toggle_hints = false;
+    let mut toggle_pause = false;
     while let Some(ev) = backend.events().pop() {
         match ev {
             Event::Quit => {
@@ -192,6 +199,7 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
                     dial_cycle: 0,
                     dial_delta: 0,
                     toggle_hints: false,
+                    toggle_pause: false,
                 };
                 return (quit, None);
             }
@@ -213,11 +221,21 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
             // Collapsed to a flag, not counted — two presses in one drain
             // are a key repeat, not a request to flicker the row.
             Event::Key(Key::Char('?' | 'h')) => toggle_hints = true,
+            // M6 pause: space is the one binding every player shares, and
+            // it is the last printable key not already spoken for.
+            Event::Key(Key::Char(' ')) => toggle_pause = true,
             Event::Key(_) => {}
         }
     }
-    let drained =
-        Drained { quit: false, jump_digit, seek_steps, dial_cycle, dial_delta, toggle_hints };
+    let drained = Drained {
+        quit: false,
+        jump_digit,
+        seek_steps,
+        dial_cycle,
+        dial_delta,
+        toggle_hints,
+        toggle_pause,
+    };
     (drained, resize)
 }
 
@@ -333,6 +351,10 @@ pub struct Player<'a> {
     /// harness and `RenderSession` never raise it and their grids are
     /// untouched. Presentation only, exactly like `overlay_visible`.
     hint_visible: bool,
+    /// M6 pause: the run loop has frozen the picture, so the progress row
+    /// reads ` PAUSED ` with a `|` bar head instead of a percentage. Purely
+    /// how the row PRINTS — the pipeline never decides what frame to show.
+    paused: bool,
     /// Set on the visible→hidden transition; consumed by `render_present`,
     /// which invalidates the backend so the row under the overlay is
     /// repainted from a clean baseline (the diff state can never be left
@@ -435,6 +457,7 @@ impl<'a> Player<'a> {
             overlay_visible: false,
             progress_ctx: None,
             hint_visible: false,
+            paused: false,
             overlay_hide_pending: false,
             fps,
         })
@@ -711,6 +734,13 @@ impl<'a> Player<'a> {
         self.progress_ctx = ctx;
     }
 
+    /// Tell the progress row that playback is frozen (M6 pause): the bar
+    /// head becomes `|` and the percent block reads ` PAUSED `. Presentation
+    /// only — pausing is the run loop's business, and this just reports it.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
     /// Show/hide the key-hints row on `rows-2` (M6, PLAN-M6-M8 §1). Same
     /// hide-repaint contract as [`set_progress_overlay`](Self::set_progress_overlay):
     /// the visible→hidden edge schedules the invalidate that repaints the row
@@ -842,10 +872,15 @@ impl<'a> Player<'a> {
                     ctx.frame_count,
                     ctx.fps(),
                     ctx.clip,
+                    self.paused,
                 ),
-                None => {
-                    draw_progress_overlay(&mut self.grid, frame_idx, self.frame_count, self.fps);
-                }
+                None => draw_progress_overlay_paused(
+                    &mut self.grid,
+                    frame_idx,
+                    self.frame_count,
+                    self.fps,
+                    self.paused,
+                ),
             }
         }
         if let Some((label, value, max)) = self.dial_overlay {
@@ -997,7 +1032,20 @@ pub fn draw_enlarge_card(grid: &mut Grid<Cell>) {
 /// Pure function of `(frame, frame_count, fps, cols)` — byte-deterministic,
 /// so diff-mode presents of an unchanged overlay row cost zero damage.
 pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32, frame_count: u32, fps: f64) {
-    draw_progress_overlay_clips(grid, frame, frame_count, fps, None);
+    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, false);
+}
+
+/// [`draw_progress_overlay`] with the M6 pause reading: `paused` swaps the
+/// bar head for `|` and the percent block for ` PAUSED `, so a frozen
+/// picture never reads as a stalled one.
+pub fn draw_progress_overlay_paused(
+    grid: &mut Grid<Cell>,
+    frame: u32,
+    frame_count: u32,
+    fps: f64,
+    paused: bool,
+) {
+    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, paused);
 }
 
 /// [`draw_progress_overlay`] with the M8 clip block: `clip = Some((c, n))`
@@ -1011,6 +1059,7 @@ pub fn draw_progress_overlay_clips(
     frame_count: u32,
     fps: f64,
     clip: Option<(usize, usize)>,
+    paused: bool,
 ) {
     let (cols, rows) = (grid.cols(), grid.rows());
     if cols == 0 || rows == 0 {
@@ -1053,7 +1102,10 @@ pub fn draw_progress_overlay_clips(
     {
         left.push_str(&format!("{c}/{n} "));
     }
-    let right = format!(" {pct:>3}% ");
+    // M6 pause: the percent block says PAUSED instead, under the same width
+    // rules — the bar simply gets two columns fewer. Printable ASCII, so the
+    // strict overlay parser and every palette keep reading it.
+    let right = if paused { " PAUSED ".to_string() } else { format!(" {pct:>3}% ") };
 
     // Bar fills whatever remains between the text blocks; on absurdly small
     // grids the texts alone are truncated to the row.
@@ -1070,10 +1122,12 @@ pub fn draw_progress_overlay_clips(
         } as usize;
         line.push('[');
         for i in 0..span {
+            // The head reads the transport: `>` playing, `|` frozen.
+            let head = if paused { '|' } else { '>' };
             line.push(if i < filled {
                 '='
             } else if i == filled {
-                '>'
+                head
             } else {
                 '.'
             });
@@ -1148,17 +1202,18 @@ fn scrub_step_label() -> String {
 /// `? keys` fits — the row is still painted, just empty.
 fn hint_line(cols: u16) -> String {
     let arrows = format!("<- -> {}", scrub_step_label());
-    let items: [&str; 6] = ["q quit", "0-9 jump", &arrows, "d dial", "[ ] adjust", "? keys"];
+    let items: [&str; 7] =
+        ["q quit", "space pause", "0-9 jump", &arrows, "d dial", "[ ] adjust", "? keys"];
     // Framed width of the kept items: the items, the gaps between them and
     // the two framing spaces. Every byte here is ASCII, so byte length is
     // column count (PLAN-M6-M8 §0.6: overlays stay printable ASCII).
-    let width = |keep: &[bool; 6]| -> usize {
+    let width = |keep: &[bool; 7]| -> usize {
         let kept = items.iter().zip(keep).filter(|(_, k)| **k);
         let (n, len) = kept.fold((0, 0), |(n, len), (it, _)| (n + 1, len + it.len()));
         if n == 0 { 0 } else { len + (n - 1) * HINT_SEP.len() + 2 }
     };
 
-    let mut keep = [true; 6];
+    let mut keep = [true; 7];
     for i in HINT_DROP_ORDER {
         if width(&keep) <= cols as usize {
             break;
@@ -1340,7 +1395,7 @@ mod tests {
     fn progress_overlay_clip_block_is_earned() {
         let row_at = |cols: u16, clip: Option<(usize, usize)>| -> String {
             let mut g: Grid<Cell> = Grid::new(cols, 4);
-            draw_progress_overlay_clips(&mut g, 900, 5400, 30.0, clip);
+            draw_progress_overlay_clips(&mut g, 900, 5400, 30.0, clip, false);
             (0..cols).map(|c| g.get(c, 3).glyph()).collect()
         };
         let m6 = |cols: u16| -> String {

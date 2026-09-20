@@ -54,13 +54,17 @@ strength / hysteresis, `[`/`]` turn it; hidden after 2500 ms). Keys: `q`,
 - **A hints row on `rows-2`,** same colours as the progress row, one fixed
   line, truncated at `cols` on word boundaries in this priority order (drop
   from the right):
-  `q quit   0-9 jump   <- -> 5s   d dial   [ ] adjust   ? keys`
+  `q quit   space pause   0-9 jump   <- -> 5s   d dial   [ ] adjust   ? keys`
   Shown whenever the progress or dial overlay is visible, for the first 3 s
   after start-up, and toggled sticky by `?` or `h` (sticky hides on the next
   `?`/`h`). `pipeline::Player` gains `set_hint_overlay(bool)` and
   `draw_hint_overlay`; `drain_events` reports `?`/`h` in `Drained`; the timers
   and stickiness live in `player.rs` beside the existing ones. Hiding any
   overlay keeps the existing `overlay_hide_pending` → `invalidate()` contract.
+- **Space pauses** (added after M6 landed): the frame freezes, the progress
+  row stays up reading ` PAUSED ` with a `|` bar head, seeks still work and
+  stay frozen, and resuming continues from the frozen frame (`--duration-secs`
+  remains a wall-clock budget).
 - **Enlarge card unchanged.**
 
 ### Accept

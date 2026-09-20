@@ -140,6 +140,88 @@ fn dial_after_cycle(idx: usize, presses: u32, readout_up: bool) -> usize {
 /// overlay row — see `pipeline::Player::set_progress_overlay`).
 const OVERLAY_HIDE_AFTER: Duration = Duration::from_millis(1000);
 
+/// Where the run loop is in the asset and whether it is moving (M6 pause).
+///
+/// Asset time is `base_frame` plus the wall time since `clock`; pausing
+/// stops contributing that second term and parks the frozen frame in
+/// `base_frame`, so resuming only has to repoint `clock` at the resume
+/// instant — playback continues from the frame on screen instead of
+/// jumping over everything the pause lasted for. Seeks repoint both, paused
+/// or not, which is why a jump while frozen simply changes the frozen
+/// frame. Split out of [`Player::run`] so the arithmetic is testable: the
+/// loop itself owns the only clock and hard-wires `AnsiBackend`.
+#[derive(Debug)]
+struct Transport {
+    /// Frame the pacing clock counts from.
+    base_frame: u64,
+    /// Pacing origin — repointed by every seek and by every resume, never
+    /// by `duration_secs` (that stays wall clock, see [`Player::run`]).
+    clock: Instant,
+    paused: bool,
+}
+
+impl Transport {
+    fn new(base_frame: u64, now: Instant) -> Transport {
+        Transport { base_frame, clock: now, paused: false }
+    }
+
+    /// Seconds of asset time since the pacing origin — zero while paused,
+    /// which is the whole of what freezing the picture means here.
+    fn elapsed_secs(&self, now: Instant) -> f64 {
+        if self.paused { 0.0 } else { now.duration_since(self.clock).as_secs_f64() }
+    }
+
+    /// Repoint to `frame` and restart the pacing clock (every 0–9 jump and
+    /// arrow scrub). Paused stays paused: the frozen frame just moves.
+    fn seek_to(&mut self, frame: u64, now: Instant) {
+        self.base_frame = frame;
+        self.clock = now;
+    }
+
+    /// Space: freeze at `frozen` (the frame currently on screen), or resume
+    /// from wherever the freeze left us.
+    fn toggle_pause(&mut self, frozen: u64, now: Instant) {
+        if self.paused {
+            self.clock = now; // the wall clock ran; asset time did not
+            self.paused = false;
+        } else {
+            self.base_frame = frozen;
+            self.paused = true;
+        }
+    }
+}
+
+/// When the bottom-row progress overlay is on screen (M5 scrub UX + M6
+/// pause). A seek shows it for [`OVERLAY_HIDE_AFTER`]; a pause holds it up
+/// with no deadline at all, because that row is what tells a frozen picture
+/// apart from a stalled one; resuming restarts the full timeout from the
+/// resume instant. Split out of [`Player::run`] for the same reason as
+/// [`HintState`] — the loop owns the only clock.
+#[derive(Debug, Default)]
+struct ProgressTimer {
+    /// When the row auto-hides; `None` is either "not on screen" or
+    /// "paused, so there is no deadline to reach".
+    until: Option<Instant>,
+}
+
+impl ProgressTimer {
+    /// One run-loop step. `restart` is true on a seek or a resume — both
+    /// want the whole timeout from now. Returns whether the row belongs on
+    /// screen, which is also what the hints row rides on.
+    fn visible(&mut self, now: Instant, restart: bool, paused: bool) -> bool {
+        if paused {
+            self.until = None; // suspended, not expired
+            return true;
+        }
+        if restart {
+            self.until = Some(now + OVERLAY_HIDE_AFTER);
+        } else if self.until.is_some_and(|t| now >= t) {
+            self.until = None;
+        }
+        self.until.is_some()
+    }
+}
+
 /// How long the key-hints row stays up at start-up (M6, PLAN-M6-M8 §1).
 /// Long enough to read six items, short enough that it is gone before anyone
 /// settles into the picture — after that the row is earned, not given.
@@ -285,7 +367,9 @@ impl PlayerBuilder {
         self
     }
 
-    /// Stop after this many seconds of wall clock (default: play to end).
+    /// Stop after this many seconds of WALL clock (default: play to end).
+    /// Wall clock, not asset time: time spent paused (space) counts against
+    /// the budget exactly as playing time does.
     pub fn duration_secs(mut self, secs: f64) -> Self {
         self.duration_secs = Some(secs);
         self
@@ -454,7 +538,9 @@ impl Player {
     /// the configured [`duration`](PlayerBuilder::duration_secs) elapses, or
     /// the user quits (`q` / `Esc` / `Ctrl-C`). Keys `0`–`9` jump to that
     /// ×10% of the asset; `←`/`→` scrub ±[`SCRUB_STEP_SECS`] (5 s); `d`
-    /// cycles the live [`Dial`]s and `[`/`]` turn the selected one. Every
+    /// cycles the live [`Dial`]s and `[`/`]` turn the selected one; space
+    /// freezes the picture and resumes it from the frozen frame (jumps and
+    /// scrubs still work while frozen, and stay frozen). Every
     /// seek flashes a bottom-row progress overlay that auto-hides after ~1 s.
     /// A key-hints row sits above it whenever an overlay is up, for the first
     /// few seconds of playback, and for as long as `?` (or `h`) pins it open
@@ -517,13 +603,15 @@ impl Player {
         let frame_count = u64::from(self.comp.frame_count());
         let clip_count = self.comp.clips().len();
         let (fps_num, fps_den) = self.comp.fps_ratio();
-        let mut base_frame = u64::from(self.start_frame);
         let t0 = Instant::now(); // duration_secs origin (never reset by jumps)
-        let mut clock = t0; // pacing origin, reset on 0–9 jumps + arrow scrubs
+        // Asset position + whether it is advancing (M6 pause). `t0` stays
+        // the wall-clock origin: `duration_secs` is a wall-clock budget by
+        // definition, so a pause spends it like playback does.
+        let mut transport = Transport::new(u64::from(self.start_frame), t0);
         let mut next_tick = t0;
         // M5 scrub UX: the transient progress overlay auto-hides this long
-        // after the last seek.
-        let mut overlay_until: Option<Instant> = None;
+        // after the last seek — and stays up for as long as a pause lasts.
+        let mut progress = ProgressTimer::default();
         // Live dials (M6 tuning UX): `d` selects, `[`/`]` turns. Starts from
         // whatever the CLI/params handed the pipeline, so a --shadow-lift on
         // the command line is simply the dial's opening position.
@@ -542,14 +630,25 @@ impl Player {
                 break;
             }
             let mut sought = false;
+            // Space first: a seek landing in the same drain then moves the
+            // frozen frame, which is the order that reads right either way.
+            let mut resumed = false;
+            if drained.toggle_pause {
+                let now = Instant::now();
+                let elapsed = transport.elapsed_secs(now);
+                let frozen = self.comp.frame_after(transport.base_frame, elapsed);
+                let frozen = if self.cfg.looping { frozen % frame_count } else { frozen };
+                transport.toggle_pause(frozen, now);
+                resumed = !transport.paused;
+                deck.set_paused(transport.paused);
+            }
             if let Some(d) = drained.jump_digit {
                 // 0–9 → jump to d×10% (PLAN §3.6; decode goes through the
                 // FIDX seek path automatically via the loaded-frame tracker,
                 // and drain_events already reset the hysteresis state — a
                 // seek must not ghost pre-seek edges/indices into the
                 // landing frame).
-                base_frame = frame_count * u64::from(d) / 10;
-                clock = Instant::now();
+                transport.seek_to(frame_count * u64::from(d) / 10, Instant::now());
                 sought = true;
             }
             if drained.seek_steps != 0 {
@@ -557,13 +656,13 @@ impl Player {
                 // the clock (post-digit-jump if both landed in one drain),
                 // clamped to the asset; same FIDX-seek + state-reset
                 // machinery as digit jumps.
-                let pos = self.comp.frame_after(base_frame, clock.elapsed().as_secs_f64());
+                let now = Instant::now();
+                let pos = self.comp.frame_after(transport.base_frame, transport.elapsed_secs(now));
                 let pos = if self.cfg.looping { pos % frame_count } else { pos };
                 let delta = (f64::from(drained.seek_steps) * SCRUB_STEP_SECS * asset_fps) as i64;
                 let landing = (pos.min(frame_count - 1) as i64 + delta)
                     .clamp(0, frame_count as i64 - 1) as u64;
-                base_frame = landing;
-                clock = Instant::now();
+                transport.seek_to(landing, now);
                 sought = true;
             }
             if drained.dial_cycle > 0 || drained.dial_delta != 0 {
@@ -585,19 +684,16 @@ impl Player {
                 deck.set_dial_overlay(None);
                 dial_until = None;
             }
-            if sought {
-                deck.set_progress_overlay(true);
-                overlay_until = Some(Instant::now() + OVERLAY_HIDE_AFTER);
-            } else if overlay_until.is_some_and(|t| Instant::now() >= t) {
-                // Auto-hide (~1 s): set_progress_overlay(false) schedules the
-                // backend invalidate that repaints the row under the overlay.
-                deck.set_progress_overlay(false);
-                overlay_until = None;
-            }
-            // Both `*_until` options are now exactly "that overlay is on
-            // screen", so the hints row can simply ride with them; hiding it
-            // goes through the same invalidate contract (PLAN-M6-M8 §1).
-            let overlays_up = overlay_until.is_some() || dial_until.is_some();
+            // Hiding goes through set_progress_overlay(false), which
+            // schedules the backend invalidate that repaints the row
+            // underneath (the M5 diff contract).
+            let show_progress =
+                progress.visible(Instant::now(), sought || resumed, transport.paused);
+            deck.set_progress_overlay(show_progress);
+            // Both of these are exactly "that overlay is on screen", so the
+            // hints row rides with them — including for the whole of a pause
+            // (PLAN-M6-M8 §1).
+            let overlays_up = show_progress || dial_until.is_some();
             let show_hints = hints.visible(Instant::now(), drained.toggle_hints, overlays_up);
             deck.set_hint_overlay(show_hints);
             if let Some(dur) = self.cfg.duration_secs
@@ -608,7 +704,9 @@ impl Player {
             // Pacing (§3.6 step 2): target frame by wall clock — if we fell
             // behind, this skips asset frames (latest-frame-wins, never
             // queued).
-            let mut target = self.comp.frame_after(base_frame, clock.elapsed().as_secs_f64());
+            let mut target = self
+                .comp
+                .frame_after(transport.base_frame, transport.elapsed_secs(Instant::now()));
             if target >= frame_count {
                 if self.cfg.looping {
                     target %= frame_count;
@@ -814,6 +912,89 @@ mod tests {
         assert!(hints.visible(late, false, true), "an overlay pulls the row up");
         assert!(hints.visible(late, true, true), "? cannot dismiss the ride-along");
         assert!(!hints.visible(late, false, false), "and it does not stick after it");
+    }
+
+    /// M6 pause (run-loop transport): freezing parks the frame on screen and
+    /// stops asset time; resuming continues FROM that frame instead of
+    /// jumping over the wall time the pause cost. Driven with synthetic
+    /// instants — `run()` owns the only clock — against the real
+    /// `Composition::frame_after`, which is the loop's one time→frame
+    /// expression, so the arithmetic under test is the shipping one.
+    #[test]
+    fn pause_freezes_the_frame_and_resume_continues_from_it() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("auto-ascii-pause-{}.ascii", std::process::id()));
+        std::fs::write(
+            &path,
+            auto_ascii_eval::fixtures::build_fixture(
+                auto_ascii_eval::fixtures::Fixture::GradientMotion,
+            ),
+        )
+        .unwrap();
+        let mut comp = Composition::single(&path);
+        comp.resolve().expect("the fixture is a valid one-clip composition");
+        let fps = comp.fps();
+        let target =
+            |tr: &Transport, now: Instant| comp.frame_after(tr.base_frame, tr.elapsed_secs(now));
+
+        let t0 = Instant::now();
+        let mut tr = Transport::new(0, t0);
+
+        // Play for a second, then freeze on whatever is up.
+        let at_pause = t0 + Duration::from_secs(1);
+        let frozen = target(&tr, at_pause);
+        assert_eq!(frozen, fps as u64, "one second of a {fps} fps asset");
+        tr.toggle_pause(frozen, at_pause);
+        assert!(tr.paused);
+
+        // Two seconds of WALL clock pass: the picture does not move.
+        let at_resume = at_pause + Duration::from_secs(2);
+        assert_eq!(target(&tr, at_resume), frozen, "a pause freezes asset time");
+
+        // Resume: the very next target is the frozen frame — not the frame
+        // two seconds of wall clock later (frozen + 2·fps, 60 frames here).
+        tr.toggle_pause(frozen, at_resume);
+        assert!(!tr.paused);
+        assert_eq!(target(&tr, at_resume), frozen, "resume continues, never skips");
+        let two_on = at_resume + Duration::from_secs(2);
+        assert_eq!(
+            target(&tr, two_on),
+            frozen + (2.0 * fps) as u64,
+            "and then it advances at the asset rate from the frozen frame"
+        );
+
+        // A seek while frozen moves the frozen frame and stays frozen.
+        tr.toggle_pause(target(&tr, two_on), two_on);
+        tr.seek_to(7, two_on);
+        assert!(tr.paused, "a jump while paused does not resume playback");
+        assert_eq!(target(&tr, two_on + Duration::from_secs(5)), 7, "it lands and holds");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// M6 pause: the progress row's timeout. A seek shows the row for
+    /// [`OVERLAY_HIDE_AFTER`]; pausing suspends the deadline so the row
+    /// persists well past it; resuming restarts the full timeout from the
+    /// resume instant rather than from the seek that preceded the pause.
+    #[test]
+    fn progress_row_timeout_is_suspended_while_paused() {
+        let t0 = Instant::now();
+        let mut row = ProgressTimer::default();
+        let nearly = OVERLAY_HIDE_AFTER - Duration::from_millis(1);
+        assert!(!row.visible(t0, false, false), "nothing has shown it yet");
+        assert!(row.visible(t0, true, false), "a seek shows it");
+        assert!(row.visible(t0 + nearly, false, false), "for the whole timeout");
+        assert!(!row.visible(t0 + OVERLAY_HIDE_AFTER, false, false), "then it hides");
+
+        // Paused: up, and still up long past the timeout.
+        let at_pause = t0 + Duration::from_secs(10);
+        assert!(row.visible(at_pause, true, true), "pausing shows the row");
+        let long_after = at_pause + OVERLAY_HIDE_AFTER * 5;
+        assert!(row.visible(long_after, false, true), "with the deadline suspended");
+
+        // Resume: the timeout restarts from HERE.
+        assert!(row.visible(long_after, true, false), "resume keeps it up");
+        assert!(row.visible(long_after + nearly, false, false), "for a full timeout");
+        assert!(!row.visible(long_after + OVERLAY_HIDE_AFTER, false, false), "then hides");
     }
 
     /// M6 review fix: the first `d` REVEALS the dial readout rather than

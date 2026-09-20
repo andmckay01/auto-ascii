@@ -79,6 +79,9 @@ pub struct ClipDeck {
     compose_params: Option<ComposeParams>,
     progress_visible: bool,
     hint_visible: bool,
+    /// M6 pause: how the progress row PRINTS while the run loop holds the
+    /// picture — re-applied on every clip, like the overlays themselves.
+    paused: bool,
     dial: Option<(&'static str, u8, u8)>,
     progress_ctx: Option<ProgressContext>,
     layer_mask: bool,
@@ -120,6 +123,7 @@ impl ClipDeck {
             compose_params: None,
             progress_visible: false,
             hint_visible: false,
+            paused: false,
             dial: None,
             progress_ctx: None,
             layer_mask: false,
@@ -261,6 +265,13 @@ impl ClipDeck {
     pub fn set_hint_overlay(&mut self, visible: bool) {
         self.mark_hidden_during_gap(self.hint_visible, visible);
         self.hint_visible = visible;
+    }
+
+    /// Report playback as frozen in the progress row (M6 pause): `|` bar
+    /// head, ` PAUSED ` where the percentage goes. The deck holds no
+    /// transport state of its own — this is the run loop's flag, forwarded.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
     }
 
     /// Show/clear the live-dial readout (M6).
@@ -440,11 +451,13 @@ impl ClipDeck {
     fn apply_sticky(&mut self, idx: usize) {
         let (progress, hints, dial, ctx) =
             (self.progress_visible, self.hint_visible, self.dial, self.progress_ctx);
+        let paused = self.paused;
         let player = self.player(idx);
         player.set_progress_overlay(progress);
         player.set_hint_overlay(hints);
         player.set_dial_overlay(dial);
         player.set_progress_context(ctx);
+        player.set_paused(paused);
     }
 
     /// An overlay that hides while a gap is on screen has no clip player to
@@ -486,6 +499,7 @@ impl ClipDeck {
                 ctx.frame_count,
                 ctx.fps(),
                 ctx.clip,
+                self.paused,
             );
         }
         if let Some((label, value, max)) = self.dial {

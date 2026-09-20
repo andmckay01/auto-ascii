@@ -11,7 +11,7 @@ re-litigate them without the owner). Landed on the branch, one commit each:
 
 | Milestone | Commit | What landed |
 |---|---|---|
-| M6 | `e2e2b4b` | Key hints in the player: `<- 5s ->` beside the scrub bar, a hints row (`q quit · 0-9 jump · <- -> 5s · d dial · [ ] adjust · ? keys`) with the overlays, for 3 s at start-up and sticky on `?`; first `d` opens on shadow lift |
+| M6 | `e2e2b4b` | Key hints in the player: `<- 5s ->` beside the scrub bar, a hints row (`q quit · 0-9 jump · <- -> 5s · d dial · [ ] adjust · ? keys`) with the overlays, for 3 s at start-up and sticky on `?`; first `d` opens on shadow lift; space pauses (frozen frame, ` PAUSED ` row that does not time out, seeks still land) |
 | M7 | `e552bad` | `auto-ascii` CLI (`crates/auto-ascii-cli`): `import`, `list`, `info`, `play`, `agent-guide`, `home`, global `--json`; home folder `~/auto-ascii` (`AUTO_ASCII_HOME`) with `library/`, `compositions/`, `exports/` and a JSON sidecar per clip; the factory is now lib + bin; `auto_ascii::timecode` |
 | M8 | `2c8d898` | Compositions: TOML timelines (`in`/`out` trims, `at` placement, gaps black, later clip on top) played virtually (`auto-ascii-player comp.toml`, `--sim` too) and flattened by `compose export`; CLI `cut` and `compose new/add/show/play/export`; `docs/AGENT-GUIDE.md` for agents |
 

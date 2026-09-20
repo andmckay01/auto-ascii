@@ -2103,6 +2103,25 @@ facade surface + this hidden module.)
     the readout on the dial already selected instead of cycling past shadow
     lift — `dial_after_cycle(idx, presses, readout_up)` in player.rs, unit
     tested — and every `d` while the readout is up cycles as before.
+    (f) **Space pauses** (added after M8 landed). `Drained.toggle_pause`
+    (`Key::Char(' ')`, one flag per drain); `pipeline::Player::set_paused` /
+    `ClipDeck::set_paused` / `draw_progress_overlay_paused`, and
+    `draw_progress_overlay_clips` gained a trailing `paused: bool` — the row
+    then prints ` PAUSED ` where the percentage goes and `|` where the bar
+    head goes, printable ASCII under the same width rules. Two run-loop
+    helpers carry the policy, both unit-tested with synthetic instants:
+    `Transport` (asset time = `base_frame` + wall time since `clock`; a pause
+    parks the frozen frame in `base_frame` and stops the second term, so
+    resuming only repoints `clock` and playback continues from the frame on
+    screen instead of skipping the pause's length — seeks repoint both and
+    leave `paused` alone, which is why a jump while frozen just moves the
+    frozen frame), and `ProgressTimer` (a seek or a resume restarts
+    `OVERLAY_HIDE_AFTER`; a pause SUSPENDS it, so the row and the hints row
+    riding on it stay up for the whole freeze). `duration_secs` is unchanged
+    and deliberately still WALL clock: a pause spends the budget like
+    playback does, now documented on the builder. The hints row gained
+    `space pause` in second place, dropped third (after `[ ] adjust` and
+    `d dial`) for its eleven columns; `? keys` is still last to go.
 28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
     should take a video from anywhere on the desktop, process it, and land
     it in the folder where the user's processed videos live"). The shape of
