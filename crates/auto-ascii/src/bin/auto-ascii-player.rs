@@ -14,15 +14,14 @@
 //! [`auto_ascii::pipeline`] the facade Player runs.
 
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
-use memmap2::Mmap;
-use auto_ascii::pipeline::{Player, color_depth};
-use auto_ascii::{PaletteChoice, RepaintMode};
-use auto_ascii_format::AsciiReader;
+use auto_ascii::deck::{ClipDeck, DeckConfig};
+use auto_ascii::pipeline::color_depth;
+use auto_ascii::{Composition, PaletteChoice, RepaintMode};
 use auto_ascii_term::{Backend, Caps, ColorTier, Event, SimBackend};
 
 /// CLI face of [`auto_ascii::RepaintMode`] (PLAN §3.1: one render path —
@@ -70,7 +69,10 @@ impl From<PaletteArg> for PaletteChoice {
 #[derive(Parser)]
 #[command(name = "auto-ascii-player", version, about = "Play ASCI assets in the terminal (PLAN §3)")]
 struct Cli {
-    /// ASCI asset (mmap'd read-only via memmap2, PLAN §8).
+    /// ASCI asset (mmap'd read-only via memmap2, PLAN §8), or a composition
+    /// `.toml` (M8, PLAN-M6-M8 §3) — a stitch of clips played virtually, on
+    /// one timeline. Bare library names inside a composition resolve under
+    /// `$AUTO_ASCII_HOME/library` (default `~/auto-ascii/library`).
     asset: PathBuf,
 
     /// Repaint mode (PLAN §7: M0 default is invalidate-every-frame).
@@ -198,6 +200,25 @@ fn parse_sim_spec(s: &str) -> Result<((u16, u16), u64)> {
     Ok((size, nframes))
 }
 
+/// A `.toml` argument is a composition, anything else is one asset
+/// (PLAN-M6-M8 §3 — the same rule `auto-ascii play` follows).
+fn is_composition(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("toml"))
+}
+
+/// Resolve the positional argument into a resolved timeline: a plain asset
+/// is a one-clip composition, so every path below has one frame mapping.
+fn open_timeline(path: &Path) -> Result<Composition> {
+    let mut comp = if is_composition(path) {
+        Composition::from_toml_file(path, Composition::default_library_dir().as_deref())
+            .with_context(|| format!("reading composition {}", path.display()))?
+    } else {
+        Composition::single(path)
+    };
+    comp.resolve()?;
+    Ok(comp)
+}
+
 /// Canonical tier tag for the `--sim` JSON line.
 fn tier_tag(t: ColorTier) -> &'static str {
     match t {
@@ -210,7 +231,13 @@ fn tier_tag(t: ColorTier) -> &'static str {
 
 /// Headless acceptance path: N frames as fast as possible against SimBackend,
 /// one JSON stats line on stdout (never touches the tty, never probes).
-fn run_sim(mut player: Player<'_>, cli: &Cli, tier: ColorTier, start_frame: u32) -> Result<()> {
+fn run_sim(
+    comp: &Composition,
+    mut deck: ClipDeck,
+    cli: &Cli,
+    tier: ColorTier,
+    start_frame: u32,
+) -> Result<()> {
     let spec = cli.sim.as_deref().expect("run_sim requires --sim");
     let ((cols, rows), nframes) = parse_sim_spec(spec)?;
     let resize_to = cli.sim_resize.as_deref().map(parse_size).transpose()?;
@@ -219,7 +246,8 @@ fn run_sim(mut player: Player<'_>, cli: &Cli, tier: ColorTier, start_frame: u32)
     let mut caps = backend.caps().clone();
     caps.color = tier;
     backend.set_caps(caps);
-    player.reflow(&mut backend, cols, rows);
+    backend.resize(cols, rows); // implies invalidate; clips reflow as they front
+    deck.set_size(cols, rows);
 
     let mut dump = cli
         .sim_dump
@@ -232,7 +260,7 @@ fn run_sim(mut player: Player<'_>, cli: &Cli, tier: ColorTier, start_frame: u32)
     // Winning-layer counts (M3): the §3.4 priority decision, summed over
     // every rendered cell — headless visibility into which layers actually
     // fire ("layers" in the JSON line).
-    player.enable_layer_mask();
+    deck.enable_layer_mask();
     let mut layer_counts = [0u64; 5];
 
     let resize_at = nframes / 2;
@@ -246,14 +274,21 @@ fn run_sim(mut player: Player<'_>, cli: &Cli, tier: ColorTier, start_frame: u32)
             // Through the event path — same code the interactive loop runs.
             backend.push_event(Event::Resize(rc, rr));
         }
-        if player.drain_events(&mut backend).quit {
+        if deck.drain_events(&mut backend).quit {
             break;
         }
-        let frame_idx =
-            ((u64::from(start_frame) + i) % u64::from(player.frame_count())) as u32;
-        let stats = player.render_present(&mut backend, frame_idx)?;
+        let frame_idx = ((u64::from(start_frame) + i) % u64::from(comp.frame_count())) as u32;
+        // Composition frame → clip + local frame (the identity for a plain
+        // asset); a gap presents black and contributes no layer counts.
+        let stats = match comp.locate_frame(frame_idx) {
+            Some(loc) => {
+                deck.activate(loc.clip_idx)?;
+                deck.render_present(&mut backend, loc.local_frame)?
+            }
+            None => deck.present_gap(&mut backend),
+        };
         bytes_total += u64::from(stats.bytes);
-        if let Some(mask) = player.layer_mask() {
+        if let Some(mask) = deck.layer_mask() {
             for &l in mask.as_slice() {
                 if let Some(c) = layer_counts.get_mut(l as usize) {
                     *c += 1;
@@ -273,7 +308,7 @@ fn run_sim(mut player: Player<'_>, cli: &Cli, tier: ColorTier, start_frame: u32)
     let avg = if rendered > 0 { bytes_total as f64 / rendered as f64 } else { 0.0 };
     let ms = |ns: u64| ns as f64 / 1e6;
     let (gc, gr) = backend.caps().cells;
-    let stage = player.stage();
+    let stage = deck.stage();
     println!(
         "{{\"fps\":{fps:.2},\"frames\":{rendered},\"bytes_total\":{bytes_total},\
          \"avg_bytes_per_frame\":{avg:.1},\"tier\":\"{}\",\"stage_ms\":{{\"decode\":{:.1},\
@@ -294,25 +329,47 @@ fn run_sim(mut player: Player<'_>, cli: &Cli, tier: ColorTier, start_frame: u32)
     Ok(())
 }
 
+/// Present one COMPOSITION frame: the clip on top at its own local frame,
+/// or a black gap frame (M8). A plain asset is one clip mapping frame to
+/// frame, so this is the pre-M8 `render_present` call for it.
+fn render_at(
+    comp: &Composition,
+    deck: &mut ClipDeck,
+    backend: &mut SimBackend,
+    frame_idx: u32,
+) -> Result<()> {
+    match comp.locate_frame(frame_idx) {
+        Some(loc) => {
+            deck.activate(loc.clip_idx)?;
+            deck.render_present(backend, loc.local_frame)?;
+        }
+        None => {
+            deck.present_gap(backend);
+        }
+    }
+    Ok(())
+}
+
 /// M5 scrub-latency benchmark: N deterministic random seeks through the
 /// EXACT interactive scrub machinery — hysteresis reset (the drain_events
 /// discontinuity rule) + FIDX keyframe bsearch + ≤ keyframe_ivl−1 delta
 /// rolls + resample + compose + present — timed end to end per seek.
 /// Acceptance (PLAN §7 M5): p50/p95 < 50 ms on the full 856 MB asset.
-fn run_bench_seek(mut player: Player<'_>, seeks: u32) -> Result<()> {
+fn run_bench_seek(comp: &Composition, mut deck: ClipDeck, seeks: u32) -> Result<()> {
     const COLS: u16 = 300;
     const ROWS: u16 = 80; // the PLAN §3.6 reference grid
     if seeks == 0 {
         bail!("--bench-seek needs N >= 1");
     }
     let mut backend = SimBackend::new(COLS, ROWS);
-    player.reflow(&mut backend, COLS, ROWS);
+    backend.resize(COLS, ROWS);
+    deck.set_size(COLS, ROWS);
     // One warmup render: builds tap tables' caches and pages in the header/
     // FIDX region; every timed seek below still decodes cold frame data.
-    player.render_present(&mut backend, 0)?;
+    render_at(comp, &mut deck, &mut backend, 0)?;
     backend.take_output();
 
-    let frames = u64::from(player.frame_count());
+    let frames = u64::from(comp.frame_count());
     let mut lat_ms: Vec<f64> = Vec::with_capacity(seeks as usize);
     let mut rng: u64 = 0x5EED_F00D_D15C_0B01; // fixed seed: reproducible run
     for _ in 0..seeks {
@@ -322,8 +379,8 @@ fn run_bench_seek(mut player: Player<'_>, seeks: u32) -> Result<()> {
         rng ^= rng >> 27;
         let frame = ((rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) % frames) as u32;
         let t = Instant::now();
-        player.reset_temporal_state(); // scrub = temporal discontinuity
-        player.render_present(&mut backend, frame)?;
+        deck.reset_active(); // scrub = temporal discontinuity
+        render_at(comp, &mut deck, &mut backend, frame)?;
         lat_ms.push(t.elapsed().as_secs_f64() * 1e3);
         backend.take_output();
     }
@@ -351,31 +408,20 @@ fn main() -> Result<()> {
         .transpose()?;
 
     if cli.sim.is_some() || cli.bench_seek.is_some() {
-        // Headless harness paths: drive the pipeline directly (the facade
-        // Player is a terminal session by definition).
-        let file = std::fs::File::open(&cli.asset)
+        // Headless harness paths: drive the clip deck directly (the facade
+        // Player is a terminal session by definition). A plain asset opens
+        // as a one-clip composition, so `--sim` on a `.toml` is the same
+        // loop with more clips in it (PLAN-M6-M8 §3).
+        let comp = open_timeline(&cli.asset)
             .with_context(|| format!("opening {}", cli.asset.display()))?;
-        // Safety: read-only private map of a file we never mutate through
-        // this mapping; M0 contract is that assets are not truncated
-        // mid-playback (the same assumption every mmap'd reader makes).
-        let mmap = unsafe { Mmap::map(&file) }
-            .with_context(|| format!("mmap {}", cli.asset.display()))?;
-        let reader = AsciiReader::open(&mmap)
-            .with_context(|| format!("{} is not a valid ASCI asset", cli.asset.display()))?;
-
-        let header = reader.header();
-        // Belt-and-braces: AsciiReader::open rejects zero fps since M1.
-        if header.fps_num == 0 || header.fps_den == 0 {
-            bail!("corrupt header: fps_num or fps_den == 0");
-        }
-        let asset_fps = f64::from(header.fps_num) / f64::from(header.fps_den);
+        let asset_fps = comp.fps();
         let start_frame: u32 = match seek_secs {
             Some(secs) => {
                 let frame = (secs * asset_fps).floor();
-                if frame >= f64::from(reader.frame_count()) {
+                if frame >= f64::from(comp.frame_count()) {
                     bail!(
                         "--seek is past the end of the asset ({} frames @ {asset_fps} fps)",
-                        reader.frame_count()
+                        comp.frame_count()
                     );
                 }
                 frame as u32
@@ -392,23 +438,30 @@ fn main() -> Result<()> {
         if let Some(spec) = &cli.font_table {
             glyphs = auto_ascii::load_font_table(spec)?.veto_tier(glyphs);
         }
-        let player = Player::new(
-            reader,
-            aspect,
-            cli.repaint == RepaintArg::Full,
-            color_depth(tier),
-            glyphs,
-        )?;
+        let deck = ClipDeck::new(
+            comp.clips().iter().map(|c| c.path.clone()).collect(),
+            DeckConfig {
+                cell_aspect: aspect,
+                repaint_full: cli.repaint == RepaintArg::Full,
+                color: color_depth(tier),
+                glyph_tier: glyphs,
+            },
+        );
         if let Some(n) = cli.bench_seek {
-            return run_bench_seek(player, n);
+            return run_bench_seek(&comp, deck, n);
         }
-        return run_sim(player, &cli, tier, start_frame);
+        return run_sim(&comp, deck, &cli, tier, start_frame);
     }
 
     // Interactive path: argv → PlayerBuilder, then the facade owns the
     // probe, the session, the pacing loop and the restore (no logic here).
-    let mut builder = auto_ascii::Player::builder()
-        .asset(&cli.asset)
+    let source = auto_ascii::Player::builder();
+    let source = if is_composition(&cli.asset) {
+        source.composition(&cli.asset)
+    } else {
+        source.asset(&cli.asset)
+    };
+    let mut builder = source
         .palette(cli.palette.into())
         .tier(cli.tier)
         .repaint(cli.repaint.into())

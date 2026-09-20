@@ -141,6 +141,86 @@ pub struct Drained {
     pub toggle_hints: bool,
 }
 
+/// What the progress overlay prints instead of this clip's own numbers
+/// while a COMPOSITION is playing (M8, PLAN-M6-M8 §3): the composition's
+/// position, and which clip of how many is on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProgressContext {
+    /// Frame on the composition timeline.
+    pub frame: u32,
+    /// Frames on the composition timeline.
+    pub frame_count: u32,
+    /// Composition fps numerator (kept as the exact header rational so the
+    /// row's timecode cannot drift from the timeline's own arithmetic).
+    pub fps_num: u16,
+    /// Composition fps denominator.
+    pub fps_den: u16,
+    /// `(current clip, clip count)`, both 1-based counts — the ` c/N `
+    /// block. Suppressed below [`PROGRESS_HINT_MIN_COLS`] and for
+    /// single-clip compositions.
+    pub clip: Option<(usize, usize)>,
+}
+
+impl ProgressContext {
+    /// The composition frame rate the timecode is printed from.
+    pub fn fps(&self) -> f64 {
+        (f64::from(self.fps_num) / f64::from(self.fps_den.max(1))).max(1e-9)
+    }
+}
+
+/// Coalesce a backend's event queue into a [`Drained`] plus the latest
+/// resize, touching no player state.
+///
+/// Split out of [`Player::drain_events`] at M8 (PLAN-M6-M8 §3): a
+/// composition's gap frames have no active clip player, and the key mapping
+/// must not exist in two copies. Quit wins and stops the drain, exactly as
+/// before.
+pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u16, u16)>) {
+    let mut resize: Option<(u16, u16)> = None;
+    let mut jump_digit = None;
+    let mut seek_steps: i32 = 0;
+    let mut dial_cycle: u32 = 0;
+    let mut dial_delta: i32 = 0;
+    let mut toggle_hints = false;
+    while let Some(ev) = backend.events().pop() {
+        match ev {
+            Event::Quit => {
+                let quit = Drained {
+                    quit: true,
+                    jump_digit: None,
+                    seek_steps: 0,
+                    dial_cycle: 0,
+                    dial_delta: 0,
+                    toggle_hints: false,
+                };
+                return (quit, None);
+            }
+            Event::Resize(c, r) => resize = Some((c, r)),
+            Event::Key(Key::Char(c @ '0'..='9')) => jump_digit = Some(c as u8 - b'0'),
+            // M5 scrub UX: ±5 s per arrow press, coalesced per drain
+            // (holding the key nets one bigger jump, not N renders).
+            Event::Key(Key::Left) => seek_steps = seek_steps.saturating_sub(1),
+            Event::Key(Key::Right) => seek_steps = seek_steps.saturating_add(1),
+            // Live dials: `d` selects which one, `[`/`]` turn it. Coalesced
+            // per drain like the arrows, so holding a key nets one bigger
+            // move rather than N renders. Digits, arrows and q/Esc are
+            // already spoken for; these three are not.
+            Event::Key(Key::Char('d')) => dial_cycle = dial_cycle.saturating_add(1),
+            Event::Key(Key::Char('[')) => dial_delta = dial_delta.saturating_sub(1),
+            Event::Key(Key::Char(']')) => dial_delta = dial_delta.saturating_add(1),
+            // M6 key hints (PLAN-M6-M8 §1): `?` is the conventional
+            // binding, `h` the one people try when `?` needs a shift.
+            // Collapsed to a flag, not counted — two presses in one drain
+            // are a key repeat, not a request to flicker the row.
+            Event::Key(Key::Char('?' | 'h')) => toggle_hints = true,
+            Event::Key(_) => {}
+        }
+    }
+    let drained =
+        Drained { quit: false, jump_digit, seek_steps, dial_cycle, dial_delta, toggle_hints };
+    (drained, resize)
+}
+
 /// The frame pipeline: decode → resample → NORM levels → compose into a
 /// term-sized grid. All buffers are (re)allocated only in `new`/`reflow` —
 /// the hot loop is allocation-free (PLAN §6 discipline).
@@ -242,6 +322,11 @@ pub struct Player<'a> {
     /// row). Drawn OVER the composed grid in `render_grid` when visible; it
     /// never touches hysteresis or the layer mask — presentation only.
     overlay_visible: bool,
+    /// M8: what the progress overlay reports while a composition plays —
+    /// the composition's position and ` c/N `, not this clip's own frame
+    /// counter. `None` (the default, and every single-asset path) leaves
+    /// the M6 row byte for byte.
+    progress_ctx: Option<ProgressContext>,
     /// M6 key hints (PLAN-M6-M8 §1): the one-line key legend on `rows-2`.
     /// Driven entirely by the run loop (it rides with the transient
     /// overlays, the start-up window and `?`/`h`), so `--sim`, the eval
@@ -348,6 +433,7 @@ impl<'a> Player<'a> {
             layer_mask: None,
             stage: StageNs::default(),
             overlay_visible: false,
+            progress_ctx: None,
             hint_visible: false,
             overlay_hide_pending: false,
             fps,
@@ -514,55 +600,17 @@ impl<'a> Player<'a> {
     /// shot boundary — a same-shot jump would otherwise render edge glyphs
     /// a cold start at that frame would not (m3_layers regression test).
     pub fn drain_events<B: Backend>(&mut self, backend: &mut B) -> Drained {
-        let mut resize: Option<(u16, u16)> = None;
-        let mut jump_digit = None;
-        let mut seek_steps: i32 = 0;
-        let mut dial_cycle: u32 = 0;
-        let mut dial_delta: i32 = 0;
-        let mut toggle_hints = false;
-        while let Some(ev) = backend.events().pop() {
-            match ev {
-                Event::Quit => {
-                    return Drained {
-                        quit: true,
-                        jump_digit: None,
-                        seek_steps: 0,
-                        dial_cycle: 0,
-                        dial_delta: 0,
-                        toggle_hints: false,
-                    };
-                }
-                Event::Resize(c, r) => resize = Some((c, r)),
-                Event::Key(Key::Char(c @ '0'..='9')) => jump_digit = Some(c as u8 - b'0'),
-                // M5 scrub UX: ±5 s per arrow press, coalesced per drain
-                // (holding the key nets one bigger jump, not N renders).
-                Event::Key(Key::Left) => seek_steps = seek_steps.saturating_sub(1),
-                Event::Key(Key::Right) => seek_steps = seek_steps.saturating_add(1),
-                // Live dials: `d` selects which one, `[`/`]` turn it. Coalesced
-                // per drain like the arrows, so holding a key nets one bigger
-                // move rather than N renders. Digits, arrows and q/Esc are
-                // already spoken for; these three are not.
-                Event::Key(Key::Char('d')) => dial_cycle = dial_cycle.saturating_add(1),
-                Event::Key(Key::Char('[')) => dial_delta = dial_delta.saturating_sub(1),
-                Event::Key(Key::Char(']')) => dial_delta = dial_delta.saturating_add(1),
-                // M6 key hints (PLAN-M6-M8 §1): `?` is the conventional
-                // binding, `h` the one people try when `?` needs a shift.
-                // Collapsed to a flag, not counted — two presses in one drain
-                // are a key repeat, not a request to flicker the row.
-                Event::Key(Key::Char('?' | 'h')) => toggle_hints = true,
-                Event::Key(_) => {}
-            }
-        }
+        let (drained, resize) = drain_backend_events(backend);
         if let Some((c, r)) = resize {
             self.reflow(backend, c, r); // resize path resets state too (realloc)
         }
-        if jump_digit.is_some() || seek_steps != 0 {
+        if drained.jump_digit.is_some() || drained.seek_steps != 0 {
             self.state.reset(); // seek discontinuity: no pre-seek ghosting
         }
         // NOTE: a dial move deliberately does NOT reset hysteresis. It is a
         // renderer retune, not a temporal discontinuity — the picture should
         // slide to the new look, not flash through a full repaint.
-        Drained { quit: false, jump_digit, seek_steps, dial_cycle, dial_delta, toggle_hints }
+        drained
     }
 
     /// Sequential-roll or FIDX-seek one plane into its standing buffer.
@@ -653,6 +701,14 @@ impl<'a> Player<'a> {
             self.overlay_hide_pending = true;
         }
         self.overlay_visible = visible;
+    }
+
+    /// Make the progress overlay report a COMPOSITION's position instead of
+    /// this clip's own (M8, PLAN-M6-M8 §3). `None` restores the asset
+    /// reading, which is what every single-asset path keeps — the M6 row is
+    /// unchanged to the byte.
+    pub fn set_progress_context(&mut self, ctx: Option<ProgressContext>) {
+        self.progress_ctx = ctx;
     }
 
     /// Show/hide the key-hints row on `rows-2` (M6, PLAN-M6-M8 §1). Same
@@ -779,7 +835,18 @@ impl<'a> Player<'a> {
             // Drawn last, over pads/viewport alike (bottom row only); the
             // layer mask is deliberately NOT updated — the overlay is
             // presentation, not composition (eval never enables it).
-            draw_progress_overlay(&mut self.grid, frame_idx, self.frame_count, self.fps);
+            match self.progress_ctx {
+                Some(ctx) => draw_progress_overlay_clips(
+                    &mut self.grid,
+                    ctx.frame,
+                    ctx.frame_count,
+                    ctx.fps(),
+                    ctx.clip,
+                ),
+                None => {
+                    draw_progress_overlay(&mut self.grid, frame_idx, self.frame_count, self.fps);
+                }
+            }
         }
         if let Some((label, value, max)) = self.dial_overlay {
             draw_dial_overlay(&mut self.grid, label, value, max);
@@ -930,6 +997,21 @@ pub fn draw_enlarge_card(grid: &mut Grid<Cell>) {
 /// Pure function of `(frame, frame_count, fps, cols)` — byte-deterministic,
 /// so diff-mode presents of an unchanged overlay row cost zero damage.
 pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32, frame_count: u32, fps: f64) {
+    draw_progress_overlay_clips(grid, frame, frame_count, fps, None);
+}
+
+/// [`draw_progress_overlay`] with the M8 clip block: `clip = Some((c, n))`
+/// adds ` c/N ` right after the timecode while a composition plays
+/// (PLAN-M6-M8 §3). The block is dropped below [`PROGRESS_HINT_MIN_COLS`]
+/// and for single-clip compositions, so `None` — every single-asset path —
+/// prints the M6 row byte for byte.
+pub fn draw_progress_overlay_clips(
+    grid: &mut Grid<Cell>,
+    frame: u32,
+    frame_count: u32,
+    fps: f64,
+    clip: Option<(usize, usize)>,
+) {
     let (cols, rows) = (grid.cols(), grid.rows());
     if cols == 0 || rows == 0 {
         return;
@@ -962,7 +1044,15 @@ pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32, frame_count: u32
     } else {
         String::new()
     };
-    let left = format!(" {} / {} ", mmss(pos as u64), mmss(total as u64));
+    let mut left = format!(" {} / {} ", mmss(pos as u64), mmss(total as u64));
+    // M8 (PLAN-M6-M8 §3): which clip of how many, right after the time
+    // block — only for a real stitch, and only where the row can spare it.
+    if let Some((c, n)) = clip
+        && n > 1
+        && cols >= PROGRESS_HINT_MIN_COLS
+    {
+        left.push_str(&format!("{c}/{n} "));
+    }
     let right = format!(" {pct:>3}% ");
 
     // Bar fills whatever remains between the text blocks; on absurdly small
@@ -1241,6 +1331,35 @@ mod tests {
             let mut t: Grid<Cell> = Grid::new(c, r);
             draw_progress_overlay(&mut t, 10, 20, 30.0);
         }
+    }
+
+    /// M8 (PLAN-M6-M8 §3): the ` c/N ` clip block rides right after the
+    /// time block — but only for a real stitch, and only where the row can
+    /// spare it. Everything else is the M6 row to the byte.
+    #[test]
+    fn progress_overlay_clip_block_is_earned() {
+        let row_at = |cols: u16, clip: Option<(usize, usize)>| -> String {
+            let mut g: Grid<Cell> = Grid::new(cols, 4);
+            draw_progress_overlay_clips(&mut g, 900, 5400, 30.0, clip);
+            (0..cols).map(|c| g.get(c, 3).glyph()).collect()
+        };
+        let m6 = |cols: u16| -> String {
+            let mut g: Grid<Cell> = Grid::new(cols, 4);
+            draw_progress_overlay(&mut g, 900, 5400, 30.0);
+            (0..cols).map(|c| g.get(c, 3).glyph()).collect()
+        };
+
+        let wide = row_at(80, Some((2, 3)));
+        assert!(wide.contains(" 0:30 / 3:00 2/3 ["), "clip block after the time: {wide:?}");
+        assert_eq!(wide.len(), 80, "the row is still painted edge to edge");
+
+        // One clip is not a stitch; a narrow row spends its columns on the
+        // bar; and no context at all is the M5/M6 row.
+        assert_eq!(row_at(80, Some((1, 1))), m6(80), "single-clip compositions say nothing");
+        assert_eq!(row_at(63, Some((2, 3))), m6(63), "below 64 columns the block is dropped");
+        assert_eq!(row_at(80, None), m6(80), "no context = the M6 row");
+        assert_eq!(row_at(64, Some((2, 3))).len(), 64, "the threshold row still fits");
+        assert!(wide.is_ascii(), "overlays stay printable ASCII (§0.6)");
     }
 
     #[test]

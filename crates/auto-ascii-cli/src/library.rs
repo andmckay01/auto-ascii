@@ -1,7 +1,8 @@
 //! The library folder's data model (PLAN-M6-M8 §2).
 //!
-//! One JSON shape serves `import`, `info` and each element of `list`: the
-//! **sidecar**. `import` writes it; the readers rebuild the `asset` block
+//! One JSON shape serves `import`, `cut`, `info` and each element of
+//! `list`: the **sidecar**. Writers fill it in; the readers rebuild the
+//! `asset` block
 //! from the ASCI header on disk (authoritative — the file is what plays)
 //! and merge whatever provenance the sidecar remembers. A clip with no
 //! sidecar is still a clip, so `source`/`created_unix`/`created` are
@@ -45,15 +46,55 @@ pub struct Sidecar {
     pub error: Option<String>,
 }
 
-/// The video an asset was built from.
+/// Where a clip came from: the video `import` ingested, or the slice
+/// `cut` took out of another clip (PLAN-M6-M8 §3).
+///
+/// Untagged, so every sidecar `import` has ever written still loads
+/// unchanged — a video source carries no `kind` and never did; `kind` is
+/// what an agent reads to tell the two apart, and only a cut has one.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Source {
-    /// Absolute path at import time (the file may since have moved).
-    pub path: String,
-    /// SHA-256 of the source bytes — the honest "is this the same video".
-    pub sha256: String,
-    /// Source file size in bytes.
-    pub bytes: u64,
+#[serde(untagged)]
+pub enum Source {
+    /// `import`: the source video.
+    Video {
+        /// Absolute path at import time (the file may since have moved).
+        path: String,
+        /// SHA-256 of the source bytes — the honest "is this the same video".
+        sha256: String,
+        /// Source file size in bytes.
+        bytes: u64,
+    },
+    /// `cut`: the slice, and the clip it came out of.
+    Cut {
+        /// Always `"cut"`.
+        kind: String,
+        /// The clip this is a slice of: its library name, or its path when
+        /// it lives outside `library/` (see [`clip_ref`]).
+        from: String,
+        /// Slice start inside that clip, seconds.
+        #[serde(rename = "in")]
+        in_secs: f64,
+        /// Slice end inside that clip, seconds (exclusive).
+        #[serde(rename = "out")]
+        out_secs: f64,
+    },
+}
+
+impl Source {
+    /// A cut's provenance, with the `kind` discriminator set in one place.
+    pub fn cut(from: String, in_secs: f64, out_secs: f64) -> Source {
+        Source::Cut { kind: "cut".to_string(), from, in_secs, out_secs }
+    }
+
+    /// The one line `list` puts in its last column.
+    pub fn summary(&self) -> String {
+        match self {
+            Source::Video { path, .. } => path.clone(),
+            Source::Cut { from, in_secs, out_secs, .. } => {
+                format!("cut of {from} [{in_secs:.2}s, {out_secs:.2}s)")
+            }
+        }
+    }
 }
 
 /// An ASCI asset's header facts, plus where it is and how big it is.
@@ -230,6 +271,33 @@ pub fn remove_sidecar(asset: &Path) -> Result<(), BoxErr> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("remove {}: {e}", path.display()).into()),
+    }
+}
+
+/// How a resolved clip is REFERRED TO from a composition's `asset` or a
+/// cut's provenance: its library name when it is `library/<name>.ascii`,
+/// else its absolute path (PLAN-M6-M8 §3).
+///
+/// The two forms are the two halves of the schema's own rule — an `asset`
+/// resolves as a path first and as `<library>/<asset>.ascii` second — so a
+/// name written here always reads back as the same file, wherever the
+/// composition lives.
+pub fn clip_ref(home: &Home, path: &Path) -> String {
+    let in_library =
+        path.extension().is_some_and(|e| e == "ascii") && same_dir(path.parent(), &home.library());
+    if in_library { crate::home::stem_of(path) } else { absolute(path) }
+}
+
+/// Whether `dir` is the folder `other` names, through symlinks when both
+/// exist — a temp `AUTO_ASCII_HOME` is a symlinked path on macOS, and a
+/// textual comparison would say no.
+fn same_dir(dir: Option<&Path>, other: &Path) -> bool {
+    match dir {
+        None => false,
+        Some(d) => match (std::fs::canonicalize(d), std::fs::canonicalize(other)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => d == other,
+        },
     }
 }
 

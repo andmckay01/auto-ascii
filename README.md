@@ -44,6 +44,11 @@ capability probe), `--sim 213x58:300` (headless render + one JSON stats line).
 `auto-ascii-factory inspect intro.ascii` prints the container's header, chunks and
 CRC status.
 
+`auto-ascii-player comp.toml` plays a **composition** — an unbounded stitch of
+clips on one timeline, each placed with `at` and trimmed with `in`/`out`, gaps
+black — without re-encoding anything; the `schema = 1` file is documented in
+[docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md).
+
 ## The `auto-ascii` CLI
 
 One command that takes a video from anywhere, processes it, and files the
@@ -56,12 +61,18 @@ cargo install --path crates/auto-ascii-cli   # or: cargo run -p auto-ascii-cli -
 auto-ascii import ~/Desktop/clip.mp4   # ffmpeg-ingest -> library/clip.ascii
 auto-ascii list                        # name, duration, fps, frames, bytes, source
 auto-ascii play clip                   # the player above, on a library clip
+
+auto-ascii cut clip --in 0:05 --out 0:20        # -> library/clip-0m05s-0m20s.ascii
+auto-ascii compose new demo                     # -> compositions/demo.toml
+auto-ascii compose add demo clip --at 0:10      # append a [[clip]] table
+auto-ascii compose play demo                    # or: compose export demo
 ```
 
 `import` also takes `--name`, `--ss`/`--t` (`SS`, `MM:SS` or `HH:MM:SS`),
 `--fps`, `--res WxH` and `--force`; `info <clip>` prints one clip's header
-plus sidecar, and `home` prints the folder. Every command accepts `--json`,
-which makes stdout exactly one JSON value so an agent can parse it — see
+plus sidecar, `compose show <name>` prints a composition's resolved timeline
+with its gaps and overlaps, and `home` prints the folder. Every command
+accepts `--json`, which makes stdout exactly one JSON value to parse — see
 [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md), which `auto-ascii agent-guide`
 prints verbatim.
 

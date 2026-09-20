@@ -10,12 +10,13 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use memmap2::Mmap;
 use auto_ascii_core::ComposeParams;
-use auto_ascii_format::AsciiReader;
 use auto_ascii_term::{AnsiBackend, Backend, ColorTier, ProbeOptions, probe_caps};
 
+use crate::composition::Composition;
+use crate::deck::{ClipDeck, DeckConfig};
 use crate::error::Error;
+use crate::pipeline::ProgressContext;
 use crate::{PaletteChoice, pipeline};
 
 /// Repaint mode (PLAN §3.1: one render path — [`Full`](RepaintMode::Full)
@@ -194,6 +195,7 @@ impl HintState {
 #[must_use = "call .build() to open the asset"]
 pub struct PlayerBuilder {
     asset: Option<PathBuf>,
+    composition: Option<PathBuf>,
     palette: PaletteChoice,
     tier: Option<ColorTier>,
     repaint: RepaintMode,
@@ -209,9 +211,23 @@ pub struct PlayerBuilder {
 }
 
 impl PlayerBuilder {
-    /// Path of the ASCI asset to play. Required.
+    /// Path of the ASCI asset to play. Required, unless
+    /// [`composition`](PlayerBuilder::composition) is set instead.
     pub fn asset(mut self, path: impl Into<PathBuf>) -> Self {
         self.asset = Some(path.into());
+        self
+    }
+
+    /// Path of a composition `.toml` to play instead of one asset
+    /// (PLAN-M6-M8 §3). The timeline is the composition's: `--seek`, the
+    /// digits, the arrows, `--loop` and the progress row all count its
+    /// frames, clips switch decoders at their boundaries and a gap plays
+    /// black. Bare library names inside the file resolve through
+    /// [`Composition::default_library_dir`].
+    ///
+    /// Mutually exclusive with [`asset`](PlayerBuilder::asset).
+    pub fn composition(mut self, path: impl Into<PathBuf>) -> Self {
+        self.composition = Some(path.into());
         self
     }
 
@@ -322,9 +338,20 @@ impl PlayerBuilder {
     /// [`Player::run`], so a bad path or corrupt file fails cleanly before
     /// any screen state changes.
     pub fn build(self) -> Result<Player, Error> {
-        let path = self.asset.clone().ok_or_else(|| {
-            Error::Config("no asset path set (PlayerBuilder::asset is required)".into())
-        })?;
+        let path = match (&self.asset, &self.composition) {
+            (Some(_), Some(_)) => {
+                return Err(Error::Config(
+                    "set either an asset or a composition, not both".into(),
+                ));
+            }
+            (Some(asset), None) => asset.clone(),
+            (None, Some(comp)) => comp.clone(),
+            (None, None) => {
+                return Err(Error::Config(
+                    "no asset path set (PlayerBuilder::asset is required)".into(),
+                ));
+            }
+        };
         if let Some(cap) = self.fps_cap
             && (cap.is_nan() || cap < MIN_FPS_CAP)
         {
@@ -338,29 +365,28 @@ impl PlayerBuilder {
         {
             return Err(Error::Config(format!("cell aspect must be finite and > 0 (got {a})")));
         }
-        let file = std::fs::File::open(&path)
-            .map_err(|source| Error::Io { path: path.clone(), source })?;
-        // SAFETY: read-only private map of a file we never mutate through
-        // this mapping; assets are not truncated mid-playback (the same
-        // assumption every mmap'd reader makes).
-        let map = unsafe { Mmap::map(&file) }
-            .map_err(|source| Error::Io { path: path.clone(), source })?;
-        let reader = AsciiReader::open(&map)
-            .map_err(|source| Error::Format { path: path.clone(), source })?;
-        let header = reader.header();
-        // Belt-and-braces: AsciiReader::open rejects zero fps since M1, but a
-        // zero here would reach Duration::from_secs_f64(1/0.0) and panic.
-        if header.fps_num == 0 || header.fps_den == 0 {
-            return Err(Error::Asset("corrupt header: fps_num or fps_den == 0"));
-        }
-        let asset_fps = f64::from(header.fps_num) / f64::from(header.fps_den);
+        // Single assets are a one-clip composition (PLAN-M6-M8 §3): one
+        // timeline, one time→frame function, no second code path. Resolving
+        // reads every clip's header — an unreadable, empty or luma-less clip
+        // fails HERE, before the terminal is touched.
+        let composed = self.composition.is_some();
+        let mut comp = match &self.composition {
+            None => Composition::single(&path),
+            Some(file) => Composition::from_toml_file(
+                file,
+                Composition::default_library_dir().as_deref(),
+            )?,
+        };
+        comp.resolve()?;
+        let asset_fps = comp.fps();
         let start_frame = match self.seek_secs {
             Some(secs) if secs.is_finite() && secs >= 0.0 => {
                 let frame = (secs * asset_fps).floor();
-                if frame >= f64::from(reader.frame_count()) {
+                if frame >= f64::from(comp.frame_count()) {
+                    let what = if composed { "composition" } else { "asset" };
                     return Err(Error::Config(format!(
-                        "seek {secs}s is past the end of the asset ({} frames @ {asset_fps} fps)",
-                        reader.frame_count()
+                        "seek {secs}s is past the end of the {what} ({} frames @ {asset_fps} fps)",
+                        comp.frame_count()
                     )));
                 }
                 frame as u32
@@ -376,8 +402,7 @@ impl PlayerBuilder {
             None => None,
             Some(spec) => Some(crate::session::load_font_table(spec)?),
         };
-        drop(reader); // run() re-opens over the owned map (cheap: header parse)
-        Ok(Player { map, cfg: self, path, asset_fps, start_frame, font_table })
+        Ok(Player { comp, composed, cfg: self, start_frame, font_table })
     }
 }
 
@@ -386,10 +411,14 @@ impl PlayerBuilder {
 /// [`Player::run`].
 #[derive(Debug)]
 pub struct Player {
-    map: Mmap,
+    /// The timeline, resolved. A plain asset is a one-clip composition, so
+    /// the run loop has exactly one time→frame path (PLAN-M6-M8 §3).
+    comp: Composition,
+    /// Built from a composition FILE — the only difference it makes is that
+    /// the progress row reports composition time and ` c/N `; a plain asset
+    /// keeps the M6 row byte for byte.
+    composed: bool,
     cfg: PlayerBuilder,
-    path: PathBuf,
-    asset_fps: f64,
     start_frame: u32,
     /// Parsed §3.4 font coverage table (repertoire veto), from
     /// [`PlayerBuilder::font_table`].
@@ -453,8 +482,6 @@ impl Player {
         // atexit hooks before touching the terminal (M0 acceptance 3,
         // pty-tested in auto-ascii-term). Errors cleanly if stdout is not a TTY.
         let mut backend = AnsiBackend::new(caps).map_err(Error::Terminal)?;
-        let reader = AsciiReader::open(&self.map)
-            .map_err(|source| Error::Format { path: self.path.clone(), source })?;
         let aspect = resolve_cell_aspect(self.cfg.cell_aspect, backend.caps().cell_px);
         // Palette selection inputs from Caps (PLAN §3.4 key: charset tier ×
         // color depth; density falls out of the viewport at reflow).
@@ -465,22 +492,31 @@ impl Player {
         if let Some(t) = &self.font_table {
             glyphs = t.veto_tier(glyphs);
         }
-        let mut player = pipeline::Player::new(
-            reader,
-            aspect,
-            self.cfg.repaint == RepaintMode::Full,
-            depth,
-            glyphs,
-        )?;
+        // One decode pipeline per clip, built as the timeline reaches them
+        // (a single asset is one clip, opened at the first render).
+        let paths = self.comp.clips().iter().map(|c| c.path.clone()).collect();
+        let mut deck = ClipDeck::new(
+            paths,
+            DeckConfig {
+                cell_aspect: aspect,
+                repaint_full: self.cfg.repaint == RepaintMode::Full,
+                color: depth,
+                glyph_tier: glyphs,
+            },
+        );
         let (cols, rows) = backend.caps().cells;
-        player.reflow(&mut backend, cols, rows);
+        backend.resize(cols, rows); // implies invalidate; clips reflow as they front
+        deck.set_size(cols, rows);
 
+        let asset_fps = self.comp.fps();
         let present_fps = match self.cfg.fps_cap {
-            Some(cap) => cap.min(self.asset_fps), // >= MIN_FPS_CAP checked at build()
-            None => self.asset_fps,
+            Some(cap) => cap.min(asset_fps), // >= MIN_FPS_CAP checked at build()
+            None => asset_fps,
         };
         let tick = Duration::from_secs_f64(1.0 / present_fps);
-        let frame_count = u64::from(player.frame_count());
+        let frame_count = u64::from(self.comp.frame_count());
+        let clip_count = self.comp.clips().len();
+        let (fps_num, fps_den) = self.comp.fps_ratio();
         let mut base_frame = u64::from(self.start_frame);
         let t0 = Instant::now(); // duration_secs origin (never reset by jumps)
         let mut clock = t0; // pacing origin, reset on 0–9 jumps + arrow scrubs
@@ -492,13 +528,16 @@ impl Player {
         // whatever the CLI/params handed the pipeline, so a --shadow-lift on
         // the command line is simply the dial's opening position.
         let mut dial_idx: usize = 0;
-        let mut compose = player.compose_params();
+        // The dials open where the pipeline starts: nothing on this path
+        // overrides the §3.5 defaults (the eval driver is the only caller
+        // that does, and it never builds a terminal Player).
+        let mut compose = ComposeParams::default();
         let mut dial_until: Option<Instant> = None;
         // M6 key hints: the legend row above the overlay row (PLAN-M6-M8 §1).
         let mut hints = HintState::new(t0);
 
         loop {
-            let drained = player.drain_events(&mut backend);
+            let drained = deck.drain_events(&mut backend);
             if drained.quit {
                 break;
             }
@@ -518,10 +557,9 @@ impl Player {
                 // the clock (post-digit-jump if both landed in one drain),
                 // clamped to the asset; same FIDX-seek + state-reset
                 // machinery as digit jumps.
-                let pos = base_frame + (clock.elapsed().as_secs_f64() * self.asset_fps) as u64;
+                let pos = self.comp.frame_after(base_frame, clock.elapsed().as_secs_f64());
                 let pos = if self.cfg.looping { pos % frame_count } else { pos };
-                let delta =
-                    (f64::from(drained.seek_steps) * SCRUB_STEP_SECS * self.asset_fps) as i64;
+                let delta = (f64::from(drained.seek_steps) * SCRUB_STEP_SECS * asset_fps) as i64;
                 let landing = (pos.min(frame_count - 1) as i64 + delta)
                     .clamp(0, frame_count as i64 - 1) as u64;
                 base_frame = landing;
@@ -539,21 +577,21 @@ impl Player {
                     dial.turn(&mut compose, drained.dial_delta);
                     // Renderer-only: re-tunes the asset already in memory, no
                     // rebuild, no temporal reset.
-                    player.set_compose_params(compose);
+                    deck.set_compose_params(compose);
                 }
-                player.set_dial_overlay(Some((dial.label(), dial.get(&compose), dial.max())));
+                deck.set_dial_overlay(Some((dial.label(), dial.get(&compose), dial.max())));
                 dial_until = Some(Instant::now() + DIAL_OVERLAY_HIDE_AFTER);
             } else if dial_until.is_some_and(|t| Instant::now() >= t) {
-                player.set_dial_overlay(None);
+                deck.set_dial_overlay(None);
                 dial_until = None;
             }
             if sought {
-                player.set_progress_overlay(true);
+                deck.set_progress_overlay(true);
                 overlay_until = Some(Instant::now() + OVERLAY_HIDE_AFTER);
             } else if overlay_until.is_some_and(|t| Instant::now() >= t) {
                 // Auto-hide (~1 s): set_progress_overlay(false) schedules the
                 // backend invalidate that repaints the row under the overlay.
-                player.set_progress_overlay(false);
+                deck.set_progress_overlay(false);
                 overlay_until = None;
             }
             // Both `*_until` options are now exactly "that overlay is on
@@ -561,7 +599,7 @@ impl Player {
             // goes through the same invalidate contract (PLAN-M6-M8 §1).
             let overlays_up = overlay_until.is_some() || dial_until.is_some();
             let show_hints = hints.visible(Instant::now(), drained.toggle_hints, overlays_up);
-            player.set_hint_overlay(show_hints);
+            deck.set_hint_overlay(show_hints);
             if let Some(dur) = self.cfg.duration_secs
                 && t0.elapsed().as_secs_f64() >= dur
             {
@@ -570,7 +608,7 @@ impl Player {
             // Pacing (§3.6 step 2): target frame by wall clock — if we fell
             // behind, this skips asset frames (latest-frame-wins, never
             // queued).
-            let mut target = base_frame + (clock.elapsed().as_secs_f64() * self.asset_fps) as u64;
+            let mut target = self.comp.frame_after(base_frame, clock.elapsed().as_secs_f64());
             if target >= frame_count {
                 if self.cfg.looping {
                     target %= frame_count;
@@ -578,7 +616,30 @@ impl Player {
                     break;
                 }
             }
-            player.render_present(&mut backend, target as u32)?;
+            // Composition time → the clip on top and its own frame. A plain
+            // asset is one clip and maps frame to frame.
+            let located = self.comp.locate_frame(target as u32);
+            if self.composed {
+                // Only a composition retimes the row: a plain asset keeps
+                // the M6 overlay, printed from its own frame counter.
+                deck.set_progress_context(Some(ProgressContext {
+                    frame: target as u32,
+                    frame_count: self.comp.frame_count(),
+                    fps_num,
+                    fps_den,
+                    clip: located.map(|l| (l.clip_idx + 1, clip_count)),
+                }));
+            }
+            match located {
+                Some(loc) => {
+                    deck.activate(loc.clip_idx)?;
+                    deck.render_present(&mut backend, loc.local_frame)?;
+                }
+                // A gap between clips: black, overlays still on top.
+                None => {
+                    deck.present_gap(&mut backend);
+                }
+            }
 
             next_tick += tick;
             let now = Instant::now();

@@ -1,17 +1,14 @@
 # auto-ascii for agents
 
-`auto-ascii` distills video into `.ascii` assets — resolution-independent
-feature files that play as ASCII art in any terminal — kept in one folder you
-can list, trim and stitch. `--json` makes stdout one JSON value and errors
-`{"error": "..."}` on stderr, exit 1; `play` is interactive and refuses it.
+`auto-ascii` distills video into `.ascii` assets — feature files that play as
+ASCII art in any terminal — kept in one folder you can list, trim and stitch.
+`--json` makes stdout one JSON value; errors are `{"error": "..."}` on stderr, exit 1.
 
 ## Home folder
 
-`~/auto-ascii`, or `$AUTO_ASCII_HOME`. `auto-ascii home` prints and creates it.
-
-    library/        <name>.ascii clips, each with a <name>.json sidecar
-    compositions/   <name>.toml timelines
-    exports/        flattened compositions
+`~/auto-ascii`, or `$AUTO_ASCII_HOME`; `auto-ascii home` prints and creates it,
+with `library/` (the `<name>.ascii` clips, each with a `<name>.json` sidecar),
+`compositions/` (`<name>.toml` timelines) and `exports/` (flattened ones) in it.
 
 ## The loop
 
@@ -20,35 +17,58 @@ can list, trim and stitch. `--json` makes stdout one JSON value and errors
    `--t T`, `--fps N`, `--res WxH`, `--force`; times are `SS`/`MM:SS`/`HH:MM:SS`.
 2. **list / info** — `auto-ascii list`, `auto-ascii info <clip>`. A `<clip>`
    is a path if one exists, else `library/<clip>.ascii`.
-3. **cut / compose** — trim one clip, or stitch many (schema below). *Not in
-   this build: these land with M8; a `.toml` written today stays valid.*
-4. **play** — `auto-ascii play <clip>`: `q` quits, `?` lists the keys.
+3. **cut** — `auto-ascii cut <clip> --in T --out T [--name N] [--force]` slices
+   one clip into a new one (default name `<clip>-0m05s-0m20s`, nothing re-encoded).
+4. **compose** — `compose new <name>` starts a timeline, `compose add <name>
+   <clip> [--in T] [--out T] [--at T]` appends one clip, and `compose show
+   <name>` prints the resolved timeline with its gaps and overlaps. A `<name>`
+   is a path to a `.toml` if one exists, else `compositions/<name>.toml`.
+5. **play / export** — `auto-ascii play <clip | composition>` and `compose play
+   <name>` are interactive, so they refuse `--json`: `q` quits, `?` lists the
+   keys, and a timeline switches clips at their boundaries without re-encoding.
+   A bare name is a library clip BEFORE `compositions/<name>.toml`, so pass the
+   `.toml` path (or use `compose play`) to force the composition. `compose
+   export <name> [-o path] [--force]` flattens one into `exports/<name>.ascii`.
 
 ## Composition schema
 
-A TOML file that IS the source of truth. File order; gaps black; later clip on top.
+A TOML file that IS the source of truth — write it yourself if you prefer,
+since `compose add` only appends. File order; gaps black; later clip on top.
+Below: `intro` plays 0:00–0:10, black 0:10–0:15, `apple-1984` 0:15–0:20.
 
 ```toml
 schema = 1
-name = "demo"          # optional; defaults to the file stem
+name = "demo"           # optional; defaults to the file stem
 [[clip]]
-asset = "apple-1984"   # library name, or a path (absolute or relative to this file)
-in = "0:05"            # optional trim start inside the asset (default: its start)
-out = "0:20"           # optional trim end inside the asset (default: its end)
-at = "0:00"            # optional timeline position (default: end of previous clip)
+asset = "intro"         # library name, or a path (absolute or relative to this file)
+out = "0:10"            # optional trim end inside the asset (default: its end)
+[[clip]]
+asset = "apple-1984"
+in = "0:05"             # optional trim start inside the asset (default: its start)
+out = "0:10"
+at = "0:15"             # optional timeline position (default: end of previous clip)
 ```
 
 ## JSON shapes
 
-`import` prints the sidecar it wrote; `list` prints an array of it, with
-`source`/`created_unix`/`created` null when a clip has no sidecar. A clip
-that will not read still gets a row: `asset` null plus an `error` string.
+`import` and `cut` print the sidecar they wrote; `list` prints an array of it,
+with `source`/`created_unix`/`created` null when there is none, and a row with
+`asset` null plus `error` when a clip will not read. A cut's `source` is its
+slice; `compose show` prints the timeline (`overlaps` adds `under`/`over`).
 
 ```json
 {"name": "clip", "source": {"path": "/abs/clip.mp4", "sha256": "…", "bytes": 91234},
  "asset": {"path": "/abs/library/clip.ascii", "bytes": 40960, "frames": 360, "fps": 30.0,
            "duration_secs": 12.0, "base_w": 480, "base_h": 270},
  "created_unix": 1758326400, "created": "2025-09-20T00:00:00Z"}
+
+{"kind": "cut", "from": "clip", "in": 5.0, "out": 20.0}
+
+{"name": "demo", "fps": 30.0, "duration_secs": 20.0, "frame_count": 600,
+ "clips": [{"index": 0, "asset": "intro", "path": "/abs/library/intro.ascii",
+            "in_secs": 0.0, "out_secs": 10.0, "at_secs": null, "start_secs": 0.0,
+            "end_secs": 10.0, "fps": 30.0}],
+ "gaps": [{"start_secs": 10.0, "end_secs": 15.0}], "overlaps": []}
 ```
 
 ## Two rules agents get wrong

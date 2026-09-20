@@ -2,12 +2,14 @@
 //!
 //! `~/auto-ascii/` — override `AUTO_ASCII_HOME` — with three visible
 //! subfolders created on demand: `library/` (processed clips + provenance
-//! sidecars), `compositions/` (M8 timelines) and `exports/` (flattened
-//! compositions). Visible and discoverable beats a dotfile cache: an agent
-//! can `ls` it and a human can find what the agent made.
+//! sidecars), `compositions/` (`<name>.toml` timelines) and `exports/`
+//! (flattened compositions). Visible and discoverable beats a dotfile
+//! cache: an agent can `ls` it and a human can find what the agent made.
 
 use std::io;
 use std::path::{Path, PathBuf};
+
+use auto_ascii::timecode;
 
 use crate::BoxErr;
 
@@ -76,12 +78,15 @@ impl Home {
         if as_path.is_file() {
             return Ok(as_path.to_path_buf());
         }
-        let in_library = self.clip_path(spec);
+        // `clip-a` and `clip-a.ascii` name the same clip: the library adds
+        // the extension, so carrying one in would ask for `clip-a.ascii.ascii`.
+        let name = library_name(spec, "ascii");
+        let in_library = self.clip_path(name);
         if in_library.is_file() {
             return Ok(in_library);
         }
-        let kebab = kebab_case(spec);
-        if !kebab.is_empty() && kebab != spec {
+        let kebab = kebab_case(name);
+        if !kebab.is_empty() && kebab != name {
             let kebabbed = self.clip_path(&kebab);
             if kebabbed.is_file() {
                 return Ok(kebabbed);
@@ -94,12 +99,116 @@ impl Home {
         )
         .into())
     }
+
+    /// Where the composition named `name` lives (whether or not it exists
+    /// yet).
+    pub fn composition_path(&self, name: &str) -> PathBuf {
+        self.compositions().join(format!("{name}.toml"))
+    }
+
+    /// Where the export of the composition named `name` lands by default.
+    pub fn export_path(&self, name: &str) -> PathBuf {
+        self.exports().join(format!("{name}.ascii"))
+    }
+
+    /// Resolve a `<name>` argument for `compose …`, the same three steps
+    /// [`resolve_clip`](Home::resolve_clip) takes: an existing path wins
+    /// (a `.toml` may live anywhere), else `compositions/<name>.toml`,
+    /// else `compositions/<kebab>.toml` — where `<name>` is `spec` without
+    /// a trailing `.toml`, so `demo` and `demo.toml` are one composition.
+    pub fn resolve_composition(&self, spec: &str) -> Result<PathBuf, BoxErr> {
+        let as_path = Path::new(spec);
+        if as_path.is_file() {
+            return Ok(as_path.to_path_buf());
+        }
+        let name = library_name(spec, "toml");
+        let in_home = self.composition_path(name);
+        if in_home.is_file() {
+            return Ok(in_home);
+        }
+        let kebab = kebab_case(name);
+        if !kebab.is_empty() && kebab != name {
+            let kebabbed = self.composition_path(&kebab);
+            if kebabbed.is_file() {
+                return Ok(kebabbed);
+            }
+        }
+        Err(format!(
+            "no composition {spec:?}: not a file here, and {} does not exist \
+             (`auto-ascii compose new {name}` starts one)",
+            in_home.display()
+        )
+        .into())
+    }
+
+    /// Resolve a `play` argument, which is a clip OR a composition
+    /// (PLAN-M6-M8 §3). Clips are tried first, so every M7 spelling still
+    /// means what it meant; a `.toml` is always a composition.
+    pub fn resolve_playable(&self, spec: &str) -> Result<Target, BoxErr> {
+        let as_path = Path::new(spec);
+        if as_path.is_file() {
+            return Ok(match as_path.extension() {
+                Some(ext) if ext == "toml" => Target::Composition(as_path.to_path_buf()),
+                _ => Target::Clip(as_path.to_path_buf()),
+            });
+        }
+        // Each folder strips only the extension IT adds, so `demo.toml`
+        // asks `compositions/` for `demo.toml` and `clip.ascii` asks
+        // `library/` for `clip.ascii`.
+        let (clip_name, comp_name) =
+            (library_name(spec, "ascii"), library_name(spec, "toml"));
+        let in_library = self.clip_path(clip_name);
+        let in_compositions = self.composition_path(comp_name);
+        // The kebab forms are the same convenience `resolve_clip` documents:
+        // an agent that saw `My Clip.mp4` go in asks for `My Clip` back.
+        let (clip_kebab, comp_kebab) = (kebab_case(clip_name), kebab_case(comp_name));
+        let kebabbed = (!clip_kebab.is_empty()
+            && (clip_kebab != clip_name || comp_kebab != comp_name))
+            .then(|| (self.clip_path(&clip_kebab), self.composition_path(&comp_kebab)));
+        for (clip, composition) in
+            std::iter::once((&in_library, &in_compositions)).chain(
+                kebabbed.iter().map(|(c, k)| (c, k)),
+            )
+        {
+            if clip.is_file() {
+                return Ok(Target::Clip(clip.clone()));
+            }
+            if composition.is_file() {
+                return Ok(Target::Composition(composition.clone()));
+            }
+        }
+        Err(format!(
+            "no clip or composition {spec:?}: not a file here, and neither {} nor {} \
+             exists (`auto-ascii list` shows the library)",
+            in_library.display(),
+            in_compositions.display()
+        )
+        .into())
+    }
+}
+
+/// What a `play` argument named: one clip, or a timeline of them.
+pub enum Target {
+    /// An `.ascii` asset.
+    Clip(PathBuf),
+    /// A composition `.toml`.
+    Composition(PathBuf),
 }
 
 /// The sidecar that belongs to an asset: the same path with a `.json`
 /// extension, so it works for library clips and loose paths alike.
 pub fn sidecar_path(asset: &Path) -> PathBuf {
     asset.with_extension("json")
+}
+
+/// `spec` without the extension its folder adds back: `clip-a.ascii` and
+/// `clip-a` are one clip, `demo.toml` and `demo` one composition.
+///
+/// Only that one extension is stripped, and only as a SUFFIX — a clip
+/// really called `clip.final` keeps its dot, and `demo.toml` never asks
+/// the folder for `demo.toml.toml`.
+fn library_name<'a>(spec: &'a str, ext: &str) -> &'a str {
+    spec.strip_suffix(&format!(".{ext}")).unwrap_or(spec)
 }
 
 /// Kebab-case a file stem or a `--name`: lowercase, every run of
@@ -144,6 +253,37 @@ pub fn name_for(path: &Path) -> Result<String, BoxErr> {
         .into());
     }
     Ok(name)
+}
+
+/// The default name of a `cut`: the source clip's name with the slice's
+/// two timestamps made file-name-safe — `apple-1984` cut `0:05`..`0:20`
+/// becomes `apple-1984-0m05s-0m20s` (PLAN-M6-M8 §3). Kebab-cased like
+/// every other name on the way in, so a cut of a hand-dropped
+/// `My Clip.ascii` still lands inside `library/`.
+pub fn cut_name(from: &str, in_secs: f64, out_secs: f64) -> String {
+    kebab_case(&format!("{from}-{}-{}", time_tag(in_secs), time_tag(out_secs)))
+}
+
+/// One timestamp as a file-name component: the shared formatter's `M:SS`
+/// (or `H:MM:SS`) with its colons spelled out — `0:05` -> `0m05s`,
+/// `1:01:01` -> `1h01m01s`. Sub-second parts are truncated, exactly as
+/// `format_mmss` truncates them, so two cuts of one clip that differ only
+/// inside a second collide by name and want `--name`.
+fn time_tag(secs: f64) -> String {
+    let text = timecode::format_mmss(secs);
+    let hours = text.matches(':').count() == 2;
+    let mut out = String::with_capacity(text.len() + 1);
+    let mut seen = 0;
+    for ch in text.chars() {
+        if ch == ':' {
+            seen += 1;
+            out.push(if hours && seen == 1 { 'h' } else { 'm' });
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('s');
+    out
 }
 
 /// Format a Unix timestamp as RFC 3339 UTC (`YYYY-MM-DDTHH:MM:SSZ`).
@@ -199,6 +339,28 @@ mod tests {
         assert_eq!(name_for(Path::new("/tmp/My Clip.mp4")).unwrap(), "my-clip");
         assert_eq!(name_for(Path::new("clip.final.mov")).unwrap(), "clip-final");
         assert!(name_for(Path::new("/tmp/%%%.mov")).is_err());
+    }
+
+    #[test]
+    fn a_folders_own_extension_is_stripped() {
+        assert_eq!(library_name("clip-a", "ascii"), "clip-a");
+        assert_eq!(library_name("clip-a.ascii", "ascii"), "clip-a");
+        assert_eq!(library_name("demo.toml", "toml"), "demo");
+        // Only that folder's extension, and only at the end.
+        assert_eq!(library_name("demo.toml", "ascii"), "demo.toml");
+        assert_eq!(library_name("clip.final", "ascii"), "clip.final");
+        assert_eq!(library_name("toml.demo", "toml"), "toml.demo");
+        assert_eq!(library_name(".ascii", "ascii"), "");
+    }
+
+    #[test]
+    fn cut_names_carry_the_slice() {
+        assert_eq!(cut_name("apple-1984", 5.0, 20.0), "apple-1984-0m05s-0m20s");
+        assert_eq!(cut_name("clip", 0.0, 2.4), "clip-0m00s-0m02s");
+        assert_eq!(cut_name("clip", 3661.0, 3725.0), "clip-1h01m01s-1h02m05s");
+        // The source name goes through the same kebab rule as --name, so a
+        // cut of a hand-dropped file cannot escape the library either.
+        assert_eq!(cut_name("My Clip", 1.0, 2.0), "my-clip-0m01s-0m02s");
     }
 
     /// Readers report the stem verbatim, so `list` and `info` agree even

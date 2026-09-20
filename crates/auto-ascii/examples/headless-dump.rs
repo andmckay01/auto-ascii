@@ -8,13 +8,32 @@
 //!
 //! Run: `cargo run --example headless-dump -- asset.ascii [FRAMES] [COLSxROWS]`
 //!
+//! A `.toml` argument is a composition (PLAN-M6-M8 §3) — the same clips
+//! stitched on one timeline, dumped exactly as they play.
+//!
 //! [`RenderSession`]: auto_ascii::RenderSession
 
 use std::io::Write;
 
 use auto_ascii::{Cell, Grid, PaletteChoice, RenderSession};
 
-const USAGE: &str = "usage: headless-dump <asset.ascii> [FRAMES] [COLSxROWS]";
+const USAGE: &str =
+    "usage: headless-dump <asset.ascii | composition.toml> [FRAMES] [COLSxROWS]";
+
+/// Open an asset — or a composition, when the argument is a `.toml`. Bare
+/// library names inside a composition resolve under `$AUTO_ASCII_HOME`.
+///
+/// The composition branch needs the (default-on) `compose` feature; a
+/// `--no-default-features` build reads assets only, and a `.toml` there
+/// fails as the non-asset it is.
+fn open(path: &str) -> Result<RenderSession, auto_ascii::Error> {
+    #[cfg(feature = "compose")]
+    if std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("toml")) {
+        let library = auto_ascii::Composition::default_library_dir();
+        return RenderSession::open_composition(path, library.as_deref());
+    }
+    RenderSession::open(path)
+}
 
 /// `"100x28"` → `(100, 28)`.
 fn parse_dims(s: &str) -> (u16, u16) {
@@ -46,7 +65,7 @@ fn main() -> Result<(), auto_ascii::Error> {
     let frames: u32 = args.next().map_or(3, |s| s.parse().expect(USAGE));
     let (cols, rows) = args.next().map_or((100, 28), |s| parse_dims(&s));
 
-    let mut session = RenderSession::open(&path)?;
+    let mut session = open(&path)?;
     // ASCII survives any pipe, pager or log file; drop this line for blocks.
     session.set_palette(PaletteChoice::Ascii);
 

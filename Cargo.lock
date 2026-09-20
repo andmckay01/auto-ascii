@@ -111,6 +111,7 @@ dependencies = [
  "criterion",
  "memmap2",
  "proptest",
+ "toml",
 ]
 
 [[package]]

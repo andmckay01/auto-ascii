@@ -62,6 +62,7 @@
 //! |---|---|---|
 //! | `bin` | **on** | the `auto-ascii-player` CLI binary (implies `terminal`) |
 //! | `terminal` | via `bin` | `Player`/`PlayerBuilder` — the blocking terminal session |
+//! | `compose` | **on** | reading composition `.toml` files (`toml` dep); the [`Composition`] type, its timeline and [`compose::export`] are always there |
 //! | *(none)* | | [`RenderSession`] only: no crossterm, no clap — the pure-embedder build (`default-features = false`) |
 //!
 //! # What is deliberately NOT here
@@ -86,8 +87,21 @@
 #[doc(hidden)]
 pub mod pipeline;
 
+mod composition;
 mod error;
 mod session;
+
+/// Flattening a [`Composition`] into one `.ascii` file (PLAN-M6-M8 §3).
+/// Playback never needs this — compositions play virtually — but a single
+/// file is sometimes what you want, and `auto-ascii cut` is an export of a
+/// one-clip composition.
+pub mod compose;
+
+/// One decode pipeline per composition clip, created on demand. Hidden: the
+/// workspace harness contract (the `--sim` path drives it), not the
+/// embedding API — [`RenderSession`] and `Player` are the supported ways in.
+#[doc(hidden)]
+pub mod deck;
 
 /// Timestamp parsing/formatting shared by every entry point that takes a
 /// time (PLAN-M6-M8 §2) — `--seek`, `auto-ascii import --ss/--t`.
@@ -96,6 +110,7 @@ pub mod timecode;
 #[cfg(feature = "terminal")]
 mod player;
 
+pub use composition::{Clip, ClipSpan, Composition, Located, SCHEMA_VERSION};
 pub use error::Error;
 pub use session::RenderSession;
 
