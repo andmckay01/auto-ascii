@@ -1,12 +1,14 @@
 //! M2 item B integration tests via the real `auto-ascii-factory` binary:
 //! params.toml plumbing (`params --dump`, --params overrides, validation),
 //! the determinism guard (default-params build byte-pinned against the
-//! committed pipeline output on a synthetic lavfi fixture — reproducible
-//! WITHOUT the corpus), and the `eval` agent socket (tiny synthetic corpus →
-//! metrics JSON with every §6 metric populated + self-contained HTML contact
-//! sheet + baseline compare gating with nonzero exit on breach).
+//! committed pipeline output on a fixture this file writes itself —
+//! reproducible WITHOUT the corpus and WITHOUT a pinned ffmpeg), and the
+//! `eval` agent socket (tiny synthetic corpus → metrics JSON with every §6
+//! metric populated + self-contained HTML contact sheet + baseline compare
+//! gating with nonzero exit on breach).
 //!
-//! This box guarantees ffmpeg + sha256sum on PATH (Linux CI).
+//! This box guarantees ffmpeg + sha256sum or shasum on PATH (Linux CI,
+//! macOS dev boxes).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -46,16 +48,23 @@ fn stderr_of(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
+/// `sha256sum` (Linux CI) or `shasum -a 256` (macOS ships shasum, not
+/// sha256sum); both print the digest as the first whitespace-separated token.
 fn sha256_of(path: &Path) -> String {
-    let out = Command::new("sha256sum")
-        .arg(path)
-        .output()
-        .expect("sha256sum must be on PATH (Linux CI box)");
-    assert!(out.status.success(), "sha256sum failed on {}", path.display());
+    let out = match Command::new("sha256sum").arg(path).output() {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Command::new("shasum")
+            .args(["-a", "256"])
+            .arg(path)
+            .output()
+            .expect("sha256sum or shasum must be on PATH"),
+        Err(e) => panic!("failed to run sha256sum: {e}"),
+    };
+    assert!(out.status.success(), "sha256 failed on {}", path.display());
     String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .next()
-        .expect("sha256sum output")
+        .expect("sha256 output")
         .to_string()
 }
 
@@ -136,10 +145,11 @@ fn params_validation_rejects_degenerate_geometry() {
 // byte-identical to the current pipeline output")
 // ---------------------------------------------------------------------------
 
-/// lavfi fixture (no corpus dependency). Pinned so an ffmpeg upgrade that
-/// changes testsrc2/encoder bytes fails HERE with a clear message instead of
-/// as a mystery asset-sha mismatch below.
-const FIXTURE_MP4_SHA: &str = "a0a8d8fa401e499fb2ea04d6b00ddbc1d4e79c8dd2a728e035cf6609e69f3454";
+/// The generated fixture itself. A GENERATOR pin, not an ffmpeg pin: the
+/// bytes come from `synth_fixture` below, so no ffmpeg upgrade can move it.
+/// Pinned so an edit to the generator fails HERE with a clear message instead
+/// of as a mystery asset-sha mismatch below.
+const FIXTURE_AVI_SHA: &str = "4c9a29d515e2184a3f592e30912dedbdb3e453901233136a249d8c56e382cd5d";
 /// Committed pipeline output for the fixture at embedded-default params.
 /// Re-baselining this constant is a deliberate act (it means the default
 /// factory output changed for every user). History:
@@ -166,18 +176,251 @@ const FIXTURE_MP4_SHA: &str = "a0a8d8fa401e499fb2ea04d6b00ddbc1d4e79c8dd2a728e03
 ///   e5bc340e… EXACTLY. So every compressed plane byte is bit-identical and
 ///   this is a pure container-identity re-pin, not a pipeline change. Every
 ///   render golden and insta snapshot passed unchanged through the rename.
-const FIXTURE_ASSET_SHA: &str = "b00e3ecb4e64aab549fbc7a4ca8da70760cc208ec234a76e3f990c29d79b9884";
+///   RE-PINNED 2026-09-20: the fixture is now a Rust-written raw BGR24 AVI
+///   instead of an ffmpeg lavfi/libx264 mp4, so the pin no longer depends on
+///   the ffmpeg build — the old mp4 pin died on ffmpeg 9.0.2, which renders
+///   testsrc2 and encodes it differently from the box the pin was taken on.
+///   The PIPELINE is unchanged; only the input bytes are, so the asset sha
+///   necessarily moved with them. Verified before pinning: three consecutive
+///   default builds of the new fixture all produced 7b301c1b… on macOS/aarch64.
+///   Cross-platform (Linux) confirmation is pending.
+const FIXTURE_ASSET_SHA: &str = "7b301c1b2d649cf9ba43ac46010c5b4cb00aab892a404049a3671bdd7a59fb6f";
 
+// Fixture geometry: exactly the default `[build]` grid and rate, which is
+// what makes the ingest a passthrough (see `synth_fixture`).
+const FIX_W: usize = 480;
+const FIX_H: usize = 270;
+const FIX_FPS: u32 = 30;
+const FIX_FRAMES: usize = 30;
+/// One uncompressed BGR24 frame. The row stride (1440) is a multiple of 4, so
+/// DIB rows need no padding and every `00db` chunk is even-sized — the RIFF
+/// pad byte never applies anywhere in this file.
+const FIX_FRAME_BYTES: u32 = (FIX_W * FIX_H * 3) as u32;
+/// Frame of the hard scene change (gives shot detection exactly one cut).
+const FIX_CUT: usize = 15;
+
+/// One rectangle in the pattern: x, y, w, h + RGB.
+type FixRect = (i32, i32, i32, i32, (u8, u8, u8));
+
+fn le32(out: &mut Vec<u8>, n: u32) {
+    out.extend_from_slice(&n.to_le_bytes());
+}
+
+fn le16(out: &mut Vec<u8>, n: u16) {
+    out.extend_from_slice(&n.to_le_bytes());
+}
+
+/// `fourcc` + little-endian payload size + payload.
+fn riff_chunk(out: &mut Vec<u8>, fourcc: &[u8; 4], payload: &[u8]) {
+    out.extend_from_slice(fourcc);
+    le32(out, payload.len() as u32);
+    out.extend_from_slice(payload);
+}
+
+/// Integer HSV at full saturation: `hue` walks six 256-wide segments of the
+/// colour wheel, `val` scales 0..=255. Integer-only, like everything else in
+/// the generator — no float rounding to differ between hosts.
+fn hue_rgb(hue: u32, val: u32) -> (u8, u8, u8) {
+    let (seg, t) = (hue / 256 % 6, hue % 256);
+    let (r, g, b) = match seg {
+        0 => (255, t, 0),
+        1 => (255 - t, 255, 0),
+        2 => (0, 255, t),
+        3 => (0, 255 - t, 255),
+        4 => (t, 0, 255),
+        _ => (255, 0, 255 - t),
+    };
+    ((r * val / 255) as u8, (g * val / 255) as u8, (b * val / 255) as u8)
+}
+
+fn put_px(rgb: &mut [u8], x: usize, y: usize, c: (u8, u8, u8)) {
+    let i = (y * FIX_W + x) * 3;
+    rgb[i] = c.0;
+    rgb[i + 1] = c.1;
+    rgb[i + 2] = c.2;
+}
+
+/// Hard-edged filled rectangle (no anti-aliasing), clipped to the frame.
+fn fill_rect(rgb: &mut [u8], x0: i32, y0: i32, w: i32, h: i32, c: (u8, u8, u8)) {
+    for y in y0.max(0)..(y0 + h).min(FIX_H as i32) {
+        for x in x0.max(0)..(x0 + w).min(FIX_W as i32) {
+            put_px(rgb, x as usize, y as usize, c);
+        }
+    }
+}
+
+/// One frame of the synthetic clip, top-down packed RGB24.
+///
+/// Deliberately edge-rich and colourful so every §4 plane gets real content:
+/// a smooth gradient background (Y), hard rectangle and 45° stripe edges
+/// (E + the Ex/Ey orientation field), a pure-white square (H highlights),
+/// saturated primaries against a hue ramp (C), and a hard cut at frame 15
+/// (shot detection sees one cut).
+fn fix_frame_rgb(f: usize) -> Vec<u8> {
+    let mut rgb = vec![0u8; FIX_W * FIX_H * 3];
+    let cut = f >= FIX_CUT;
+    let phase = (f % FIX_CUT) * 4; // 4 px/frame, restarting after the cut
+    let step = phase as i32;
+
+    // Background: a luma gradient along one axis, a hue ramp along the other.
+    // The cut swaps the two axes AND drops to a dark, narrow luma band: the
+    // §5 stage-2 detector thresholds the SAD of 256-bin L* HISTOGRAMS, which
+    // a mere transpose would leave untouched (it is position-blind). Scene B
+    // barely overlaps scene A's luma range, so the cut is unmissable — and
+    // its shadows give the H plane's deep-shadow bit real work too.
+    for y in 0..FIX_H {
+        for x in 0..FIX_W {
+            let (hue, val) = if cut {
+                (x * 1536 / FIX_W, 10 + y * 50 / FIX_H)
+            } else {
+                (y * 1536 / FIX_H, 40 + x * 200 / FIX_W)
+            };
+            put_px(&mut rgb, x, y, hue_rgb(hue as u32, val as u32));
+        }
+    }
+
+    // A band of diagonal stripes: constant x+y is a 45° edge.
+    let band = if cut { 20..70 } else { 120..170 };
+    for y in band {
+        for x in 0..FIX_W {
+            let lit = ((x + y + phase) / 12).is_multiple_of(2);
+            put_px(&mut rgb, x, y, if lit { (245, 245, 30) } else { (20, 20, 80) });
+        }
+    }
+
+    // Saturated rectangles sliding 4 px/frame, alternating direction so the
+    // motion field is not a single global pan.
+    let rects: &[FixRect] = if cut {
+        &[
+            (250, 90, 90, 70, (255, 32, 0)),
+            (30, 170, 80, 60, (0, 224, 64)),
+            (150, 120, 60, 110, (32, 64, 255)),
+        ]
+    } else {
+        &[
+            (20, 30, 80, 70, (255, 0, 32)),
+            (200, 60, 70, 50, (0, 255, 96)),
+            (330, 180, 90, 70, (64, 0, 255)),
+        ]
+    };
+    for (i, &(x, y, w, h, c)) in rects.iter().enumerate() {
+        let dx = if i.is_multiple_of(2) { step } else { -step };
+        fill_rect(&mut rgb, x + dx, y, w, h, c);
+    }
+
+    // A small pure-white square — the H plane's top-hat target.
+    let (hx, hy) = if cut { (380 - step, 200) } else { (60 + step, 215) };
+    fill_rect(&mut rgb, hx, hy, 24, 24, (255, 255, 255));
+    rgb
+}
+
+/// The same frame as the DIB stores it: rows bottom-up (last image row
+/// first), pixels B,G,R.
+fn fix_frame_bgr_bottom_up(f: usize) -> Vec<u8> {
+    let rgb = fix_frame_rgb(f);
+    let stride = FIX_W * 3;
+    let mut out = Vec::with_capacity(rgb.len());
+    for y in (0..FIX_H).rev() {
+        for px in rgb[y * stride..(y + 1) * stride].chunks_exact(3) {
+            out.extend_from_slice(&[px[2], px[1], px[0]]);
+        }
+    }
+    out
+}
+
+/// Write the determinism fixture: a minimal RIFF AVI holding 30 frames of
+/// uncompressed 24-bit BGR (BI_RGB) at 480x270, 30 fps.
+///
+/// Written from Rust rather than synthesised with `ffmpeg -f lavfi -i
+/// testsrc2 ...` on purpose. The mp4 this replaced depended on testsrc2's
+/// renderer, on libx264 AND on swscale's YUV->RGB, none of which are
+/// bit-stable across ffmpeg majors — so the pin broke on the first ffmpeg
+/// upgrade, with nothing about the factory having changed. This file is
+/// already at the default `[build]` geometry and rate, so the factory's
+/// `scale=480:270:flags=area,fps=30,format=rgb24` ingest is a passthrough
+/// scale, a 1:1 fps filter and an exact BGR->RGB byte permutation: every
+/// ffmpeg build decodes the identical frames.
 fn synth_fixture(dir: &TempDir) -> PathBuf {
-    let input = dir.path("fixture.mp4");
-    let status = Command::new("ffmpeg")
-        .args(["-y", "-nostdin", "-v", "error", "-f", "lavfi", "-i"])
-        .arg("testsrc2=duration=1:size=480x270:rate=30")
-        .args(["-pix_fmt", "yuv420p"])
-        .arg(&input)
-        .status()
-        .expect("ffmpeg must be installed");
-    assert!(status.success(), "ffmpeg lavfi synthesis failed");
+    // movi: one `00db` chunk per frame, each with an idx1 entry. idx1
+    // offsets are relative to the `movi` fourcc itself (4 for the first).
+    let mut movi = Vec::with_capacity(4 + FIX_FRAMES * (8 + FIX_FRAME_BYTES as usize));
+    movi.extend_from_slice(b"movi");
+    let mut idx1 = Vec::with_capacity(FIX_FRAMES * 16);
+    for f in 0..FIX_FRAMES {
+        let offset = movi.len() as u32;
+        riff_chunk(&mut movi, b"00db", &fix_frame_bgr_bottom_up(f));
+        idx1.extend_from_slice(b"00db");
+        le32(&mut idx1, 0x10); // dwFlags = AVIIF_KEYFRAME
+        le32(&mut idx1, offset);
+        le32(&mut idx1, FIX_FRAME_BYTES);
+    }
+
+    // hdrl { avih, LIST strl { strh, strf } }.
+    let mut avih = Vec::with_capacity(56); // MainAVIHeader
+    le32(&mut avih, 1_000_000 / FIX_FPS); // dwMicroSecPerFrame
+    le32(&mut avih, FIX_FRAME_BYTES * FIX_FPS); // dwMaxBytesPerSec
+    le32(&mut avih, 0); // dwPaddingGranularity
+    le32(&mut avih, 0x10); // dwFlags = AVIF_HASINDEX
+    le32(&mut avih, FIX_FRAMES as u32); // dwTotalFrames
+    le32(&mut avih, 0); // dwInitialFrames
+    le32(&mut avih, 1); // dwStreams
+    le32(&mut avih, FIX_FRAME_BYTES); // dwSuggestedBufferSize
+    le32(&mut avih, FIX_W as u32); // dwWidth
+    le32(&mut avih, FIX_H as u32); // dwHeight
+    for _ in 0..4 {
+        le32(&mut avih, 0); // dwReserved[4]
+    }
+
+    let mut strh = Vec::with_capacity(56); // AVIStreamHeader
+    strh.extend_from_slice(b"vids"); // fccType
+    strh.extend_from_slice(b"DIB "); // fccHandler = uncompressed DIB
+    le32(&mut strh, 0); // dwFlags
+    le16(&mut strh, 0); // wPriority
+    le16(&mut strh, 0); // wLanguage
+    le32(&mut strh, 0); // dwInitialFrames
+    le32(&mut strh, 1); // dwScale
+    le32(&mut strh, FIX_FPS); // dwRate => 30/1 fps
+    le32(&mut strh, 0); // dwStart
+    le32(&mut strh, FIX_FRAMES as u32); // dwLength
+    le32(&mut strh, FIX_FRAME_BYTES); // dwSuggestedBufferSize
+    le32(&mut strh, 0xFFFF_FFFF); // dwQuality = default
+    le32(&mut strh, 0); // dwSampleSize
+    for v in [0, 0, FIX_W as u16, FIX_H as u16] {
+        le16(&mut strh, v); // rcFrame, four i16
+    }
+
+    let mut strf = Vec::with_capacity(40); // BITMAPINFOHEADER
+    le32(&mut strf, 40); // biSize
+    le32(&mut strf, FIX_W as u32); // biWidth
+    le32(&mut strf, FIX_H as u32); // biHeight > 0 => bottom-up rows
+    le16(&mut strf, 1); // biPlanes
+    le16(&mut strf, 24); // biBitCount
+    le32(&mut strf, 0); // biCompression = BI_RGB
+    le32(&mut strf, FIX_FRAME_BYTES); // biSizeImage
+    for _ in 0..4 {
+        le32(&mut strf, 0); // bi{X,Y}PelsPerMeter, biClrUsed, biClrImportant
+    }
+
+    let mut strl = Vec::new();
+    strl.extend_from_slice(b"strl");
+    riff_chunk(&mut strl, b"strh", &strh);
+    riff_chunk(&mut strl, b"strf", &strf);
+    let mut hdrl = Vec::new();
+    hdrl.extend_from_slice(b"hdrl");
+    riff_chunk(&mut hdrl, b"avih", &avih);
+    riff_chunk(&mut hdrl, b"LIST", &strl);
+
+    // RIFF `AVI ` { LIST hdrl, LIST movi, idx1 }.
+    let mut body = Vec::with_capacity(4 + 8 + hdrl.len() + 8 + movi.len() + 8 + idx1.len());
+    body.extend_from_slice(b"AVI ");
+    riff_chunk(&mut body, b"LIST", &hdrl);
+    riff_chunk(&mut body, b"LIST", &movi);
+    riff_chunk(&mut body, b"idx1", &idx1);
+    let mut avi = Vec::with_capacity(8 + body.len());
+    riff_chunk(&mut avi, b"RIFF", &body);
+
+    let input = dir.path("fixture.avi");
+    std::fs::write(&input, &avi).unwrap();
     input
 }
 
@@ -187,9 +430,9 @@ fn default_params_build_is_byte_pinned() {
     let input = synth_fixture(&dir);
     assert_eq!(
         sha256_of(&input),
-        FIXTURE_MP4_SHA,
-        "the ffmpeg on this box renders the lavfi fixture differently — \
-         re-baseline BOTH constants deliberately"
+        FIXTURE_AVI_SHA,
+        "synth_fixture no longer writes the pinned bytes — the generator was \
+         edited; re-baseline BOTH constants deliberately"
     );
 
     // Flagless build == embedded defaults == the committed pipeline bytes.
