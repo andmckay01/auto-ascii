@@ -51,6 +51,29 @@ type Result<T> = std::result::Result<T, Error>;
 const H_HIGHLIGHT_MIN: u8 = 64;
 const H_SHADOW_MIN: u8 = 128;
 
+/// Seconds of asset time one Left/Right arrow press scrubs (M5 scrub UX,
+/// PLAN §7 M5). Presses coalesced within one event drain add up (holding the
+/// key nets one bigger jump); digits 0–9 still jump to 0–90%. It lives here
+/// rather than beside the run loop because the overlays PRINT it (M6 key
+/// hints, PLAN-M6-M8 §1) and this module builds without the `terminal`
+/// feature; `crate::player` re-exports it under its documented name.
+pub const SCRUB_STEP_SECS: f64 = 5.0;
+
+/// Narrowest row that still gets the progress overlay's arrow-hint block
+/// (M6, PLAN-M6-M8 §1). Below it the row is exactly the M5 layout — the
+/// timecode and the bar are worth more than the hint on a narrow terminal.
+const PROGRESS_HINT_MIN_COLS: u16 = 64;
+
+/// Gap between key-hint items (M6, PLAN-M6-M8 §1): wide enough that `[ ]`
+/// and `0-9` read as one item each at a glance.
+const HINT_SEP: &str = "   ";
+
+/// Drop order for [`hint_line`] (M6 review fix), as indices into the display
+/// list — first to go first. `? keys` is deliberately absent: how to summon
+/// the legend back is the one hint a narrow terminal must keep, so it is the
+/// last item standing.
+const HINT_DROP_ORDER: [usize; 5] = [4, 3, 2, 1, 0];
+
 /// Map the probed terminal capabilities to the palette-selection charset
 /// tier (PLAN §3.4: `Caps.glyph_support` records the trusted repertoire).
 /// Braille requires *verified* support (never set from passive hints).
@@ -112,6 +135,10 @@ pub struct Drained {
     /// change — no asset is touched and no temporal state is reset, so the
     /// picture re-tunes without a visible discontinuity.
     pub dial_delta: i32,
+    /// `?` or `h` pressed this drain (M6 key hints, PLAN-M6-M8 §1) — the
+    /// caller flips the sticky key-hints row. Coalesced to a flag like the
+    /// arrows: holding the key must not race the row on and off.
+    pub toggle_hints: bool,
 }
 
 /// The frame pipeline: decode → resample → NORM levels → compose into a
@@ -215,6 +242,12 @@ pub struct Player<'a> {
     /// row). Drawn OVER the composed grid in `render_grid` when visible; it
     /// never touches hysteresis or the layer mask — presentation only.
     overlay_visible: bool,
+    /// M6 key hints (PLAN-M6-M8 §1): the one-line key legend on `rows-2`.
+    /// Driven entirely by the run loop (it rides with the transient
+    /// overlays, the start-up window and `?`/`h`), so `--sim`, the eval
+    /// harness and `RenderSession` never raise it and their grids are
+    /// untouched. Presentation only, exactly like `overlay_visible`.
+    hint_visible: bool,
     /// Set on the visible→hidden transition; consumed by `render_present`,
     /// which invalidates the backend so the row under the overlay is
     /// repainted from a clean baseline (the diff state can never be left
@@ -315,6 +348,7 @@ impl<'a> Player<'a> {
             layer_mask: None,
             stage: StageNs::default(),
             overlay_visible: false,
+            hint_visible: false,
             overlay_hide_pending: false,
             fps,
         })
@@ -485,6 +519,7 @@ impl<'a> Player<'a> {
         let mut seek_steps: i32 = 0;
         let mut dial_cycle: u32 = 0;
         let mut dial_delta: i32 = 0;
+        let mut toggle_hints = false;
         while let Some(ev) = backend.events().pop() {
             match ev {
                 Event::Quit => {
@@ -494,6 +529,7 @@ impl<'a> Player<'a> {
                         seek_steps: 0,
                         dial_cycle: 0,
                         dial_delta: 0,
+                        toggle_hints: false,
                     };
                 }
                 Event::Resize(c, r) => resize = Some((c, r)),
@@ -509,6 +545,11 @@ impl<'a> Player<'a> {
                 Event::Key(Key::Char('d')) => dial_cycle = dial_cycle.saturating_add(1),
                 Event::Key(Key::Char('[')) => dial_delta = dial_delta.saturating_sub(1),
                 Event::Key(Key::Char(']')) => dial_delta = dial_delta.saturating_add(1),
+                // M6 key hints (PLAN-M6-M8 §1): `?` is the conventional
+                // binding, `h` the one people try when `?` needs a shift.
+                // Collapsed to a flag, not counted — two presses in one drain
+                // are a key repeat, not a request to flicker the row.
+                Event::Key(Key::Char('?' | 'h')) => toggle_hints = true,
                 Event::Key(_) => {}
             }
         }
@@ -521,7 +562,7 @@ impl<'a> Player<'a> {
         // NOTE: a dial move deliberately does NOT reset hysteresis. It is a
         // renderer retune, not a temporal discontinuity — the picture should
         // slide to the new look, not flash through a full repaint.
-        Drained { quit: false, jump_digit, seek_steps, dial_cycle, dial_delta }
+        Drained { quit: false, jump_digit, seek_steps, dial_cycle, dial_delta, toggle_hints }
     }
 
     /// Sequential-roll or FIDX-seek one plane into its standing buffer.
@@ -612,6 +653,19 @@ impl<'a> Player<'a> {
             self.overlay_hide_pending = true;
         }
         self.overlay_visible = visible;
+    }
+
+    /// Show/hide the key-hints row on `rows-2` (M6, PLAN-M6-M8 §1). Same
+    /// hide-repaint contract as [`set_progress_overlay`](Self::set_progress_overlay):
+    /// the visible→hidden edge schedules the invalidate that repaints the row
+    /// underneath, so the diff baseline never keeps describing hint cells.
+    /// The caller owns WHEN it shows — timers and stickiness are run-loop
+    /// policy (`crate::Player`), never something the pipeline decides.
+    pub fn set_hint_overlay(&mut self, visible: bool) {
+        if self.hint_visible && !visible {
+            self.overlay_hide_pending = true;
+        }
+        self.hint_visible = visible;
     }
 
     /// Decode → resample → NORM levels → compose → present one asset frame
@@ -729,6 +783,15 @@ impl<'a> Player<'a> {
         }
         if let Some((label, value, max)) = self.dial_overlay {
             draw_dial_overlay(&mut self.grid, label, value, max);
+        }
+        // One row above the progress/dial row, same presentation-only rules:
+        // no layer mask, no temporal state (M6, PLAN-M6-M8 §1). Gated on the
+        // viewport so it never lands on the enlarge card — when the terminal
+        // is too small to play, "enlarge terminal" is the only message that
+        // matters, and `rows-2` is exactly where the card's second line sits
+        // on a 4-row screen.
+        if self.hint_visible && self.vp.is_some() {
+            draw_hint_overlay(&mut self.grid);
         }
         Ok(())
     }
@@ -891,14 +954,23 @@ pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32, frame_count: u32
     } else {
         100
     };
+    // M6 (PLAN-M6-M8 §1): the arrow-key hint rides at the far left when the
+    // row is wide enough for it; below the threshold this is empty and the
+    // bytes are exactly the M5 row.
+    let hint = if cols >= PROGRESS_HINT_MIN_COLS {
+        format!(" <- {} -> ", scrub_step_label())
+    } else {
+        String::new()
+    };
     let left = format!(" {} / {} ", mmss(pos as u64), mmss(total as u64));
     let right = format!(" {pct:>3}% ");
 
     // Bar fills whatever remains between the text blocks; on absurdly small
     // grids the texts alone are truncated to the row.
     let mut line = String::with_capacity(cols as usize);
+    line.push_str(&hint);
     line.push_str(&left);
-    let fixed = left.chars().count() + right.chars().count() + 2; // "[" + "]"
+    let fixed = hint.chars().count() + left.chars().count() + right.chars().count() + 2; // []
     if (cols as usize) > fixed {
         let span = cols as usize - fixed;
         let filled = if frame_count > 1 {
@@ -964,6 +1036,69 @@ pub fn draw_dial_overlay(grid: &mut Grid<Cell>, label: &str, value: u8, max: u8)
     }
     line.push_str(&right);
 
+    let mut chars = line.chars();
+    for col in 0..cols {
+        let ch = chars.next().unwrap_or(' ');
+        grid.set(col, row, Cell::new(ch, fg, bg));
+    }
+}
+
+/// [`SCRUB_STEP_SECS`] as the overlays print it: whole seconds carry no
+/// trailing `.0` (`5s`, not `5.0s`), which is all a one-line row has room to
+/// say. Derived, never a literal — the two rows and the constant cannot drift.
+fn scrub_step_label() -> String {
+    format!("{SCRUB_STEP_SECS}s")
+}
+
+/// The key-hints line for a `cols`-wide row (M6, PLAN-M6-M8 §1). Items are
+/// dropped WHOLE, in [`HINT_DROP_ORDER`], until the list fits — so a narrow
+/// terminal shows fewer hints rather than a word cut in half, and the
+/// survivors keep their reading order. One leading and trailing space frame
+/// the list, matching the progress row's blocks. Returns "" when not even
+/// `? keys` fits — the row is still painted, just empty.
+fn hint_line(cols: u16) -> String {
+    let arrows = format!("<- -> {}", scrub_step_label());
+    let items: [&str; 6] = ["q quit", "0-9 jump", &arrows, "d dial", "[ ] adjust", "? keys"];
+    // Framed width of the kept items: the items, the gaps between them and
+    // the two framing spaces. Every byte here is ASCII, so byte length is
+    // column count (PLAN-M6-M8 §0.6: overlays stay printable ASCII).
+    let width = |keep: &[bool; 6]| -> usize {
+        let kept = items.iter().zip(keep).filter(|(_, k)| **k);
+        let (n, len) = kept.fold((0, 0), |(n, len), (it, _)| (n + 1, len + it.len()));
+        if n == 0 { 0 } else { len + (n - 1) * HINT_SEP.len() + 2 }
+    };
+
+    let mut keep = [true; 6];
+    for i in HINT_DROP_ORDER {
+        if width(&keep) <= cols as usize {
+            break;
+        }
+        keep[i] = false;
+    }
+    if width(&keep) > cols as usize {
+        return String::new(); // not even the `? keys` hint fits
+    }
+    let kept: Vec<&str> =
+        items.iter().zip(keep).filter(|(_, k)| *k).map(|(it, _)| *it).collect();
+    format!(" {} ", kept.join(HINT_SEP))
+}
+
+/// The key-hints row (M6, PLAN-M6-M8 §1): one line on `rows-2` in the
+/// progress overlay's colors, listing every bound key. Shown while a
+/// transient overlay is up, for a short window at start-up and whenever `?`
+/// pins it (all run-loop policy — see `Player::set_hint_overlay`). Pure
+/// function of `cols`, so an unchanged row costs zero damage in diff mode.
+pub fn draw_hint_overlay(grid: &mut Grid<Cell>) {
+    let (cols, rows) = (grid.cols(), grid.rows());
+    if cols == 0 || rows < 2 {
+        return; // nowhere to put it without evicting the progress row
+    }
+    let row = rows - 2;
+    // Deliberately the progress overlay's palette: one chrome, two rows.
+    let fg = Rgb::gray(235);
+    let bg = Rgb::new(24, 24, 40);
+
+    let line = hint_line(cols);
     let mut chars = line.chars();
     for col in 0..cols {
         let ch = chars.next().unwrap_or(' ');

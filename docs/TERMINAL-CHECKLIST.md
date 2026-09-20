@@ -24,8 +24,9 @@ ASSET=assets/sheep-counting-neroni-clips.ascii # any .ascii you have
 PLAY="./target/release/auto-ascii-player $ASSET"
 ```
 
-Keys during playback: `q`/`Esc` quit · `0`–`9` seek to 0–90 % · `←`/`→`
-scrub ±5 s (a bottom-row progress bar flashes for ~1 s) · resize the
+Keys during playback: `q`/`Esc` quit · `0`–`9` jump · `←`/`→` 5 s ·
+`d` dial · `[` `]` adjust · `?` keys. The bottom-row progress bar flashes
+for ~1 s after a seek, with the key-hints row just above it; resize the
 window at any time.
 
 **Read the probe's mind** on the terminal you are sitting in (prints one line

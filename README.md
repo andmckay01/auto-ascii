@@ -32,7 +32,7 @@ cargo run --release -p auto-ascii-factory -- build clip.mp4 -o intro.ascii
 
 # 2. play it
 cargo run --release -p auto-ascii --bin auto-ascii-player -- intro.ascii
-#    q / Esc quit · 0-9 seek to 0-90% · Left/Right scrub ±5 s · resize any time
+#    q/Esc quit · 0-9 jump · ←/→ 5 s · d dial · [ ] adjust · ? keys
 
 # 3. no terminal? render frames as text instead
 cargo run --release -p auto-ascii --example headless-dump -- intro.ascii 3 100x28

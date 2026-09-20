@@ -40,10 +40,10 @@ pub enum RepaintMode {
 /// already started.
 pub const MIN_FPS_CAP: f64 = 1.0;
 
-/// Seconds of asset time one Left/Right arrow press scrubs (M5 scrub UX,
-/// PLAN §7 M5). Presses coalesced within one event drain add up (holding
-/// the key nets one bigger jump); digits 0–9 still jump to 0–90%.
-pub const SCRUB_STEP_SECS: f64 = 5.0;
+// The scrub step now lives in `pipeline` — the progress and hints rows print
+// it (M6, PLAN-M6-M8 §1) and that module builds without the `terminal`
+// feature. Re-exported here so `auto_ascii::SCRUB_STEP_SECS` is unchanged.
+pub use crate::pipeline::SCRUB_STEP_SECS;
 
 /// How long the live-dial readout stays up after the last turn of the dial.
 /// Longer than the seek overlay: you are watching the picture change while you
@@ -124,10 +124,69 @@ impl Dial {
     }
 }
 
+/// Where `d` lands (M6 review fix): the FIRST press only REVEALS the
+/// readout — you cannot cycle off a dial you cannot see, and
+/// [`Dial::ShadowLift`] leads the cycle deliberately, so jumping straight
+/// past it was wrong. Every press while the readout is up advances by one,
+/// wrapping; presses coalesced into one drain still count past the reveal.
+fn dial_after_cycle(idx: usize, presses: u32, readout_up: bool) -> usize {
+    let advance = presses.saturating_sub(u32::from(!readout_up)) as usize;
+    (idx + advance) % Dial::ALL.len()
+}
+
 /// How long the bottom-row progress overlay stays up after a seek before it
 /// auto-hides (M5 scrub UX; hiding forces a clean full repaint of the
 /// overlay row — see `pipeline::Player::set_progress_overlay`).
 const OVERLAY_HIDE_AFTER: Duration = Duration::from_millis(1000);
+
+/// How long the key-hints row stays up at start-up (M6, PLAN-M6-M8 §1).
+/// Long enough to read six items, short enough that it is gone before anyone
+/// settles into the picture — after that the row is earned, not given.
+const HINT_STARTUP_SHOW_FOR: Duration = Duration::from_millis(3000);
+
+/// Visibility policy for the key-hints row (M6, PLAN-M6-M8 §1): it rides
+/// with whichever transient overlay is up, shows for
+/// [`HINT_STARTUP_SHOW_FOR`] at start-up, and is pinned open by `?`/`h`
+/// until the next press. Split out of the run loop so the timing rules are
+/// testable — [`Player::run`] owns the only clock and hard-wires
+/// `AnsiBackend`, so there is nothing headless to drive it through.
+#[derive(Debug)]
+struct HintState {
+    /// When the start-up window lapses. Cut short by the first `?`/`h`
+    /// press (a deliberate press ends the freebie) and never re-armed.
+    startup_until: Instant,
+    /// The pin `?`/`h` last set — the OPPOSITE of what was on screen when it
+    /// was pressed, so one key both summons and dismisses the row.
+    sticky: bool,
+}
+
+impl HintState {
+    fn new(now: Instant) -> HintState {
+        HintState { startup_until: now + HINT_STARTUP_SHOW_FOR, sticky: false }
+    }
+
+    /// One run-loop step: fold in this drain's `?`/`h` press and report
+    /// whether the row belongs on screen now. `overlays_up` is true while the
+    /// progress or dial overlay is visible — the hints ride along with them,
+    /// since a viewer touching those keys is exactly who wants the legend.
+    ///
+    /// A press toggles against what is ON SCREEN, not against `sticky`
+    /// alone: pressing `?` while the start-up row (or an overlay's
+    /// ride-along) is up must dismiss it rather than silently pin it for the
+    /// rest of playback and leave the next press reading inverted. The
+    /// overlays keep their veto either way — the row cannot be dismissed out
+    /// from under the bar it belongs to, it just does not stick once that
+    /// bar goes.
+    fn visible(&mut self, now: Instant, toggle: bool, overlays_up: bool) -> bool {
+        let showing = self.sticky || overlays_up || now < self.startup_until;
+        if !toggle {
+            return showing;
+        }
+        self.startup_until = now; // a deliberate press ends the start-up window
+        self.sticky = !showing;
+        self.sticky || overlays_up
+    }
+}
 
 /// Builder for [`Player`] — see [`Player::builder`]. Every option has a
 /// sensible default; only [`asset`](PlayerBuilder::asset) is required.
@@ -365,8 +424,12 @@ impl Player {
     /// Blocks until the asset ends (unless [`looping`](PlayerBuilder::looping)),
     /// the configured [`duration`](PlayerBuilder::duration_secs) elapses, or
     /// the user quits (`q` / `Esc` / `Ctrl-C`). Keys `0`–`9` jump to that
-    /// ×10% of the asset; `←`/`→` scrub ±[`SCRUB_STEP_SECS`] (5 s). Every
+    /// ×10% of the asset; `←`/`→` scrub ±[`SCRUB_STEP_SECS`] (5 s); `d`
+    /// cycles the live [`Dial`]s and `[`/`]` turn the selected one. Every
     /// seek flashes a bottom-row progress overlay that auto-hides after ~1 s.
+    /// A key-hints row sits above it whenever an overlay is up, for the first
+    /// few seconds of playback, and for as long as `?` (or `h`) pins it open
+    /// (M6, PLAN-M6-M8 §1).
     ///
     /// # Errors
     /// [`Error::Terminal`] when stdout is not a TTY (headless callers want
@@ -431,6 +494,8 @@ impl Player {
         let mut dial_idx: usize = 0;
         let mut compose = player.compose_params();
         let mut dial_until: Option<Instant> = None;
+        // M6 key hints: the legend row above the overlay row (PLAN-M6-M8 §1).
+        let mut hints = HintState::new(t0);
 
         loop {
             let drained = player.drain_events(&mut backend);
@@ -465,7 +530,9 @@ impl Player {
             }
             if drained.dial_cycle > 0 || drained.dial_delta != 0 {
                 if drained.dial_cycle > 0 {
-                    dial_idx = (dial_idx + drained.dial_cycle as usize) % Dial::ALL.len();
+                    // Read BEFORE this drain arms it below: the first `d` on a
+                    // hidden readout shows the current dial, it does not cycle.
+                    dial_idx = dial_after_cycle(dial_idx, drained.dial_cycle, dial_until.is_some());
                 }
                 let dial = Dial::ALL[dial_idx];
                 if drained.dial_delta != 0 {
@@ -489,6 +556,12 @@ impl Player {
                 player.set_progress_overlay(false);
                 overlay_until = None;
             }
+            // Both `*_until` options are now exactly "that overlay is on
+            // screen", so the hints row can simply ride with them; hiding it
+            // goes through the same invalidate contract (PLAN-M6-M8 §1).
+            let overlays_up = overlay_until.is_some() || dial_until.is_some();
+            let show_hints = hints.visible(Instant::now(), drained.toggle_hints, overlays_up);
+            player.set_hint_overlay(show_hints);
             if let Some(dur) = self.cfg.duration_secs
                 && t0.elapsed().as_secs_f64() >= dur
             {
@@ -626,5 +699,77 @@ mod tests {
         let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
         let e = Player::builder().asset(manifest).build().unwrap_err();
         assert!(matches!(e, Error::Format { .. }), "{e}");
+    }
+
+    /// M6 key hints (PLAN-M6-M8 §1): the run loop's visibility policy —
+    /// start-up window, ride-along with the overlays, sticky `?`/`h`. Driven
+    /// with synthetic instants because `run()` owns the only clock and
+    /// hard-wires `AnsiBackend`: there is no seam to hand a SimBackend or a
+    /// fake clock, and inventing one is out of scope here. What the row then
+    /// DRAWS, and that hiding it forces the full repaint, is covered
+    /// end-to-end in tests/scrub_overlay.rs.
+    #[test]
+    fn hint_row_shows_at_start_up_then_rides_the_overlays() {
+        let t0 = Instant::now();
+        let mut hints = HintState::new(t0);
+
+        // Start-up window: up with no key pressed and no overlay on screen.
+        assert!(hints.visible(t0, false, false), "hints show at start-up");
+        let last = t0 + HINT_STARTUP_SHOW_FOR - Duration::from_millis(1);
+        assert!(hints.visible(last, false, false), "still up inside the window");
+        assert!(!hints.visible(t0 + HINT_STARTUP_SHOW_FOR, false, false), "window lapses");
+
+        // Long after the window: an overlay pulls the row back for its life.
+        let late = t0 + HINT_STARTUP_SHOW_FOR + Duration::from_secs(60);
+        assert!(hints.visible(late, false, true), "rides with a visible overlay");
+        assert!(!hints.visible(late, false, false), "and leaves with it");
+
+        // `?`/`h` pins it open until the next press — timers do not override.
+        assert!(hints.visible(late, true, false), "? pins the row open");
+        assert!(hints.visible(late, false, false), "and it stays pinned");
+        assert!(!hints.visible(late, true, false), "a second ? unpins it");
+    }
+
+    /// M6 review fix: `?`/`h` toggles against what is ON SCREEN. A press
+    /// inside the start-up window dismisses the row and ends the window,
+    /// instead of silently pinning it for the rest of playback and leaving
+    /// the next press reading inverted; a press while an overlay is up
+    /// cannot dismiss the ride-along, but must not leave the row pinned once
+    /// that overlay lapses.
+    #[test]
+    fn hint_toggle_reads_what_is_on_screen_not_the_pin() {
+        let t0 = Instant::now();
+        let mut hints = HintState::new(t0);
+        assert!(hints.visible(t0, false, false), "the start-up row is up");
+        assert!(!hints.visible(t0, true, false), "? during start-up dismisses it");
+        let tick = t0 + Duration::from_millis(1);
+        assert!(!hints.visible(tick, false, false), "and the window does not bring it back");
+        assert!(hints.visible(tick, true, false), "the next ? summons it again");
+
+        // A press while an overlay is up: the ride-along still wins for as
+        // long as the overlay lives, but the pin left behind is "hidden".
+        let mut hints = HintState::new(t0);
+        let late = t0 + HINT_STARTUP_SHOW_FOR + Duration::from_secs(60);
+        assert!(hints.visible(late, false, true), "an overlay pulls the row up");
+        assert!(hints.visible(late, true, true), "? cannot dismiss the ride-along");
+        assert!(!hints.visible(late, false, false), "and it does not stick after it");
+    }
+
+    /// M6 review fix: the first `d` REVEALS the dial readout rather than
+    /// cycling past shadow lift; once the readout is up, `d` cycles as
+    /// before. The index arithmetic is the only testable part of that path —
+    /// the rest is `run()`'s hard-wired backend and clock.
+    #[test]
+    fn first_d_reveals_the_dial_before_it_cycles() {
+        // Readout hidden: one `d` lands on the dial already selected.
+        assert_eq!(dial_after_cycle(0, 1, false), 0, "first d shows shadow lift");
+        // Readout up: the same press advances.
+        assert_eq!(dial_after_cycle(0, 1, true), 1, "d cycles once the readout is up");
+        // Presses coalesced in one drain still count past the reveal...
+        assert_eq!(dial_after_cycle(0, 3, false), 2);
+        // ...and the cycle wraps.
+        assert_eq!(dial_after_cycle(2, 2, true), 1);
+        // A drain with no `d` never moves the selection.
+        assert_eq!(dial_after_cycle(1, 0, false), 1);
     }
 }

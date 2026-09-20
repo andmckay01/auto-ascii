@@ -1788,3 +1788,57 @@ facade surface + this hidden module.)
     -p auto-ascii --no-verify` passes (the closure is packaged together
     because the deps are unpublished; `--no-verify` skips the rebuild,
     nothing is published; on a dirty tree add `--allow-dirty`).
+
+27. **M6 landed** (key-hints agent; PLAN-M6-M8 §1 — "the player should show,
+    terse but clear, what the keys do"). No always-on chrome: the hints are
+    event-driven like the M5 overlay, so every headless grid is untouched.
+    (a) **Progress row gains an arrow-hint block** at the far left —
+    `" <- 5s -> "` ahead of the timecode — only when the row is at least
+    `PROGRESS_HINT_MIN_COLS` (64) wide; below that the bytes are the M5
+    layout exactly, so a narrow terminal spends its columns on the timecode
+    and the bar. The `5` is `SCRUB_STEP_SECS`, which MOVED from
+    `crate::player` to `crate::pipeline` for this (the overlays print it and
+    that module builds without the `terminal` feature); the public name
+    `auto_ascii::SCRUB_STEP_SECS` is unchanged — `player` re-exports it.
+    (b) **New key-hints row** on `rows-2`, in the progress row's colors:
+    `q quit   0-9 jump   <- -> 5s   d dial   [ ] adjust   ? keys`, with whole
+    items dropped in `HINT_DROP_ORDER` until the list fits `cols` — `[ ]
+    adjust`, then `d dial`, then the arrows, then `0-9`, then `q quit`, with
+    `? keys` the LAST to go, since how to summon the legend back is what a
+    cramped screen must still say (80/64 → all six, 40 → four, 32 → three).
+    The remainder is painted in the same background, so no picture cell
+    survives underneath, and the row is gated on the viewport so it never
+    lands on the enlarge card (`rows-2` is where that card's second line sits
+    on a 4-row screen). New pipeline surface:
+    `Player::set_hint_overlay(bool)` and `pub fn draw_hint_overlay(grid: &mut
+    Grid<Cell>)`, plus `Drained.toggle_hints: bool` (`?` or `h`, collapsed to
+    one flag per drain — a held key must not flicker the row). Printable
+    ASCII only, so the arrows are `<-`/`->` (PLAN-M6-M8 §0.6); `auto-ascii-term`
+    needed no change, since both keys already arrive as `Key::Char`.
+    (c) **Visibility is run-loop policy, never the pipeline's.** `player.rs`
+    gains `HINT_STARTUP_SHOW_FOR` (3 s) and a private `HintState`: the row
+    rides with whichever transient overlay is up, shows for the start-up
+    window, and is pinned by `?`/`h` until the next press. The pin toggles
+    against what is ON SCREEN, not against the flag alone — a press inside
+    the start-up window (or during an overlay's ride-along) dismisses the row
+    and ends the window, instead of silently pinning it for the rest of
+    playback and leaving the next press reading inverted. `--sim`,
+    `RenderSession` and the eval harness never call the setter, so the parity
+    grid, the console goldens and the insta snapshots pass unblessed. Every
+    hide — progress, dial or hints — still goes through `overlay_hide_pending`
+    → `invalidate()`.
+    (d) **Tests:** auto-ascii/tests/scrub_overlay.rs extended to the new
+    contract — the two rows hide on SEPARATE frames so each hide path is
+    asserted to damage `cols*rows` on its own, and while they are up every
+    row above the bottom TWO matches the no-overlay reference — plus hint
+    content at 80/64/40 columns, the 64-column arrow-block threshold (and its
+    absence at 63) and the `?`/`h` toggle through the real event queue. The
+    TIMING rules are unit-tested in player.rs with synthetic instants
+    (`hint_row_shows_at_start_up_then_rides_the_overlays`): `run()` owns the
+    only clock and hard-wires `AnsiBackend`, so there is no seam to hand a
+    SimBackend or a fake clock, and cutting one was out of this milestone's
+    scope.
+    (e) **Dial polish** (review fix, same seam): the first `d` now REVEALS
+    the readout on the dial already selected instead of cycling past shadow
+    lift — `dial_after_cycle(idx, presses, readout_up)` in player.rs, unit
+    tested — and every `d` while the readout is up cycles as before.
