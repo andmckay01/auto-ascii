@@ -1,8 +1,45 @@
-# HANDOFF — project save point (2026-08-28)
+# HANDOFF — project save point (2026-09-20)
 
 Resume document for the **auto-ascii** ASCII video engine. Written for a future
 work session (human or Claude) returning cold. The spec is `PLAN.md`; this file
 is "where things stand and how to pick them up."
+
+## 2026-09-20 — M6–M8 expansion (branch `expand-compositions`, PR pending)
+
+The engine became a tool. Spec: `PLAN-M6-M8.md` (decisions in its §0; do not
+re-litigate them without the owner). Landed on the branch, one commit each:
+
+| Milestone | Commit | What landed |
+|---|---|---|
+| M6 | `e2e2b4b` | Key hints in the player: `<- 5s ->` beside the scrub bar, a hints row (`q quit · 0-9 jump · <- -> 5s · d dial · [ ] adjust · ? keys`) with the overlays, for 3 s at start-up and sticky on `?`; first `d` opens on shadow lift |
+| M7 | `e552bad` | `auto-ascii` CLI (`crates/auto-ascii-cli`): `import`, `list`, `info`, `play`, `agent-guide`, `home`, global `--json`; home folder `~/auto-ascii` (`AUTO_ASCII_HOME`) with `library/`, `compositions/`, `exports/` and a JSON sidecar per clip; the factory is now lib + bin; `auto_ascii::timecode` |
+| M8 | `2c8d898` | Compositions: TOML timelines (`in`/`out` trims, `at` placement, gaps black, later clip on top) played virtually (`auto-ascii-player comp.toml`, `--sim` too) and flattened by `compose export`; CLI `cut` and `compose new/add/show/play/export`; `docs/AGENT-GUIDE.md` for agents |
+
+Merged into main the same day, ahead of the branch: `2a47f07` (macOS build:
+portable errno + `openpty` pointers) and `0cc2770` (the factory byte-pin test
+now builds its fixture in Rust, a raw BGR24 AVI, so it no longer depends on
+the ffmpeg build; confirmed identical on macOS/aarch64 and in a Debian
+bookworm container).
+
+**Second build box: the owner's Mac** (Apple Silicon, Ghostty 1.3.1, cargo
+1.95, Homebrew ffmpeg 9.0.2, Docker Desktop). Everything in `scripts/eval.sh`
+runs there; the perf thresholds were calibrated on hetzner. Its data volume
+runs at 100 % — check `df -h /System/Volumes/Data` before build-heavy work and
+prefer `CARGO_INCREMENTAL=0`. hetzner was unreachable over Tailscale that day;
+Linux checks ran in `rust:1.95-slim-bookworm` with the checkout mounted.
+
+Quick start for the new tool (from the branch or after the merge):
+
+```bash
+cargo build --release -p auto-ascii-cli -p auto-ascii --features auto-ascii/bin
+./target/release/auto-ascii import ~/Desktop/clip.mp4          # -> ~/auto-ascii/library/clip.ascii
+./target/release/auto-ascii compose new demo && ./target/release/auto-ascii compose add demo clip --in 0:05 --out 0:20
+./target/release/auto-ascii compose play demo                  # or: compose export demo
+./target/release/auto-ascii agent-guide                        # what an agent needs, 80 lines
+```
+
+Backlog from the spec (§4): an MCP server (`auto-ascii mcp`) over the same
+library calls, clip names in the scrub overlay, transitions, per-clip dials.
 
 ## Status: COMPLETE through M5 (all planned milestones)
 
@@ -217,7 +254,7 @@ Two changes, audited, together taking a 63 s clip from ~7 min to ~2.5 min:
   encoding will NOT pay on this box (2 physical cores; SMT caps ~2.1x and
   per-plane already reaches it) — only on genuinely multicore hardware.
 
-## Backlog (PLAN §7 M6+, explicitly out of v1)
+## Backlog (PLAN §7, explicitly out of v1)
 
 Motion plane (new plane ID, no format break), audio via the `Clock` seam,
 braille polish, zstd dictionaries, kitty-graphics presenter. Known cosmetic
