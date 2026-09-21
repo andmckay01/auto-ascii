@@ -10,8 +10,8 @@ version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-# Publish metadata (M4 item C). `license` is the workspace's dual
-# MIT OR Apache-2.0; LICENSE-MIT / LICENSE-APACHE live at the repo root.
+# Publish metadata (M4 item C). `license` is the workspace's MIT; the
+# LICENSE file lives at the repo root.
 keywords = ["ascii", "terminal", "video", "tui", "ansi"]
 categories = ["multimedia::video", "command-line-utilities", "rendering"]
 readme = "README.md"

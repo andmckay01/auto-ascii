@@ -91,3 +91,6 @@ are not published. The facade's version is ahead of the libraries' because
 is yanked. Publish in the order core, format, term, facade, bumping versions
 first: a published version number can never be reused. The `npm/` package is
 a name placeholder only.
+
+The project is MIT licensed ([LICENSE](LICENSE)); contributions are accepted
+under the same terms.

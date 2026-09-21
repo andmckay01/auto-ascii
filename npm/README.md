@@ -44,10 +44,5 @@ embedding API.
 
 ## License
 
-Dual-licensed under either of
-
-- Apache License, Version 2.0
-- MIT license
-
-at your option. See the bundled `LICENSE` file, or `LICENSE-APACHE` and
-`LICENSE-MIT` at the root of the repository.
+MIT. See the bundled `LICENSE` file, or `LICENSE` at the root of the
+repository.

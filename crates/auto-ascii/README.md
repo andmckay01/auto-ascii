@@ -35,4 +35,4 @@ eight shipped palettes and the eval harness.
 
 ## License
 
-Dual-licensed under Apache-2.0 or MIT, at your option.
+MIT; the `LICENSE` file lives at the root of the repository.

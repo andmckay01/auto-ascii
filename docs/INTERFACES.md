@@ -54,7 +54,7 @@ crates/
                         cannot live in either.
 ```
 
-- Root workspace: resolver 3, edition 2024, `license = "MIT OR Apache-2.0"`,
+- Root workspace: resolver 3, edition 2024, `license = "MIT"`,
   `[profile.release] opt-level = 3`, all versions via `[workspace.dependencies]`.
 - Factory deps `image`/`imageproc`/`ndarray`/`rayon` (PLAN §8) deliberately
   deferred: M0 is luma-only from ffmpeg rawvideo — add at M1/M3 when a stage
