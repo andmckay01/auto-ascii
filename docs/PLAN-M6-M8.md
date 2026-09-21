@@ -1,5 +1,9 @@
 # PLAN M6–M8 — key hints, the agent-first `auto-ascii` CLI, compositions
 
+> **Status: landed 2026-09-20** (PR #1). `PLAN.md` §7 carries the as-built
+> M6–M8 bullets and `INTERFACES.md` the API notes; §0 below records the
+> decisions, §4 the backlog.
+
 Spec for the 2026-09-20 expansion. `PLAN.md` stays the engine spec; this file
 carries the three milestones that turn the engine into a tool, and each
 milestone adds its one-line bullet to `PLAN.md` §7 and its API notes to
@@ -32,7 +36,7 @@ milestone adds its one-line bullet to `PLAN.md` §7 and its API notes to
    per clip, not a re-encode.
 5. **Overlays stay event-driven.** No always-on chrome: the parity and
    console-golden tests render the real `Player` grid and must keep passing
-   unchanged. Hints appear with the existing overlays, on `?`, and for a short
+   unchanged. Hints appear with the existing overlays, on `v`, and for a short
    window at start-up (run-loop only, never inside `pipeline::Player`).
 6. **Printable ASCII only in overlays** (`scrub_overlay.rs` parser), so arrows
    are `<-` and `->`.
@@ -54,11 +58,11 @@ strength / hysteresis, `[`/`]` turn it; hidden after 2500 ms). Keys: `q`,
 - **A hints row on `rows-2`,** same colours as the progress row, one fixed
   line, truncated at `cols` on word boundaries in this priority order (drop
   from the right):
-  `q quit   space pause   0-9 jump   <- -> 5s   d dial   [ ] adjust   ? keys`
+  `q quit   space pause   0-9 jump   <- -> 5s   d dial   [ ] adjust   v controls`
   Shown whenever the progress or dial overlay is visible, for the first 3 s
-  after start-up, and toggled sticky by `?` or `h` (sticky hides on the next
-  `?`/`h`). `pipeline::Player` gains `set_hint_overlay(bool)` and
-  `draw_hint_overlay`; `drain_events` reports `?`/`h` in `Drained`; the timers
+  after start-up, and toggled sticky by `v` (sticky hides on the next
+  `v`). `pipeline::Player` gains `set_hint_overlay(bool)` and
+  `draw_hint_overlay`; `drain_events` reports `v` in `Drained`; the timers
   and stickiness live in `player.rs` beside the existing ones. Hiding any
   overlay keeps the existing `overlay_hide_pending` → `invalidate()` contract.
 - **Space pauses** (added after M6 landed): the frame freezes, the progress
@@ -74,12 +78,12 @@ strength / hysteresis, `[`/`]` turn it; hidden after 2500 ms). Keys: `q`,
   → full-screen match; hide damages `cols*rows`; all bytes printable ASCII.
 - New tests: hint row content at 80, 64 and 40 columns (truncation order);
   progress row with and without the arrow block at the 64-column threshold;
-  `?` toggles `Drained`; start-up window shows then hides (run-loop test on
+  `v` toggles `Drained`; start-up window shows then hides (run-loop test on
   the SimBackend or pty).
 - `pipeline_parity.rs`, `linux_console_golden.rs`, tier goldens and the 36
   insta snapshots pass **without re-blessing**.
 - README "Quickstart" key line and `docs/TERMINAL-CHECKLIST.md:27` list all
-  keys: `q/Esc quit · 0-9 jump · <-/-> 5 s · d dial · [ ] adjust · ? keys`.
+  keys: `q/Esc quit · 0-9 jump · <-/-> 5 s · d dial · [ ] adjust · v controls`.
 - `PLAN.md` §7 gains `- **M6 — key hints.** …` and INTERFACES gets a landed
   note in the numbered style.
 

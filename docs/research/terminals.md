@@ -1,4 +1,4 @@
-<!-- Terminal backends & capabilities — produced by the ascii-engine-plan workflow, 2026-07-24; input to ../../PLAN.md -->
+<!-- Terminal backends & capabilities — produced by the ascii-engine-plan workflow, 2026-07-24; input to ../PLAN.md -->
 
 # TERMINAL BACKENDS & CAPABILITIES — digest
 

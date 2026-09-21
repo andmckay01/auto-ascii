@@ -31,8 +31,8 @@ use auto_ascii_core::{Grid, Resampler, Viewport};
 /// the SSIM reference percentiles they must stay independent of the params
 /// under test. Chosen on the M3 corpus at the 300×80 reference grid so truth
 /// density lands in the "real contours" band (~4–10% of cells): low 60 /
-/// high 140 keeps the sheep outlines and silhouette limbs while dropping
-/// grass micro-texture.
+/// high 140 keeps subject outlines and limbs while dropping fine
+/// micro-texture (grass blades, grain).
 pub const CANNY_LOW: f32 = 60.0;
 pub const CANNY_HIGH: f32 = 140.0;
 

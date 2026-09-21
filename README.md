@@ -13,16 +13,18 @@ asset looks right at 80×24 in a Linux console and at 320×90 in a GPU terminal 
 and equally right inside *your* renderer, if you'd rather draw the cells
 yourself.
 
-All Rust, one workspace, two binaries (`auto-ascii-factory`, `auto-ascii-player`) and one
-library crate (`auto-ascii`). ffmpeg is used by the factory as a subprocess; the
-player links no codecs.
+All Rust, one workspace: one library crate (`auto-ascii`), two engine binaries
+(`auto-ascii-factory`, `auto-ascii-player`) and the `auto-ascii` CLI that files
+clips in a library and stitches them into compositions. ffmpeg is used by the
+factory as a subprocess; the player links no codecs.
 
-**Status — v0.1.0.** All planned milestones (M0–M5) are complete and the look
-has been signed off. `scripts/eval.sh` is the gate and it is green: 402 tests,
-clippy clean at `-D warnings`, a 2000-iteration resize fuzz, and four criterion
-perf gates passing with 37–47 % headroom. Corpus quality metrics reproduce
-bit-identically across runs. Prebuilt Linux (glibc + static musl) and
-cross-built Windows binaries live in `dist/`; macOS builds from source.
+**Status.** The engine milestones (M0–M5) are complete and signed off; the tool
+layer (M6–M8: on-screen key hints, the `auto-ascii` CLI, compositions) landed on
+2026-09-20. `auto-ascii` 0.2.0 and `auto-ascii-core` / `-format` / `-term`
+0.1.0 are on crates.io. `scripts/eval.sh` is the gate: workspace tests, clippy
+at `-D warnings`, a resize fuzz, criterion perf gates, and a corpus eval when
+local clips are present. [CONTRIBUTING.md](CONTRIBUTING.md) has the build, the
+gate and the rules.
 
 ## Quickstart
 
@@ -32,7 +34,7 @@ cargo run --release -p auto-ascii-factory -- build clip.mp4 -o intro.ascii
 
 # 2. play it
 cargo run --release -p auto-ascii --bin auto-ascii-player -- intro.ascii
-#    q/Esc quit · space pause · 0-9 jump · ←/→ 5 s · d dial · [ ] adjust · ? keys
+#    q/Esc quit · space pause · 0-9 jump · ←/→ 5 s · d dial · [ ] adjust · v controls
 
 # 3. no terminal? render frames as text instead
 cargo run --release -p auto-ascii --example headless-dump -- intro.ascii 3 100x28
@@ -79,9 +81,8 @@ prints verbatim.
 ## Install
 
 The fast path is a prebuilt player binary — copy it, run it, done (measured
-0.2 s from binary-in-hand to the first presented frame on this repo's
-reference box, probe deadline included; the M5 acceptance budget is
-2 *minutes*):
+0.2 s from binary-in-hand to the first presented frame on a 2-core Linux box,
+probe deadline included; the M5 acceptance budget was 2 *minutes*):
 
 ```bash
 # from a release tarball / dist/ directory produced by scripts/release.sh:
@@ -100,7 +101,7 @@ enforces the < 5 MB stripped-size gate):
 | macOS | build **on a Mac**: `make build` or the native cargo line above (see the Makefile's macOS section) | no osxcross by policy; Apple Silicon and Intel both build from source |
 
 A from-source build on a clean checkout (fresh `target/`, warm crates.io
-cache) measures ~29 s on this box (2 physical cores + SMT) — `time cargo build --release -p
+cache) takes 30–45 s on a 2-core Linux box — `time cargo build --release -p
 auto-ascii --features bin`.
 
 To embed the library (turn the `bin` feature off if you only want
@@ -179,9 +180,13 @@ for the per-terminal manual pass.
 
 Every tunable — edge thresholds, EMA constants, hysteresis deltas, highlight
 percentiles — lives in [`params.toml`](params.toml), never in code. The loop is
-`build → eval → read metrics → edit params → repeat`:
+`build → eval → read metrics → edit params → repeat`, driven by whatever
+reference videos you keep in `corpus/` (local and gitignored, see
+[`corpus/README.md`](corpus/README.md)):
 
 ```bash
+auto-ascii-factory eval --corpus corpus/ --params params.toml \
+    --out runs/base.json --html runs/base.html          # once: record a baseline
 auto-ascii-factory eval --corpus corpus/ --params params.toml \
     --baseline runs/base.json --out runs/latest.json --html runs/latest.html
 ```
@@ -190,25 +195,33 @@ auto-ascii-factory eval --corpus corpus/ --params params.toml \
 and writes metrics JSON plus a self-contained HTML contact sheet — SSIM, edge F1
 against a Canny ground truth, flicker (glyph switches/cell/s), damage rate and
 bytes/frame, per-stage frame times. Nonzero exit on a tolerance breach against
-the baseline. The reference clips are described in
-[`corpus/README.md`](corpus/README.md) (the videos themselves are local, not
-committed).
+the baseline. `runs/` is gitignored output. `auto-ascii-factory sweep` runs the
+same eval over a grid of parameter overrides and ranks the combos; the sweep
+file format is documented at the top of
+[`crates/auto-ascii-factory/src/sweep.rs`](crates/auto-ascii-factory/src/sweep.rs).
 
 ## Repo map & development
 
 | path | what |
 |---|---|
 | `crates/auto-ascii` | **the public library** + the `auto-ascii-player` binary |
+| `crates/auto-ascii-cli` | the `auto-ascii` CLI: a library of clips, `cut`, `compose`, `--json` |
 | `crates/auto-ascii-format` | ASCI v1 container (zstd + temporal delta, O(1) seek) |
 | `crates/auto-ascii-core` | pure engine: viewport, resampler, compositor, palettes, hysteresis |
 | `crates/auto-ascii-term` | `Backend` trait, ANSI backend, capability probe, simulator |
-| `crates/auto-ascii-factory` | offline factory + the eval driver |
+| `crates/auto-ascii-factory` | offline factory (lib + bin) + the eval and sweep drivers |
 | `crates/auto-ascii-eval` | metrics, fixtures, report schema |
 | `scripts/eval.sh` | the one-command gate: tests, clippy, resize fuzz, perf gates, corpus eval |
-| `PLAN.md` / `INTERFACES.md` | the build plan and the API registry |
+| `docs/AGENT-GUIDE.md` | the CLI for agents (also `auto-ascii agent-guide`) |
+| `docs/TERMINAL-CHECKLIST.md` | the manual per-terminal pass |
+| `docs/PLAN.md`, `docs/PLAN-M6-M8.md` | the build plans: the engine, then the CLI and compositions |
+| `docs/INTERFACES.md` | the internal API registry, milestone by milestone |
+| `docs/research/` | pre-implementation research digests (they use the project's earlier working name) |
+| `tools/` | `prep_video.py` (canvas-normalize a source video), `soak.py` (resize-storm soak) |
 
-`scripts/eval.sh` is what "green" means here; it runs in a few minutes on this box (2 physical cores + SMT) (corpus sections skip automatically when the local clips are
-absent — committed tests never depend on them).
+`scripts/eval.sh` is what "green" means here; it runs in a few minutes on a
+2-core box, and the corpus section skips itself when `corpus/` holds no videos —
+committed tests never depend on them.
 
 ## License
 

@@ -1,4 +1,4 @@
-<!-- Architecture proposal A (Pragmatist, WINNER) — produced by the ascii-engine-plan workflow, 2026-07-24; input to ../../PLAN.md -->
+<!-- Architecture proposal A (Pragmatist, WINNER) — produced by the ascii-engine-plan workflow, 2026-07-24; input to ../PLAN.md -->
 
 # SLEEPYTIME — Architecture Proposal (Architect A, Pragmatist)
 

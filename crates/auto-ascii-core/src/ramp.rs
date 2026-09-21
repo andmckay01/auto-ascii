@@ -14,7 +14,7 @@ pub const ASCII_BASE_COARSE: &[char] =
 /// (PLAN §3.4 row 2): `" .,:;i1tfLCG08@"`.
 ///
 /// Note: PLAN labels this "16-step" but specifies 15 glyphs; the glyph string
-/// is authoritative (recorded in INTERFACES.md).
+/// is authoritative (recorded in docs/INTERFACES.md).
 pub const ASCII_BASE_FINE: &[char] = &[
     ' ', '.', ',', ':', ';', 'i', '1', 't', 'f', 'L', 'C', 'G', '0', '8', '@',
 ];

@@ -1680,7 +1680,11 @@ facade surface + this hidden module.)
     `--cache-dir runs/cache`); stage_ms/write_ms fields are wall-clock and
     vary run-to-run — the compare tolerances absorb that; every other
     metric is deterministic (regeneration reproduced ssim/flicker/damage
-    bit-for-bit). No `pub` signature changed.
+    bit-for-bit). No `pub` signature changed. **Superseded 2026-09-20:**
+    the three-clip corpus, the symlink assembly, the real-corpus
+    determinism guard and the committed `runs/base.json` are gone; the
+    section now evals whatever videos sit in `corpus/` against a baseline
+    the user records locally (`runs/` is gitignored, corpus/README.md).
 17. **M2 adversarial-review fixes landed** (review-fix agent). Four
     confirmed findings, each with regression tests:
     (4a) **eval baseline blindness** [high]: `frame_ssim`'s source side no
@@ -1871,7 +1875,7 @@ facade surface + this hidden module.)
     Sweep evidence in the M3 integration report.
 21. **M3 Tune landed** (tune agent): `auto-ascii-factory sweep` per the Binaries
     section (PLAN §5 CLI — sweep.rs; ranked `sweep.json` schema v1 +
-    `leaderboard.html`; committed axis grids under `sweeps/`). Decisions:
+    `leaderboard.html`; the M3 axis grids, since removed from the tree). Decisions:
     (a) **composite score** = `0.4·mean(ssim) + 0.4·mean(edge_f1) −
     0.2·mean(flicker/2.0)` (means over clips; `[score]` overridable per
     grid file; flicker_norm 2.0 = the §6 gate, so a clip at the gate costs
@@ -2145,24 +2149,24 @@ facade surface + this hidden module.)
     that module builds without the `terminal` feature); the public name
     `auto_ascii::SCRUB_STEP_SECS` is unchanged — `player` re-exports it.
     (b) **New key-hints row** on `rows-2`, in the progress row's colors:
-    `q quit   0-9 jump   <- -> 5s   d dial   [ ] adjust   ? keys`, with whole
+    `q quit   0-9 jump   <- -> 5s   d dial   [ ] adjust   v controls`, with whole
     items dropped in `HINT_DROP_ORDER` until the list fits `cols` — `[ ]
     adjust`, then `d dial`, then the arrows, then `0-9`, then `q quit`, with
-    `? keys` the LAST to go, since how to summon the legend back is what a
+    `v controls` the LAST to go, since how to summon the legend back is what a
     cramped screen must still say (80/64 → all six, 40 → four, 32 → three).
     The remainder is painted in the same background, so no picture cell
     survives underneath, and the row is gated on the viewport so it never
     lands on the enlarge card (`rows-2` is where that card's second line sits
     on a 4-row screen). New pipeline surface:
     `Player::set_hint_overlay(bool)` and `pub fn draw_hint_overlay(grid: &mut
-    Grid<Cell>)`, plus `Drained.toggle_hints: bool` (`?` or `h`, collapsed to
+    Grid<Cell>)`, plus `Drained.toggle_hints: bool` (`v`, collapsed to
     one flag per drain — a held key must not flicker the row). Printable
     ASCII only, so the arrows are `<-`/`->` (PLAN-M6-M8 §0.6); `auto-ascii-term`
     needed no change, since both keys already arrive as `Key::Char`.
     (c) **Visibility is run-loop policy, never the pipeline's.** `player.rs`
     gains `HINT_STARTUP_SHOW_FOR` (3 s) and a private `HintState`: the row
     rides with whichever transient overlay is up, shows for the start-up
-    window, and is pinned by `?`/`h` until the next press. The pin toggles
+    window, and is pinned by `v` until the next press. The pin toggles
     against what is ON SCREEN, not against the flag alone — a press inside
     the start-up window (or during an overlay's ride-along) dismisses the row
     and ends the window, instead of silently pinning it for the rest of
@@ -2176,7 +2180,7 @@ facade surface + this hidden module.)
     asserted to damage `cols*rows` on its own, and while they are up every
     row above the bottom TWO matches the no-overlay reference — plus hint
     content at 80/64/40 columns, the 64-column arrow-block threshold (and its
-    absence at 63) and the `?`/`h` toggle through the real event queue. The
+    absence at 63) and the `v` toggle through the real event queue. The
     TIMING rules are unit-tested in player.rs with synthetic instants
     (`hint_row_shows_at_start_up_then_rides_the_overlays`): `run()` owns the
     only clock and hard-wires `AnsiBackend`, so there is no seam to hand a
@@ -2204,7 +2208,7 @@ facade surface + this hidden module.)
     and deliberately still WALL clock: a pause spends the budget like
     playback does, now documented on the builder. The hints row gained
     `space pause` in second place, dropped third (after `[ ] adjust` and
-    `d dial`) for its eleven columns; `? keys` is still last to go.
+    `d dial`) for its eleven columns; `v controls` is still last to go.
 28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
     should take a video from anywhere on the desktop, process it, and land
     it in the folder where the user's processed videos live"). The shape of
@@ -2475,7 +2479,7 @@ facade surface + this hidden module.)
     reads the PIN before the start-up window: pinned → unpin, start-up
     freebie → dismiss, anything else (including an overlay's ride-along) →
     pin. Under the old "toggle against what is on screen" rule a pause held
-    the progress row up forever, so `?` could never pin the legend and
+    the progress row up forever, so `v` could never pin the legend and
     would silently unpin one that was. (5) `RenderSession::open` is
     `from_composition(Composition::single(path))` — no second mapping path,
     no cached fps/aspect/frame_count, one 16:9 degenerate-aspect fallback

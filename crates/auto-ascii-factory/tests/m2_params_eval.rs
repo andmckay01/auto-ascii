@@ -369,32 +369,6 @@ fn default_params_build_is_byte_pinned() {
     assert_eq!(sha256_of(&out_filed), FIXTURE_ASSET_SHA, "--params file path diverged");
 }
 
-/// Acceptance 8 (corpus integration half — the committed guard above runs
-/// without the corpus): rebuilding the grass clip with pure defaults must be
-/// byte-identical to the committed assets/ copy. Ignored by default: needs
-/// the local-only corpus and a full 194-frame zstd-19 build (~1 min).
-/// Run: `cargo test -p auto-ascii-factory --test m2_params_eval -- --ignored`
-#[test]
-#[ignore = "needs local corpus (gitignored) + ~1 min build"]
-fn grass_rebuild_matches_assets_copy() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let input = root.join("corpus/prepared/grass-field-windy-mirror.mp4");
-    let committed = root.join("assets/grass-field-windy-mirror.ascii");
-    if !input.is_file() || !committed.is_file() {
-        eprintln!("skipping: corpus/assets not present on this checkout");
-        return;
-    }
-    let dir = TempDir::new("grass");
-    let rebuilt = dir.path("grass.ascii");
-    let out = factory(&[&"build", &input, &"-o", &rebuilt]);
-    assert!(out.status.success(), "grass rebuild failed:\n{}", stderr_of(&out));
-    assert_eq!(
-        sha256_of(&rebuilt),
-        sha256_of(&committed),
-        "default-params grass rebuild is not byte-identical to assets/ copy"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // eval: JSON + HTML + baseline gating on a tiny synthetic corpus
 // ---------------------------------------------------------------------------

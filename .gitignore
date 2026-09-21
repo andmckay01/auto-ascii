@@ -1,12 +1,13 @@
 /target
-# scripts/release.sh output (stripped release binaries, M5 item E)
+# scripts/release.sh output (stripped release binaries)
 /dist
-corpus/*.mp4
-corpus/prepared/*.mp4
-corpus/prepared/samples/
+# Reference videos for `auto-ascii-factory eval` stay local (corpus/README.md),
+# as do eval outputs, baselines and the asset cache under runs/.
+/corpus/*
+!/corpus/README.md
+/runs/
+# Built assets are regenerable from their source videos.
 *.ascii
-# legacy pre-rename assets: still on disk locally until swept, and renaming
-# this pattern un-ignored them once already. Keep it so ~1.2 GB of stale
-# binaries can never be staged by accident.
+# The pre-rename asset extension, kept so stale local builds are never staged.
 *.slpy
 __pycache__/

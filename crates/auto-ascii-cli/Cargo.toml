@@ -1,6 +1,6 @@
 [package]
 name = "auto-ascii-cli"
-description = "auto-ascii agent-first CLI: import video into a library of ASCI clips, list them, play them (PLAN-M6-M8 §2)"
+description = "auto-ascii agent-first CLI: import video into a library of ASCI clips, cut and compose them, play them"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

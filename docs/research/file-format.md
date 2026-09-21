@@ -1,4 +1,4 @@
-<!-- Asset file format exploration — produced by the ascii-engine-plan workflow, 2026-07-24; input to ../../PLAN.md -->
+<!-- Asset file format exploration — produced by the ascii-engine-plan workflow, 2026-07-24; input to ../PLAN.md -->
 
 Empirical results are in. Composing the digest.
 

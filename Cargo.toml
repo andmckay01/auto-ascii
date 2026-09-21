@@ -1,4 +1,4 @@
-# auto-ascii workspace — PLAN.md §2 (crate layout), §8 (dependencies).
+# auto-ascii workspace — docs/PLAN.md §2 (crate layout), §8 (dependencies).
 
 [workspace]
 resolver = "3"
