@@ -69,9 +69,9 @@ const PROGRESS_HINT_MIN_COLS: u16 = 64;
 const HINT_SEP: &str = "   ";
 
 /// Drop order for [`hint_line`] (M6 review fix), as indices into the display
-/// list — first to go first. `? keys` is deliberately absent: how to summon
-/// the legend back is the one hint a narrow terminal must keep, so it is the
-/// last item standing. `space pause` goes early for its width: eleven
+/// list — first to go first. `v controls` is deliberately absent: how to
+/// summon the legend back is the one hint a narrow terminal must keep, so it
+/// is the last item standing. `space pause` goes early for its width: eleven
 /// columns is the most any one hint costs, and space is the binding people
 /// try without being told.
 const HINT_DROP_ORDER: [usize; 6] = [5, 4, 1, 3, 2, 0];
@@ -137,7 +137,7 @@ pub struct Drained {
     /// change — no asset is touched and no temporal state is reset, so the
     /// picture re-tunes without a visible discontinuity.
     pub dial_delta: i32,
-    /// `?` or `h` pressed this drain (M6 key hints, PLAN-M6-M8 §1) — the
+    /// `v` pressed this drain (M6 key hints, PLAN-M6-M8 §1) — the
     /// caller flips the sticky key-hints row. Coalesced to a flag like the
     /// arrows: holding the key must not race the row on and off.
     pub toggle_hints: bool,
@@ -216,11 +216,12 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
             Event::Key(Key::Char('d')) => dial_cycle = dial_cycle.saturating_add(1),
             Event::Key(Key::Char('[')) => dial_delta = dial_delta.saturating_sub(1),
             Event::Key(Key::Char(']')) => dial_delta = dial_delta.saturating_add(1),
-            // M6 key hints (PLAN-M6-M8 §1): `?` is the conventional
-            // binding, `h` the one people try when `?` needs a shift.
-            // Collapsed to a flag, not counted — two presses in one drain
-            // are a key repeat, not a request to flicker the row.
-            Event::Key(Key::Char('?' | 'h')) => toggle_hints = true,
+            // M6 key hints (PLAN-M6-M8 §1): `v` for the controls legend —
+            // one unshifted key, and the row itself names it, so there is
+            // nothing to guess. Collapsed to a flag, not counted — two
+            // presses in one drain are a key repeat, not a request to
+            // flicker the row.
+            Event::Key(Key::Char('v')) => toggle_hints = true,
             // M6 pause: space is the one binding every player shares, and
             // it is the last printable key not already spoken for.
             Event::Key(Key::Char(' ')) => toggle_pause = true,
@@ -347,7 +348,7 @@ pub struct Player<'a> {
     progress_ctx: Option<ProgressContext>,
     /// M6 key hints (PLAN-M6-M8 §1): the one-line key legend on `rows-2`.
     /// Driven entirely by the run loop (it rides with the transient
-    /// overlays, the start-up window and `?`/`h`), so `--sim`, the eval
+    /// overlays, the start-up window and `v`), so `--sim`, the eval
     /// harness and `RenderSession` never raise it and their grids are
     /// untouched. Presentation only, exactly like `overlay_visible`.
     hint_visible: bool,
@@ -1195,11 +1196,11 @@ fn scrub_step_label() -> String {
 /// terminal shows fewer hints rather than a word cut in half, and the
 /// survivors keep their reading order. One leading and trailing space frame
 /// the list, matching the progress row's blocks. Returns "" when not even
-/// `? keys` fits — the row is still painted, just empty.
+/// `v controls` fits — the row is still painted, just empty.
 fn hint_line(cols: u16) -> String {
     let arrows = format!("<- -> {}", scrub_step_label());
     let items: [&str; 7] =
-        ["q quit", "space pause", "0-9 jump", &arrows, "d dial", "[ ] adjust", "? keys"];
+        ["q quit", "space pause", "0-9 jump", &arrows, "d dial", "[ ] adjust", "v controls"];
     // Framed width of the kept items: the items, the gaps between them and
     // the two framing spaces. Every byte here is ASCII, so byte length is
     // column count (PLAN-M6-M8 §0.6: overlays stay printable ASCII).
@@ -1217,7 +1218,7 @@ fn hint_line(cols: u16) -> String {
         keep[i] = false;
     }
     if width(&keep) > cols as usize {
-        return String::new(); // not even the `? keys` hint fits
+        return String::new(); // not even the `v controls` hint fits
     }
     let kept: Vec<&str> =
         items.iter().zip(keep).filter(|(_, k)| *k).map(|(it, _)| *it).collect();
@@ -1226,7 +1227,7 @@ fn hint_line(cols: u16) -> String {
 
 /// The key-hints row (M6, PLAN-M6-M8 §1): one line on `rows-2` in the
 /// progress overlay's colors, listing every bound key. Shown while a
-/// transient overlay is up, for a short window at start-up and whenever `?`
+/// transient overlay is up, for a short window at start-up and whenever `v`
 /// pins it (all run-loop policy — see `Player::set_hint_overlay`). Pure
 /// function of `cols`, so an unchanged row costs zero damage in diff mode.
 pub fn draw_hint_overlay(grid: &mut Grid<Cell>) {

@@ -5,7 +5,7 @@
 //! The acceptance surface tested here:
 //! * arrows surface through the REAL event queue as coalesced ±5 s steps and
 //!   reset hysteresis exactly like digit jumps (temporal discontinuity), and
-//!   `?`/`h` surface as the hints toggle;
+//!   `v` surfaces as the hints toggle;
 //! * neither overlay corrupts diff output — every presented frame across
 //!   show/hide parses as a valid escape stream, replaying the with-overlay
 //!   diff stream reconstructs the SAME screen as an untouched reference
@@ -35,14 +35,15 @@ fn grid_row(p: &Player<'_>, row: u16) -> String {
 // The key-hints row exactly as PLAN-M6-M8 §1 specifies it, at the widths the
 // milestone calls out plus the 32-column floor: the full list at 80, then
 // items leaving in drop order — `[ ] adjust`, `d dial`, `space pause`,
-// `<- -> 5s` — while `? keys` survives all of them, because how to summon
-// the legend back is what a cramped screen must still say. Written out in
-// full rather than assembled, so a wording change has to be deliberate.
+// `<- -> 5s` — while `v controls` survives all of them, because how to
+// summon the legend back is what a cramped screen must still say. Written
+// out in full rather than assembled, so a wording change has to be
+// deliberate.
 const HINTS_80: &str =
-    " q quit   space pause   0-9 jump   <- -> 5s   d dial   [ ] adjust   ? keys      ";
-const HINTS_64: &str = " q quit   space pause   0-9 jump   <- -> 5s   d dial   ? keys   ";
-const HINTS_40: &str = " q quit   0-9 jump   <- -> 5s   ? keys  ";
-const HINTS_32: &str = " q quit   0-9 jump   ? keys     ";
+    " q quit   space pause   0-9 jump   <- -> 5s   d dial   [ ] adjust   v controls  ";
+const HINTS_64: &str = " q quit   space pause   0-9 jump   <- -> 5s   v controls        ";
+const HINTS_40: &str = " q quit   0-9 jump   v controls         ";
+const HINTS_32: &str = " q quit   0-9 jump   v controls ";
 
 // ---------------------------------------------------------------------------
 // A strict truecolor escape-stream interpreter: it accepts EXACTLY what the
@@ -234,12 +235,12 @@ fn overlay_show_hide_never_corrupts_diff_output() {
 }
 
 /// The hints row at four widths (PLAN-M6-M8 §1 + the M6 review fix): the
-/// full list fits at 80; 64 has dropped `[ ] adjust`; a 40-column terminal
-/// has also dropped `d dial` and `space pause`, and a 32-column one (the
-/// minimum playable width) the arrows too — but `? keys` is still there at
-/// every width, so the legend can always be summoned back. The row is
-/// painted to its full width throughout, so no stale picture cell survives
-/// underneath it.
+/// full list fits at 80; 64 has dropped `[ ] adjust` and `d dial`; a
+/// 40-column terminal has also dropped `space pause` and the arrows, and a
+/// 32-column one (the minimum playable width) shows those same three items,
+/// filling the row exactly — `v controls` is still there at every width, so
+/// the legend can always be summoned back. The row is painted to its full
+/// width throughout, so no stale picture cell survives underneath it.
 #[test]
 fn hint_row_drops_whole_items_as_the_terminal_narrows() {
     let asset = build_fixture(Fixture::GradientMotion);
@@ -253,7 +254,7 @@ fn hint_row_drops_whole_items_as_the_terminal_narrows() {
         backend.take_output();
         assert_eq!(grid_row(&p, rows - 2), want, "hints row at {cols} columns");
         assert_eq!(want.len(), cols as usize, "the row is painted to its full width");
-        assert!(want.contains("? keys"), "the summon hint survives every drop");
+        assert!(want.contains("v controls"), "the summon hint survives every drop");
     }
 }
 
@@ -316,36 +317,37 @@ fn progress_row_gains_the_arrow_block_at_64_columns() {
     assert_eq!(narrow.len(), 63);
 }
 
-/// `?` and `h` surface through the REAL event queue as the hints toggle
-/// (PLAN-M6-M8 §1), collapsed to one flag per drain, and they move nothing
+/// `v` surfaces through the REAL event queue as the hints toggle
+/// (PLAN-M6-M8 §1), collapsed to one flag per drain, and it moves nothing
 /// else: the row is chrome, not a seek or a dial.
 #[test]
-fn question_mark_and_h_report_the_hints_toggle() {
+fn v_reports_the_hints_toggle() {
     let asset = build_fixture(Fixture::GradientMotion);
     let mut backend = SimBackend::new(80, 24);
     let mut p = player(&asset, true);
     p.reflow(&mut backend, 80, 24);
 
-    for key in ['?', 'h'] {
-        backend.push_event(Event::Key(Key::Char(key)));
-        let d = p.drain_events(&mut backend);
-        assert!(d.toggle_hints, "{key} must report the hints toggle");
-        assert_eq!((d.jump_digit, d.seek_steps, d.dial_cycle, d.dial_delta), (None, 0, 0, 0));
-    }
+    backend.push_event(Event::Key(Key::Char('v')));
+    let d = p.drain_events(&mut backend);
+    assert!(d.toggle_hints, "v must report the hints toggle");
+    assert_eq!((d.jump_digit, d.seek_steps, d.dial_cycle, d.dial_delta), (None, 0, 0, 0));
 
     // Repeats inside one drain collapse — a held key must not flicker the row.
-    backend.push_event(Event::Key(Key::Char('?')));
-    backend.push_event(Event::Key(Key::Char('h')));
-    backend.push_event(Event::Key(Key::Char('?')));
+    backend.push_event(Event::Key(Key::Char('v')));
+    backend.push_event(Event::Key(Key::Char('v')));
+    backend.push_event(Event::Key(Key::Char('v')));
     assert!(p.drain_events(&mut backend).toggle_hints);
 
-    // Unbound keys still report nothing.
-    backend.push_event(Event::Key(Key::Char('x')));
-    assert!(!p.drain_events(&mut backend).toggle_hints);
+    // Unbound keys still report nothing — `?` and `h` were the M6 bindings
+    // and are as inert now as any key that never had a meaning.
+    for key in ['x', '?', 'h'] {
+        backend.push_event(Event::Key(Key::Char(key)));
+        assert!(!p.drain_events(&mut backend).toggle_hints, "{key} must not toggle");
+    }
 }
 
 /// Space through the REAL event queue (M6 pause): one flag per drain,
-/// collapsed like `?`, and it moves nothing else — pausing is a transport
+/// collapsed like `v`, and it moves nothing else — pausing is a transport
 /// change, not a seek or a dial.
 #[test]
 fn space_reports_the_pause_toggle() {

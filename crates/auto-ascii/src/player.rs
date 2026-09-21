@@ -271,17 +271,17 @@ const HINT_STARTUP_SHOW_FOR: Duration = Duration::from_millis(3000);
 
 /// Visibility policy for the key-hints row (M6, PLAN-M6-M8 §1): it rides
 /// with whichever transient overlay is up, shows for
-/// [`HINT_STARTUP_SHOW_FOR`] at start-up, and is pinned open by `?`/`h`
-/// until the next press. Split out of the run loop so the timing rules are
+/// [`HINT_STARTUP_SHOW_FOR`] at start-up, and is pinned open by `v` until
+/// the next press. Split out of the run loop so the timing rules are
 /// testable — [`Player::run`] owns the only clock and hard-wires
 /// `AnsiBackend`, so there is nothing headless to drive it through.
 #[derive(Debug)]
 struct HintState {
-    /// When the start-up window lapses. Cut short by the first `?`/`h`
-    /// press (a deliberate press ends the freebie) and never re-armed.
+    /// When the start-up window lapses. Cut short by the first `v` press
+    /// (a deliberate press ends the freebie) and never re-armed.
     startup_until: Instant,
-    /// The pin `?`/`h` last set — the OPPOSITE of what was on screen when it
-    /// was pressed, so one key both summons and dismisses the row.
+    /// The pin `v` last set — the OPPOSITE of what was on screen when it was
+    /// pressed, so one key both summons and dismisses the row.
     sticky: bool,
 }
 
@@ -290,7 +290,7 @@ impl HintState {
         HintState { startup_until: now + HINT_STARTUP_SHOW_FOR, sticky: false }
     }
 
-    /// One run-loop step: fold in this drain's `?`/`h` press and report
+    /// One run-loop step: fold in this drain's `v` press and report
     /// whether the row belongs on screen now. `overlays_up` is true while the
     /// progress or dial overlay is visible — the hints ride along with them,
     /// since a viewer touching those keys is exactly who wants the legend.
@@ -299,7 +299,7 @@ impl HintState {
     /// unpin, start-up freebie → dismiss it, anything else → pin. Toggling
     /// against "is the row on screen" instead looks right until an overlay
     /// is up for a long time — during a pause the progress row never goes
-    /// away, so `?` could only ever unpin, and a press would silently take
+    /// away, so `v` could only ever unpin, and a press would silently take
     /// down a legend the viewer had pinned. The overlays keep their veto
     /// either way: the row cannot be dismissed out from under the bar it
     /// belongs to, it just stops riding along once that bar goes.
@@ -316,7 +316,7 @@ impl HintState {
             // means "go away". Anything else — an overlay's ride-along, or
             // nothing on screen at all — means "stay up", which the old
             // rule could not express: during a pause the progress row is up
-            // for minutes, so `?` could only ever fail to pin.
+            // for minutes, so `v` could only ever fail to pin.
             !in_startup
         };
         self.sticky || overlays_up
@@ -584,8 +584,8 @@ impl Player {
     /// scrubs still work while frozen, and stay frozen). Every
     /// seek flashes a bottom-row progress overlay that auto-hides after ~1 s.
     /// A key-hints row sits above it whenever an overlay is up, for the first
-    /// few seconds of playback, and for as long as `?` (or `h`) pins it open
-    /// (M6, PLAN-M6-M8 §1).
+    /// few seconds of playback, and for as long as `v` pins it open (M6,
+    /// PLAN-M6-M8 §1).
     ///
     /// # Errors
     /// [`Error::Terminal`] when stdout is not a TTY (headless callers want
@@ -941,7 +941,7 @@ mod tests {
     }
 
     /// M6 key hints (PLAN-M6-M8 §1): the run loop's visibility policy —
-    /// start-up window, ride-along with the overlays, sticky `?`/`h`. Driven
+    /// start-up window, ride-along with the overlays, sticky `v`. Driven
     /// with synthetic instants because `run()` owns the only clock and
     /// hard-wires `AnsiBackend`: there is no seam to hand a SimBackend or a
     /// fake clock, and inventing one is out of scope here. What the row then
@@ -963,13 +963,13 @@ mod tests {
         assert!(hints.visible(late, false, true), "rides with a visible overlay");
         assert!(!hints.visible(late, false, false), "and leaves with it");
 
-        // `?`/`h` pins it open until the next press — timers do not override.
-        assert!(hints.visible(late, true, false), "? pins the row open");
+        // `v` pins it open until the next press — timers do not override.
+        assert!(hints.visible(late, true, false), "v pins the row open");
         assert!(hints.visible(late, false, false), "and it stays pinned");
-        assert!(!hints.visible(late, true, false), "a second ? unpins it");
+        assert!(!hints.visible(late, true, false), "a second v unpins it");
     }
 
-    /// `?`/`h` reads the pin first, then the start-up window: a press
+    /// `v` reads the pin first, then the start-up window: a press
     /// inside the start-up window dismisses that freebie and ends it,
     /// while a press with an overlay up (or nothing up) pins the row.
     #[test]
@@ -977,10 +977,10 @@ mod tests {
         let t0 = Instant::now();
         let mut hints = HintState::new(t0);
         assert!(hints.visible(t0, false, false), "the start-up row is up");
-        assert!(!hints.visible(t0, true, false), "? during start-up dismisses it");
+        assert!(!hints.visible(t0, true, false), "v during start-up dismisses it");
         let tick = t0 + Duration::from_millis(1);
         assert!(!hints.visible(tick, false, false), "and the window does not bring it back");
-        assert!(hints.visible(tick, true, false), "the next ? summons it again");
+        assert!(hints.visible(tick, true, false), "the next v summons it again");
 
         // A press while an overlay is up PINS (addendum 3b): the press
         // cannot mean "dismiss" — the overlay keeps the row up regardless —
@@ -988,14 +988,14 @@ mod tests {
         let mut hints = HintState::new(t0);
         let late = t0 + HINT_STARTUP_SHOW_FOR + Duration::from_secs(60);
         assert!(hints.visible(late, false, true), "an overlay pulls the row up");
-        assert!(hints.visible(late, true, true), "? pins it while the bar is up");
+        assert!(hints.visible(late, true, true), "v pins it while the bar is up");
         assert!(hints.visible(late, false, false), "and it stays after the bar goes");
         assert!(!hints.visible(late, true, false), "the next press unpins");
     }
 
     /// Addendum 3b regression: a pause holds the progress row up for as
     /// long as the viewer likes, so "toggle against what is on screen"
-    /// left `?` unable to EVER pin the legend — and a press would silently
+    /// left `v` unable to EVER pin the legend — and a press would silently
     /// unpin one that was already pinned. The pin is read first now.
     #[test]
     fn hints_can_be_pinned_while_the_progress_row_is_up() {
@@ -1003,14 +1003,14 @@ mod tests {
         let mut hints = HintState::new(t0);
         let late = t0 + HINT_STARTUP_SHOW_FOR + Duration::from_secs(60);
         // Paused: the progress row is up indefinitely (ProgressTimer).
-        assert!(hints.visible(late, true, true), "? pins during a pause");
+        assert!(hints.visible(late, true, true), "v pins during a pause");
         assert!(hints.visible(late, false, true), "and stays pinned");
         // A second press unpins — the row is still on screen only because
         // the paused progress row is, and it leaves with it.
-        assert!(hints.visible(late, true, true), "a second ? unpins");
+        assert!(hints.visible(late, true, true), "a second v unpins");
         assert!(!hints.visible(late, false, false), "gone once the bar goes");
         // Nothing on screen at all: a press pins, as it always did.
-        assert!(hints.visible(late, true, false), "? pins with nothing up");
+        assert!(hints.visible(late, true, false), "v pins with nothing up");
         assert!(hints.visible(late, false, false), "and it stays");
     }
 
