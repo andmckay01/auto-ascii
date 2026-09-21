@@ -6,13 +6,12 @@ description = "Realtime ASCII-art video: play ASCI feature assets in a terminal,
 # stays there yanked, and crates.io never lets a version number be reused.
 # The three libraries below are first publishes under new names, so they
 # keep the workspace 0.1.0 — hence the dep reqs here say 0.1.
-# See RENAME-PLAN.md §6.
 version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-# Publish metadata (M4 item C). `license` is the workspace's dual
-# MIT OR Apache-2.0; LICENSE-MIT / LICENSE-APACHE live at the repo root.
+# Publish metadata (M4 item C). `license` is the workspace's MIT; the
+# LICENSE file lives at the repo root.
 keywords = ["ascii", "terminal", "video", "tui", "ansi"]
 categories = ["multimedia::video", "command-line-utilities", "rendering"]
 readme = "README.md"
@@ -29,13 +28,19 @@ readme = "README.md"
 #                        acceptance 4 — verify with
 #                        `cargo tree -p auto-ascii --no-default-features`)
 [features]
-default = ["bin"]
+default = ["bin", "compose"]
 # The blocking terminal player (Player/PlayerBuilder): real session entry,
-# caps probe, restore hooks — pulls auto-ascii-term's crossterm/libc session layer.
-terminal = ["auto-ascii-term/session"]
+# caps probe, restore hooks — pulls auto-ascii-term's crossterm/libc session
+# layer. Implies `compose`: the player takes a composition .toml (M8).
+terminal = ["auto-ascii-term/session", "compose"]
 # The `auto-ascii-player` CLI binary (thin argv shim over the facade + the
 # headless --sim harness).
 bin = ["terminal", "dep:clap", "dep:anyhow"]
+# M8 (PLAN-M6-M8 §3): reading composition TOML files
+# (Composition::from_toml_str/from_toml_file, RenderSession::open_composition).
+# The Composition type itself, its timeline math and compose::export are core
+# tier — only the parser needs a dependency.
+compose = ["dep:toml"]
 
 [dependencies]
 auto-ascii-core = { workspace = true }
@@ -50,6 +55,10 @@ memmap2 = { workspace = true }
 # bin-only (feature-gated; PLAN §8).
 clap = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
+# `compose`-only (M8): composition files are TOML. Parsed through
+# `toml::Table` rather than a serde derive so every rejection can name the
+# offending clip index — which is also why serde is not a direct dep here.
+toml = { workspace = true, optional = true }
 
 [[bin]]
 name = "auto-ascii-player"

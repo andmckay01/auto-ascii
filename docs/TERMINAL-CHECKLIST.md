@@ -1,7 +1,7 @@
-# Terminal checklist — the owner's 5-minute pass
+# Terminal checklist — the 5-minute manual pass
 
-The build box is headless: kitty, alacritty, wezterm, gnome-terminal and xterm
-**cannot run here**, so nothing in CI can claim "verified on kitty". What CI
+CI is headless: kitty, alacritty, wezterm, gnome-terminal and xterm
+**cannot run there**, so nothing automated can claim "verified on kitty". What CI
 *does* pin is each terminal's **identity**: the environment it exports, the
 `TIOCGWINSZ` it sets and the exact bytes it answers our capability volley with
 are replayed through the real probe on a real pty, and the resulting `Caps` are
@@ -20,13 +20,14 @@ terminal.
 
 ```bash
 cargo build --release -p auto-ascii           # the player
-ASSET=assets/sheep-counting-neroni-clips.ascii # any .ascii you have
+ASSET=path/to/clip.ascii                      # any .ascii (auto-ascii import makes one)
 PLAY="./target/release/auto-ascii-player $ASSET"
 ```
 
-Keys during playback: `q`/`Esc` quit · `0`–`9` seek to 0–90 % · `←`/`→`
-scrub ±5 s (a bottom-row progress bar flashes for ~1 s) · resize the
-window at any time.
+Keys during playback: `q`/`Esc` quit · `space` pause · `0`–`9` jump ·
+`←`/`→` 5 s · `d` dial · `[` `]` adjust · `v` controls. The bottom-row progress
+bar flashes for ~1 s after a seek, with the key-hints row just above it;
+while paused it stays up and reads `PAUSED`. Resize the window at any time.
 
 **Read the probe's mind** on the terminal you are sitting in (prints one line
 with the caps the shipping probe concluded — color tier, sync 2026, cell px,
@@ -220,7 +221,7 @@ audit command and its current result:
 
 ```bash
 rg -n -i -e 'SSH_CONNECTION|SSH_TTY|\bssh\b|conpty|tmux|telnet|downshift|governor|bandwidth' \
-   --glob '!target/**' --glob '!docs/research/**' --glob '!PLAN.md' --glob '!runs/**' \
+   --glob '!target/**' --glob '!docs/research/**' --glob '!docs/PLAN.md' --glob '!runs/**' \
    --glob '!Cargo.lock' .
 ```
 

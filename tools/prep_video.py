@@ -3,7 +3,7 @@
 prep_video.py — auto-ascii corpus-preparation front door.
 
 Normalizes any source video onto a consistent canvas (default 1920x1080) so the
-offline factory (PLAN.md §5; the future `auto-ascii-factory` ingest stage) always
+offline factory (docs/PLAN.md §5; the future `auto-ascii-factory` ingest stage) always
 receives canvas-normalized input regardless of source aspect. Pure stdlib;
 shells out to ffmpeg/ffprobe. Originals are never modified.
 
@@ -300,20 +300,20 @@ def build_mirror_axis(parts, cur: str, axis: str, tile: int, canvas: int,
 
 EPILOG = """examples:
   # Full video onto the default 1920x1080 canvas, mirror fill:
-  tools/prep_video.py corpus/grass-field-windy.mp4
+  tools/prep_video.py corpus/portrait-clip.mp4
 
   # Compare fill modes (fill tiles color-negated in the second):
-  tools/prep_video.py corpus/grass-field-windy.mp4 --fill mirror        --out corpus/prepared/grass-mirror.mp4
-  tools/prep_video.py corpus/grass-field-windy.mp4 --fill mirror-invert --out corpus/prepared/grass-mirror-invert.mp4
+  tools/prep_video.py corpus/portrait-clip.mp4 --fill mirror        --out corpus/prepared/portrait-mirror.mp4
+  tools/prep_video.py corpus/portrait-clip.mp4 --fill mirror-invert --out corpus/prepared/portrait-mirror-invert.mp4
 
   # Cut two snippets, stitch them (audio kept), then normalize:
-  tools/prep_video.py corpus/sheep-counting-neroni.mp4 --clip 0:30-0:45 --clip 5:00-5:15
+  tools/prep_video.py corpus/long-clip.mp4 --clip 0:30-0:45 --clip 5:00-5:15
 
   # Loop a short clip out to >= 20 s by boomerang (fwd/rev/fwd/...):
-  tools/prep_video.py corpus/grass-field-windy.mp4 --min-duration 20
+  tools/prep_video.py corpus/short-clip.mp4 --min-duration 20
 
   # Custom canvas:
-  tools/prep_video.py in.mp4 --canvas 1280x720 --out prepared/in-720p.mp4
+  tools/prep_video.py in.mp4 --canvas 1280x720 --out corpus/prepared/in-720p.mp4
 
 timestamps: SS, MM:SS or HH:MM:SS, fractional seconds allowed (e.g. 1:23.5).
 default output: <input-dir>/prepared/<input-stem>-prepared.mp4

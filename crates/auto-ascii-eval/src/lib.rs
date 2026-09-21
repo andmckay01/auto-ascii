@@ -4,7 +4,10 @@
 //! schema. The driver that builds assets, runs the player against
 //! `SimBackend` and writes `runs/*.json` + HTML contact sheets is
 //! `auto-ascii-factory eval` (PLAN §5, M2 item B) — this crate deliberately does
-//! no I/O beyond serde.
+//! no I/O beyond serde, the single exception being
+//! [`fixtures::write_bgr24_avi`] (M7), which writes the raw-video INPUT
+//! fixture that the factory's determinism guard and `auto-ascii import`'s
+//! tests share.
 //!
 //! The measurement chain for the §6 quality metric:
 //!

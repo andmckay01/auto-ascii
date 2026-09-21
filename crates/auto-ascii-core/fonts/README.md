@@ -101,5 +101,5 @@ procedure) — the committed data is already sufficient.
 - Embedders: `RenderSession::set_font_table(Some("NAME|PATH"))`.
 - Metrics: `auto-ascii-factory eval --font-table NAME|PATH` scores downscale-
   SSIM through the chosen table (`auto_ascii_eval::CoverageTable::from_font_table`).
-  The default remains `conservative` — the committed `runs/base.json`
-  baseline's table.
+  The default remains `conservative`; absolute SSIM is only comparable within
+  one table, so record a baseline with the table you will keep using.

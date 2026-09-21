@@ -1,14 +1,18 @@
 //! M5 scrub UX (PLAN §7 M5 item D): Left/Right arrow seeks and the
-//! transient bottom-row progress overlay.
+//! transient bottom-row progress overlay — plus the M6 key-hints row one
+//! line above it (PLAN-M6-M8 §1).
 //!
 //! The acceptance surface tested here:
 //! * arrows surface through the REAL event queue as coalesced ±5 s steps and
-//!   reset hysteresis exactly like digit jumps (temporal discontinuity);
-//! * the overlay never corrupts diff output — every presented frame across
-//!   overlay show/hide parses as a valid escape stream, replaying the
-//!   with-overlay diff stream reconstructs the SAME screen as an untouched
-//!   reference player once the overlay hides, and the hide itself forces a
-//!   full repaint (the diff baseline cannot keep describing overlay cells).
+//!   reset hysteresis exactly like digit jumps (temporal discontinuity), and
+//!   `v` surfaces as the hints toggle;
+//! * neither overlay corrupts diff output — every presented frame across
+//!   show/hide parses as a valid escape stream, replaying the with-overlay
+//!   diff stream reconstructs the SAME screen as an untouched reference
+//!   player once both rows hide, and EACH hide forces a full repaint (the
+//!   diff baseline cannot keep describing overlay cells);
+//! * the hints row drops whole items from the right as the terminal narrows,
+//!   and the progress row's arrow block appears exactly at 64 columns.
 
 use auto_ascii::pipeline::Player;
 use auto_ascii_core::{ColorDepth, GlyphTier};
@@ -22,6 +26,24 @@ fn player(bytes: &[u8], repaint_full: bool) -> Player<'_> {
     Player::new(AsciiReader::open(bytes).unwrap(), 2.0, repaint_full, ColorDepth::True, GlyphTier::Ascii)
         .unwrap()
 }
+
+/// One rendered grid row as text (M6 hint/progress row assertions).
+fn grid_row(p: &Player<'_>, row: u16) -> String {
+    p.grid().row(row).iter().map(|c| c.glyph()).collect()
+}
+
+// The key-hints row exactly as PLAN-M6-M8 §1 specifies it, at the widths the
+// milestone calls out plus the 32-column floor: the full list at 80, then
+// items leaving in drop order — `[ ] adjust`, `d dial`, `space pause`,
+// `<- -> 5s` — while `v controls` survives all of them, because how to
+// summon the legend back is what a cramped screen must still say. Written
+// out in full rather than assembled, so a wording change has to be
+// deliberate.
+const HINTS_80: &str =
+    " q quit   space pause   0-9 jump   <- -> 5s   d dial   [ ] adjust   v controls  ";
+const HINTS_64: &str = " q quit   space pause   0-9 jump   <- -> 5s   v controls        ";
+const HINTS_40: &str = " q quit   0-9 jump   v controls         ";
+const HINTS_32: &str = " q quit   0-9 jump   v controls ";
 
 // ---------------------------------------------------------------------------
 // A strict truecolor escape-stream interpreter: it accepts EXACTLY what the
@@ -140,11 +162,13 @@ impl Screen {
     }
 }
 
-/// The acceptance test (M5 accept 2): frames stay byte-valid across overlay
-/// show/hide in PURE DIFF mode, the reconstructed screen matches a
-/// no-overlay reference everywhere except the overlay row while visible,
-/// the hide forces a full repaint, and afterwards the screens are identical
-/// — the overlay left zero trace in the diff state.
+/// The acceptance test (M5 accept 2, extended by PLAN-M6-M8 §1): frames stay
+/// byte-valid across show/hide in PURE DIFF mode, the reconstructed screen
+/// matches a no-overlay reference everywhere except the two overlay rows
+/// while they are visible, EACH hide forces a full repaint, and afterwards
+/// the screens are identical — the overlays left zero trace in the diff
+/// state. The two rows hide on separate frames on purpose: each hide path
+/// has to schedule its own invalidate, not lean on the other one's.
 #[test]
 fn overlay_show_hide_never_corrupts_diff_output() {
     let asset = build_fixture(Fixture::GradientMotion);
@@ -160,42 +184,253 @@ fn overlay_show_hide_never_corrupts_diff_output() {
     let mut s_with = Screen::new(cols, rows);
     let mut s_ref = Screen::new(cols, rows);
 
-    for f in 0..12u32 {
+    for f in 0..14u32 {
         if f == 4 {
             with.set_progress_overlay(true);
+            with.set_hint_overlay(true); // the hints ride with it (M6)
         }
         if f == 8 {
             with.set_progress_overlay(false); // auto-hide moment
+        }
+        if f == 11 {
+            with.set_hint_overlay(false); // the hints follow, one hide later
         }
         let stats = with.render_present(&mut b_with, f).unwrap();
         s_with.apply(&b_with.take_output()); // panics on any invalid byte
         reference.render_present(&mut b_ref, f).unwrap();
         s_ref.apply(&b_ref.take_output());
 
-        if f == 8 {
+        if f == 8 || f == 11 {
             assert_eq!(
                 stats.cells_damaged,
                 u32::from(cols) * u32::from(rows),
-                "hiding the overlay must invalidate → full repaint"
+                "hiding an overlay must invalidate → full repaint (frame {f})"
             );
         }
-        if (4..8).contains(&f) {
+        if (4..11).contains(&f) {
+            let hints = s_with.row_string(rows - 2);
+            assert_eq!(hints, HINTS_80, "hints row at frame {f}");
             let bottom = s_with.row_string(rows - 1);
-            assert!(
-                bottom.contains('[') && bottom.contains('%') && bottom.contains('/'),
-                "overlay visible on the bottom row: {bottom:?}"
-            );
-            // Everything ABOVE the overlay row is untouched by it.
-            for r in 0..rows - 1 {
+            if f < 8 {
+                assert!(
+                    bottom.contains('[') && bottom.contains('%') && bottom.contains('/'),
+                    "overlay visible on the bottom row: {bottom:?}"
+                );
+            } else {
+                // Progress gone, hints still up: the bottom row is the
+                // picture again, repainted from a clean baseline.
+                assert_eq!(bottom, s_ref.row_string(rows - 1), "bottom row at frame {f}");
+            }
+            // Everything ABOVE the two overlay rows is untouched by them.
+            for r in 0..rows - 2 {
                 assert_eq!(s_with.row_string(r), s_ref.row_string(r), "row {r} at frame {f}");
             }
         } else {
             assert!(
                 s_with.cells == s_ref.cells,
-                "screens must be identical when the overlay is hidden (frame {f})"
+                "screens must be identical when the overlays are hidden (frame {f})"
             );
         }
     }
+}
+
+/// The hints row at four widths (PLAN-M6-M8 §1 + the M6 review fix): the
+/// full list fits at 80; 64 has dropped `[ ] adjust` and `d dial`; a
+/// 40-column terminal has also dropped `space pause` and the arrows, and a
+/// 32-column one (the minimum playable width) shows those same three items,
+/// filling the row exactly — `v controls` is still there at every width, so
+/// the legend can always be summoned back. The row is painted to its full
+/// width throughout, so no stale picture cell survives underneath it.
+#[test]
+fn hint_row_drops_whole_items_as_the_terminal_narrows() {
+    let asset = build_fixture(Fixture::GradientMotion);
+    for (cols, want) in [(80u16, HINTS_80), (64, HINTS_64), (40, HINTS_40), (32, HINTS_32)] {
+        let rows = 24u16;
+        let mut backend = SimBackend::new(cols, rows);
+        let mut p = player(&asset, true);
+        p.reflow(&mut backend, cols, rows);
+        p.set_hint_overlay(true);
+        p.render_present(&mut backend, 0).unwrap();
+        backend.take_output();
+        assert_eq!(grid_row(&p, rows - 2), want, "hints row at {cols} columns");
+        assert_eq!(want.len(), cols as usize, "the row is painted to its full width");
+        assert!(want.contains("v controls"), "the summon hint survives every drop");
+    }
+}
+
+/// M6 review fix: the hints row never lands on the enlarge card. At 30x4 the
+/// terminal is below the 32x9 minimum, so the card is what `render_grid`
+/// draws — and `rows-2` is exactly where the card's "enlarge terminal" line
+/// sits. Raising the row must therefore change nothing at all.
+#[test]
+fn hint_row_stays_off_the_enlarge_card() {
+    let asset = build_fixture(Fixture::GradientMotion);
+    let (cols, rows) = (30u16, 4u16);
+
+    let mut backend = SimBackend::new(cols, rows);
+    let mut p = player(&asset, true);
+    p.reflow(&mut backend, cols, rows);
+    p.set_hint_overlay(true);
+    p.render_present(&mut backend, 0).unwrap();
+    backend.take_output();
+
+    let mut b_ref = SimBackend::new(cols, rows);
+    let mut reference = player(&asset, true);
+    reference.reflow(&mut b_ref, cols, rows);
+    reference.render_present(&mut b_ref, 0).unwrap();
+    b_ref.take_output();
+
+    assert!(grid_row(&p, rows - 2).contains("enlarge"), "the card's message is on rows-2");
+    assert_eq!(
+        p.grid().as_slice(),
+        reference.grid().as_slice(),
+        "a raised hints row must not touch the enlarge card"
+    );
+}
+
+/// The progress row's arrow block (PLAN-M6-M8 §1) appears exactly at
+/// `PROGRESS_HINT_MIN_COLS` = 64 and is absent one column below, where the
+/// row is the M5 layout to the byte — a narrow terminal spends its columns on
+/// the timecode and the bar instead.
+#[test]
+fn progress_row_gains_the_arrow_block_at_64_columns() {
+    let asset = build_fixture(Fixture::GradientMotion);
+    let rows = 24u16;
+    let row_at = |cols: u16| {
+        let mut backend = SimBackend::new(cols, rows);
+        let mut p = player(&asset, true);
+        p.reflow(&mut backend, cols, rows);
+        p.set_progress_overlay(true);
+        p.render_present(&mut backend, 0).unwrap();
+        backend.take_output();
+        grid_row(&p, rows - 1)
+    };
+
+    let wide = row_at(64);
+    assert!(wide.starts_with(" <- 5s -> "), "arrow block at 64 columns: {wide:?}");
+    assert!(wide.contains('[') && wide.ends_with("% "), "bar and percent survive: {wide:?}");
+    assert_eq!(wide.len(), 64, "the row is still painted edge to edge");
+
+    let narrow = row_at(63);
+    assert!(!narrow.contains('<'), "no arrow block below the threshold: {narrow:?}");
+    assert!(narrow.starts_with(" 0:00 / "), "M5 layout starts at the timecode: {narrow:?}");
+    assert_eq!(narrow.len(), 63);
+}
+
+/// `v` surfaces through the REAL event queue as the hints toggle
+/// (PLAN-M6-M8 §1), collapsed to one flag per drain, and it moves nothing
+/// else: the row is chrome, not a seek or a dial.
+#[test]
+fn v_reports_the_hints_toggle() {
+    let asset = build_fixture(Fixture::GradientMotion);
+    let mut backend = SimBackend::new(80, 24);
+    let mut p = player(&asset, true);
+    p.reflow(&mut backend, 80, 24);
+
+    backend.push_event(Event::Key(Key::Char('v')));
+    let d = p.drain_events(&mut backend);
+    assert!(d.toggle_hints, "v must report the hints toggle");
+    assert_eq!((d.jump_digit, d.seek_steps, d.dial_cycle, d.dial_delta), (None, 0, 0, 0));
+
+    // Repeats inside one drain collapse — a held key must not flicker the row.
+    backend.push_event(Event::Key(Key::Char('v')));
+    backend.push_event(Event::Key(Key::Char('v')));
+    backend.push_event(Event::Key(Key::Char('v')));
+    assert!(p.drain_events(&mut backend).toggle_hints);
+
+    // Unbound keys still report nothing — `?` and `h` were the M6 bindings
+    // and are as inert now as any key that never had a meaning.
+    for key in ['x', '?', 'h'] {
+        backend.push_event(Event::Key(Key::Char(key)));
+        assert!(!p.drain_events(&mut backend).toggle_hints, "{key} must not toggle");
+    }
+}
+
+/// Space through the REAL event queue (M6 pause): one flag per drain,
+/// collapsed like `v`, and it moves nothing else — pausing is a transport
+/// change, not a seek or a dial.
+#[test]
+fn space_reports_the_pause_toggle() {
+    let asset = build_fixture(Fixture::GradientMotion);
+    let mut backend = SimBackend::new(80, 24);
+    let mut p = player(&asset, true);
+    p.reflow(&mut backend, 80, 24);
+
+    backend.push_event(Event::Key(Key::Char(' ')));
+    let d = p.drain_events(&mut backend);
+    assert!(d.toggle_pause, "space must report the pause toggle");
+    assert_eq!((d.jump_digit, d.seek_steps, d.dial_cycle, d.dial_delta), (None, 0, 0, 0));
+    assert!(!d.toggle_hints);
+
+    // A key repeat inside one drain is one intent, not a pause/resume stutter.
+    backend.push_event(Event::Key(Key::Char(' ')));
+    backend.push_event(Event::Key(Key::Char(' ')));
+    assert!(p.drain_events(&mut backend).toggle_pause);
+
+    // Quit still wins over a queued space.
+    backend.push_event(Event::Key(Key::Char(' ')));
+    backend.push_event(Event::Quit);
+    let d = p.drain_events(&mut backend);
+    assert!(d.quit);
+    assert!(!d.toggle_pause);
+}
+
+/// M6 pause on screen: the progress row reads ` PAUSED ` where the
+/// percentage goes and `|` where the bar head goes, in printable ASCII the
+/// strict screen model above accepts. The row is a pure function of the
+/// paused flag, so it persists frame after frame with zero damage in diff
+/// mode — nothing in the render path can time it out, which is what lets the
+/// run loop suspend the 1 s deadline (`ProgressTimer`, unit-tested in
+/// player.rs). Resuming restores the percentage, and hiding the row still
+/// forces the full repaint.
+#[test]
+fn paused_progress_row_reads_paused_and_persists() {
+    let asset = build_fixture(Fixture::GradientMotion);
+    let (cols, rows) = (80u16, 24u16);
+    let mut backend = SimBackend::new(cols, rows);
+    let mut p = player(&asset, false); // pure diff — the corruptible mode
+    p.reflow(&mut backend, cols, rows);
+    let mut screen = Screen::new(cols, rows);
+
+    p.set_progress_overlay(true);
+    p.set_paused(true);
+    p.render_present(&mut backend, 12).unwrap();
+    screen.apply(&backend.take_output()); // panics on any invalid byte
+    let paused = screen.row_string(rows - 1);
+    assert!(paused.ends_with(" PAUSED "), "the percent block reads PAUSED: {paused:?}");
+    assert!(paused.contains("=|"), "the bar head is a bar, not an arrow: {paused:?}");
+    assert!(!paused.contains('%'), "no percentage while frozen: {paused:?}");
+
+    // Frozen: the same frame, the same row, no damage at all — the row
+    // cannot age out on its own however long the pause lasts.
+    for _ in 0..4 {
+        let stats = p.render_present(&mut backend, 12).unwrap();
+        screen.apply(&backend.take_output());
+        assert_eq!(stats.cells_damaged, 0, "a frozen frame redraws nothing");
+        assert_eq!(screen.row_string(rows - 1), paused, "and the row does not move");
+    }
+
+    // A seek while frozen: the row follows the new frame, still PAUSED.
+    p.render_present(&mut backend, 40).unwrap();
+    screen.apply(&backend.take_output());
+    let moved = screen.row_string(rows - 1);
+    assert!(moved.ends_with(" PAUSED "), "still frozen after a seek: {moved:?}");
+    assert_ne!(moved, paused, "but the timecode moved with the frame");
+
+    // Resume: the percentage is back, and the hide still repaints in full.
+    p.set_paused(false);
+    p.render_present(&mut backend, 40).unwrap();
+    screen.apply(&backend.take_output());
+    let playing = screen.row_string(rows - 1);
+    assert!(playing.contains('%') && playing.contains("=>"), "resumed row: {playing:?}");
+    p.set_progress_overlay(false);
+    let stats = p.render_present(&mut backend, 40).unwrap();
+    screen.apply(&backend.take_output());
+    assert_eq!(
+        stats.cells_damaged,
+        u32::from(cols) * u32::from(rows),
+        "hiding the row after a pause still forces the full repaint"
+    );
 }
 
 /// Arrow keys through the REAL event queue: coalesced net steps, quit
@@ -245,9 +480,10 @@ fn arrow_scrub_reports_steps_and_resets_state() {
     assert_eq!(d.seek_steps, 0);
 }
 
-/// The public scrub-step contract (PLAN §7 M5: Left/Right = ±5 s). The
-/// constant lives on the terminal Player, so it exists only with that
-/// feature (the pure-embedder build has no key bindings to document).
+/// The public scrub-step contract (PLAN §7 M5: Left/Right = ±5 s). Since M6
+/// the constant lives in `pipeline` (the overlays print it, and that module
+/// builds without the `terminal` feature); only the facade re-export is
+/// gated, because the pure-embedder build has no key bindings to document.
 #[cfg(feature = "terminal")]
 #[test]
 fn scrub_step_is_five_seconds() {

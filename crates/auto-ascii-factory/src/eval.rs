@@ -299,13 +299,17 @@ pub(crate) fn eval_clip(
         eprintln!("eval: cached asset {}", asset_path.display());
     } else {
         eprintln!("eval: building {}", asset_path.display());
-        build::run(&BuildArgs {
-            input: input.to_path_buf(),
-            output: asset_path.clone(),
-            ss: None,
-            t: None,
-            params: params.clone(),
-        })?;
+        build::run(
+            &BuildArgs {
+                input: input.to_path_buf(),
+                output: asset_path.clone(),
+                ss: None,
+                t: None,
+                params: params.clone(),
+            },
+            // Same destination the info lines always had (M7 lib split).
+            &mut std::io::stderr(),
+        )?;
     }
 
     let file = std::fs::File::open(&asset_path)

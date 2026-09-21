@@ -1,4 +1,4 @@
-<!-- Architecture proposal C (Extensibility) — produced by the ascii-engine-plan workflow, 2026-07-24; input to ../../PLAN.md -->
+<!-- Architecture proposal C (Extensibility) — produced by the ascii-engine-plan workflow, 2026-07-24; input to ../PLAN.md -->
 
 # SLEEPYTIME — Architecture Proposal (Architect C: Extensibility)
 

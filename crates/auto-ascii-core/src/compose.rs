@@ -182,7 +182,7 @@ impl Default for ComposeParams {
             // note 18: E ≈ L* contrast, hysteresis seeds at t_hi 28, corpus
             // max ~130) after box-average dilution to cell resolution — NOT
             // on a full 0..255 synthetic scale. Re-anchored at M3
-            // integration from a corpus sweep (grass F1 0.72 @ T_on 32 with
+            // integration from a corpus sweep (fine-texture clip F1 0.72 @ T_on 32 with
             // precision 0.77 — the coherence gates carry noise suppression;
             // 0.52 @ 40, 0.00 @ the original 96).
             edge_t_on: 32,
@@ -199,7 +199,7 @@ impl Default for ComposeParams {
             quad_e_on: 2,
             quad_e_off: 1,
             // M3 Tune: 160 (0.625·step) from the committed corpus sweep —
-            // grass flicker 2.313 → 1.651 (fixes the ≤ 2 gate breach) with
+            // fine-texture flicker 2.313 → 1.651 (fixes the ≤ 2 gate breach) with
             // edge F1 invariant (the near-white veto rides the plain index)
             // and mean corpus ssim flat. The §3.5 spec nominal 0.35·step
             // remains `hysteresis::IDX_HYST_Q8` (= 90).
@@ -320,7 +320,7 @@ pub fn compose_cell_layer(
     // instantaneous brightness, not the hysteresis-held display index —
     // riding `idx` here coupled edge recall to `idx_hyst_q8` (wider
     // stickiness held bright cells at the top step past bright edges,
-    // measurably dropping edge F1 on the sheep/silhouette clips).
+    // measurably dropping edge F1 on the high-contrast clips).
     let plain_idx = ((n as u32 * len as u32) >> 8).min(len as u32 - 1);
     let near_white = ((plain_idx + 1) << 8) > params.edge_white_cut_q8 as u32 * len as u32;
 

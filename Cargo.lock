@@ -111,6 +111,21 @@ dependencies = [
  "criterion",
  "memmap2",
  "proptest",
+ "toml",
+]
+
+[[package]]
+name = "auto-ascii-cli"
+version = "0.1.0"
+dependencies = [
+ "auto-ascii",
+ "auto-ascii-eval",
+ "auto-ascii-factory",
+ "auto-ascii-format",
+ "clap",
+ "memmap2",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

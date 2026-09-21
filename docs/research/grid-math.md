@@ -1,4 +1,4 @@
-<!-- Viewport math & realtime resampling — produced by the ascii-engine-plan workflow, 2026-07-24; input to ../../PLAN.md -->
+<!-- Viewport math & realtime resampling — produced by the ascii-engine-plan workflow, 2026-07-24; input to ../PLAN.md -->
 
 # VIEWPORT MATH & REALTIME RESAMPLING — DIGEST
 

@@ -1,4 +1,4 @@
-# auto-ascii workspace — PLAN.md §2 (crate layout), §8 (dependencies).
+# auto-ascii workspace — docs/PLAN.md §2 (crate layout), §8 (dependencies).
 
 [workspace]
 resolver = "3"
@@ -9,12 +9,13 @@ members = [
     "crates/auto-ascii-eval",
     "crates/auto-ascii-factory",
     "crates/auto-ascii",
+    "crates/auto-ascii-cli",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/andmckay01/auto-ascii"
 
 [workspace.dependencies]

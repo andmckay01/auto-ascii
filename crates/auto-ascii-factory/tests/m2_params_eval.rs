@@ -192,30 +192,11 @@ const FIX_W: usize = 480;
 const FIX_H: usize = 270;
 const FIX_FPS: u32 = 30;
 const FIX_FRAMES: usize = 30;
-/// One uncompressed BGR24 frame. The row stride (1440) is a multiple of 4, so
-/// DIB rows need no padding and every `00db` chunk is even-sized — the RIFF
-/// pad byte never applies anywhere in this file.
-const FIX_FRAME_BYTES: u32 = (FIX_W * FIX_H * 3) as u32;
 /// Frame of the hard scene change (gives shot detection exactly one cut).
 const FIX_CUT: usize = 15;
 
 /// One rectangle in the pattern: x, y, w, h + RGB.
 type FixRect = (i32, i32, i32, i32, (u8, u8, u8));
-
-fn le32(out: &mut Vec<u8>, n: u32) {
-    out.extend_from_slice(&n.to_le_bytes());
-}
-
-fn le16(out: &mut Vec<u8>, n: u16) {
-    out.extend_from_slice(&n.to_le_bytes());
-}
-
-/// `fourcc` + little-endian payload size + payload.
-fn riff_chunk(out: &mut Vec<u8>, fourcc: &[u8; 4], payload: &[u8]) {
-    out.extend_from_slice(fourcc);
-    le32(out, payload.len() as u32);
-    out.extend_from_slice(payload);
-}
 
 /// Integer HSV at full saturation: `hue` walks six 256-wide segments of the
 /// colour wheel, `val` scales 0..=255. Integer-only, like everything else in
@@ -328,8 +309,10 @@ fn fix_frame_bgr_bottom_up(f: usize) -> Vec<u8> {
     out
 }
 
-/// Write the determinism fixture: a minimal RIFF AVI holding 30 frames of
-/// uncompressed 24-bit BGR (BI_RGB) at 480x270, 30 fps.
+/// Write the determinism fixture: 30 frames of the pattern above through
+/// `auto_ascii_eval::fixtures::write_bgr24_avi` (M7 moved the RIFF
+/// container writer there so `auto-ascii import`'s tests share it — the
+/// bytes, and therefore `FIXTURE_AVI_SHA`, are unchanged).
 ///
 /// Written from Rust rather than synthesised with `ffmpeg -f lavfi -i
 /// testsrc2 ...` on purpose. The mp4 this replaced depended on testsrc2's
@@ -341,86 +324,15 @@ fn fix_frame_bgr_bottom_up(f: usize) -> Vec<u8> {
 /// scale, a 1:1 fps filter and an exact BGR->RGB byte permutation: every
 /// ffmpeg build decodes the identical frames.
 fn synth_fixture(dir: &TempDir) -> PathBuf {
-    // movi: one `00db` chunk per frame, each with an idx1 entry. idx1
-    // offsets are relative to the `movi` fourcc itself (4 for the first).
-    let mut movi = Vec::with_capacity(4 + FIX_FRAMES * (8 + FIX_FRAME_BYTES as usize));
-    movi.extend_from_slice(b"movi");
-    let mut idx1 = Vec::with_capacity(FIX_FRAMES * 16);
-    for f in 0..FIX_FRAMES {
-        let offset = movi.len() as u32;
-        riff_chunk(&mut movi, b"00db", &fix_frame_bgr_bottom_up(f));
-        idx1.extend_from_slice(b"00db");
-        le32(&mut idx1, 0x10); // dwFlags = AVIIF_KEYFRAME
-        le32(&mut idx1, offset);
-        le32(&mut idx1, FIX_FRAME_BYTES);
-    }
-
-    // hdrl { avih, LIST strl { strh, strf } }.
-    let mut avih = Vec::with_capacity(56); // MainAVIHeader
-    le32(&mut avih, 1_000_000 / FIX_FPS); // dwMicroSecPerFrame
-    le32(&mut avih, FIX_FRAME_BYTES * FIX_FPS); // dwMaxBytesPerSec
-    le32(&mut avih, 0); // dwPaddingGranularity
-    le32(&mut avih, 0x10); // dwFlags = AVIF_HASINDEX
-    le32(&mut avih, FIX_FRAMES as u32); // dwTotalFrames
-    le32(&mut avih, 0); // dwInitialFrames
-    le32(&mut avih, 1); // dwStreams
-    le32(&mut avih, FIX_FRAME_BYTES); // dwSuggestedBufferSize
-    le32(&mut avih, FIX_W as u32); // dwWidth
-    le32(&mut avih, FIX_H as u32); // dwHeight
-    for _ in 0..4 {
-        le32(&mut avih, 0); // dwReserved[4]
-    }
-
-    let mut strh = Vec::with_capacity(56); // AVIStreamHeader
-    strh.extend_from_slice(b"vids"); // fccType
-    strh.extend_from_slice(b"DIB "); // fccHandler = uncompressed DIB
-    le32(&mut strh, 0); // dwFlags
-    le16(&mut strh, 0); // wPriority
-    le16(&mut strh, 0); // wLanguage
-    le32(&mut strh, 0); // dwInitialFrames
-    le32(&mut strh, 1); // dwScale
-    le32(&mut strh, FIX_FPS); // dwRate => 30/1 fps
-    le32(&mut strh, 0); // dwStart
-    le32(&mut strh, FIX_FRAMES as u32); // dwLength
-    le32(&mut strh, FIX_FRAME_BYTES); // dwSuggestedBufferSize
-    le32(&mut strh, 0xFFFF_FFFF); // dwQuality = default
-    le32(&mut strh, 0); // dwSampleSize
-    for v in [0, 0, FIX_W as u16, FIX_H as u16] {
-        le16(&mut strh, v); // rcFrame, four i16
-    }
-
-    let mut strf = Vec::with_capacity(40); // BITMAPINFOHEADER
-    le32(&mut strf, 40); // biSize
-    le32(&mut strf, FIX_W as u32); // biWidth
-    le32(&mut strf, FIX_H as u32); // biHeight > 0 => bottom-up rows
-    le16(&mut strf, 1); // biPlanes
-    le16(&mut strf, 24); // biBitCount
-    le32(&mut strf, 0); // biCompression = BI_RGB
-    le32(&mut strf, FIX_FRAME_BYTES); // biSizeImage
-    for _ in 0..4 {
-        le32(&mut strf, 0); // bi{X,Y}PelsPerMeter, biClrUsed, biClrImportant
-    }
-
-    let mut strl = Vec::new();
-    strl.extend_from_slice(b"strl");
-    riff_chunk(&mut strl, b"strh", &strh);
-    riff_chunk(&mut strl, b"strf", &strf);
-    let mut hdrl = Vec::new();
-    hdrl.extend_from_slice(b"hdrl");
-    riff_chunk(&mut hdrl, b"avih", &avih);
-    riff_chunk(&mut hdrl, b"LIST", &strl);
-
-    // RIFF `AVI ` { LIST hdrl, LIST movi, idx1 }.
-    let mut body = Vec::with_capacity(4 + 8 + hdrl.len() + 8 + movi.len() + 8 + idx1.len());
-    body.extend_from_slice(b"AVI ");
-    riff_chunk(&mut body, b"LIST", &hdrl);
-    riff_chunk(&mut body, b"LIST", &movi);
-    riff_chunk(&mut body, b"idx1", &idx1);
-    let mut avi = Vec::with_capacity(8 + body.len());
-    riff_chunk(&mut avi, b"RIFF", &body);
-
     let input = dir.path("fixture.avi");
-    std::fs::write(&input, &avi).unwrap();
+    auto_ascii_eval::fixtures::write_bgr24_avi(
+        &input,
+        FIX_W as u32,
+        FIX_H as u32,
+        FIX_FPS,
+        (0..FIX_FRAMES).map(fix_frame_bgr_bottom_up),
+    )
+    .unwrap();
     input
 }
 
@@ -455,32 +367,6 @@ fn default_params_build_is_byte_pinned() {
     let out = factory(&[&"build", &input, &"-o", &out_filed, &"--params", &params_copy]);
     assert!(out.status.success(), "build failed:\n{}", stderr_of(&out));
     assert_eq!(sha256_of(&out_filed), FIXTURE_ASSET_SHA, "--params file path diverged");
-}
-
-/// Acceptance 8 (corpus integration half — the committed guard above runs
-/// without the corpus): rebuilding the grass clip with pure defaults must be
-/// byte-identical to the committed assets/ copy. Ignored by default: needs
-/// the local-only corpus and a full 194-frame zstd-19 build (~1 min).
-/// Run: `cargo test -p auto-ascii-factory --test m2_params_eval -- --ignored`
-#[test]
-#[ignore = "needs local corpus (gitignored) + ~1 min build"]
-fn grass_rebuild_matches_assets_copy() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let input = root.join("corpus/prepared/grass-field-windy-mirror.mp4");
-    let committed = root.join("assets/grass-field-windy-mirror.ascii");
-    if !input.is_file() || !committed.is_file() {
-        eprintln!("skipping: corpus/assets not present on this checkout");
-        return;
-    }
-    let dir = TempDir::new("grass");
-    let rebuilt = dir.path("grass.ascii");
-    let out = factory(&[&"build", &input, &"-o", &rebuilt]);
-    assert!(out.status.success(), "grass rebuild failed:\n{}", stderr_of(&out));
-    assert_eq!(
-        sha256_of(&rebuilt),
-        sha256_of(&committed),
-        "default-params grass rebuild is not byte-identical to assets/ copy"
-    );
 }
 
 // ---------------------------------------------------------------------------

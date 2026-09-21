@@ -8,12 +8,12 @@
 
 use std::path::Path;
 
-use memmap2::Mmap;
 use auto_ascii_core::{Cell, ColorDepth, FontTable, Grid};
-use auto_ascii_format::AsciiReader;
 
+use crate::composition::Composition;
+use crate::deck::{ClipDeck, DeckConfig};
 use crate::error::Error;
-use crate::{PaletteChoice, pipeline};
+use crate::PaletteChoice;
 
 /// Resolve a `--font-table NAME|PATH` spec (PLAN §3.4, M5): a committed
 /// built-in table by name, else a path to a `auto-ascii-factory font-table`
@@ -78,17 +78,24 @@ pub(crate) fn load_font_table(spec: &str) -> Result<FontTable, Error> {
 ///
 /// Rendering the *same* `frame_idx` twice returns the same grid without
 /// re-decoding.
+///
+/// # Compositions
+///
+/// [`open_composition`](RenderSession::open_composition) (and
+/// [`from_composition`](RenderSession::from_composition)) opens a stitch of
+/// clips instead of one asset (PLAN-M6-M8 §3). Everything above is
+/// unchanged: `frame_idx` counts frames on the COMPOSITION's timeline at
+/// its own [`fps`](RenderSession::fps), each clip decodes from its own
+/// mapping, a clip switch resets temporal state exactly like a backward
+/// jump, and a gap between clips renders an all-blank grid.
 pub struct RenderSession {
-    /// Borrows the mapping owned by `map` (see SAFETY in [`open`]). Declared
-    /// before `map` so it is dropped first — the borrow never dangles.
-    inner: pipeline::Player<'static>,
-    /// The memory-mapped asset backing `inner`. Never touched directly; it
-    /// exists to keep the mapping alive and is dropped last (field order).
-    _map: Mmap,
-    fps: f64,
-    aspect: f64,
-    /// Grid dims of the last reflow; `None` forces a reflow on next render.
-    dims: Option<(u16, u16)>,
+    /// The clip decks' render state. Declared first so its borrows die
+    /// before anything it depends on.
+    deck: ClipDeck,
+    /// The timeline. A plain asset is a one-clip composition whose frame
+    /// mapping is the identity (integer, exact) — one path, one source of
+    /// truth for fps, aspect and frame count.
+    comp: Composition,
     /// Frame index of the last successful render (backward-jump detection).
     last_frame: Option<u32>,
     /// The chosen repertoire, kept so the font-table veto can re-resolve it.
@@ -100,10 +107,10 @@ pub struct RenderSession {
 impl std::fmt::Debug for RenderSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RenderSession")
-            .field("fps", &self.fps)
-            .field("aspect", &self.aspect)
-            .field("frame_count", &self.inner.frame_count())
-            .field("dims", &self.dims)
+            .field("fps", &self.comp.fps())
+            .field("aspect", &self.comp.aspect())
+            .field("frame_count", &self.comp.frame_count())
+            .field("clips", &self.deck.len())
             .field("last_frame", &self.last_frame)
             .finish_non_exhaustive()
     }
@@ -112,62 +119,56 @@ impl std::fmt::Debug for RenderSession {
 impl RenderSession {
     /// Open an ASCI asset for terminal-free rendering.
     ///
-    /// The file is memory-mapped read-only and validated (header, chunk
-    /// structure); frames are decoded on demand in [`render`](Self::render).
-    /// Defaults: [`PaletteChoice::Auto`] (Unicode blocks — there is no
-    /// terminal to probe) and cell aspect 2.0 (see
+    /// The file is memory-mapped read-only and opened as a container
+    /// (header, TRLR, chunk roll, frame index), so a corrupt or truncated
+    /// asset fails HERE rather than at the first frame; frames are decoded
+    /// on demand in [`render`](Self::render). Defaults:
+    /// [`PaletteChoice::Auto`] (Unicode blocks — there is no terminal to
+    /// probe) and cell aspect 2.0 (see
     /// [`set_cell_aspect`](Self::set_cell_aspect)).
+    ///
+    /// One asset is a one-clip composition internally, so this and
+    /// [`from_composition`](Self::from_composition) are the same code path
+    /// — the clip's frames map to composition frames one for one.
     pub fn open(path: impl AsRef<Path>) -> Result<RenderSession, Error> {
-        let path = path.as_ref();
-        let file = std::fs::File::open(path)
-            .map_err(|source| Error::Io { path: path.into(), source })?;
-        // SAFETY: read-only private map of a file we never mutate through
-        // this mapping; the standard mmap'd-reader assumption that the asset
-        // is not truncated mid-use (same contract as the player binary).
-        let map = unsafe { Mmap::map(&file) }
-            .map_err(|source| Error::Io { path: path.into(), source })?;
+        RenderSession::from_composition(Composition::single(path.as_ref()))
+    }
 
-        // SAFETY of the 'static lifetime: `bytes` points into the OS mapping
-        // owned by `map`, whose address is stable for the life of `map`
-        // (moving the `Mmap` handle moves a pointer, not the mapping). The
-        // only consumer is `inner`, stored in the same struct and declared
-        // BEFORE `map`, so Rust's declaration-order drop guarantees `inner`
-        // (and every slice it holds) dies before the mapping is unmapped.
-        // The fake 'static never escapes: every accessor reborrows at &self.
-        let bytes: &'static [u8] =
-            unsafe { std::slice::from_raw_parts(map.as_ptr(), map.len()) };
+    /// Open a composition TOML for terminal-free rendering (PLAN-M6-M8 §3).
+    ///
+    /// `library_dir` is where a bare library NAME in the file resolves
+    /// (`<library>/<name>.ascii`); pass
+    /// [`Composition::default_library_dir`] for the usual
+    /// `$AUTO_ASCII_HOME/library` rule, or `None` to accept only paths.
+    ///
+    /// # Errors
+    /// [`Error::Config`] for a malformed file (every clip-level message
+    /// names the clip index) and [`Error::Io`]/[`Error::Format`] when the
+    /// file or one of its clips cannot be read.
+    #[cfg(feature = "compose")]
+    pub fn open_composition(
+        path: impl AsRef<Path>,
+        library_dir: Option<&Path>,
+    ) -> Result<RenderSession, Error> {
+        let comp = Composition::from_toml_file(path, library_dir)?;
+        RenderSession::from_composition(comp)
+    }
 
-        let reader = AsciiReader::open(bytes)
-            .map_err(|source| Error::Format { path: path.into(), source })?;
-        let header = reader.header();
-        if header.fps_num == 0 || header.fps_den == 0 {
-            return Err(Error::Asset("corrupt header: fps_num or fps_den == 0"));
+    /// Render a [`Composition`] built in memory — what
+    /// [`open_composition`](RenderSession::open_composition) is on top of,
+    /// and what a caller who assembled the clips itself wants.
+    ///
+    /// Resolving the composition (reading each clip's header) happens here
+    /// if the caller has not done it already; the clips' decode pipelines
+    /// are built lazily, as the timeline reaches them.
+    pub fn from_composition(mut comp: Composition) -> Result<RenderSession, Error> {
+        if !comp.is_resolved() {
+            comp.resolve()?;
         }
-        let fps = f64::from(header.fps_num) / f64::from(header.fps_den);
-        // Degenerate (zero) header aspect fields fall back to 16:9 — the
-        // same normalization pipeline::Player::new applies for the viewport,
-        // so aspect() always reports the ratio render() letterboxes to.
-        let aspect = if header.aspect_num == 0 || header.aspect_den == 0 {
-            16.0 / 9.0
-        } else {
-            f64::from(header.aspect_num) / f64::from(header.aspect_den)
-        };
-        // Truecolor + Unicode defaults: RenderSession always composes full
-        // RGB cells (the embedder owns quantization, if any); Auto has no
-        // Caps to consult, so it resolves to the Unicode-blocks tier.
-        let inner = pipeline::Player::new(
-            reader,
-            auto_ascii_core::DEFAULT_CELL_ASPECT,
-            false, // repaint mode is a terminal concern; unused here
-            ColorDepth::True,
-            PaletteChoice::Auto.resolve_headless(),
-        )?;
+        let paths = comp.clips().iter().map(|c| c.path.clone()).collect();
         Ok(RenderSession {
-            inner,
-            _map: map,
-            fps,
-            aspect,
-            dims: None,
+            deck: ClipDeck::new(paths, headless_deck_config()),
+            comp,
             last_frame: None,
             palette: PaletteChoice::Auto,
             font_table: None,
@@ -182,9 +183,10 @@ impl RenderSession {
         if let Some(t) = &self.font_table {
             tier = t.veto_tier(tier);
         }
-        self.inner.set_glyph_tier(tier);
-        self.inner.reset_temporal_state();
-        self.dims = None; // palettes are rebuilt at reflow (density-keyed)
+        // Every clip, present and future: the deck resets their temporal
+        // state and drops their reflow (palettes are density-keyed and are
+        // rebuilt there).
+        self.deck.set_glyph_tier(tier);
     }
 
     /// Compose asset frame `frame_idx` into a `cols × rows` cell grid and
@@ -200,33 +202,39 @@ impl RenderSession {
         cols: u16,
         rows: u16,
     ) -> Result<&Grid<Cell>, Error> {
-        if frame_idx >= self.inner.frame_count() {
+        if frame_idx >= self.comp.frame_count() {
             return Err(Error::Config(format!(
                 "frame index {frame_idx} out of range (asset has {} frames)",
-                self.inner.frame_count()
+                self.comp.frame_count()
             )));
         }
-        if self.dims != Some((cols, rows)) {
-            self.inner.reflow_grid(cols, rows);
-            self.dims = Some((cols, rows));
+        // The timeline says which clip is on top and which of ITS frames
+        // that is — for one asset, frame f, exactly.
+        let located = self.comp.locate_frame(frame_idx);
+        let backward = self.last_frame.is_some_and(|last| frame_idx < last);
+        self.deck.set_size(cols, rows);
+        if backward {
+            self.deck.reset_active(); // backward jump: no ghosting
         }
-        if self.last_frame.is_some_and(|last| frame_idx < last) {
-            self.inner.reset_temporal_state(); // backward jump: no ghosting
-        }
-        self.inner.render_grid(frame_idx)?;
+        // render_at reflows on a size change, switches clips (which resets
+        // the one it fronts) and paints a gap black.
+        self.deck.render_at(located)?;
+        // Only now: a failed render must not move the cursor a later
+        // backward-jump test reads.
         self.last_frame = Some(frame_idx);
-        Ok(self.inner.grid())
+        Ok(self.deck.showing())
     }
 
     /// Frames per second the asset was authored at — drive your clock with
     /// this (frame to show at time `t` is `(t * fps()) as u32`).
     pub fn fps(&self) -> f64 {
-        self.fps
+        self.comp.fps()
     }
 
-    /// Total frames in the asset (always > 0).
+    /// Total frames in the asset — or on the composition's timeline at
+    /// [`fps`](RenderSession::fps) (always > 0).
     pub fn frame_count(&self) -> u32 {
-        self.inner.frame_count()
+        self.comp.frame_count()
     }
 
     /// The asset's intended picture aspect ratio, width / height, from the
@@ -236,7 +244,7 @@ impl RenderSession {
     /// tracks the asset's aspect, not a hard-coded 16:9); it is exposed for
     /// embedders sizing their own viewport.
     pub fn aspect(&self) -> f64 {
-        self.aspect
+        self.comp.aspect()
     }
 
     /// Set the glyph repertoire for subsequent renders. [`PaletteChoice::Auto`]
@@ -283,8 +291,23 @@ impl RenderSession {
                 "cell aspect must be finite and > 0 (got {cell_aspect})"
             )));
         }
-        self.inner.set_cell_aspect(cell_aspect);
-        self.dims = None; // viewport math is recomputed at reflow
+        // Every clip, present and future; viewport math is recomputed at
+        // the reflow the deck schedules for each of them.
+        self.deck.set_cell_aspect(cell_aspect);
         Ok(())
+    }
+}
+
+/// How [`RenderSession`] builds every clip pipeline: truecolor + Unicode
+/// defaults (it always composes full RGB cells — the embedder owns any
+/// quantization — and `Auto` has no `Caps` to consult, so it resolves to
+/// the Unicode-blocks tier), cell aspect 2.0, no repaint mode (a terminal
+/// concern, unused here).
+fn headless_deck_config() -> DeckConfig {
+    DeckConfig {
+        cell_aspect: auto_ascii_core::DEFAULT_CELL_ASPECT,
+        repaint_full: false,
+        color: ColorDepth::True,
+        glyph_tier: PaletteChoice::Auto.resolve_headless(),
     }
 }

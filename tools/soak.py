@@ -54,12 +54,12 @@ Standalone modes:
 
 Smoke mode (~1 min sanity check of the harness itself):
 
-    tools/soak.py --duration 60 --outdir /tmp/soak-smoke
+    tools/soak.py --duration 60 --asset assets/clip.ascii --outdir /tmp/soak-smoke
 
 Full soak, detached:
 
-    setsid nohup tools/soak.py --duration 3600 --outdir runs/soak-1h \
-        > runs/soak-1h/harness.out 2>&1 &
+    setsid nohup tools/soak.py --duration 3600 --asset assets/clip.ascii \
+        --outdir runs/soak-1h > runs/soak-1h/harness.out 2>&1 &
 
 Python 3.8+ stdlib only. The player binary is NOT built here — build it
 first: `cargo build --release -p auto-ascii --features bin`.
@@ -448,7 +448,7 @@ def self_test() -> int:
     corruption class is caught. Returns a process exit code."""
     volley = b"\x1b[>0q\x1b[?2026$p\x1bP+q524742\x1b\\\x1b[16t\x1b[c"
     enter = b"\x1b[?1049h\x1b[?25l\x1b[?7l"
-    frame = (b"\x1b[?2026h\x1b[1;1H\x1b[38;5;120;48;5;16m~~grass~~"
+    frame = (b"\x1b[?2026h\x1b[1;1H\x1b[38;5;120;48;5;16m~~soak~~"
              b"\x1b[12;40H\x1b[38;2;255;250;205m\xe2\x96\x80\xe2\x96\x84"
              b"\x1b[140;500H\x1b[0mx\x1b[?2026l")
     good = volley + enter + frame + RESTORE_SEQ
@@ -506,7 +506,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--duration", type=float, default=3600.0,
                     help="soak length in seconds (default 3600; 60 = smoke mode)")
-    ap.add_argument("--asset", type=Path, default=REPO / "assets/grass-field-windy-mirror.ascii")
+    ap.add_argument("--asset", type=Path, help="the .ascii asset to loop")
     ap.add_argument("--player", type=Path, default=REPO / "target/release/auto-ascii-player")
     ap.add_argument("--outdir", type=Path,
                     help="directory for head.log/tail.log/rss.csv/resizes.csv/summary.json")
@@ -526,6 +526,8 @@ def main() -> int:
         print(json.dumps({"escape_check": report, "fail_reasons": reasons}, indent=2))
         return 0 if not reasons else 1
 
+    if args.asset is None:
+        ap.error("--asset is required (unless --check-logs/--self-test)")
     if args.outdir is None:
         ap.error("--outdir is required (unless --check-logs/--self-test)")
     if not args.player.is_file():

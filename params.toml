@@ -61,8 +61,8 @@ bilateral_passes = 2
 bilateral_radius = 2
 # Hysteresis on the smoothed magnitude: >= t_hi seeds an edge; t_lo..t_hi
 # pixels survive only when 8-connected to a seed (Canny-style, unthinned).
-# Eyeballed on the corpus: 28/12 traces sheep outlines + silhouette limbs
-# while keeping grass-blade speckle out of the seed set.
+# Eyeballed on the M3 corpus: 28/12 traces subject outlines and limbs while
+# keeping fine-texture speckle (grass blades) out of the seed set.
 t_hi = 28
 t_lo = 12
 
@@ -102,8 +102,8 @@ ema_alpha_c_milli = 700
 # Edge gate on/hold thresholds (strict >) on the box-resampled E plane.
 # NOTE the scale: factory E ~= L* contrast (t_hi seeds at 28, corpus max
 # ~130) diluted by the cell box average — NOT a full 0..255 range. 32/16
-# picked by corpus sweep at M3 integration (grass F1 0.72 @ 32, precision
-# 0.77; 0.52 @ 40; 0.00 @ 96 — coherence gates carry noise suppression).
+# picked by corpus sweep at M3 integration (fine-texture clip F1 0.72 @ 32,
+# precision 0.77; 0.52 @ 40; 0.00 @ 96 — coherence gates carry noise suppression).
 edge_t_on = 32
 edge_t_off = 16
 # Coherence bands (Q8): < coh_min suppresses the edge layer, coh_min..coh_dir
@@ -131,12 +131,12 @@ quad_e_on = 2
 quad_e_off = 1
 # Ramp-index hysteresis width, Q8 fractions of one ramp step. The §3.5 spec
 # nominal is "boundary +/- 0.35 step" = 90 (auto_ascii_core::IDX_HYST_Q8); promoted
-# to a tunable at M3 Tune and RE-TUNED to 160 (0.625 step) by the committed
-# corpus sweep (sweeps/m3-axis3 + Tune-finish, composite score 0.4160 vs
-# 0.3932 @ 90): grass flicker 2.313 -> 1.651 (the <= 2 gate breach fixed),
-# sheep 1.361 -> 1.288, silhouette 1.553 -> 1.599, edge F1 byte-identical on
-# all three clips (the near-white veto rides the PLAIN index since Tune),
-# mean ssim flat (0.6167 -> 0.6164). 0..=255; < 1 full step by contract.
+# to a tunable at M3 Tune and RE-TUNED to 160 (0.625 step) by the M3 corpus
+# sweep (composite score 0.4160 vs 0.3932 @ 90): the fine-texture clip's
+# flicker fell 2.313 -> 1.651 (the <= 2 gate breach fixed), the other clips
+# moved by < 0.1, edge F1 stayed byte-identical (the near-white veto rides the
+# PLAIN index since Tune) and mean ssim stayed flat (0.6167 -> 0.6164).
+# 0..=255; < 1 full step by contract.
 idx_hyst_q8 = 160
 # Shadow lift: bends the per-shot NORM levels LUT toward the shadows so a dark
 # subject clears the first ramp steps instead of sharing a glyph with black.

@@ -18,25 +18,14 @@
 //! future work). Progress/diagnostics go to stderr; stdout stays clean
 //! (inspect's report and `params --dump` are the stdout products).
 
-mod build;
-mod edges;
-mod eval;
-mod extract;
-mod features;
-mod ffmpeg;
-mod font_table;
-mod highlights;
-mod lut;
-mod params;
-mod reel;
-mod sha256;
-mod shots;
-mod sweep;
-mod temporal;
+//! M7 (PLAN-M6-M8 §2): the stages moved into `src/lib.rs` so a second
+//! binary can ingest video; this file is the clap surface, the `inspect`
+//! report and nothing else.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use auto_ascii_factory::{build, effective_params, eval, font_table, parse_res, sweep};
 use clap::{Parser, Subcommand};
 use auto_ascii_format::{
     CHUNK_HEADER_SIZE, ChunkHeader, AsciiHeader, AsciiReader, TAG_FRAM, frame_flags, header_flags,
@@ -202,46 +191,16 @@ fn parse_t(s: &str) -> Result<f64, String> {
     Ok(v)
 }
 
-fn parse_res(s: &str) -> Result<(u16, u16), String> {
-    let (w, h) = s
-        .split_once(['x', 'X'])
-        .ok_or_else(|| format!("bad --res {s:?}: expected WxH, e.g. 480x270"))?;
-    let w: u16 = w.trim().parse().map_err(|e| format!("bad --res width: {e}"))?;
-    let h: u16 = h.trim().parse().map_err(|e| format!("bad --res height: {e}"))?;
-    if w == 0 || h == 0 {
-        return Err("--res dimensions must be nonzero".into());
-    }
-    if !w.is_multiple_of(2) || !h.is_multiple_of(2) {
-        return Err("--res dimensions must be even (chroma plane C is stored at half res)".into());
-    }
-    Ok((w, h))
-}
-
-/// Effective params: embedded defaults, --params file, then CLI overrides
-/// (the most specific wins); re-validated after the merge.
-fn effective_params(
-    path: Option<&std::path::Path>,
-    fps: Option<u16>,
-    res: Option<(u16, u16)>,
-) -> Result<params::Params, Box<dyn std::error::Error>> {
-    let mut p = params::Params::load(path)?;
-    if let Some(fps) = fps {
-        p.build.fps = fps;
-    }
-    if let Some((w, h)) = res {
-        p.build.base_w = w;
-        p.build.base_h = h;
-    }
-    p.validate()?;
-    Ok(p)
-}
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.cmd {
         Cmd::Build { input, output, ss, t, fps, res, params } => {
             effective_params(params.as_deref(), fps, res).and_then(|params| {
-                build::run(&build::BuildArgs { input, output, ss, t, params })
+                build::run(
+                    &build::BuildArgs { input, output, ss, t, params },
+                    &mut std::io::stderr(),
+                )
+                .map(|_report| ())
             })
         }
         Cmd::Inspect { asset, dump_planes, frame } => {

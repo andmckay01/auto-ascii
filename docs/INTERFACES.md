@@ -23,10 +23,14 @@ crates/
   auto-ascii-eval       lib   deps: auto-ascii-core, auto-ascii-term, auto-ascii-format, serde, serde_json
                         dev: insta, proptest   (NEW at M2; auto-ascii-format added
                         at item C for the synthetic fixture builders)
-  auto-ascii-factory  bin   deps: auto-ascii-format, auto-ascii-core, auto-ascii-term, auto-ascii-eval,
+  auto-ascii-factory lib+bin deps: auto-ascii-format, auto-ascii-core,
+                        auto-ascii-term, auto-ascii-eval,
                         auto-ascii(default-features=false — pipeline only),
                         clap, indicatif, serde, serde_json,
                         toml, memmap2               (M2 item B additions)
+                        M7: lib + THIN bin — src/lib.rs owns the modules and
+                        the build entry; src/main.rs is the clap surface and
+                        `inspect`. Unpublished (ffmpeg subprocess).
   auto-ascii      lib+bin  THE public facade (M4 item A; absorbed the
                         auto-ascii-player crate — pipeline, tests, benches, bin).
                         deps: auto-ascii-core, auto-ascii-format, memmap2,
@@ -38,9 +42,19 @@ crates/
                         --no-default-features = pure embedder: RenderSession
                         only; dep tree has NO clap/anyhow/crossterm
                         (M4 acceptance 4)
+  auto-ascii-cli      bin   the `auto-ascii` binary (NEW at M7; unpublished).
+                        deps: auto-ascii(path, DEFAULT features — `play`
+                        needs the terminal Player, and the workspace entry
+                        sets default-features=false), auto-ascii-factory(path,
+                        the lib), auto-ascii-format, clap, memmap2, serde,
+                        serde_json; dev: auto-ascii-eval (AVI fixtures).
+                        No new external dependency entered the workspace.
+                        It is a THIRD crate because the factory already
+                        depends on the facade, so the binary needing both
+                        cannot live in either.
 ```
 
-- Root workspace: resolver 3, edition 2024, `license = "MIT OR Apache-2.0"`,
+- Root workspace: resolver 3, edition 2024, `license = "MIT"`,
   `[profile.release] opt-level = 3`, all versions via `[workspace.dependencies]`.
 - Factory deps `image`/`imageproc`/`ndarray`/`rayon` (PLAN §8) deliberately
   deferred: M0 is luma-only from ffmpeg rawvideo — add at M1/M3 when a stage
@@ -761,16 +775,151 @@ pub enum PaletteChoice { Auto, Ascii, Unicode, Braille }  // §3.4 charset axis
 pub use auto_ascii_core::{Cell, Grid, Rgb};  // what render() hands back — nothing
     // else from auto-ascii-core is re-exported (resampler, palettes, viewport,
     // hysteresis: engine internals a simple project never touches)
+pub mod timecode;  // M7 (PLAN-M6-M8 §2): the project's ONE timestamp grammar
+    // pub fn parse(&str) -> Result<f64, TimecodeError>   // SS[.f] | MM:SS[.f]
+    //     | HH:MM:SS[.f]; fields trimmed, NOT range-checked against the unit
+    //     above them (0:90 == 90 s), negatives/inf/NaN rejected
+    // pub fn format_mmss(f64) -> String                  // M:SS, H:MM:SS past
+    //     the hour — the progress overlay's shape; <0/NaN print 0:00
+    // pub enum TimecodeError { TooManyFields, BadField(String),
+    //     OutOfRange(String) }   // Display text is user-facing verbatim
+    // Core tier: no deps, no features. `auto-ascii-player --seek` and
+    // `auto-ascii import --ss/--t` are both this function.
+
+// composition.rs — M8 (PLAN-M6-M8 §3): clips stitched on one timeline.
+// Core tier EXCEPT the TOML parser (feature `compose`, default-on via
+// `terminal`); nothing here re-encodes anything.
+pub const SCHEMA_VERSION: i64 = 1;    // the only `schema` this build reads
+pub struct Clip { pub name: String, pub path: PathBuf, pub in_secs: f64,
+                  pub out_secs: Option<f64>, pub at_secs: Option<f64> }
+    // as written in the file; `Clip::new(path)` = untrimmed, sequential
+pub struct ClipSpan { pub start_frame, end_frame: u32,
+                      pub start_secs, end_secs, in_secs, out_secs: f64,
+                      pub fps_num, fps_den: u16, pub frame_count: u32,
+                      pub base_w, base_h, aspect_num, aspect_den: u16 }
+    // + fps() / len_frames() / len_secs() / source_secs() / planes()
+    // -> &[u8] / contains_frame(u32)
+    // one per clip, parallel to clips(): the resolved `[start, end)` table
+    // `compose show` prints and `export` validates. The timeline is FRAMES
+    // at the composition rate and the seconds are derived from them —
+    // seconds cannot express a boundary (a 0.3 s slice is
+    // 0.30000000000000004), which used to hand the frame at exactly 0.3 s
+    // to the wrong clip at an already-trimmed source frame
+pub struct Located { pub clip_idx: usize, pub local_frame: u32 }
+pub struct Span { pub start_frame, end_frame: u32,
+                  pub start_secs, end_secs: f64 }   // + len_frames()
+pub struct Overlap { pub span: Span, pub under: usize, pub over: usize }
+pub enum ClipMark { Clear, Partial, Hidden }   // `compose show`'s verdict
+pub struct Composition;
+impl Composition {
+  pub fn single(path: impl Into<PathBuf>) -> Composition;     // one clip, no I/O
+  pub fn from_clips(name: impl Into<String>, Vec<Clip>) -> Composition;
+      // `auto-ascii cut` = this with one trimmed clip, exported
+  pub fn from_toml_str(&str, base_dir: &Path, library_dir: Option<&Path>)
+      -> Result<Composition, Error>;                          // feature `compose`
+  pub fn from_toml_file(impl AsRef<Path>, library_dir: Option<&Path>)
+      -> Result<Composition, Error>;                          // feature `compose`
+      // `asset` resolves as an existing path relative to the FILE, else
+      // <library>/<asset>.ascii. Unknown keys, a wrong `schema`, a bad time
+      // and an asset that resolves nowhere are Error::Config — every
+      // clip-level message names the CLIP INDEX (hand-rolled over
+      // toml::Table for exactly that reason; serde is not a direct dep)
+  pub fn default_library_dir() -> Option<PathBuf>;
+      // $AUTO_ASCII_HOME/library, else ~/auto-ascii/library, only if it exists
+  pub fn resolve(&mut self) -> Result<(), Error>;
+      // THE I/O step: OPENS each clip as a container through a mapping
+      // (`AsciiReader::open` — header, TRLR anchor, chunk roll, FIDX; a
+      // truncated asset must fail here, not once the session is up), takes
+      // fps/frames/base res/aspect/plane ids from its header, validates
+      // 0 <= in < out <= asset duration (with half a frame of slack at the
+      // end, then clamped — the duration the tools PRINT must be usable as
+      // `out`) and rejects an empty composition, a zero-frame or luma-less
+      // clip — every error names the clip index. Idempotent; everything
+      // below is defined only after it succeeds (unresolved reports zeros)
+  pub fn is_resolved(&self) -> bool;
+  pub fn name(&self) -> &str;              pub fn clips(&self) -> &[Clip];
+  pub fn timeline(&self) -> &[ClipSpan];   pub fn aspect(&self) -> f64;
+  pub fn fps(&self) -> f64;                // the HIGHEST clip fps
+  pub fn fps_ratio(&self) -> (u16, u16);   // that clip's exact header rational
+  pub fn duration_secs(&self) -> f64;      // the latest clip end
+  pub fn frame_count(&self) -> u32;        // duration × fps, snapped
+  pub fn locate(&self, t_secs: f64) -> Option<Located>;   // = locate_frame(t·fps)
+  pub fn locate_frame(&self, frame_idx: u32) -> Option<Located>;
+      // THE time→frame function (§3 semantics): file order, `at` overrides,
+      // ends EXCLUSIVE, overlap → the LATER-listed clip, gap → None (black,
+      // not an error). Pure integer over the frame grid; float positions
+      // are snapped to the exact integer within 1e-6 frames (absolute), so
+      // a single asset maps frame f to frame f and a boundary frame has
+      // exactly one owner
+  pub fn is_toml_path(path: &Path) -> bool;   // `.toml`, case-insensitive:
+      // the one rule for "clip or composition?" (player bin, examples, CLI)
+  pub fn frame_after(&self, base_frame: u64, elapsed_secs: f64) -> u64;
+      // the run loop's one pacing expression, unchanged from M5
+  pub fn frame_at_secs(&self, secs: f64) -> Result<u32, Error>;
+      // THE `--seek` bound check (PlayerBuilder, --sim, --bench-seek): one
+      // copy, and the past-the-end message names the composition or the
+      // asset per is_stitch()
+  pub fn is_stitch(&self) -> bool;   // a real stitch, vs one asset wrapped
+      // by single() — what messages call it, and whether the progress row
+      // prints ` c/N `
+  pub fn gaps(&self) -> Vec<Span>;               // stretches no clip covers
+  pub fn overlaps(&self) -> Vec<Overlap>;        // every sharing PAIR,
+      // later-listed clip `over`, timeline order
+  pub fn mark_for(&self, clip_idx: usize) -> Option<ClipMark>;
+      // Clear / Partial / Hidden (whole span covered by later clips)
+      // All three are computed on the FRAME grid, so abutting clips can
+      // never report a sliver gap or a one-ULP overlap — which is what a
+      // float analysis of the same timeline does (`GAP 0.20 0.20`,
+      // `end_secs: 0.30000000000000004`). `compose show` is a lookup.
+}
+
+// compose.rs — M8 export (always available; no TOML needed)
+pub mod compose {
+  pub struct ExportOptions { pub keyframe_ivl: u8, pub zstd_level: i32 }
+      // Default = params.toml [build]: 60 / 15 (NOT auto-ascii-format's 19)
+  pub struct ExportReport { pub frames: u32, pub fps: f64, pub bytes: u64,
+                            pub shots: u32, pub cuts: u32 }
+  pub fn export(&Composition, out: &Path, &ExportOptions)
+      -> Result<ExportReport, Error>;
+      // ATOMIC (as the factory's build pass is): frames go to `<out>.part`,
+      // renamed over `out` only once FIDX + TRLR + the patched header are
+      // down; any failure removes the part and leaves an existing `out`
+      // untouched. One mapping per clip, but decoders (plane buffers +
+      // FIDX) are opened on demand and capped LRU at MAX_LIVE_SOURCES (4),
+      // so memory tracks live clips, not clip count; the NORM pre-pass
+      // copies shot tables and drops its readers.
+      // Flatten to one asset: every clip must share ONE base resolution and
+      // ONE plane registry (the error names the offending clip and suggests
+      // `import --res`). Planes are copied verbatim from the top clip
+      // (sequential roll, else FIDX seek); gaps write black planes; NORM is
+      // one pre-pass — a record per (clip slice ∩ source shot), rebased to
+      // output frames, CUT at every clip boundary and gap edge (record 0
+      // keeps the source's own flag), gap records identity levels
+}
 
 // session.rs — the terminal-free embedder entry (always available)
 pub struct RenderSession;   // owns the mmap + decode state + hysteresis
 impl RenderSession {
   pub fn open(path: impl AsRef<Path>) -> Result<RenderSession, Error>;
-      // mmap read-only + validate; defaults: Unicode palette, truecolor
+      // = from_composition(Composition::single(path)): ONE path, and
+      // resolving opens the container (so a truncated asset fails here,
+      // not at the first frame). Defaults: Unicode palette, truecolor
       // cells (embedder owns quantization), cell aspect 2.0.
-      // Internally Player<'static> over the owned map (encapsulated
-      // self-reference; SAFETY comment in session.rs — drop order pins
-      // the borrow, the fake 'static never escapes)
+      // Internally a one-clip `deck::ClipDeck` (M8) holding
+      // Player<'static> over the owned map (encapsulated self-reference;
+      // SAFETY comment in deck.rs — drop order pins the borrow, the fake
+      // 'static never escapes that module)
+  pub fn open_composition(impl AsRef<Path>, library_dir: Option<&Path>)
+      -> Result<RenderSession, Error>;                    // M8, feature `compose`
+  pub fn from_composition(Composition) -> Result<RenderSession, Error>;  // M8
+      // Same render() contract on the COMPOSITION's timeline: frame_idx
+      // counts its frames at its fps(), one mmap + one decode pipeline per
+      // clip built on first use, a clip switch resets temporal state (each
+      // clip has its own, so the switch starts fresh by construction — the
+      // reset is for RETURNING to a clip whose state is as stale as the
+      // time away), a gap renders an all-blank grid. Resolves the
+      // composition if the caller has not. Single-asset sessions are
+      // untouched: frame_idx maps to itself, no timeline in the way
   pub fn render(&mut self, frame_idx: u32, cols: u16, rows: u16)
       -> Result<&Grid<Cell>, Error>;
       // letterboxed compose at cols×rows; <32×9 renders the enlarge card.
@@ -799,6 +948,11 @@ pub enum RepaintMode { Full /*default*/, Diff }
 pub struct PlayerBuilder;   // Default; #[must_use]
 impl PlayerBuilder {        // the spec'd builder (§7 M4) + escape hatches
   pub fn asset(self, impl Into<PathBuf>) -> Self;          // REQUIRED
+  pub fn composition(self, impl Into<PathBuf>) -> Self;    // M8: …or this,
+      // a composition .toml — mutually exclusive with asset(). The whole
+      // run loop then counts COMPOSITION frames: --seek, 0-9, the arrows,
+      // --loop, --fps-cap and the progress row. Bare library names inside
+      // the file resolve through Composition::default_library_dir()
   pub fn palette(self, PaletteChoice) -> Self;             // default Auto
   pub fn tier(self, Option<ColorTier>) -> Self;   // Some = force + skip volley
   pub fn repaint(self, RepaintMode) -> Self;
@@ -840,7 +994,22 @@ Deliberately `#[doc(hidden)]` (workspace harness contract, semver-exempt):
 `auto_ascii::pipeline` (below), `PaletteChoice::resolve_for_caps(&Caps)`
 and `auto_ascii::load_font_table(&str) -> Result<auto_ascii_core::FontTable,
 Error>` (M5: the bin's `--sim` path applies the same repertoire veto as
-run(); embedders use the wrapped forms above) — CLI/--sim plumbing.
+run(); embedders use the wrapped forms above) — CLI/--sim plumbing — plus
+`auto_ascii::deck` (M8): `ClipDeck::new(Vec<PathBuf>, DeckConfig)` and the
+render/overlay forwarders `activate`/`render_grid`/`render_present`/
+`drain_events`/`set_*`/`stage`/`layer_mask`, plus `MAX_LIVE_CLIPS` (8) and
+`live_clips()`. The render surface is exactly three calls —
+`render_at(Option<Located>)`, `present_at(backend, Option<Located>)` and
+`showing()` — so the locate→activate→render dispatch exists ONCE rather
+than at each of the four call sites; `stage()` carries evicted clips' time
+and times gap presents, so a composition's budget still adds up. It is the ONE clip-switch
+implementation — `RenderSession`, the terminal `Player` and `--sim` all
+drive it — and it never hands out the `Player<'static>` it holds, which is
+what keeps the fake `'static` inside the module. At most `MAX_LIVE_CLIPS`
+pipelines are resident: opening one past the cap evicts the least recently
+fronted clip, clearing its player BEFORE its mapping (same drop-order
+argument), and re-opening is the lazy path again — cold, which is the
+temporal reset a return to a clip wants anyway.
 
 ## auto_ascii::pipeline — the hidden engine room (ex auto-ascii-player lib)
 
@@ -936,6 +1105,23 @@ pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32,
                              frame_count: u32, fps: f64);  // M5 scrub UX:
     // the bottom-row bar (" M:SS / M:SS [====>....] NN% ", pure ASCII,
     // byte-deterministic — unchanged rows cost zero diff damage)
+// M8 (PLAN-M6-M8 §3) additions:
+pub struct ProgressContext { pub frame, frame_count: u32,
+                             pub fps_num, fps_den: u16,
+                             pub clip: Option<(usize, usize)> }  // + fps()
+pub fn Player::set_progress_context(&mut self, Option<ProgressContext>);
+    // the row reports the COMPOSITION's position instead of this clip's own
+    // frame counter; None (every single-asset path) is the M6 row verbatim
+pub fn draw_progress_overlay_clips(grid, frame, frame_count, fps,
+                                   clip: Option<(usize, usize)>);
+    // draw_progress_overlay + " c/N " right after the time block, dropped
+    // below PROGRESS_HINT_MIN_COLS (64) and for single-clip compositions —
+    // so `draw_progress_overlay` is literally this with clip = None
+pub fn drain_backend_events<B: Backend>(&mut B) -> (Drained, Option<(u16,u16)>);
+    // the key mapping, coalesced, with NO player state touched (Quit still
+    // wins and stops the drain). Player::drain_events is this plus the
+    // reflow/reset; deck::ClipDeck::drain_events is this plus its own —
+    // a gap frame has no clip player to drain through
 // REMOVED at M3: compose_cells (the M1 base-only compositor) — the §3.5
 // path replaced it wholesale; keeping it invited silent drift between the
 // shipping renderer and the golden harness.
@@ -1061,6 +1247,12 @@ facade surface + this hidden module.)
   [--bench-seek N]
   [--font-table NAME|PATH] [--sim COLSxROWS:NFRAMES] [--sim-tier TIER]
   [--sim-dump PATH] [--sim-resize [COLSxROWS]]`.
+  M8: the positional argument may be a composition `.toml` instead of an
+  asset (decided by the extension, the same rule `auto-ascii play` follows)
+  — interactively it becomes `PlayerBuilder::composition`, and `--sim` /
+  `--bench-seek` walk the composition timeline through `deck::ClipDeck`.
+  Every flag keeps its meaning on that timeline; bare library names inside
+  the file resolve through `Composition::default_library_dir()`.
   M5 item B: `--font-table` maps onto `PlayerBuilder::font_table`
   (interactive) and applies the identical repertoire veto on the `--sim`
   path via the hidden `auto_ascii::load_font_table`.
@@ -1086,6 +1278,154 @@ facade surface + this hidden module.)
   `--sim-resize` (default value 100x40, requires `--sim`) injects a
   `Event::Resize` at frame NFRAMES/2 through the same event path the
   interactive loop uses, proving next-frame reflow.
+- `auto-ascii` (PLAN-M6-M8 §2) — M7, the agent-first CLI, built from
+  `crates/auto-ascii-cli` (package `auto-ascii-cli`, binary `auto-ascii`;
+  unpublished, like the factory it depends on). CLI as of M8:
+  `[--json] import <video> [--name N] [--ss T] [--t T] [--fps N]
+  [--res WxH] [--force] | list | info <clip> |
+  cut <clip> --in T --out T [--name N] [--force] |
+  compose new <name> | compose add <name> <clip> [--in T] [--out T] [--at T] |
+  compose show <name> | compose play <name> |
+  compose export <name> [-o path] [--force] |
+  play <clip | composition> | agent-guide | home`. `--json` is global
+  (accepted before or after the subcommand, at any subcommand depth).
+  **Home folder:** `~/auto-ascii`, or `$AUTO_ASCII_HOME` when set and
+  non-empty, with `library/` + `compositions/` + `exports/` created on
+  demand by `home` and by `import` (NOT by `agent-guide`, which resolves no
+  home at all and works with `HOME` unset). **`<clip>` resolves** as an
+  existing path first, else `library/<clip>.ascii`, else
+  `library/<kebab(clip)>.ascii`. **Names are kebab-case on the WAY IN:**
+  lowercase, every run of non-ASCII-alphanumerics collapsed to one `-`,
+  ends trimmed — applied by `import` to `--name` as well as to the derived
+  file stem, which also makes a name incapable of holding a path separator
+  or `..`. Readers (`list`, `info`) report the file stem VERBATIM instead,
+  so they cannot disagree about a file a human dropped in by hand; the
+  kebab step in `resolve_clip` is the bridge between the two.
+  **Timestamps** (`--ss`, `--t`) go through `auto_ascii::timecode::parse`,
+  the facade's one grammar (`SS[.f]`, `MM:SS[.f]`, `HH:MM:SS[.f]`), shared
+  with `auto-ascii-player --seek`; they are parsed by the command, not by a
+  clap `value_parser`, so a bad one is an `auto-ascii` error in the chosen
+  output mode rather than a clap usage error.
+  **Output contract:** humans get aligned text on stdout (the factory's
+  `inspect` column style: two spaces, a 14-wide label); `--json` puts
+  EXACTLY one JSON value there and nothing else, and every error becomes
+  `{"error": "..."}` on stderr with exit code 1 — INCLUDING clap's own
+  usage errors (M8 review), which the binary takes from `try_parse` and
+  re-renders through that one path, because an agent that typo'd a flag can
+  read an object and cannot read a usage block. `--json` is looked for in
+  argv rather than in the parsed `Cli`, which a usage error means there is
+  none of. `--help`/`--version` stay OUTPUT (clap's own stream, exit 0) and
+  a usage error WITHOUT `--json` keeps clap's rendering and clap's exit
+  code 2, so "you typed it wrong" stays distinguishable from "it ran and
+  failed". `play` is the one command
+  that REFUSES `--json` (`{"error": "play is interactive; run it without
+  --json"}`, exit 1, checked before the home folder is even resolved): the
+  player owns stdout for its whole run, so no value printed around it could
+  be the only one there. Everything chatty —
+  ffmpeg progress, the factory's `input:`/`pass 1/2:`/`wrote` lines —
+  goes to stderr in BOTH modes, which is what makes that keepable.
+  **Every byte of output goes through one `emit`/`outln!` pair** (M8
+  review) that writes to a locked handle and treats `BrokenPipe` as the
+  end of the job: `auto-ascii list | head -1` exits 0 quietly where
+  `println!` would have panicked with exit 101 (the same rule as
+  `examples/headless-dump.rs`, M5 fix 7).
+  **The sidecar** (`library/<name>.json`) is the one JSON shape: `import`
+  and `cut` print exactly what they wrote, `info` prints one, `list` prints
+  an array of them —
+  `{"name", "source": {"path","sha256","bytes"} | null,
+  "asset": {"path","bytes","frames","fps","duration_secs","base_w",
+  "base_h"} | null, "created_unix": u64|null, "created": RFC-3339-UTC|null,
+  "error": String (ABSENT when the clip read cleanly)}`.
+  **Provenance is retired only once the new bytes are in place** (M8
+  review): both writers validate, build (or export), and only THEN delete
+  the old sidecar and write the new one — so a rebuild that fails leaves
+  the clip it did not replace fully described, and a failure between the
+  rename and the sidecar leaves a clip visibly unrecorded (which `list`
+  says) rather than one described by bytes that were never written. The
+  four steps `import` and `cut` share — name, refuse-existing, retire +
+  record, print — are one set of functions in `main.rs`; only what they put
+  in the library differs.
+  The `asset` block is re-read from the ASCI header (mmap + `AsciiReader`)
+  on every `list`/`info`, so it cannot go stale; only provenance comes from
+  the file, and an asset with no sidecar still lists, with the three
+  nullable fields `null`. Sidecars are parsed through a provenance-only
+  struct (source + created fields, all optional, unknown keys ignored), so
+  a hand-written `{"source": {...}}` loads, and INSIDE `source` only a
+  video's `path` is required (M8 review): `"kind": "cut"` makes it a cut
+  with `from`/`in`/`out` optional, anything else is a video source with
+  `sha256`/`bytes` optional, and what is missing reads back as `null` or
+  prints as `(unknown)` rather than sinking the whole sidecar. A `source`
+  that is neither — no `path`, no `kind` — is the malformed case, and the
+  message names the file it is in. `list` NEVER aborts on one bad
+  entry — a truncated file, a directory, a non-UTF-8 name or an unparseable
+  sidecar becomes an entry carrying `error` (and `?` columns in the human
+  table), exit 0 — while `info`/`play`, which name ONE clip, stay strict. `home --json` prints
+  `{"home","library","compositions","exports"}`. `agent-guide` prints
+  `docs/AGENT-GUIDE.md` via `include_str!`, so the command and the file
+  cannot drift (`--json`: `{"guide": "..."}`).
+  **`cut`** (M8) is an `auto_ascii::compose::export` of a ONE-CLIP
+  composition — no ffmpeg, planes copied not re-derived — into
+  `library/<name>.ascii`, default name `<clip>-<in>-<out>` with the
+  timestamps made file-name-safe (`apple-1984-0m05s-0m20s`: `format_mmss`
+  with its colons spelled `h`/`m` and a trailing `s`, so a sub-second
+  distinction collides by name and wants `--name`). `export` is itself
+  atomic (note 29(i)), so it points straight at `library/` and a failed
+  `--force` leaves the clip already there intact; the slice is validated
+  (`Composition::resolve`) BEFORE anything on disk moves and the old
+  sidecar goes only once the new bytes have landed, so a rejected `--out`
+  leaves the old clip whole, provenance included. Its encode knobs are the
+  factory's `params.toml` `[build]` pair read through `effective_params`,
+  shared with `compose export`, so a slice is the kind of asset `import`
+  writes rather than a third profile. Its sidecar is the same object with a
+  different `source`: `{"kind": "cut", "from": <library name or path>,
+  "in": secs, "out": secs}`. The `Source` enum is UNTAGGED — a
+  video source carries no `kind` and never did, so every sidecar `import`
+  has written still loads — and the `asset` block is read back off the
+  header, like `list`/`info` read it.
+  **`compose …`** (M8) edits the same TOML an agent would write by hand,
+  and only ever by appending: `new <name>` creates
+  `compositions/<name>.toml` (`create_new`, so a collision is an error)
+  holding `schema = 1`, `name` and a comment block naming the four clip
+  keys; `add <name> <clip> [--in T] [--out T] [--at T]` appends one
+  `[[clip]]` table whose `asset` is the LIBRARY NAME when the clip lives
+  in `library/` and its absolute path otherwise, with the timestamps
+  written back VERBATIM (the schema takes a string anywhere it takes
+  seconds). The composition the file WOULD become is parsed and RESOLVED
+  first (M8 review), so a table above that no longer loads, a trim the
+  timeline rejects or a `<clip>` that is not an ASCI asset fails with the
+  file byte for byte as it was; the append itself is one `O_APPEND` write,
+  so two agents adding at once both land where a read-modify-write would
+  have lost one;
+  `show <name>` prints the resolved timeline; `play <name>` runs the
+  player on it and refuses `--json` for the same reason `play` does;
+  `export <name> [-o path] [--force]` flattens it to
+  `exports/<name>.ascii`. **A `<name>` resolves** like a `<clip>` does —
+  an existing path (a `.toml` anywhere), else `compositions/<name>.toml`,
+  else the kebab form — and everywhere a name meets its folder the
+  extension THAT folder adds is stripped from the argument first (both
+  resolvers and `compose new`: `demo.toml` and `demo` are one composition,
+  `clip.ascii` and `clip` one clip; never `demo.toml.toml`), which is also
+  the name the "does not exist" error suggests. `play` resolves EITHER kind, clips first (so every M7 spelling
+  still means what it meant), with a `.toml` path always a composition.
+  **`compose show --json`:** `{"name", "fps", "duration_secs",
+  "frame_count", "clips": [{"index","asset","path","in_secs","out_secs",
+  "at_secs","start_secs","end_secs","fps"}], "gaps":
+  [{"start_secs","end_secs"}], "overlaps":
+  [{"start_secs","end_secs","under","over"}]}` — `at_secs` is the `at` AS
+  WRITTEN (null when the clip simply follows the one before it), while
+  `in_secs`/`out_secs` are RESOLVED (an absent `out` reports the asset's
+  own end); `gaps` and `overlaps` are `Composition::gaps()` /
+  `Composition::overlaps()` verbatim (the FRAME GRID, so abutting clips
+  cannot report a 1e-16 s sliver either way), with `over` the later-listed
+  clip that plays there. The human table is those rows in
+  TIMELINE order with `GAP` rows interleaved and BOTH sides of every
+  overlap marked: `OVERLAP #k` on the covering clip, and on the covered
+  one `UNDER #k` or `HIDDEN #k` — `Composition::mark_for` decides which by
+  summing covered FRAMES, so a clip hidden by two later clips between them
+  is `HIDDEN` even though neither covers it alone. A clip not one frame of
+  which ever plays is exactly what start/end columns hide.
+  **`compose export --json`** is the `ExportReport` plus where it landed:
+  `{"path","frames","fps","bytes","shots","cuts"}`.
 
 ## M0 scope notes & deviations from PLAN
 
@@ -1285,7 +1625,11 @@ facade surface + this hidden module.)
     interactive default (`--repaint full`) is unchanged;
     (g) eval cache under `runs/cache/` (gitignored via `*.ascii`), key
     `(input sha256, build-params sha256)` with a hand-rolled tested SHA-256
-    (`sha256.rs`) — no new hashing dependency; PNGs for the contact sheet
+    (`sha256.rs`; INCREMENTAL as of the M8 review — a `Sha256` of eight
+    words plus a <64-byte tail, full blocks compressed straight out of the
+    caller's slice, and `sha256_file` streaming 64 KiB at a time, so
+    hashing a 4 GB source costs 64 KiB rather than twice the file) — no new
+    hashing dependency; PNGs for the contact sheet
     come from the ffmpeg subprocess (rawvideo→png and
     scale/fps/select→png), so no image crate either; `toml` is the one new
     workspace dependency.
@@ -1336,7 +1680,11 @@ facade surface + this hidden module.)
     `--cache-dir runs/cache`); stage_ms/write_ms fields are wall-clock and
     vary run-to-run — the compare tolerances absorb that; every other
     metric is deterministic (regeneration reproduced ssim/flicker/damage
-    bit-for-bit). No `pub` signature changed.
+    bit-for-bit). No `pub` signature changed. **Superseded 2026-09-20:**
+    the three-clip corpus, the symlink assembly, the real-corpus
+    determinism guard and the committed `runs/base.json` are gone; the
+    section now evals whatever videos sit in `corpus/` against a baseline
+    the user records locally (`runs/` is gitignored, corpus/README.md).
 17. **M2 adversarial-review fixes landed** (review-fix agent). Four
     confirmed findings, each with regression tests:
     (4a) **eval baseline blindness** [high]: `frame_ssim`'s source side no
@@ -1527,7 +1875,7 @@ facade surface + this hidden module.)
     Sweep evidence in the M3 integration report.
 21. **M3 Tune landed** (tune agent): `auto-ascii-factory sweep` per the Binaries
     section (PLAN §5 CLI — sweep.rs; ranked `sweep.json` schema v1 +
-    `leaderboard.html`; committed axis grids under `sweeps/`). Decisions:
+    `leaderboard.html`; the M3 axis grids, since removed from the tree). Decisions:
     (a) **composite score** = `0.4·mean(ssim) + 0.4·mean(edge_f1) −
     0.2·mean(flicker/2.0)` (means over clips; `[score]` overridable per
     grid file; flicker_norm 2.0 = the §6 gate, so a clip at the gate costs
@@ -1788,3 +2136,352 @@ facade surface + this hidden module.)
     -p auto-ascii --no-verify` passes (the closure is packaged together
     because the deps are unpublished; `--no-verify` skips the rebuild,
     nothing is published; on a dirty tree add `--allow-dirty`).
+
+27. **M6 landed** (key-hints agent; PLAN-M6-M8 §1 — "the player should show,
+    terse but clear, what the keys do"). No always-on chrome: the hints are
+    event-driven like the M5 overlay, so every headless grid is untouched.
+    (a) **Progress row gains an arrow-hint block** at the far left —
+    `" <- 5s -> "` ahead of the timecode — only when the row is at least
+    `PROGRESS_HINT_MIN_COLS` (64) wide; below that the bytes are the M5
+    layout exactly, so a narrow terminal spends its columns on the timecode
+    and the bar. The `5` is `SCRUB_STEP_SECS`, which MOVED from
+    `crate::player` to `crate::pipeline` for this (the overlays print it and
+    that module builds without the `terminal` feature); the public name
+    `auto_ascii::SCRUB_STEP_SECS` is unchanged — `player` re-exports it.
+    (b) **New key-hints row** on `rows-2`, in the progress row's colors:
+    `q quit   0-9 jump   <- -> 5s   d dial   [ ] adjust   v controls`, with whole
+    items dropped in `HINT_DROP_ORDER` until the list fits `cols` — `[ ]
+    adjust`, then `d dial`, then the arrows, then `0-9`, then `q quit`, with
+    `v controls` the LAST to go, since how to summon the legend back is what a
+    cramped screen must still say (80/64 → all six, 40 → four, 32 → three).
+    The remainder is painted in the same background, so no picture cell
+    survives underneath, and the row is gated on the viewport so it never
+    lands on the enlarge card (`rows-2` is where that card's second line sits
+    on a 4-row screen). New pipeline surface:
+    `Player::set_hint_overlay(bool)` and `pub fn draw_hint_overlay(grid: &mut
+    Grid<Cell>)`, plus `Drained.toggle_hints: bool` (`v`, collapsed to
+    one flag per drain — a held key must not flicker the row). Printable
+    ASCII only, so the arrows are `<-`/`->` (PLAN-M6-M8 §0.6); `auto-ascii-term`
+    needed no change, since both keys already arrive as `Key::Char`.
+    (c) **Visibility is run-loop policy, never the pipeline's.** `player.rs`
+    gains `HINT_STARTUP_SHOW_FOR` (3 s) and a private `HintState`: the row
+    rides with whichever transient overlay is up, shows for the start-up
+    window, and is pinned by `v` until the next press. The pin toggles
+    against what is ON SCREEN, not against the flag alone — a press inside
+    the start-up window (or during an overlay's ride-along) dismisses the row
+    and ends the window, instead of silently pinning it for the rest of
+    playback and leaving the next press reading inverted. `--sim`,
+    `RenderSession` and the eval harness never call the setter, so the parity
+    grid, the console goldens and the insta snapshots pass unblessed. Every
+    hide — progress, dial or hints — still goes through `overlay_hide_pending`
+    → `invalidate()`.
+    (d) **Tests:** auto-ascii/tests/scrub_overlay.rs extended to the new
+    contract — the two rows hide on SEPARATE frames so each hide path is
+    asserted to damage `cols*rows` on its own, and while they are up every
+    row above the bottom TWO matches the no-overlay reference — plus hint
+    content at 80/64/40 columns, the 64-column arrow-block threshold (and its
+    absence at 63) and the `v` toggle through the real event queue. The
+    TIMING rules are unit-tested in player.rs with synthetic instants
+    (`hint_row_shows_at_start_up_then_rides_the_overlays`): `run()` owns the
+    only clock and hard-wires `AnsiBackend`, so there is no seam to hand a
+    SimBackend or a fake clock, and cutting one was out of this milestone's
+    scope.
+    (e) **Dial polish** (review fix, same seam): the first `d` now REVEALS
+    the readout on the dial already selected instead of cycling past shadow
+    lift — `dial_after_cycle(idx, presses, readout_up)` in player.rs, unit
+    tested — and every `d` while the readout is up cycles as before.
+    (f) **Space pauses** (added after M8 landed). `Drained.toggle_pause`
+    (`Key::Char(' ')`, one flag per drain); `pipeline::Player::set_paused` /
+    `ClipDeck::set_paused` / `draw_progress_overlay_paused`, and
+    `draw_progress_overlay_clips` gained a trailing `paused: bool` — the row
+    then prints ` PAUSED ` where the percentage goes and `|` where the bar
+    head goes, printable ASCII under the same width rules. Two run-loop
+    helpers carry the policy, both unit-tested with synthetic instants:
+    `Transport` (asset time = `base_frame` + wall time since `clock`; a pause
+    parks the frozen frame in `base_frame` and stops the second term, so
+    resuming only repoints `clock` and playback continues from the frame on
+    screen instead of skipping the pause's length — seeks repoint both and
+    leave `paused` alone, which is why a jump while frozen just moves the
+    frozen frame), and `ProgressTimer` (a seek or a resume restarts
+    `OVERLAY_HIDE_AFTER`; a pause SUSPENDS it, so the row and the hints row
+    riding on it stay up for the whole freeze). `duration_secs` is unchanged
+    and deliberately still WALL clock: a pause spends the budget like
+    playback does, now documented on the builder. The hints row gained
+    `space pause` in second place, dropped third (after `[ ] adjust` and
+    `d dial`) for its eleven columns; `v controls` is still last to go.
+28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
+    should take a video from anywhere on the desktop, process it, and land
+    it in the folder where the user's processed videos live"). The shape of
+    the new binary is in the Binaries section above; these are the
+    decisions behind it.
+    (a) **The factory became lib + thin bin.** `auto-ascii-factory/src/lib.rs`
+    owns all sixteen modules (every one `pub` — the crate is unpublished
+    workspace plumbing, and making them private would have turned
+    cross-module helpers into dead code) and adds the supported entry
+    points: `build(&BuildRequest, &mut dyn Write) -> Result<BuildReport>`,
+    `effective_params`, `parse_res` and the re-exported `sha256*`.
+    `main.rs` kept the clap surface and `inspect`. The `Write` argument is
+    the whole point of the split: `build::run` no longer `eprintln!`s its
+    `input:`/`pass 1/2:`/`wrote` lines, it writes them to a caller's sink,
+    so the factory bin passes `stderr` (bytes unchanged) and the CLI passes
+    stderr too while keeping stdout for one JSON value. The indicatif bars
+    stayed on stderr, where they always were. Proof the split moved
+    nothing: `tests/build_e2e.rs` and `tests/m2_params_eval.rs` pass
+    untouched, including both byte pins.
+    (b) **One timestamp grammar**, `auto_ascii::timecode` (core tier, no
+    deps): `parse` + `format_mmss` + `TimecodeError`. The player binary's
+    private `parse_timestamp` is gone; its unit test now calls the shared
+    parser and pins that `--seek` accepts exactly the same set of strings.
+    `format_mmss` matches the progress overlay's shape, which keeps its own
+    closure (M6 pins those bytes; nothing in `pipeline.rs` was touched).
+    (c) **The AVI fixture writer moved** to
+    `auto_ascii_eval::fixtures::write_bgr24_avi(path, w, h, fps, frames)` —
+    frames are DIB-order (rows bottom-up, pixels B,G,R), `w` must be a
+    multiple of 4 so no row or chunk needs padding. The factory's pin test
+    kept its pattern generator and calls the shared writer;
+    `FIXTURE_AVI_SHA` did not move, which is the proof the container bytes
+    are identical. This is the one file-writing helper in an otherwise
+    I/O-free crate, and it exists so the determinism guard and the CLI's
+    tests cannot drift apart.
+    (d) **Nullable provenance, authoritative headers.** `list`/`info`
+    rebuild the `asset` block from the ASCI header every time (mmap +
+    `AsciiReader`) and take only `source`/`created_unix`/`created` from the
+    sidecar, so a stale or absent sidecar can never misreport what will
+    play. An asset with no sidecar lists with those three fields `null` —
+    never a missing key, which is what an agent's schema check needs. A
+    clip that cannot be read at all keeps its row too, with `asset` null
+    and an `error` string; the listing's job is to show the folder, and one
+    bad file hiding the other twenty is the worse failure. `--force`
+    deleted the old sidecar BEFORE the rebuild started — REVERSED at M8
+    review (note 29(j)): the delete now follows the successful build, so
+    the clip a failed rebuild did not replace keeps its provenance, while
+    a failure between the rename and the sidecar still leaves the clip
+    visibly unrecorded and names the orphaned path in its message.
+    (e) **Kebab-casing is applied to `--name`, not just to the default —
+    on the way IN only.** It is the documented naming rule (agent guide
+    rule 1) and it doubles as the containment check: a kebab name cannot
+    hold `/` or `..`, so no `--name` can write outside `library/`. Readers
+    report the file stem verbatim, and `resolve_clip` falls back to the
+    kebab form, so an agent can ask for `My Clip` and get `my-clip`.
+    (f) **Tests:** `crates/auto-ascii-cli/tests/cli.rs` runs the real binary
+    with `AUTO_ASCII_HOME` pointed at a per-test temp dir — `home` creates
+    the three folders; `import` of a 12-frame 160x90 30 fps AVI produces the
+    clip and a sidecar with every field checked (human AND `--json`, with
+    the printed object asserted equal to the file on disk); the name
+    collision fails before ffmpeg runs and `--force` rebuilds
+    byte-identically; `list --json` covers a sidecar-less asset; `info`
+    resolves by name and by path; `agent-guide` is asserted equal to the
+    committed file; a bad `--ss` exits 1 with `{"error": ...}` on stderr,
+    empty stdout and no asset written.
+29. **M8 landed** (compositions agent; PLAN-M6-M8 §3 — "`.ascii` files are
+    the clips, and a *composition* stitches an unbounded number of them,
+    each placed at a chosen point on the timeline with its start and end
+    trimmed"). The library half: the type, the player, the export. The
+    `auto-ascii compose …`/`cut` subcommands are the CLI half and land
+    beside it.
+    (a) **One timeline function, and single assets go through it.**
+    `Composition::locate(t_secs) -> Option<Located>` is the only place §3's
+    semantics live (file order, `at` overrides, ends EXCLUSIVE, later-listed
+    clip on top of an overlap, gap → `None`), and `locate_frame(f)` is
+    `locate(f / fps)`. A plain asset is `Composition::single(path)` — one
+    clip, no trim — so the run loop's two `base + elapsed·fps` copies became
+    one `Composition::frame_after`, and `RenderSession`, `Player`, `--sim`
+    and `--bench-seek` all map frames the same way. Float frame positions
+    are SNAPPED to the exact integer within 1e-6 (a frame becomes a time
+    and back, which lands a few ULPs either side); without that, `floor`
+    dropped a frame at every boundary, and with it a one-clip composition
+    provably maps frame f to frame f at every f — unit-tested over a whole
+    fixture, which is what makes routing single assets through the
+    composition path safe.
+    (b) **`resolve()` is the one I/O step,** reading each clip's 64-byte
+    header through a mapping (fps/frames/base res/aspect/plane ids) rather
+    than an `AsciiReader::open` that would build a FIDX per clip. It also
+    took over the unplayable-asset checks (`zero frames`, `no Y plane`) so
+    `PlayerBuilder::build` still rejects a bad asset before the terminal is
+    touched, now for every clip. Everything below `resolve` is defined only
+    after it succeeds; an unresolved composition reports zeros and locates
+    nothing, and `export` says so rather than writing an empty file.
+    (c) **`deck::ClipDeck` is the one clip-switch implementation** (hidden,
+    semver-exempt, like `pipeline`): one mmap + one `pipeline::Player` per
+    clip, both built on first use, plus the presentation state — overlays,
+    dial readout, compose params, layer mask, progress context — re-applied
+    to whichever clip is fronted, so a switch never drops an overlay or a
+    turned dial. A switch resets that clip's temporal state and schedules
+    `invalidate()`; each clip owning its own state means the switch is
+    already cold by construction, and the explicit reset is for RETURNING
+    to a clip whose remembered ramp indices describe the frame it showed
+    before we left. Gap frames are a blank `Grid` with the overlays drawn
+    on top (the enlarge card below 32×9), so a gap still answers the
+    keyboard. `pipeline::drain_events` split: `drain_backend_events` is the
+    key mapping with no player state, which the deck needs because a gap
+    frame has no player to drain through — `Player::drain_events` is that
+    plus the reflow/reset it always did.
+    (d) **Single-asset output is untouched,** deliberately and by test:
+    `RenderSession::render` keeps the identity mapping for a plain asset
+    (no timeline in the way), the progress row only reports composition
+    time when the player was built from a `.toml`, and ` c/N ` needs both
+    ≥64 columns and more than one clip — so `draw_progress_overlay` is
+    `draw_progress_overlay_clips(.., None)` and the M6 bytes stand.
+    `render_session.rs`, `scrub_overlay.rs`, `pipeline_parity.rs`,
+    `linux_console_golden.rs`, the tier goldens and the insta snapshots all
+    pass unblessed.
+    (e) **Export copies planes, never re-derives them.** Every clip must
+    share one base resolution and one plane registry (the error names the
+    offending clip and suggests `import --res`); the top clip's planes are
+    decoded (sequential roll where the walk is sequential, FIDX seek
+    otherwise) and handed to `write_frame` unchanged, gaps write black
+    planes, and NORM is one pre-pass over the clips' own shot tables with
+    no decoding: a record per (clip slice ∩ source shot), rebased to output
+    frames, CUT at every clip boundary and gap edge, identity levels for
+    gaps, and record 0 keeping the source's own flag (nothing precedes
+    frame 0 to cut away from). `ExportOptions` defaults to params.toml's
+    `[build]` 60/15, NOT `auto-ascii-format`'s 19 — the format crate's
+    default is not the factory's policy, and a flattened composition is the
+    same kind of asset the factory writes.
+    (f) **No `auto-ascii-format` change was needed.** The task allowed for
+    a missing reader accessor; `shots()`, `shot_for_frame()` and
+    `plane_index()` already cover the NORM pre-pass, so the container crate
+    is untouched at M8.
+    (g) **`toml` is the only new dependency, under the new default-on
+    `compose` feature** (`terminal` enables it — the player takes a
+    composition file). `serde` is NOT a direct dep: the parse is hand-rolled
+    over `toml::Table` so every rejection can name the clip INDEX, which a
+    `deny_unknown_fields` derive cannot. `cargo check -p auto-ascii
+    --no-default-features` still carries no toml/clap/crossterm.
+    (h) **Tests:** `locate` unit-tested in `composition.rs` (sequential
+    default, explicit `at` + gap, overlap → later clip, in/out trims, mixed
+    fps via a 15 fps clip, exclusive ends, empty/inverted/past-the-end
+    rejections naming the clip index, and the TOML error surface);
+    `auto-ascii/tests/composition.rs` builds two fixture clips in a temp
+    dir and stitches them with a trim and an `at` that leaves a 1.6 s gap,
+    then asserts the frame before the gap equals clip A played alone at the
+    same point, the frame after equals clip B started cold at its `in`
+    frame, gap frames are exactly `Cell::BLANK`, and an export reopens with
+    the same frame count, the NORM table the report describes (4 records, 3
+    cuts, at frames 0/72/120/141) and the same pictures; a trimmed one-clip
+    export is the source's frames at the offset (the `cut` round trip); the
+    real binary prints the stats line for `--sim 120x40:60` on a `.toml`,
+    and `--seek 0:04.5` on the composition produces a sim-dump byte-
+    identical to seeking clip B alone to `0:01`.
+    (i) **Review fixes.** Export is ATOMIC (`<out>.part` + rename, the
+    factory's pattern) — a failed export no longer replaces a good asset
+    with a headerless stub, and it leaves no debris; tested by corrupting a
+    clip's frame payload after `resolve` and asserting the previous `out`
+    survives byte for byte. The deck caps residency at `MAX_LIVE_CLIPS`
+    (8) with LRU eviction, so "unbounded clips" costs bounded memory;
+    eviction clears the player before the mapping, and a 12-clip walk
+    asserts the cap holds and that a re-opened clip renders what it did
+    before. A gap below 32×9 now draws the enlarge card AND keeps the
+    progress/dial rows (the hints row stays off, since `rows-2` is the
+    card's second line) — being stuck in a gap on a small terminal with no
+    scrub bar is exactly the case that needs one. `headless-dump` takes a
+    `.toml` too, and the seek error says "composition" when the source is
+    one.
+    (j) **The CLI half** — `auto-ascii cut` and `compose new/add/show/play/
+    export`, whose shapes are in the Binaries section above. `cut` is an
+    export of a one-clip composition, so slicing needs no ffmpeg and the
+    slice is the source's own planes, and it points straight at
+    `library/` because `export` is itself atomic (sub-item (i)), so a
+    failed `--force` leaves the clip already there intact. The `compose` subcommands are TEXT operations on
+    the TOML (`crates/auto-ascii-cli/src/composition.rs`): `new` writes a
+    header and a commented clip table, `add` appends one `[[clip]]` and
+    nothing re-serializes the file, so an agent's comments and ordering
+    survive every edit — the file is the source of truth (§0.3), and these
+    are conveniences over it, not a model of it. Reading is the facade's
+    `Composition::from_toml_file`, resolved against the home `library/`
+    rather than the environment sniff `default_library_dir` does, because
+    the CLI always knows which home it is in. `compose show` adds the only
+    two things a timeline has that a clip list does not, both computed off
+    the facade: `gaps()`, `overlaps()` and `mark_for()` on the frame
+    grid, so a clip 0.3 s long (0.30000000000000004 in binary) abutting one
+    placed at 0.3 shows neither a gap nor an overlap — the CLI's own float
+    versions were deleted when that surface landed. The sidecar's `source` became an untagged enum so a
+    cut's provenance shares the shape without invalidating one sidecar
+    `import` had already written, and `play` now takes either kind of
+    argument. `docs/AGENT-GUIDE.md` grew to 79 lines for the new commands
+    and the two-clip-with-a-gap example; its pinned cap moved 60 → 80.
+    **Review fixes (same round).** clap's usage errors go through
+    `try_parse` and the one `{"error": ...}` path (Binaries above);
+    provenance is retired only after the build/export succeeds, reversing
+    note 28(d) and keeping a failed `--force` non-destructive; `play`
+    checks the HEADER only, so a clip with a truncated sidecar still plays
+    while `info`, which is about the sidecar, still refuses; an EMPTY
+    `HOME`/`USERPROFILE` is no home rather than a relative `auto-ascii/` in
+    the working directory; the `.toml` extension test ignores ASCII case
+    (`Demo.TOML` is a composition on the file systems this ships to); the
+    export knobs come from `auto_ascii_factory::effective_params` instead
+    of a third hard-coded 60/15; and the four steps `import` and `cut`
+    share are one set of functions rather than two copies.
+    **Tests:** seventeen cases added to `crates/auto-ascii-cli/tests/cli.rs`
+    (31 in the suite), over
+    `auto_ascii_eval` fixture clips written straight into `library/` with
+    no sidecars (no ffmpeg anywhere in the M8 half) — `cut` writes frames =
+    round((out−in)·fps) with the cut provenance and no `.part` left behind;
+    `cut --json` equals the file it wrote, collides, and rebuilds
+    byte-identically under `--force`; `new` + two `add`s are pinned to the
+    exact TOML tail and an agent's own comment survives the next `add`;
+    `show --json` reports the 1.6 s gap of the §3 example and a second case
+    marks `OVERLAP #0`; `export`'s `frames` equals `show`'s `frame_count`
+    and its file re-enters `list` header-first; a `.toml` outside the home
+    folder resolves and exports; and every error path — unknown clip,
+    missing composition, `new` on an existing name, `cut` with `out <= in`,
+    a clipless `show` — is one `{"error": ...}` on stderr with empty stdout
+    and exit 1. The review round added: the four usage-error kinds as JSON
+    objects (with `--help`/`--version` still exit 0) and clap's own text at
+    exit 2 without `--json`; a failed `--force` rebuild keeping its
+    provenance and a successful one replacing it; `play` over a truncated
+    sidecar; an empty `HOME`; an uppercase `.TOML` path resolving as a
+    composition; and a unit test tying the export knobs to the factory's
+    params.
+    (j) **Code-review fixes.** (1) The timeline is INTEGER frames at the
+    composition rate — `ClipSpan { start_frame, end_frame }`, `locate_frame`
+    pure integer, `locate(t)` = `locate_frame(t·fps)`, seconds derived from
+    the frames. Seconds could not express a boundary: a 0.3 s slice ends at
+    0.30000000000000004, so the frame at exactly 0.3 s went to the FIRST
+    clip at a source frame its own `out` had trimmed away, and the second
+    clip never showed its frame 0 (swept over every one-decimal placement
+    at 30 fps now). Derived seconds also kill the 1e-16 s "gaps" `compose
+    show` would otherwise print between abutting clips. (2) `out` gets half
+    a frame of slack and is then clamped, so the duration the tools PRINT
+    (`4.17s` for 100 frames at 24 fps) is a usable `out` instead of a
+    self-contradicting rejection; past that the message speaks the same
+    `{:.2}s`. (3) `resolve` runs `AsciiReader::open` per clip, not a header
+    parse, so `PlayerBuilder::build` keeps its documented promise to reject
+    a corrupt asset before the terminal is touched (truncated-asset test);
+    its unplayable-asset messages now name the clip index like every other
+    resolve error. (4) `export` opens clip decoders lazily, LRU-capped at
+    `MAX_LIVE_SOURCES` (4), and the NORM pre-pass keeps shot tables rather
+    than readers — memory tracks live clips, not clip count. (5)
+    `RenderSession::render` records the frame cursor only after a
+    successful render, so a failed frame cannot corrupt backward-jump
+    detection. (6) `ClipDeck::stage()` carries evicted players' time and
+    times gap presents; the dispatch collapsed into `render_at`/
+    `present_at`/`showing` (four pasted copies gone, `activate` private,
+    `clip_frame_count`/`active` deleted). (7) The progress row prints
+    through `timecode::format_mmss` instead of its own closure, and
+    `Composition::is_toml_path` is the one "clip or composition?" rule.
+    (k) **Addenda to the review batch.** (1) `Composition::gaps()`,
+    `overlaps()` and `mark_for(clip_idx)` expose the timeline analysis
+    `compose show` was doing in floats: gaps as `Span`s, overlaps as PAIRS
+    (`under`/`over`, later-listed on top, so three-deep coverage is three
+    facts rather than a special case) and a per-clip `ClipMark`
+    (Clear/Partial/Hidden, Hidden = every frame covered). All on the frame
+    grid, so abutting clips report neither a sliver gap nor a one-ULP
+    overlap — the two cases the float version got wrong. (2) A paused run
+    loop no longer re-composes and re-presents the frozen frame every tick:
+    `RepaintGate` paints only when something changed (key, seek, resize,
+    overlay edge including a timeout) and the loop idles otherwise, which
+    is most of a core and tens of MB/s of escape stream saved on a picture
+    that is not moving. (3) Space freezes on the frame last PRESENTED
+    (`freeze_target`), not on where the clock has reached — at `--fps-cap
+    1` on a 30 fps asset those were ~30 frames apart, so the picture jumped
+    forward a second at the moment it was asked to stop. (4) `HintState`
+    reads the PIN before the start-up window: pinned → unpin, start-up
+    freebie → dismiss, anything else (including an overlay's ride-along) →
+    pin. Under the old "toggle against what is on screen" rule a pause held
+    the progress row up forever, so `v` could never pin the legend and
+    would silently unpin one that was. (5) `RenderSession::open` is
+    `from_composition(Composition::single(path))` — no second mapping path,
+    no cached fps/aspect/frame_count, one 16:9 degenerate-aspect fallback
+    (in `resolve`); single-asset output is unchanged (goldens, parity and
+    the render-session suite unblessed).

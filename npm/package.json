@@ -2,7 +2,7 @@
   "name": "auto-ascii",
   "version": "0.0.1",
   "description": "Realtime ASCII-art video for terminals. Placeholder reserving this name for a future prebuilt-binary / WASM distribution of the auto-ascii player; the working implementation today is the Rust crate.",
-  "license": "(MIT OR Apache-2.0)",
+  "license": "MIT",
   "homepage": "https://github.com/andmckay01/auto-ascii#readme",
   "repository": {
     "type": "git",

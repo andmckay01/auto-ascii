@@ -1,4 +1,4 @@
-<!-- ASCII conversion algorithms — produced by the ascii-engine-plan workflow, 2026-07-24; input to ../../PLAN.md -->
+<!-- ASCII conversion algorithms — produced by the ascii-engine-plan workflow, 2026-07-24; input to ../PLAN.md -->
 
 # ASCII-Art Conversion Algorithms for Realtime Video — Research Digest
 

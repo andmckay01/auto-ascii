@@ -23,10 +23,10 @@
 /// pool inside [`Resampler`] and `w_off` indexes it — a fixed `MAXTAP` cannot
 /// cover extreme downscales (480 source columns → a 1-col viewport is a legal
 /// fuzz case, PLAN §6), while a pool keeps `Tap1D` a fixed-size POD. Recorded
-/// in INTERFACES.md.
+/// in docs/INTERFACES.md.
 ///
 /// `ntaps` is `u16` (widened from the scaffold's `u8`, recorded in
-/// INTERFACES.md): the same 480→1 fuzz case needs 480 taps in one run, which
+/// docs/INTERFACES.md): the same 480→1 fuzz case needs 480 taps in one run, which
 /// overflows `u8`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tap1D {
