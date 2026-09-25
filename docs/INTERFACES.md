@@ -299,6 +299,42 @@ pub fn compose_frame_masked(...same args, out: &mut Grid<Cell>,
                             mask: &mut Grid<u8>);
     // compose_frame + mask fill; mask must match out's full terminal dims;
     // cells byte-identical to compose_frame (unit-tested)
+
+// Glyph codecs (note 27h) — the per-cell features→glyph mapping, pluggable.
+// compose_cell IS the `pixels` codec; the frame loop above runs any codec,
+// monomorphized, chosen once per FRAME (never per cell).
+pub mod codec {
+  pub trait GlyphCodec {
+    const NAME: &'static str;   // registry name: `/` readout, --codec, the
+                                // per-video settings file — stable forever
+    fn cell(&CellInputs, lut: &[u8;256], &PaletteSet, &ComposeParams,
+            &mut CellState) -> (Cell, u8 /* layer id */);  // never allocates
+  }
+  pub enum Codec { Pixels /*default*/, Letters }  // THE registry
+  impl Codec {
+    pub const ALL: [Codec; 2];            // `/` cycle order, default first
+    pub fn name(self) -> &'static str;    // "pixels" | "letters"
+    pub fn from_name(&str) -> Option<Codec>;
+    pub fn next(self) -> Codec;           // wraps
+    pub fn names() -> String;             // "pixels, letters"
+  }
+  pub fn compose_frame_codec(Codec, &FramePlanes, &Viewport, lut, &PaletteSet,
+      &ComposeParams, &mut HysteresisState, &mut Grid<Cell>,
+      mask: Option<&mut Grid<u8>>);  // Pixels ≡ compose_frame(_masked) byte
+      // for byte (tests/codec_props.rs)
+  pub mod pixels { pub struct Pixels; }   // the §3.5 compositor, verbatim
+  pub mod letters {                       // printable characters
+    pub struct Letters;
+    pub const LETTERS_RAMP, LETTERS_TOP, LETTERS_BOTTOM: &[char]; // 16 each
+    pub const LETTERS_FILL: char = '█'; pub const LETTERS_FILL_MIN: u8 = 236;
+    pub fn letters_glyphs(blocks: bool) -> Vec<char>;  // the repertoire
+  }
+}
+// Adding a codec: one module implementing GlyphCodec + in codec/mod.rs a
+// variant, its ALL entry and one arm each in name()/compose_frame_codec
+// (missing arms are compile errors; a missing ALL entry fails a unit test).
+// cell_flags bits 2–7 are codec-private temporal memory (a codec switch
+// resets all state).
 ```
 
 ## auto-ascii-term (PLAN §3.1, §3.6) — M1: caps probe + color tiers + ?2026
@@ -941,7 +977,11 @@ impl RenderSession {
       // choice via FontTable::veto_tier (braille→unicode→ascii) — resets
       // temporal state like set_palette; bad specs are Error::Config and
       // leave the session untouched
+  pub fn set_codec(&mut self, Codec);   // note 27h: glyph codec for later
+  pub fn codec(&self) -> Codec;         // renders (default Pixels); a change
+      // resets temporal state like set_palette
 }
+pub use auto_ascii_core::Codec;         // note 27h — the registry enum
 
 // player.rs — feature "terminal" (in the default set via "bin")
 pub enum RepaintMode { Full /*default*/, Diff }
@@ -971,6 +1011,9 @@ impl PlayerBuilder {        // the spec'd builder (§7 M4) + escape hatches
       // builtin NAME | PATH; parsed+validated at build(); run() applies the
       // repertoire veto AFTER resolve_for_caps (user-asserted font truth
       // degrades the probed/forced tier, never upgrades it)
+  pub fn codec(self, Codec) -> Self;    // note 27h: start every clip in this
+      // codec, overriding a codec saved in a video's settings; `/` still
+      // cycles it
   pub fn build(self) -> Result<Player, Error>;    // opens+validates the asset;
       // does NOT touch the terminal — bad path/file fails before any
       // screen state changes (incl. font-table resolution)
@@ -1062,6 +1105,12 @@ impl<'a> Player<'a> {
       // layer on; H present ⇒ highlight/shadow on; absent ⇒ auto-disabled
       // (M1-era Y+C assets play with pure base+structure — §4 back-compat,
       // regression-tested in tests/m3_layers.rs).
+  pub fn set_codec(&mut self, Codec); pub fn codec(&self) -> Codec;
+      // note 27h: a CHANGE resets all per-cell temporal state (cold start
+      // in the new codec); render_grid composes via compose_frame_codec
+  pub fn set_info_overlay(&mut self, Option<&str>);  // note 27h: the info
+      // row (rows-3), drawn only while the hints row is; copies on change
+      // only; clearing it while visible schedules the hide repaint
   pub fn set_compose_params(&mut self, ComposeParams);  // eval wires
       // params.toml [compose]; interactive keeps the core defaults (pinned
       // equal to the committed [compose] by factory unit test). A CHANGE
@@ -1248,7 +1297,12 @@ facade surface + this hidden module.)
   [--no-cache] [--no-quirks] [--palette auto|ascii|unicode|braille]
   [--bench-seek N]
   [--font-table NAME|PATH] [--sim COLSxROWS:NFRAMES] [--sim-tier TIER]
-  [--sim-dump PATH] [--sim-resize [COLSxROWS]]`.
+  [--sim-dump PATH] [--sim-resize [COLSxROWS]] [--codec pixels|letters]`.
+  Note 27h: `--codec` is `PlayerBuilder::codec` interactively (it beats a
+  codec saved for the video) and the codec a `--sim` run renders in; `--sim`
+  never reads a video's saved settings. `examples/headless-dump.rs` takes
+  `--codec NAME`, `--palette ascii|unicode|braille` (default ascii) and
+  `--from FRAME` (FRAMES consecutive frames from FRAME) anywhere on the line.
   M8: the positional argument may be a composition `.toml` instead of an
   asset (decided by the extension, the same rule `auto-ascii play` follows)
   — interactively it becomes `PlayerBuilder::composition`, and `--sim` /
@@ -2231,6 +2285,54 @@ facade surface + this hidden module.)
     the real event queue, and for every dial the picture restored byte for
     byte after up N / down N and moved the other way past the origin, plus
     the rule behind it, "a turned dial is a cold start at its position".
+    (h) **Glyph codecs, `/`, and per-video settings** (after the dial fix).
+    The per-cell mapping became a named, pluggable codec
+    (`auto_ascii_core::codec`, API in the core section): `pixels` is the
+    §3.5 compositor moved verbatim into `codec/pixels.rs` and stays the
+    default — every golden, the parity pin and the console golden pass
+    unblessed, and `--sim-dump` escape streams on all four sample clips were
+    compared byte for byte against the pre-codec build. `letters` draws
+    with printable characters: a 16-step ramp ` .:;+cxnoeSGD8BM` ordered by
+    ink coverage measured on Menlo and SF Mono (stroke glyphs kept out of
+    it), a contrast curve `(n + n²/256)/2` on the ramp index only (mid
+    letters read as one grey weight, so mid-darks drop to punctuation),
+    top-/bottom-heavy variants (`'"7TYFP…` / `.,uawg…`) where the two taps
+    disagree (dual threshold in codec-private flag bits), ASCII strokes
+    `- _ | / \` by orientation bin with pixels' own near-white veto, one
+    junction glyph `+`, and `█`/`▀`/`▄` only for near-white ink on block
+    tiers (on at 236, held to 208, judged on the bright half for a half
+    variant). Color is the same chroma sample with a ≤1.5× value gain (a
+    glyph inks a fifth of its cell). Stability: letters holds the DISPLAYED
+    luma with a deadband of 13/8 × `idx_hyst_q8` of a pixels step (the
+    tier's `PaletteSet.base.len()`) instead of `hysteresis_idx` — its steps
+    are a third the width, and a per-step band flickered ~2× pixels; measured
+    glyph switches/cell/s now sit within ±3.5% of pixels on dark, bright,
+    face and high-motion clips at 120x40 and 200x56 (below pixels on the
+    ASCII tier). The player: `/` (`Drained.codec_cycle`, counted) cycles
+    `Codec::ALL` live, a cold start in the new codec; `s` (`Drained.save`,
+    collapsed) saves the dials and codec for the clip on top. The controls
+    overlay gained an info row on `rows-3` (`draw_info_overlay`, printable
+    ASCII, non-ASCII → `?`) — ` <clip stem>   codec: <name>   settings:
+    default|saved|s to save|unreadable|save failed ` — riding with the
+    hints row; `/` and `s` raise both for the dial timeout. The hints row
+    lists `/ codec` and `s save` and drops them FIRST, so at 80 columns it
+    is the M6 row byte for byte. **Per-video settings did not exist before
+    this**; they are `<asset>.player.toml` beside the asset (the CLI's
+    `.json`-sidecar convention), hidden module `auto_ascii::settings`
+    (`VideoSettings { compose, codec }`, `path_for`/`parse`/`to_toml`/
+    `load`/`save` — temp file + rename). Keys are params.toml `[compose]`
+    names, one per `Dial` (`Dial::param_key/param/set_param`) plus `codec =
+    "name"`; every key optional (a file without `codec` plays `pixels`),
+    unknown keys and unknown codec names ignored, malformed values an
+    error (the player then shows `unreadable` and uses defaults). They load
+    as each clip fronts (a stitch re-tunes at the cut; a gap keeps what was
+    showing). Tests: `codec::tests` (registry), `codec::letters::tests`,
+    `auto-ascii-core/tests/codec_props.rs` (letters repertoire over random
+    planes on every tier; pixels-through-registry ≡ plain path),
+    `auto-ascii/tests/codecs.rs` (`/`/`s` via the event queue, cold-start
+    switch and exact return to pixels, deck stickiness, hints/info rows,
+    the two committed goldens `letters_80x24_{ascii,unicode}.txt` over a
+    synthetic every-plane asset), `settings::tests` (round trip, old files).
 28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
     should take a video from anywhere on the desktop, process it, and land
     it in the folder where the user's processed videos live"). The shape of

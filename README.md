@@ -34,7 +34,8 @@ cargo run --release -p auto-ascii-factory -- build clip.mp4 -o intro.ascii
 
 # 2. play it
 cargo run --release -p auto-ascii --bin auto-ascii-player -- intro.ascii
-#    q/Esc quit · space pause · 0-9 jump · ←/→ 5 s · d dial · [ ] adjust · v controls
+#    q/Esc quit · space pause · 0-9 jump · ←/→ 5 s · d dial · [ ] adjust
+#    / codec · s save · v controls
 
 # 3. no terminal? render frames as text instead
 cargo run --release -p auto-ascii --example headless-dump -- intro.ascii 3 100x28
@@ -42,9 +43,18 @@ cargo run --release -p auto-ascii --example headless-dump -- intro.ascii 3 100x2
 
 Useful player flags: `--loop`, `--fps-cap 30`, `--seek 1:30`, `--palette
 ascii|unicode|braille`, `--tier truecolor|256|16|mono`, `--no-query` (skip the
-capability probe), `--sim 213x58:300` (headless render + one JSON stats line).
+capability probe), `--codec pixels|letters`, `--sim 213x58:300` (headless
+render + one JSON stats line).
 `auto-ascii-factory inspect intro.ascii` prints the container's header, chunks and
 CRC status.
+
+**Glyph codecs.** How a cell becomes a glyph is a pluggable codec: `pixels`
+(the default — shade ramps and half-blocks, a low-res picture) or `letters`
+(printable characters ordered by ink, ASCII strokes on edges, `█▀▄` only for
+near-white highlights). `/` cycles them while playing; `v` shows the clip
+name and active codec above the key hints. The dials (`d`, `[ ]`) and the
+codec are per video: `s` saves them beside the asset as
+`<name>.player.toml`, and they load the next time that video plays.
 
 `auto-ascii-player comp.toml` plays a **composition** — an unbounded stitch of
 clips on one timeline, each placed with `at` and trimmed with `in`/`out`, gaps

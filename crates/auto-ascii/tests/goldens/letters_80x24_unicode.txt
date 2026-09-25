@@ -1,0 +1,26 @@
+letters codec, UnicodeBlocks tier, truecolor, 80x24, frame 5
+|                   ..................::::::::::::::;;;;;;;;;;;;;+++++++++++++ccc|
+|        +_____________________________________________________________+++++ccccc|
+|        |█████████████████████████████████████████████████████████████8|+ccccccc|
+|         ---------------------------------------------;;;;;++++++++++++ccccccccc|
+|           ..................::::::::::::::;;;;;;;;;;;;;;++++++++++++ccccccccccc|
+|          .................:::::::::::::::;;;;;;;;;;;;;++++++++++++cccccccccccxx|
+|        .................;::::::+;::-/-______-\;;;;;;++++++++++++cccccccccccxxxx|
+|      ...............:.:;::::;:;:////eGSGSeGSG-\\\;++++++++++++cccccccccccxxxxxx|
+|    ...............:.::::::::;:://GGGSGGDGSGGoGSGG\\+++++++++cccccccccccxxxxxxxx|
+|  ................;::::;::::+://DDDDGGGDGSGGDGSGGeGS\++++++cccccccccccxxxxxxxxxx|
+|.................;::::;::::+::|888DDDGGG8GGGGeGGGGSGG|+++cccccccccccxxxxxxxxxxxx|
+|...............::::+::::+::::|BB█████████████GGGSGGGG||ccccccccccccxxxxxxxxxxxnn|
+|.............:::::::::::::::;|GB██████████████DGGGGoGG|ccccccccccxxxxxxxxxxxnnnn|
+|...........:::::::::::::::;;;|GB██████████████DGSGGoGS|ccccccccxxxxxxxxxxxnnnnnn|
+|.........::::::::::+::::+;;;;|BB8███████████GGGGSGGGG|cccccccxxxxxxxxxxxnnnnnnnn|
+|.......::::::::::;::::;;;;;+;;\888DDDGGGDGSGG8GSGGeGS/cccccxxxxxxxxxxxnnnnnnnnnn|
+|.....:::::::::::::;:;;;;;;c;+;;\DDDGGGGGGSGGGGSGGoG//ccccxxxxxxxxxxxnnnnnnnnnnnn|
+|...:::::::::::::::;;;;+;;;;+;;x+\\GGSeGSGSeGSGSeGS/ccccxxxxxxxxxxxnnnnnnnnnnnnnn|
+|..::::::::::::::;;;;;;+;;c;c;+x+c+\\\\SeSeoSe--//ccccxxxxxxxxxxxnnnnnnnnnnnnnnnn|
+|::::::::::::::;;;;;;;;;;;;++cccc++++++---ccc-ccccccxxxxxxxxxxxnnnnnnnnnn        |
+|::::::::::::;;;;;;;;;;;;;+++++++++++++cccccccccccxxxxxxxxxxxnnnnnnnnnnn         |
+|::::::::::;;;;;;;;;;;;;+++++++++++++cccccccccccxxxxxxxxxxxnnnnnnnnnnnnn         |
+|::::::::;;;;;;;;;;;;;+++++++++++++cccccccccccxxxxxxxxxxxnnnnnnnnnnnnnnn         |
+|                                                                                |
+colors fnv1a64 20fb7688a2b4fc9e

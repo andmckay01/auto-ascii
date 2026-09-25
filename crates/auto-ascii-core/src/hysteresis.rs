@@ -21,7 +21,9 @@ pub const IDX_UNSET: u8 = 0xFF;
 /// remains the documented spec default.
 pub const IDX_HYST_Q8: u32 = 90;
 
-/// Per-cell hysteresis flags.
+/// Per-cell hysteresis flags. Bits 0–1 are the shared gates below; bits 2–7
+/// are codec-private temporal memory (a [`crate::codec`] may use them freely —
+/// a codec switch resets all state, so no bit outlives the codec that set it).
 pub mod cell_flags {
     /// The edge gate was on last frame (dual-threshold memory).
     pub const WAS_EDGE: u8 = 1;

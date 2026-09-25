@@ -110,6 +110,13 @@ pub mod timecode;
 #[cfg(feature = "terminal")]
 mod player;
 
+/// Per-video player settings (the dials and codec saved with `s`), kept in a
+/// `<asset>.player.toml` beside each asset. Hidden: the player's persistence
+/// contract, exposed for the workspace tests, not the embedding API.
+#[cfg(feature = "terminal")]
+#[doc(hidden)]
+pub mod settings;
+
 pub use composition::{
     Clip, ClipMark, ClipSpan, Composition, Located, Overlap, SCHEMA_VERSION, Span,
 };
@@ -124,6 +131,11 @@ pub use player::{Dial, MIN_FPS_CAP, Player, PlayerBuilder, RepaintMode, SCRUB_ST
 // is the PlayerBuilder::tier argument. Everything else in the internal
 // crates stays internal.
 pub use auto_ascii_core::{Cell, Grid, Rgb};
+/// Glyph codecs — how a cell's features become a glyph: `pixels` (the
+/// default, picture-like) or `letters` (printable characters). Chosen with
+/// [`RenderSession::set_codec`] or `PlayerBuilder::codec`, cycled live with
+/// `/` in the player.
+pub use auto_ascii_core::Codec;
 #[cfg(feature = "terminal")]
 pub use auto_ascii_term::ColorTier;
 

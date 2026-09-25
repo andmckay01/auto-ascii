@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use auto_ascii_core::{Cell, ColorDepth, FontTable, Grid};
+use auto_ascii_core::{Cell, Codec, ColorDepth, FontTable, Grid};
 
 use crate::composition::Composition;
 use crate::deck::{ClipDeck, DeckConfig};
@@ -277,6 +277,19 @@ impl RenderSession {
         };
         self.apply_glyph_tier();
         Ok(())
+    }
+
+    /// Choose the glyph codec for subsequent renders — how each cell's
+    /// features become a glyph (see [`Codec`]). The default,
+    /// [`Codec::Pixels`], is the classic picture-like mapping; switching
+    /// resets temporal state, like [`set_palette`](Self::set_palette).
+    pub fn set_codec(&mut self, codec: Codec) {
+        self.deck.set_codec(codec);
+    }
+
+    /// The glyph codec in force.
+    pub fn codec(&self) -> Codec {
+        self.deck.codec()
     }
 
     /// Set the cell aspect ratio `cell_h / cell_w` used by the letterbox

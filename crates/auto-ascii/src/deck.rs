@@ -16,7 +16,9 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use auto_ascii_core::{Cell, ColorDepth, ComposeParams, GlyphTier, Grid, MIN_COLS, MIN_ROWS};
+use auto_ascii_core::{
+    Cell, Codec, ColorDepth, ComposeParams, GlyphTier, Grid, MIN_COLS, MIN_ROWS,
+};
 use auto_ascii_format::AsciiReader;
 use auto_ascii_term::{Backend, FrameStats};
 use memmap2::Mmap;
@@ -25,7 +27,7 @@ use crate::composition::Located;
 use crate::error::Error;
 use crate::pipeline::{
     self, Drained, ProgressContext, StageNs, draw_dial_overlay, draw_enlarge_card,
-    draw_hint_overlay, draw_progress_overlay_clips,
+    draw_hint_overlay, draw_info_overlay, draw_progress_overlay_clips,
 };
 
 /// Add two per-stage accumulators.
@@ -89,8 +91,12 @@ pub struct ClipDeck {
     /// Presentation state re-applied to whichever player is fronted, so a
     /// clip switch never drops an overlay or a turned dial.
     compose_params: Option<ComposeParams>,
+    /// The glyph codec every clip composes with (the `/` key).
+    codec: Codec,
     progress_visible: bool,
     hint_visible: bool,
+    /// The controls overlay's info row (see `pipeline::draw_info_overlay`).
+    info: Option<String>,
     /// M6 pause: how the progress row PRINTS while the run loop holds the
     /// picture — re-applied on every clip, like the overlays themselves.
     paused: bool,
@@ -138,8 +144,10 @@ impl ClipDeck {
             size: (0, 0),
             cfg,
             compose_params: None,
+            codec: Codec::default(),
             progress_visible: false,
             hint_visible: false,
+            info: None,
             paused: false,
             dial: None,
             progress_ctx: None,
@@ -302,6 +310,22 @@ impl ClipDeck {
         self.hint_visible = visible;
     }
 
+    /// Set (or clear) the info row drawn above the hints while they show —
+    /// clip name, codec, settings state. Copies only when the text changes.
+    pub fn set_info_overlay(&mut self, info: Option<&str>) {
+        match info {
+            None => {
+                let was = self.info.take().is_some();
+                self.mark_hidden_during_gap(was && self.hint_visible, false);
+            }
+            Some(new) => match &mut self.info {
+                Some(cur) if cur == new => {}
+                Some(cur) => new.clone_into(cur),
+                slot => *slot = Some(new.to_owned()),
+            },
+        }
+    }
+
     /// Report playback as frozen in the progress row (M6 pause): `|` bar
     /// head, ` PAUSED ` where the percentage goes. The deck holds no
     /// transport state of its own — this is the run loop's flag, forwarded.
@@ -328,6 +352,21 @@ impl ClipDeck {
         self.compose_params = Some(params);
         for player in self.players.iter_mut().flatten() {
             player.set_compose_params(params);
+        }
+    }
+
+    /// The glyph codec in force.
+    pub fn codec(&self) -> Codec {
+        self.codec
+    }
+
+    /// Switch the glyph codec on every clip, present and future (the `/`
+    /// key; each player resets its temporal state when the codec actually
+    /// changes, see `pipeline::Player::set_codec`).
+    pub fn set_codec(&mut self, codec: Codec) {
+        self.codec = codec;
+        for player in self.players.iter_mut().flatten() {
+            player.set_codec(codec);
         }
     }
 
@@ -457,6 +496,7 @@ impl ClipDeck {
         if let Some(params) = self.compose_params {
             player.set_compose_params(params);
         }
+        player.set_codec(self.codec);
         if self.layer_mask {
             player.enable_layer_mask();
         }
@@ -477,9 +517,11 @@ impl ClipDeck {
         let (progress, hints, dial, ctx) =
             (self.progress_visible, self.hint_visible, self.dial, self.progress_ctx);
         let paused = self.paused;
-        let player = self.player(idx);
+        let info = self.info.as_deref();
+        let player = self.players[idx].as_mut().expect("clip is open");
         player.set_progress_overlay(progress);
         player.set_hint_overlay(hints);
+        player.set_info_overlay(info);
         player.set_dial_overlay(dial);
         player.set_progress_context(ctx);
         player.set_paused(paused);
@@ -535,6 +577,9 @@ impl ClipDeck {
         // `render_grid` applies through `vp.is_some()`).
         if self.hint_visible && !tiny {
             draw_hint_overlay(&mut self.blank);
+            if let Some(info) = &self.info {
+                draw_info_overlay(&mut self.blank, info);
+            }
         }
     }
 }

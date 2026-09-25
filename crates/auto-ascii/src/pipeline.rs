@@ -28,8 +28,8 @@
 use std::time::Instant;
 
 use auto_ascii_core::{
-    Cell, ColorDepth, ComposeParams, FramePlanes, GlyphTier, Grid, HysteresisState, PaletteSet,
-    Resampler, Rgb, Viewport, compose_frame, compose_frame_masked, compute_viewport_for,
+    Cell, Codec, ColorDepth, ComposeParams, FramePlanes, GlyphTier, Grid, HysteresisState,
+    PaletteSet, Resampler, Rgb, Viewport, compose_frame_codec, compute_viewport_for,
     select_palettes,
 };
 use auto_ascii_format::header::plane_id;
@@ -74,7 +74,11 @@ const HINT_SEP: &str = "   ";
 /// is the last item standing. `space pause` goes early for its width: eleven
 /// columns is the most any one hint costs, and space is the binding people
 /// try without being told.
-const HINT_DROP_ORDER: [usize; 6] = [5, 4, 1, 3, 2, 0];
+///
+/// `s save` and `/ codec` go first of all: the info row above names the
+/// codec anyway, and dropping them first keeps the row at 80 columns exactly
+/// what it was before codecs existed.
+const HINT_DROP_ORDER: [usize; 8] = [7, 6, 5, 4, 1, 3, 2, 0];
 
 /// Map the probed terminal capabilities to the palette-selection charset
 /// tier (PLAN §3.4: `Caps.glyph_support` records the trusted repertoire).
@@ -146,6 +150,13 @@ pub struct Drained {
     /// playback. Coalesced to a flag for the same reason as `toggle_hints`:
     /// a key repeat is one intent, not a pause/resume stutter.
     pub toggle_pause: bool,
+    /// `/` presses this drain — each advances the active glyph codec by one
+    /// through [`Codec::ALL`], wrapping. Counted, not collapsed: every press
+    /// is a visible step, like `d`.
+    pub codec_cycle: u32,
+    /// `s` pressed this drain — the caller saves the current dials and codec
+    /// as this video's settings. Collapsed to a flag: a held key is one save.
+    pub save: bool,
 }
 
 /// What the progress overlay prints instead of this clip's own numbers
@@ -190,6 +201,8 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
     let mut dial_delta: i32 = 0;
     let mut toggle_hints = false;
     let mut toggle_pause = false;
+    let mut codec_cycle: u32 = 0;
+    let mut save = false;
     while let Some(ev) = backend.events().pop() {
         match ev {
             Event::Quit => {
@@ -201,6 +214,8 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
                     dial_delta: 0,
                     toggle_hints: false,
                     toggle_pause: false,
+                    codec_cycle: 0,
+                    save: false,
                 };
                 return (quit, None);
             }
@@ -226,6 +241,11 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
             // M6 pause: space is the one binding every player shares, and
             // it is the last printable key not already spoken for.
             Event::Key(Key::Char(' ')) => toggle_pause = true,
+            // Glyph codecs: `/` cycles them live. Unshifted on US layouts and
+            // bound to nothing else; `s` saves the dials and codec for this
+            // video. Neither letter nor symbol was spoken for.
+            Event::Key(Key::Char('/')) => codec_cycle = codec_cycle.saturating_add(1),
+            Event::Key(Key::Char('s')) => save = true,
             Event::Key(_) => {}
         }
     }
@@ -237,6 +257,8 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
         dial_delta,
         toggle_hints,
         toggle_pause,
+        codec_cycle,
+        save,
     };
     (drained, resize)
 }
@@ -277,6 +299,8 @@ pub struct Player<'a> {
     /// §3.5 compositor tunables (defaults = the untuned M3 baseline; the
     /// eval driver overrides from params.toml `[compose]`).
     compose_params: ComposeParams,
+    /// The glyph codec composing every cell (default [`Codec::Pixels`]).
+    codec: Codec,
     /// Per-cell temporal state (§3.5): ramp-index hysteresis, edge on/off
     /// memory, orientation bin. Reset on shot change, realloc+reset on
     /// resize.
@@ -356,6 +380,11 @@ pub struct Player<'a> {
     /// harness and `RenderSession` never raise it and their grids are
     /// untouched. Presentation only, exactly like `overlay_visible`.
     hint_visible: bool,
+    /// The info row above the hints (clip name, codec, settings state),
+    /// drawn only while the hints row is — the controls overlay `v` toggles.
+    /// Kept as an owned string that is re-copied only when the text changes,
+    /// so re-applying it every frame allocates nothing.
+    info: Option<String>,
     /// M6 pause: the run loop has frozen the picture, so the progress row
     /// reads ` PAUSED ` with a `|` bar head instead of a percentage. Purely
     /// how the row PRINTS — the pipeline never decides what frame to show.
@@ -426,6 +455,7 @@ impl<'a> Player<'a> {
             color,
             palette: None,
             compose_params: ComposeParams::default(),
+            codec: Codec::default(),
             state: HysteresisState::new(0, 0),
             vp: None,
             resampler: None,
@@ -462,6 +492,7 @@ impl<'a> Player<'a> {
             overlay_visible: false,
             progress_ctx: None,
             hint_visible: false,
+            info: None,
             paused: false,
             overlay_hide_pending: false,
             fps,
@@ -496,6 +527,22 @@ impl<'a> Player<'a> {
         // worked one way and not the other. The lift itself reaches the
         // picture through the LUT key in `update_levels` on the next render.
         self.state.reset();
+    }
+
+    /// The glyph codec in force.
+    pub fn codec(&self) -> Codec {
+        self.codec
+    }
+
+    /// Switch the glyph codec (the `/` key). A change resets ALL per-cell
+    /// temporal state — remembered ramp indices and codec-private flag bits
+    /// belong to the old codec's ramp — so the next frame is a cold start
+    /// in the new one; an equal value is a no-op.
+    pub fn set_codec(&mut self, codec: Codec) {
+        if codec != self.codec {
+            self.codec = codec;
+            self.state.reset();
+        }
     }
 
     /// Start collecting the per-cell winning-layer mask (render metadata for
@@ -772,6 +819,24 @@ impl<'a> Player<'a> {
         self.hint_visible = visible;
     }
 
+    /// Set (or clear) the info row's text — shown one row above the hints,
+    /// only while they are. Copies only when the text changes; clearing it
+    /// while it is on screen schedules the repaint underneath.
+    pub fn set_info_overlay(&mut self, info: Option<&str>) {
+        match info {
+            None => {
+                if self.info.take().is_some() && self.hint_visible {
+                    self.overlay_hide_pending = true;
+                }
+            }
+            Some(new) => match &mut self.info {
+                Some(cur) if cur == new => {}
+                Some(cur) => new.clone_into(cur),
+                slot => *slot = Some(new.to_owned()),
+            },
+        }
+    }
+
     /// Decode → resample → NORM levels → compose → present one asset frame
     /// (PLAN §3.6 steps 3–6). Renders the "enlarge terminal" card when the
     /// terminal is below the 32x9 minimum.
@@ -851,27 +916,19 @@ impl<'a> Player<'a> {
                     .use_chroma
                     .then(|| (&self.cr_dst[..], &self.cg_dst[..], &self.cb_dst[..])),
             };
-            match &mut self.layer_mask {
-                Some(mask) => compose_frame_masked(
-                    &planes,
-                    &vp,
-                    &self.levels_lut,
-                    set,
-                    &self.compose_params,
-                    &mut self.state,
-                    &mut self.grid,
-                    mask,
-                ),
-                None => compose_frame(
-                    &planes,
-                    &vp,
-                    &self.levels_lut,
-                    set,
-                    &self.compose_params,
-                    &mut self.state,
-                    &mut self.grid,
-                ),
-            }
+            // One dispatch per frame: the codec's per-cell loop is
+            // monomorphized, so the pixels path is the pre-codec loop.
+            compose_frame_codec(
+                self.codec,
+                &planes,
+                &vp,
+                &self.levels_lut,
+                set,
+                &self.compose_params,
+                &mut self.state,
+                &mut self.grid,
+                self.layer_mask.as_mut(),
+            );
             self.stage.compose += t.elapsed().as_nanos() as u64;
         } else {
             draw_enlarge_card(&mut self.grid);
@@ -912,6 +969,9 @@ impl<'a> Player<'a> {
         // on a 4-row screen.
         if self.hint_visible && self.vp.is_some() {
             draw_hint_overlay(&mut self.grid);
+            if let Some(info) = &self.info {
+                draw_info_overlay(&mut self.grid, info);
+            }
         }
         Ok(())
     }
@@ -1216,18 +1276,27 @@ fn scrub_step_label() -> String {
 /// `v controls` fits — the row is still painted, just empty.
 fn hint_line(cols: u16) -> String {
     let arrows = format!("<- -> {}", scrub_step_label());
-    let items: [&str; 7] =
-        ["q quit", "space pause", "0-9 jump", &arrows, "d dial", "[ ] adjust", "v controls"];
+    let items: [&str; 9] = [
+        "q quit",
+        "space pause",
+        "0-9 jump",
+        &arrows,
+        "d dial",
+        "[ ] adjust",
+        "/ codec",
+        "s save",
+        "v controls",
+    ];
     // Framed width of the kept items: the items, the gaps between them and
     // the two framing spaces. Every byte here is ASCII, so byte length is
     // column count (PLAN-M6-M8 §0.6: overlays stay printable ASCII).
-    let width = |keep: &[bool; 7]| -> usize {
+    let width = |keep: &[bool; 9]| -> usize {
         let kept = items.iter().zip(keep).filter(|(_, k)| **k);
         let (n, len) = kept.fold((0, 0), |(n, len), (it, _)| (n + 1, len + it.len()));
         if n == 0 { 0 } else { len + (n - 1) * HINT_SEP.len() + 2 }
     };
 
-    let mut keep = [true; 7];
+    let mut keep = [true; 9];
     for i in HINT_DROP_ORDER {
         if width(&keep) <= cols as usize {
             break;
@@ -1259,6 +1328,29 @@ pub fn draw_hint_overlay(grid: &mut Grid<Cell>) {
 
     let line = hint_line(cols);
     let mut chars = line.chars();
+    for col in 0..cols {
+        let ch = chars.next().unwrap_or(' ');
+        grid.set(col, row, Cell::new(ch, fg, bg));
+    }
+}
+
+/// The info row of the controls overlay: one line on `rows-3`, directly
+/// above the key hints and in the same colors, carrying whatever the run
+/// loop reports — the clip's name, the active glyph codec, whether this
+/// video's settings are saved. Printable ASCII only, like every overlay
+/// (PLAN-M6-M8 §0.6): anything else in `text` (a clip named in another
+/// script) prints as `?` rather than as a glyph of unknown width. Truncated
+/// to the row and painted to its full width. Pure function of
+/// `(text, cols)`, so an unchanged row costs zero damage in diff mode.
+pub fn draw_info_overlay(grid: &mut Grid<Cell>, text: &str) {
+    let (cols, rows) = (grid.cols(), grid.rows());
+    if cols == 0 || rows < 3 {
+        return; // the hints and progress rows own the bottom two
+    }
+    let row = rows - 3;
+    let fg = Rgb::gray(235);
+    let bg = Rgb::new(24, 24, 40);
+    let mut chars = text.chars().map(|c| if c == ' ' || c.is_ascii_graphic() { c } else { '?' });
     for col in 0..cols {
         let ch = chars.next().unwrap_or(' ');
         grid.set(col, row, Cell::new(ch, fg, bg));

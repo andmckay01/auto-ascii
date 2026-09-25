@@ -8,6 +8,12 @@
 //!
 //! Run: `cargo run --example headless-dump -- asset.ascii [FRAMES] [COLSxROWS]`
 //!
+//! Options (anywhere on the line): `--codec pixels|letters` picks the glyph
+//! codec, `--palette ascii|unicode|braille` the repertoire (default `ascii`),
+//! and `--from FRAME` dumps FRAMES *consecutive* frames starting at FRAME
+//! instead of spreading them across the asset — what you want to look for
+//! frame-to-frame flicker.
+//!
 //! A `.toml` argument is a composition (PLAN-M6-M8 §3) — the same clips
 //! stitched on one timeline, dumped exactly as they play.
 //!
@@ -15,10 +21,10 @@
 
 use std::io::Write;
 
-use auto_ascii::{Cell, Grid, PaletteChoice, RenderSession};
+use auto_ascii::{Cell, Codec, Grid, PaletteChoice, RenderSession};
 
-const USAGE: &str =
-    "usage: headless-dump <asset.ascii | composition.toml> [FRAMES] [COLSxROWS]";
+const USAGE: &str = "usage: headless-dump <asset.ascii | composition.toml> [FRAMES] [COLSxROWS] \
+     [--codec pixels|letters] [--palette ascii|unicode|braille] [--from FRAME]";
 
 /// Open an asset — or a composition, when the argument is a `.toml`. Bare
 /// library names inside a composition resolve under `$AUTO_ASCII_HOME`.
@@ -59,24 +65,54 @@ fn dump_frame(
     Ok(())
 }
 
+/// `--palette NAME` → a repertoire.
+fn parse_palette(s: &str) -> PaletteChoice {
+    match s {
+        "ascii" => PaletteChoice::Ascii,
+        "unicode" => PaletteChoice::Unicode,
+        "braille" => PaletteChoice::Braille,
+        _ => panic!("{USAGE}"),
+    }
+}
+
 fn main() -> Result<(), auto_ascii::Error> {
+    // Options first, wherever they sit; what is left is positional.
+    let (mut codec, mut palette, mut from) = (Codec::default(), PaletteChoice::Ascii, None);
+    let mut positional = Vec::new();
     let mut args = std::env::args().skip(1);
-    let path = args.next().expect(USAGE);
-    let frames: u32 = args.next().map_or(3, |s| s.parse().expect(USAGE));
-    let (cols, rows) = args.next().map_or((100, 28), |s| parse_dims(&s));
+    while let Some(arg) = args.next() {
+        let mut value = || args.next().expect(USAGE);
+        match arg.as_str() {
+            "--codec" => codec = Codec::from_name(&value()).expect(USAGE),
+            "--palette" => palette = parse_palette(&value()),
+            "--from" => from = Some(value().parse::<u32>().expect(USAGE)),
+            _ => positional.push(arg),
+        }
+    }
+    let mut positional = positional.into_iter();
+    let path = positional.next().expect(USAGE);
+    let frames: u32 = positional.next().map_or(3, |s| s.parse().expect(USAGE));
+    let (cols, rows) = positional.next().map_or((100, 28), |s| parse_dims(&s));
 
     let mut session = open(&path)?;
-    // ASCII survives any pipe, pager or log file; drop this line for blocks.
-    session.set_palette(PaletteChoice::Ascii);
+    // ASCII survives any pipe, pager or log file; `--palette unicode` for blocks.
+    session.set_palette(palette);
+    session.set_codec(codec);
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let count = frames.clamp(1, session.frame_count());
-    let stride = (session.frame_count() / count).max(1);
+    let (start, stride) = match from {
+        Some(f) => (f.min(session.frame_count() - 1), 1),
+        None => (0, (session.frame_count() / count).max(1)),
+    };
     for n in 0..count {
         // Frame indices only ever advance here, so hysteresis stays warm and
         // the dump is exactly what playback would show at those frames.
-        let frame = n * stride;
+        let frame = start + n * stride;
+        if frame >= session.frame_count() {
+            break;
+        }
         let total = session.frame_count();
         let grid = session.render(frame, cols, rows)?;
         match dump_frame(&mut out, grid, frame, total) {

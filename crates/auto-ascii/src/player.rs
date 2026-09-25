@@ -10,13 +10,16 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use auto_ascii_core::ComposeParams;
+use std::fmt::Write as _;
+
+use auto_ascii_core::{Codec, ComposeParams};
 use auto_ascii_term::{AnsiBackend, Backend, ColorTier, ProbeOptions, probe_caps};
 
 use crate::composition::Composition;
 use crate::deck::{ClipDeck, DeckConfig};
 use crate::error::Error;
 use crate::pipeline::ProgressContext;
+use crate::settings::VideoSettings;
 use crate::{PaletteChoice, pipeline};
 
 /// Repaint mode (PLAN §3.1: one render path — [`Full`](RepaintMode::Full)
@@ -110,6 +113,37 @@ impl Dial {
             Dial::ShadowLift => p.shadow_lift,
             Dial::EdgeStrength => self.max().saturating_sub(p.edge_t_on),
             Dial::Hysteresis => p.idx_hyst_q8,
+        }
+    }
+
+    /// The `params.toml` `[compose]` key of the field this dial turns — also
+    /// its key in a video's saved settings file (see [`crate::settings`]).
+    pub fn param_key(self) -> &'static str {
+        match self {
+            Dial::ShadowLift => "shadow_lift",
+            Dial::EdgeStrength => "edge_t_on",
+            Dial::Hysteresis => "idx_hyst_q8",
+        }
+    }
+
+    /// The raw field value (not inverted — [`get`](Dial::get) is the
+    /// on-screen reading).
+    pub fn param(self, p: &ComposeParams) -> u8 {
+        match self {
+            Dial::ShadowLift => p.shadow_lift,
+            Dial::EdgeStrength => p.edge_t_on,
+            Dial::Hysteresis => p.idx_hyst_q8,
+        }
+    }
+
+    /// Set the raw field, clamped to what the dial can reach — a saved or
+    /// hand-edited value outside the scale would leave the readout pinned
+    /// at an end while the picture sat somewhere the dial cannot return to.
+    pub fn set_param(self, p: &mut ComposeParams, v: u8) {
+        match self {
+            Dial::ShadowLift => p.shadow_lift = v,
+            Dial::EdgeStrength => p.edge_t_on = v.min(self.max()),
+            Dial::Hysteresis => p.idx_hyst_q8 = v,
         }
     }
 
@@ -349,6 +383,7 @@ pub struct PlayerBuilder {
     no_quirks: bool,
     no_cache: bool,
     font_table: Option<String>,
+    codec: Option<Codec>,
 }
 
 impl PlayerBuilder {
@@ -476,6 +511,14 @@ impl PlayerBuilder {
         self
     }
 
+    /// Start in this glyph [`Codec`] for every clip, overriding any codec
+    /// saved in a video's settings (default: the saved one, else
+    /// [`Codec::Pixels`]). `/` still cycles it during playback.
+    pub fn codec(mut self, codec: Codec) -> Self {
+        self.codec = Some(codec);
+        self
+    }
+
     /// Check the configuration and open every asset that will play — one
     /// for [`asset`](PlayerBuilder::asset), all of a
     /// [`composition`](PlayerBuilder::composition)'s clips — as a
@@ -586,7 +629,10 @@ impl Player {
     /// the configured [`duration`](PlayerBuilder::duration_secs) elapses, or
     /// the user quits (`q` / `Esc` / `Ctrl-C`). Keys `0`–`9` jump to that
     /// ×10% of the asset; `←`/`→` scrub ±[`SCRUB_STEP_SECS`] (5 s); `d`
-    /// cycles the live [`Dial`]s and `[`/`]` turn the selected one; space
+    /// cycles the live [`Dial`]s and `[`/`]` turn the selected one; `/`
+    /// cycles the glyph [`Codec`]; `s` saves the dials and codec as this
+    /// video's settings (`<asset>.player.toml`, loaded whenever the video
+    /// fronts); space
     /// freezes the picture and resumes it from the frozen frame (jumps and
     /// scrubs still work while frozen, and stay frozen). Every
     /// seek flashes a bottom-row progress overlay that auto-hides after ~1 s.
@@ -669,6 +715,19 @@ impl Player {
         // that does, and it never builds a terminal Player).
         let mut compose = ComposeParams::default();
         let mut dial_until: Option<Instant> = None;
+        // Glyph codec (`/` cycles it) and the per-video settings (`s` saves
+        // dials + codec beside the clip; they load as each clip fronts). An
+        // explicit `codec` from the builder wins over a saved one.
+        let mut codec = self.cfg.codec.unwrap_or_default();
+        deck.set_codec(codec);
+        let mut fronted: Option<usize> = None;
+        let mut clip_name = String::new();
+        let mut saved: Option<VideoSettings> = None;
+        let mut settings_note: Option<&'static str> = None; // a load or save that failed
+        // `/` and `s` raise the controls overlay for as long as a dial turn
+        // does — the info row in it is where their answer shows.
+        let mut note_until: Option<Instant> = None;
+        let mut info = String::new();
         // M6 key hints: the legend row above the overlay row (PLAN-M6-M8 §1).
         let mut hints = HintState::new(t0);
         // M6 pause: a frozen picture is painted once, not every tick.
@@ -741,6 +800,29 @@ impl Player {
                 deck.set_dial_overlay(None);
                 dial_until = None;
             }
+            if drained.codec_cycle > 0 {
+                for _ in 0..drained.codec_cycle {
+                    codec = codec.next();
+                }
+                // Renderer-only, like a dial: the pipeline resets its
+                // temporal state on the change, so the next frame is a cold
+                // start in the new codec.
+                deck.set_codec(codec);
+            }
+            if drained.save
+                && let Some(idx) = fronted
+            {
+                let current = VideoSettings { compose, codec };
+                match current.save(&self.comp.clips()[idx].path) {
+                    Ok(_) => (saved, settings_note) = (Some(current), None),
+                    Err(_) => settings_note = Some("save failed"),
+                }
+            }
+            if drained.codec_cycle > 0 || drained.save {
+                note_until = Some(Instant::now() + DIAL_OVERLAY_HIDE_AFTER);
+            } else if note_until.is_some_and(|t| Instant::now() >= t) {
+                note_until = None;
+            }
             // Hiding goes through set_progress_overlay(false), which
             // schedules the backend invalidate that repaints the row
             // underneath (the M5 diff contract).
@@ -750,7 +832,7 @@ impl Player {
             // Both of these are exactly "that overlay is on screen", so the
             // hints row rides with them — including for the whole of a pause
             // (PLAN-M6-M8 §1).
-            let overlays_up = show_progress || dial_until.is_some();
+            let overlays_up = show_progress || dial_until.is_some() || note_until.is_some();
             let show_hints = hints.visible(Instant::now(), drained.toggle_hints, overlays_up);
             deck.set_hint_overlay(show_hints);
             if let Some(dur) = self.cfg.duration_secs
@@ -774,6 +856,40 @@ impl Player {
             // Composition time → the clip on top and its own frame. A plain
             // asset is one clip and maps frame to frame.
             let located = self.comp.locate_frame(target as u32);
+            // A clip coming to the front brings its own saved settings (or
+            // the defaults): they are per video, so a stitch re-tunes at the
+            // cut. A gap keeps whatever was showing.
+            if let Some(l) = located
+                && fronted != Some(l.clip_idx)
+            {
+                fronted = Some(l.clip_idx);
+                let path = &self.comp.clips()[l.clip_idx].path;
+                clip_name = path.file_stem().map_or_else(
+                    || path.display().to_string(),
+                    |s| s.to_string_lossy().into_owned(),
+                );
+                (saved, settings_note) = match VideoSettings::load(path) {
+                    Ok(s) => (s, None),
+                    Err(_) => (None, Some("unreadable")),
+                };
+                let start = saved.unwrap_or_default();
+                compose = start.compose;
+                codec = self.cfg.codec.unwrap_or(start.codec);
+                deck.set_compose_params(compose);
+                deck.set_codec(codec);
+            }
+            // The controls overlay's info row: what is playing, in which
+            // codec, and whether that is what is saved for it. Rebuilt in a
+            // reused buffer; the deck copies it only when the text changes.
+            let current = VideoSettings { compose, codec };
+            let status = settings_note.unwrap_or(match saved {
+                Some(s) if s == current => "saved",
+                None if current == VideoSettings::default() => "default",
+                _ => "s to save",
+            });
+            info.clear();
+            let _ = write!(info, " {clip_name}   codec: {}   settings: {status} ", codec.name());
+            deck.set_info_overlay(Some(&info));
             if self.comp.is_stitch() {
                 // Only a composition retimes the row: a plain asset keeps
                 // the M6 overlay, printed from its own frame counter.
@@ -793,6 +909,8 @@ impl Player {
                 || sought
                 || drained.dial_cycle > 0
                 || drained.dial_delta != 0
+                || drained.codec_cycle > 0
+                || drained.save
                 || drained.toggle_hints
                 || show_progress != was_progress
                 || show_hints != was_hints

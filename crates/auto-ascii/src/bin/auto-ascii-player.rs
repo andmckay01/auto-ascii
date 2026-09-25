@@ -21,7 +21,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use auto_ascii::deck::{ClipDeck, DeckConfig};
 use auto_ascii::pipeline::color_depth;
-use auto_ascii::{Composition, PaletteChoice, RepaintMode};
+use auto_ascii::{Codec, Composition, PaletteChoice, RepaintMode};
 use auto_ascii_term::{Backend, Caps, ColorTier, Event, SimBackend};
 
 /// CLI face of [`auto_ascii::RepaintMode`] (PLAN §3.1: one render path —
@@ -143,6 +143,14 @@ struct Cli {
     #[arg(long, value_name = "NAME|PATH")]
     font_table: Option<String>,
 
+    /// Glyph codec — how cell features become glyphs: `pixels` (default;
+    /// shades and half-blocks, picture-like) or `letters` (printable
+    /// characters, blocks only for the densest fill). Interactively it
+    /// overrides the codec saved for the video, and `/` still cycles it;
+    /// with --sim it is the codec the run renders in.
+    #[arg(long, value_name = "NAME", value_parser = parse_codec)]
+    codec: Option<Codec>,
+
     /// Headless mode: render NFRAMES frames to SimBackend at COLSxROWS as
     /// fast as possible (no pacing), never touch the tty, print one JSON
     /// stats line (acceptance runs at 213x58:900 and 320x90:900).
@@ -174,6 +182,11 @@ struct Cli {
     /// sequence (seeded LCG); never touches the tty.
     #[arg(long, value_name = "N", conflicts_with = "sim")]
     bench_seek: Option<u32>,
+}
+
+/// `--codec NAME` → a registered codec (the error lists them all).
+fn parse_codec(name: &str) -> std::result::Result<Codec, String> {
+    Codec::from_name(name).ok_or_else(|| format!("unknown codec {name:?} (known: {})", Codec::names()))
 }
 
 /// Parse "COLSxROWS" (e.g. "213x58").
@@ -396,7 +409,7 @@ fn main() -> Result<()> {
         if let Some(spec) = &cli.font_table {
             glyphs = auto_ascii::load_font_table(spec)?.veto_tier(glyphs);
         }
-        let deck = ClipDeck::new(
+        let mut deck = ClipDeck::new(
             comp.clips().iter().map(|c| c.path.clone()).collect(),
             DeckConfig {
                 cell_aspect: aspect,
@@ -405,6 +418,9 @@ fn main() -> Result<()> {
                 glyph_tier: glyphs,
             },
         );
+        // Headless runs never read a video's saved settings: what renders is
+        // exactly what the flags say, so a run is reproducible anywhere.
+        deck.set_codec(cli.codec.unwrap_or_default());
         if let Some(n) = cli.bench_seek {
             return run_bench_seek(&comp, deck, n);
         }
@@ -442,6 +458,9 @@ fn main() -> Result<()> {
     if let Some(spec) = &cli.font_table {
         builder = builder.font_table(spec.as_str());
     }
+    if let Some(codec) = cli.codec {
+        builder = builder.codec(codec);
+    }
     builder.build()?.run()?;
     Ok(())
 }
@@ -449,6 +468,14 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codec_flag_parsing() {
+        assert_eq!(parse_codec("pixels"), Ok(Codec::Pixels));
+        assert_eq!(parse_codec("letters"), Ok(Codec::Letters));
+        let e = parse_codec("ascii").unwrap_err();
+        assert!(e.contains("pixels, letters"), "the error lists the registry: {e}");
+    }
 
     #[test]
     fn size_and_spec_parsing() {
