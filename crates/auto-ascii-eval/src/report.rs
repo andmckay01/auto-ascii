@@ -1,9 +1,10 @@
-//! Versioned JSON report schema (PLAN §6 "metrics JSON per run").
+//! Versioned JSON report schema — one metrics JSON per eval run.
 //!
-//! This is the machine half of the agent socket (PLAN §5): the factory's
+//! This is the machine half of the agent socket: the factory's
 //! `eval` subcommand emits an [`EvalReport`] to `runs/*.json`, an
-//! orchestrating agent reads it, edits params.toml, and loops. Committed
-//! baselines (`runs/base.json`) are compared with [`crate::compare_reports`].
+//! orchestrating agent reads it, edits params.toml, and loops. Recorded
+//! baselines (e.g. `runs/base.json`) are compared with
+//! [`crate::compare_reports`].
 //!
 //! Schema rules:
 //! - `schema_version` bumps on any breaking field change; additive optional
@@ -19,10 +20,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::stats::{DamageStats, StageTimesMs};
 
-/// Current report schema version. v2 (M3): the edge-F1 metric family
-/// (`edge_f1`/`edge_precision`/`edge_recall`) joins `ClipMetrics`. The bump
-/// is a deliberate generation marker for the M3 renderer — the fields are
-/// technically additive and v1 reports still deserialize (serde defaults);
+/// Current report schema version. v2 adds the edge-F1 metric family
+/// (`edge_f1`/`edge_precision`/`edge_recall`) to `ClipMetrics` as a
+/// deliberate renderer-generation marker — the fields themselves are
+/// additive, so v1 reports still deserialize (serde defaults);
 /// [`crate::compare_reports`] accepts an OLDER-versioned baseline with an
 /// informational note and fails only on a NEWER/unknown baseline version.
 pub const SCHEMA_VERSION: u32 = 2;
@@ -73,25 +74,25 @@ pub struct ClipReport {
     pub metrics: ClipMetrics,
 }
 
-/// The §6 metric set. Every field is optional/defaultable so partial runs
-/// (e.g. a tier sweep without SSIM) still serialize, and future metrics are
-/// additive.
+/// The per-clip metric set. Every field is optional/defaultable so partial
+/// runs (e.g. a tier sweep without SSIM) still serialize, and future metrics
+/// are additive.
 ///
 /// The asset-structure fields (`shot_count`/`cut_count`/`keyframe_count`/
 /// `asset_bytes`) exist so the baseline compare sees FACTORY-tunable
-/// regressions, not only render quality (M2 review fix: a shot threshold
-/// that kills cut detection, a keyframe cadence change or a zstd downgrade
-/// must trip the gate — render-side metrics alone are nearly blind to them
-/// because the player normalizes through whatever levels the factory wrote).
+/// regressions, not only render quality: a shot threshold that kills cut
+/// detection, a keyframe cadence change or a zstd downgrade must trip the
+/// gate, and render-side metrics alone are nearly blind to them because the
+/// player normalizes through whatever levels the factory wrote.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClipMetrics {
     /// Downscale-SSIM, mean over sampled frames (higher is better).
     pub ssim: Option<f64>,
     /// Glyph switches per cell per second on static segments (lower is
-    /// better; M3 gate ≤ 2).
+    /// better; gate ≤ 2).
     pub flicker_switches_per_cell_sec: Option<f64>,
-    /// Edge F1 vs source Canny at grid resolution (PLAN §6; higher is
+    /// Edge F1 vs source Canny at grid resolution (higher is
     /// better) — mean over sampled frames, 1-cell tolerance ring
     /// ([`crate::edge`] documents thresholds + empty-frame conventions).
     pub edge_f1: Option<f64>,
@@ -105,7 +106,7 @@ pub struct ClipMetrics {
     /// CUT-flagged shots (hard cuts the player resets hysteresis on).
     pub cut_count: Option<u32>,
     /// Keyframes in the asset (FIDX roster) — drops when `keyframe_ivl`
-    /// inflates, taking seek latency with it (PLAN §4).
+    /// inflates, taking seek latency with it.
     pub keyframe_count: Option<u32>,
     /// Asset file size in bytes (encode-profile bloat detector).
     pub asset_bytes: Option<u64>,
@@ -157,8 +158,6 @@ mod tests {
         assert_eq!(back, r);
     }
 
-    /// v1 reports (no edge metrics, old version stamp) still deserialize —
-    /// the M2 `runs/base.json` remains readable for the compare path.
     #[test]
     fn v1_report_still_deserializes() {
         let json = r#"{

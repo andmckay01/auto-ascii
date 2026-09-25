@@ -1,17 +1,3 @@
-//! M2 item E (PLAN §6, amended): the UNTHROTTLED end-to-end SimBackend fps
-//! gate — the real player pipeline must sustain ≥ 24 effective fps at
-//! 300×80 (throttled-link gates are descoped per the Scope amendment).
-//!
-//! The measured number on the reference box is in the hundreds even under
-//! the dev profile (the workspace pins opt-level 3 for the hot crates); the
-//! assertion stays at the 24 fps contract so this never flaps — precise
-//! regression tracking is `perf/thresholds.toml` + scripts/perf-gate.sh
-//! (criterion medians, item E).
-//!
-//! Input: deterministic synthetic asset at production geometry (480×270 Y +
-//! 240×135 RGB565 C, temporal delta, keyframe 60) — committed gates must be
-//! reproducible without the corpus (repo rule).
-
 use std::io::Cursor;
 use std::time::Instant;
 
@@ -36,8 +22,6 @@ fn tri(p: u32) -> u8 {
     if m < 256 { m as u8 } else { (511 - m) as u8 }
 }
 
-/// Same generator family as benches/pipeline.rs: drifting gradient + coarse
-/// translating noise — dense, structured frame deltas at production res.
 fn luma_plane(frame: u32) -> Vec<u8> {
     let (w, h) = (u32::from(BASE_W), u32::from(BASE_H));
     let mut plane = Vec::with_capacity((w * h) as usize);
@@ -69,7 +53,7 @@ fn chroma_plane(frame: u32) -> Vec<u8> {
 fn build_synth_asset() -> Vec<u8> {
     let opts = WriterOptions {
         plane_ids: vec![plane_id::Y, plane_id::C],
-        zstd_level: 3, // setup speed; decode cost is level-independent
+        zstd_level: 3,
         ..WriterOptions::default()
     };
     let meta = Meta {
@@ -92,9 +76,6 @@ fn build_synth_asset() -> Vec<u8> {
     writer.finish().expect("finish").into_inner()
 }
 
-/// PLAN §6 hard gate (amended: unthrottled): ≥ 24 effective fps at 300×80,
-/// default `--repaint full` mode, truecolor tier, chroma composited — the
-/// most expensive steady-state configuration.
 #[test]
 fn unthrottled_sim_sustains_24fps_at_300x80() {
     let asset = build_synth_asset();
@@ -111,13 +92,12 @@ fn unthrottled_sim_sustains_24fps_at_300x80() {
     player.reflow(&mut backend, 300, 80);
     assert!(player.viewport().is_some(), "300x80 must yield a viewport");
 
-    // Warm-up lap (page in the asset, settle allocations), then measure.
     for i in 0..FRAMES {
         player.render_present(&mut backend, i).expect("warm-up frame");
         backend.take_output();
     }
 
-    let frames = 480u32; // 5 laps: sequential rolls + periodic loop-wrap seeks
+    let frames = 480u32;
     let t0 = Instant::now();
     let mut bytes_total = 0u64;
     for i in 0..frames {

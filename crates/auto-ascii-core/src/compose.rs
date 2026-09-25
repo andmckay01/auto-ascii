@@ -1,14 +1,13 @@
-//! Layer compositor (PLAN §3.4/§3.5).
+//! Layer compositor.
 //!
-//! [`compose_luma`] is the M0 L0-only path (kept verbatim — M0/M2 goldens and
-//! the player's legacy path depend on it). [`compose_frame`]/[`compose_cell`]
-//! are the M3 three-layer compositor: base luminance, edge/contour, highlight
-//! — **priority/override composition, one glyph per cell, never blended**
-//! (§3.4). No dithering in v1 (§3.5). The per-cell mapping itself is the
-//! [`pixels`](crate::codec::pixels) glyph codec; this module owns the frame
-//! loop every codec runs ([`crate::codec`]). Nothing here allocates; all temporal
-//! state lives in [`HysteresisState`], (re)allocated only via its
-//! `new`/`resize` (PLAN §6 hot-path discipline).
+//! [`compose_luma`] is the base-ramp-only path (L0 from a luma plane).
+//! [`compose_frame`]/[`compose_cell`] are the three-layer compositor: base
+//! luminance, edge/contour, highlight — **priority/override composition, one
+//! glyph per cell, never blended**. No dithering. The per-cell mapping itself
+//! is the [`pixels`](crate::codec::pixels) glyph codec; this module owns the
+//! frame loop every codec runs ([`crate::codec`]). Nothing here allocates; all
+//! temporal state lives in [`HysteresisState`], (re)allocated only via its
+//! `new`/`resize`.
 
 use crate::cell::{Cell, Rgb};
 use crate::codec::GlyphCodec;
@@ -19,16 +18,16 @@ use crate::palette::PaletteSet;
 use crate::ramp::ramp_glyph;
 use crate::viewport::Viewport;
 
-/// Fill `out` from a resampled luma plane, letterboxed per `vp` (PLAN §3.2/§3.4).
+/// Fill `out` from a resampled luma plane, letterboxed per `vp`.
 ///
-/// * `luma` — normalized luma (factory-baked p2/p98 levels, M0 simplification),
-///   row-major `vp.cols × vp.rows`; extra trailing bytes are ignored so a
-///   shared oversized scratch buffer is fine.
+/// * `luma` — normalized luma (p2/p98 levels already applied), row-major
+///   `vp.cols × vp.rows`; extra trailing bytes are ignored so a shared
+///   oversized scratch buffer is fine.
 /// * `ramp` — a base ramp (see [`crate::ramp::base_ramp_for_cols`]).
 /// * `out` — must already be sized to the full terminal grid
 ///   (`vp.cols + pad_left + pad_right` × `vp.rows + pad_top + pad_bottom`);
 ///   sizing happens in `Backend::resize`, the only hot-path allocation point
-///   (PLAN §6) — this function never allocates.
+///   — this function never allocates.
 ///
 /// Pads are filled with [`Cell::BLANK`] (space on black) every call, so a grid
 /// reused across resizes needs no separate clear.
@@ -52,7 +51,6 @@ pub fn compose_luma(luma: &[u8], vp: &Viewport, ramp: &[char], out: &mut Grid<Ce
     assert!(luma.len() >= vc * vr, "luma plane smaller than viewport");
     assert!(!ramp.is_empty(), "empty ramp");
 
-    // Pads: blank the whole grid first (memset-cheap, keeps one code path).
     out.fill(Cell::BLANK);
 
     let pad_left = vp.pad_left as usize;
@@ -65,17 +63,17 @@ pub fn compose_luma(luma: &[u8], vp: &Viewport, ramp: &[char], out: &mut Grid<Ce
     }
 }
 
-/// H-plane flag bits (PLAN §4 plane registry: bit0 highlight, bit1 deep shadow).
+/// H-plane flag bits (bit0 highlight, bit1 deep shadow).
 pub mod h_flags {
     pub const HIGHLIGHT: u8 = 1;
     pub const DEEP_SHADOW: u8 = 1 << 1;
 }
 
-/// Per-cell winning-layer ids — render metadata (M3). A `Grid<u8>` of these
-/// (the **LayerMask**, filled by [`compose_frame_masked`]) makes the §3.4
-/// priority decision observable per cell; the eval harness reads it for the
-/// §6 edge-F1 prediction side ("cells where the edge layer won"). Values are
-/// data, not bitflags — exactly one layer wins (§3.4 override, never blend).
+/// Per-cell winning-layer ids — render metadata. A `Grid<u8>` of these (the
+/// **LayerMask**, filled by [`compose_frame_masked`]) makes the layer-priority
+/// decision observable per cell; the eval harness reads it for the edge-F1
+/// prediction side ("cells where the edge layer won"). Values are data, not
+/// bitflags — exactly one layer wins (override, never blend).
 pub mod layer {
     /// L0 base ramp won (also letterbox pads and Y-only back-compat cells).
     pub const BASE: u8 = 0;
@@ -86,13 +84,14 @@ pub mod layer {
     /// Deep-shadow clamp won (H bit1 → darkest step).
     pub const SHADOW: u8 = 3;
     /// Sub-cell vertical structure won (half-block / quadrant / `" _`
-    /// subposition — §3.3's Vc×2Vr payoff, not an edge-layer decision).
+    /// subposition — read from the Vc×2Vr luma pair, not an edge-layer
+    /// decision).
     pub const STRUCTURE: u8 = 4;
 }
 
-/// Per-cell compositor inputs (§3.5): the two vertical luma taps from the
-/// Vc×2Vr plane, edge magnitude + doubled-angle orientation, H flags, and the
-/// cell's chroma sample (`None` = gray path: mono tier or Y-only asset).
+/// Per-cell compositor inputs: the two vertical luma taps from the Vc×2Vr
+/// plane, edge magnitude + doubled-angle orientation, H flags, and the cell's
+/// chroma sample (`None` = gray path: mono tier or Y-only asset).
 #[derive(Clone, Copy, Debug)]
 pub struct CellInputs {
     pub luma_top: u8,
@@ -107,8 +106,8 @@ pub struct CellInputs {
     pub chroma: Option<Rgb>,
 }
 
-/// Compositor tunables (§3.5). Every field is a `params.toml` candidate — the
-/// defaults here are the untuned baseline the M3 eval loop starts from.
+/// Compositor tunables, mirrored field for field by the `[compose]` table of
+/// `params.toml`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ComposeParams {
     /// Edge gate on-threshold (strict `e > T_on`).
@@ -119,30 +118,29 @@ pub struct ComposeParams {
     pub coh_min_q8: u8,
     /// Coherence at/above this (Q8) draws directional glyphs; the band
     /// between `coh_min_q8` and this draws the junction glyph (bins conflict
-    /// — cancelled doubled-angle vectors, §3.3 "conflict handling falls out
-    /// free").
+    /// — cancelled doubled-angle vectors).
     pub coh_dir_q8: u8,
-    /// Highlight gate: overrides only while `idx < len·hi_cut_q8/256` (§3.5
-    /// `idx < HI_CUT` — highlights extend range on dark-mid cells only).
+    /// Highlight gate: overrides only while `idx < len·hi_cut_q8/256` —
+    /// highlights extend range on dark-mid cells only.
     pub hi_cut_q8: u8,
-    /// Edge suppression on near-white base (§3.4 "edge wins if gated on and
-    /// base isn't near-white"): suppressed when `(idx+1)·256/len` exceeds
-    /// this. 240 = exactly the top ramp step at every shipped length.
+    /// Edge suppression on near-white base (the edge wins only if gated on
+    /// and the base isn't near-white): suppressed when `(idx+1)·256/len`
+    /// exceeds this. 240 = exactly the top ramp step at every shipped length.
     pub edge_white_cut_q8: u8,
-    /// `|top − bottom|` at/above this is "large" (§3.5): half-block /
-    /// subposition / quadrant paths and the edge top/bottom subposition.
+    /// `|top − bottom|` at/above this is "large": half-block / subposition /
+    /// quadrant paths and the edge top/bottom subposition.
     pub halfblock_min_delta: u8,
     /// Edge magnitude at/above this upgrades an ASCII junction `+` to `#`.
     pub edge_strong: u8,
     /// Quadrant-refinement **noise floor**, arm threshold (strict
     /// `e > quad_e_on`). Coherence divides by `max(e, 1)`, so at a resampled
     /// E of 0–1 a 1-LSB resample-noise `(Ex, Ey)` vector reads as "perfectly
-    /// coherent" and would steer the cell to a noise-driven corner quadrant
-    /// (M3 review). This is deliberately a *noise* floor and not the edge
-    /// gate's hold threshold: resampled E is heavily diluted by the box
-    /// average (corpus source E mean ≈ 3.6, 8.95% nonzero), so a genuine fine
-    /// diagonal — source E ≈ 100 across one or two pixels of a 3×6 source box
-    /// — lands near cell E 6–11, exactly the band quadrants exist to serve.
+    /// coherent" and would steer the cell to a noise-driven corner quadrant.
+    /// This is deliberately a *noise* floor and not the edge gate's hold
+    /// threshold: resampled E is heavily diluted by the box average, so a
+    /// genuine fine diagonal — source E ≈ 100 across one or two pixels of a
+    /// 3×6 source box — lands near cell E 6–11, exactly the band quadrants
+    /// exist to serve.
     pub quad_e_on: u8,
     /// Quadrant-refinement noise floor, hold threshold (strict
     /// `e > quad_e_off` while the gate was on last frame). The pair is a
@@ -150,69 +148,44 @@ pub struct ComposeParams {
     /// a single hard threshold on this noisy plane lets a cell dithering
     /// across it alternate quadrant/half-block every frame.
     pub quad_e_off: u8,
-    /// Ramp-index hysteresis width in Q8 fractions of one step. The §3.5
-    /// spec nominal is "boundary ± 0.35·step" = 90 ([`crate::IDX_HYST_Q8`]);
-    /// promoted to a tunable at M3 Tune — wider = stickier cells (less
-    /// flicker), narrower = more responsive.
+    /// Ramp-index hysteresis width in Q8 fractions of one step. The nominal
+    /// width is "boundary ± 0.35·step" = 90 ([`crate::IDX_HYST_Q8`]); wider =
+    /// stickier cells (less flicker), narrower = more responsive.
     pub idx_hyst_q8: u8,
     /// Shadow lift: how far to bend the tone curve toward the shadows when the
     /// NORM levels LUT is built. `0` = off (the plain linear per-shot window);
     /// `255` = a full square-root curve. See
-    /// [`build_levels_lut`](../../auto_ascii/pipeline/fn.build_levels_lut.html).
+    /// `auto_ascii::pipeline::build_levels_lut_lifted` for the curve.
     ///
-    /// **Why this exists.** The per-shot NORM window ([`PlaneLevels`] p2→0,
-    /// p98→255) is *linear*, so it cannot move a dark subject relative to a
-    /// bright one — normalizing a shot of fire leaves a face at the same
-    /// fraction of the range wherever the endpoints land. That matters more
-    /// here than in a continuous-tone renderer: a glyph ramp has only 8–16
-    /// steps, so a subject below the first step is not merely dark, it is *the
-    /// same glyph as black* and disappears. Lifting buys it a step.
-    ///
-    /// Applied to the 256-entry LUT, so it costs nothing per pixel and rides
-    /// on top of the per-shot normalization instead of replacing it. Endpoints
-    /// stay pinned (0→0, 255→255): this redistributes the middle, it does not
-    /// wash the picture out.
+    /// The per-shot NORM window (p2→0, p98→255) is *linear*, so it cannot move
+    /// a dark subject relative to a bright one, and on an 8–16 step glyph ramp
+    /// a subject below the first step renders as *the same glyph as black*.
+    /// Lifting buys it a step. Applied to the 256-entry LUT, so it costs
+    /// nothing per pixel and rides on top of the per-shot normalization.
+    /// Endpoints stay pinned (0→0, 255→255): this redistributes the middle, it
+    /// does not wash the picture out.
     pub shadow_lift: u8,
 }
 
 impl Default for ComposeParams {
     fn default() -> ComposeParams {
         ComposeParams {
-            // Edge thresholds live on the FACTORY's E scale (INTERFACES
-            // note 18: E ≈ L* contrast, hysteresis seeds at t_hi 28, corpus
-            // max ~130) after box-average dilution to cell resolution — NOT
-            // on a full 0..255 synthetic scale. Re-anchored at M3
-            // integration from a corpus sweep (fine-texture clip F1 0.72 @ T_on 32 with
-            // precision 0.77 — the coherence gates carry noise suppression;
-            // 0.52 @ 40, 0.00 @ the original 96).
             edge_t_on: 32,
             edge_t_off: 16,
-            coh_min_q8: 96,       // 0.375
-            coh_dir_q8: 160,      // 0.625
-            hi_cut_q8: 160,       // 0.625 of the ramp
+            coh_min_q8: 96,
+            coh_dir_q8: 160,
+            hi_cut_q8: 160,
             edge_white_cut_q8: 240,
             halfblock_min_delta: 64,
-            edge_strong: 96,      // ascii '+' → '#', same E scale
-            // Noise floor only (M4 review): 1-LSB resample noise cannot
-            // exceed E = 1, so `> 2` arms on genuine ink and `> 1` holds it
-            // — the whole E ∈ [2, 15] fine-diagonal band stays served.
+            edge_strong: 96,
             quad_e_on: 2,
             quad_e_off: 1,
-            // M3 Tune: 160 (0.625·step) from the committed corpus sweep —
-            // fine-texture flicker 2.313 → 1.651 (fixes the ≤ 2 gate breach) with
-            // edge F1 invariant (the near-white veto rides the plain index)
-            // and mean corpus ssim flat. The §3.5 spec nominal 0.35·step
-            // remains `hysteresis::IDX_HYST_Q8` (= 90).
             idx_hyst_q8: 160,
-            // Off by default: the shipped corpus was tuned and signed off
-            // without it, and every committed golden assumes the plain linear
-            // window. It is a per-clip choice, not a global look change.
             shadow_lift: 0,
         }
     }
 }
 
-/// Highlight fg boost (§3.4 "highlights may boost value"): +25% toward white.
 #[inline]
 pub(crate) fn boost(c: Rgb) -> Rgb {
     Rgb::new(
@@ -222,22 +195,21 @@ pub(crate) fn boost(c: Rgb) -> Rgb {
     )
 }
 
-/// Scale the cell chroma to one vertical tap's luma, preserving the cell mean
-/// (`m` = mean of the two post-LUT taps): channel · l / m, clamped.
 #[inline]
 pub(crate) fn shade(c: Rgb, l: u8, m: u8) -> Rgb {
     let s = |v: u8| ((v as u32 * l as u32) / m as u32).min(255) as u8;
     Rgb::new(s(c.r), s(c.g), s(c.b))
 }
 
-/// §3.5 per-cell selection — the [`pixels`](crate::codec::pixels) codec.
+/// Per-cell selection — the [`pixels`](crate::codec::pixels) codec.
 /// `(col, row)` index into `state` (viewport cells).
 ///
-/// Layer priority (§3.4, override never blend): edge (gated + coherent, base
-/// not near-white) → deep-shadow clamp (H bit1 → darkest step) → highlight
-/// (H bit0, `idx < HI_CUT`) → half-block/quadrant (unicode) or `" - _`
-/// subposition (ascii) when `|top−bottom|` is large → base ramp. Foreground
-/// is always the chroma sample (gray fallback); the backend quantizes.
+/// Layer priority (override, never blend): edge (gated + coherent, base not
+/// near-white) → deep-shadow clamp (H bit1 → darkest step) → highlight
+/// (H bit0, `idx < len·hi_cut_q8/256`) → half-block/quadrant (unicode) or
+/// `" - _` subposition (ascii) when `|top−bottom|` is large → base ramp.
+/// Foreground is always the chroma sample (gray fallback); the backend
+/// quantizes.
 pub fn compose_cell(
     inp: &CellInputs,
     lut: &[u8; 256],
@@ -268,12 +240,12 @@ pub fn compose_cell_layer(
 /// Resampled feature planes for one frame, all at viewport resolution
 /// (`luma2` at Vc×2Vr, everything else Vc×Vr; oversized buffers are fine).
 ///
-/// `None` planes auto-disable their layer — an M1-era Y(+C) asset composes
-/// through the exact base path with no edge/highlight leakage (back-compat,
-/// PLAN §4 plane-registry detection is the caller's job).
+/// `None` planes auto-disable their layer — a Y(+C)-only asset composes
+/// through the exact base path with no edge/highlight leakage (detecting
+/// which planes an asset carries is the caller's job).
 #[derive(Clone, Copy, Debug)]
 pub struct FramePlanes<'a> {
-    /// Luma at Vc × 2Vr (two vertical taps per cell, §3.3).
+    /// Luma at Vc × 2Vr (two vertical taps per cell).
     pub luma2: &'a [u8],
     pub e: Option<&'a [u8]>,
     pub ex: Option<&'a [u8]>,
@@ -283,9 +255,9 @@ pub struct FramePlanes<'a> {
     pub chroma: Option<(&'a [u8], &'a [u8], &'a [u8])>,
 }
 
-/// Full-frame §3.5 composition: [`compose_cell`] per viewport cell,
-/// [`Cell::BLANK`] pads. The edge layer runs only when E, Ex AND Ey are all
-/// present. Never allocates.
+/// Full-frame composition: [`compose_cell`] per viewport cell, [`Cell::BLANK`]
+/// pads. The edge layer runs only when E, Ex AND Ey are all present. Never
+/// allocates.
 ///
 /// # Panics
 /// If `out` doesn't match the viewport's terminal dimensions, if `state`
@@ -303,15 +275,15 @@ pub fn compose_frame(
 }
 
 /// [`compose_frame`] that also records the winning [`layer`] id per cell
-/// into `mask` — the **LayerMask** render metadata (M3). `mask` must match
+/// into `mask` — the **LayerMask** render metadata. `mask` must match
 /// `out`'s full terminal dimensions; pads are [`layer::BASE`]. Identical
 /// cell output and state mutations to [`compose_frame`]; the eval driver
-/// crops the viewport and selects [`layer::EDGE`] for the §6 edge-F1
+/// crops the viewport and selects [`layer::EDGE`] for the edge-F1
 /// prediction side.
 ///
 /// # Panics
 /// As [`compose_frame`], plus a `mask`/`out` dimension mismatch.
-#[allow(clippy::too_many_arguments)] // mirrors compose_frame + the one output it exists for
+#[allow(clippy::too_many_arguments)]
 pub fn compose_frame_masked(
     planes: &FramePlanes<'_>,
     vp: &Viewport,
@@ -326,10 +298,7 @@ pub fn compose_frame_masked(
     frame_impl::<Pixels>(planes, vp, lut, set, params, state, out, Some(mask));
 }
 
-/// The per-cell loop every codec runs, monomorphized per codec `C` — the
-/// codec is chosen once per frame (see [`crate::codec::compose_frame_codec`]),
-/// never per cell.
-#[allow(clippy::too_many_arguments)] // internal: the pub wrappers are the API
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn frame_impl<C: GlyphCodec>(
     planes: &FramePlanes<'_>,
     vp: &Viewport,
@@ -401,7 +370,6 @@ mod tests {
 
     #[test]
     fn pads_are_blank_and_viewport_is_mapped() {
-        // 213×58 → 206×58 with pads L3/R4 (PLAN §3.2 worked example).
         let vp = compute_viewport(213, 58, 2.0).unwrap();
         let ramp = base_ramp_for_cols(vp.cols);
         assert_eq!(ramp, ASCII_BASE_FINE);
@@ -410,7 +378,6 @@ mod tests {
             .map(|i| (i % 256) as u8)
             .collect();
         let mut grid: Grid<Cell> = Grid::new(213, 58);
-        // Pre-poison so we prove pads get overwritten to BLANK.
         grid.fill(Cell::new('X', Rgb::WHITE, Rgb::WHITE));
         compose_luma(&luma, &vp, ramp, &mut grid);
 
@@ -433,7 +400,6 @@ mod tests {
 
     #[test]
     fn top_bottom_pads_blank() {
-        // 80×24 → 80×23: one pad row at the bottom (remainder bottom, §3.2).
         let vp = compute_viewport(80, 24, 2.0).unwrap();
         assert_eq!((vp.pad_top, vp.pad_bottom), (0, 1));
         let luma = vec![255u8; vp.cols as usize * vp.rows as usize];
@@ -445,8 +411,8 @@ mod tests {
 
     #[test]
     fn oversized_luma_buffer_is_fine() {
-        let vp = compute_viewport(320, 90, 2.0).unwrap(); // exact fit, no pads
-        let mut luma = vec![128u8; 480 * 270]; // shared scratch bigger than needed
+        let vp = compute_viewport(320, 90, 2.0).unwrap();
+        let mut luma = vec![128u8; 480 * 270];
         luma[0] = 0;
         let mut grid: Grid<Cell> = Grid::new(320, 90);
         compose_luma(&luma, &vp, ASCII_BASE_COARSE, &mut grid);
@@ -463,17 +429,12 @@ mod tests {
         compose_luma(&luma, &vp, ASCII_BASE_COARSE, &mut grid);
     }
 
-    // ---- M3 three-layer compositor (§3.5) ----
-
     use crate::palette::{ColorDepth, GlyphTier, select_palettes};
 
     fn ident() -> [u8; 256] {
         core::array::from_fn(|i| i as u8)
     }
 
-    /// Bias-128 half-scale plane bytes for an edge whose *tangent* runs along
-    /// image-space θ. The asset stores the GRADIENT doubled-angle convention
-    /// = the tangent one negated (factory edges.rs), so encode with `−`.
     fn exy(theta_deg: f64, mag: f64) -> (u8, u8) {
         let a = (2.0 * theta_deg).to_radians();
         (
@@ -491,12 +452,10 @@ mod tests {
         CellInputs { luma_top: n, luma_bottom: n, e: 0, ex: 128, ey: 128, h: 0, chroma: None }
     }
 
-    /// Synthetic oriented edge → correct directional glyph for every bin.
     #[test]
     fn oriented_edge_glyph_per_bin() {
         let ascii = select_palettes(GlyphTier::Ascii, ColorDepth::True, 100);
         let uni = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::True, 100);
-        // Image-space θ (y down): bins 1–2 render '\', bins 5–6 '/'.
         let expect_ascii = ['-', '\\', '\\', '|', '|', '/', '/', '-'];
         let expect_uni = ['─', '╲', '╲', '│', '│', '╱', '╱', '─'];
         for k in 0..8usize {
@@ -511,10 +470,9 @@ mod tests {
     fn edge_subposition_variants() {
         let ascii = select_palettes(GlyphTier::Ascii, ColorDepth::True, 100);
         let uni = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::True, 100);
-        let (ex, ey) = exy(0.0, 200.0); // horizontal stroke
-        // Bright top tap → top subposition.
+        let (ex, ey) = exy(0.0, 200.0);
         let top = CellInputs { luma_top: 200, luma_bottom: 20, e: 200, ex, ey, h: 0, chroma: None };
-        assert_eq!(cell_with(&top, &ascii).glyph(), '='); // ASCII overline surrogate
+        assert_eq!(cell_with(&top, &ascii).glyph(), '=');
         assert_eq!(cell_with(&top, &uni).glyph(), '‾');
         let bot = CellInputs { luma_top: 20, luma_bottom: 200, ..top };
         assert_eq!(cell_with(&bot, &ascii).glyph(), '_');
@@ -524,11 +482,8 @@ mod tests {
     #[test]
     fn junction_when_bins_conflict() {
         let ascii = select_palettes(GlyphTier::Ascii, ColorDepth::True, 100);
-        // Coherence 2·15/60 = 0.5 — inside the junction band [0.375, 0.625);
-        // e = 60 sits between T_on (32) and edge_strong (96) → '+'.
         let inp = CellInputs { e: 60, ex: 128 + 15, ey: 128, ..base_inp(100) };
         assert_eq!(cell_with(&inp, &ascii).glyph(), '+');
-        // Same conflict at strong magnitude (2·40/180 ≈ 0.44, e ≥ 96) → '#'.
         let strong = CellInputs { e: 180, ex: 128 + 40, ey: 128, ..base_inp(100) };
         assert_eq!(cell_with(&strong, &ascii).glyph(), '#');
     }
@@ -536,7 +491,6 @@ mod tests {
     #[test]
     fn low_coherence_suppresses_edge() {
         let ascii = select_palettes(GlyphTier::Ascii, ColorDepth::True, 100);
-        // Directions cancelled inside the cell: |v| ≈ 0 despite e = 200.
         let inp = CellInputs { e: 200, ex: 131, ey: 126, ..base_inp(100) };
         let cell = cell_with(&inp, &ascii);
         assert_eq!(cell.glyph(), ascii.base.glyph(3), "falls back to base ramp");
@@ -560,12 +514,10 @@ mod tests {
             let inp = CellInputs { e, ex, ey, ..base_inp(100) };
             compose_cell(&inp, &lut, &ascii, &params, st, 0, 0).glyph()
         };
-        // Defaults: T_on 32 / T_off 16 (factory E scale — see Default impl).
         assert_eq!(at(40, &mut st), '|', "above T_on: edge turns on");
         assert_eq!(at(20, &mut st), '|', "T_off < e < T_on holds while was_edge");
         assert_eq!(at(10, &mut st), ascii.base.glyph(3), "below T_off: edge drops");
         assert_eq!(at(20, &mut st), ascii.base.glyph(3), "T_off alone cannot re-arm");
-        // Scene-cut reset clears was_edge memory too.
         assert_eq!(at(40, &mut st), '|');
         st.reset();
         assert_eq!(at(20, &mut st), ascii.base.glyph(3), "after cut, T_on required again");
@@ -574,12 +526,10 @@ mod tests {
     #[test]
     fn highlight_gate_and_boost() {
         let ascii = select_palettes(GlyphTier::Ascii, ColorDepth::True, 100);
-        // idx 3 < HI_CUT 5 (len 8 · 160/256) → highlight glyph, boosted fg.
         let inp = CellInputs { h: h_flags::HIGHLIGHT, ..base_inp(100) };
         let cell = cell_with(&inp, &ascii);
-        assert_eq!(cell.glyph(), '+'); // hidx = 3·4/5 = 2 in " .+*"
+        assert_eq!(cell.glyph(), '+');
         assert_eq!(cell.fg, Rgb::gray(138), "gray(100) boosted 25% toward white");
-        // Bright base: gate closed, highlight never fires (no leak).
         let bright = CellInputs { h: h_flags::HIGHLIGHT, ..base_inp(220) };
         assert_eq!(cell_with(&bright, &ascii).glyph(), ascii.base.glyph(6));
     }
@@ -604,13 +554,11 @@ mod tests {
         let bot = CellInputs { luma_top: 20, luma_bottom: 200, ..base_inp(0) };
         let cell = cell_with(&bot, &uni);
         assert_eq!((cell.glyph(), cell.fg, cell.bg), ('▄', Rgb::gray(200), Rgb::gray(20)));
-        // Chroma pair: scaled around the cell mean, clamped.
         let color = CellInputs { chroma: Some(Rgb::new(200, 100, 50)), ..top };
         let cell = cell_with(&color, &uni);
         assert_eq!(cell.glyph(), '▀');
         assert_eq!(cell.fg, Rgb::new(255, 181, 90));
         assert_eq!(cell.bg, Rgb::new(36, 18, 9));
-        // ASCII tier gets `"`/`_` instead (§3.5 subposition path).
         let ascii = select_palettes(GlyphTier::Ascii, ColorDepth::True, 100);
         assert_eq!(cell_with(&top, &ascii).glyph(), '"');
         assert_eq!(cell_with(&bot, &ascii).glyph(), '_');
@@ -619,23 +567,16 @@ mod tests {
     #[test]
     fn quadrant_from_pair_plus_orientation() {
         let uni = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::True, 100);
-        // Coherent diagonal below the edge gate (e=24 ≤ T_on 32), bright top.
         let (ex, ey) = exy(45.0, 24.0);
         let inp = CellInputs { luma_top: 200, luma_bottom: 20, e: 24, ex, ey, h: 0, chroma: None };
         assert_eq!(cell_with(&inp, &uni).glyph(), '▝');
         let flipped = CellInputs { luma_top: 20, luma_bottom: 200, ..inp };
         assert_eq!(cell_with(&flipped, &uni).glyph(), '▖');
-        // Vertical orientation can't pick a side (needs 2Vc) → half-block.
         let (ex, ey) = exy(90.0, 24.0);
         let v = CellInputs { ex, ey, ..inp };
         assert_eq!(cell_with(&v, &uni).glyph(), '▀');
     }
 
-    /// M3 review low (regression): a 1-LSB resample-noise (Ex,Ey) vector
-    /// over a near-zero E plane must NOT steer quadrant refinement —
-    /// coherence divides by max(e, 1), so (129, 128) at e ∈ {0, 1} reads as
-    /// "fully coherent" without a magnitude floor and picked a noise-driven
-    /// corner quadrant instead of the half-block.
     #[test]
     fn lsb_noise_orientation_never_picks_quadrant() {
         let uni = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::True, 100);
@@ -650,8 +591,6 @@ mod tests {
                 );
             }
         }
-        // The floor is a NOISE floor: the first magnitude above 1-LSB noise
-        // already refines (arm threshold is strict `>`).
         let p = ComposeParams::default();
         let e = p.quad_e_on + 1;
         let (ex, ey) = exy(45.0, f64::from(e));
@@ -659,19 +598,12 @@ mod tests {
         assert_eq!(cell_with(&inp, &uni).glyph(), '▝', "arms one LSB above the noise floor");
     }
 
-    /// M4 review (regression): the floor must not eat the fine-diagonal band
-    /// it exists to serve. Resampled E is diluted by the cell box average
-    /// (corpus source E mean ≈ 3.6), so a genuine fine diagonal lands around
-    /// cell E 6–11 — far below the edge gate's hold threshold (16), which an
-    /// earlier fix used as the floor and which silently downgraded every one
-    /// of these cells to a plain half-block.
     #[test]
     fn fine_diagonal_band_still_refines_to_quadrants() {
         let uni = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::True, 100);
         let p = ComposeParams::default();
         assert!(p.quad_e_on < p.edge_t_off, "the floor must sit below the edge gate");
         for e in 3u8..=15 {
-            // Coherent 45°/135° strokes at the cell's own magnitude.
             let (ex, ey) = exy(45.0, f64::from(e));
             let up = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None };
             assert_eq!(cell_with(&up, &uni).glyph(), '▝', "E={e} diagonal lost its quadrant");
@@ -681,33 +613,24 @@ mod tests {
         }
     }
 
-    /// M4 review (regression): a single hard threshold on the E plane lets a
-    /// cell whose resampled magnitude dithers across it alternate
-    /// quadrant/half-block every frame — invisible to the ≤2 switches/cell/s
-    /// flicker gate, which only sees the ascii-tier eval render. The floor is
-    /// therefore a dual threshold: once armed, a 1-LSB dip holds the quadrant.
     #[test]
     fn quadrant_floor_is_dither_stable() {
         let uni = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::True, 100);
         let (lut, p) = (ident(), ComposeParams::default());
         let mut st = HysteresisState::new(1, 1);
         let at = |e: u8, st: &mut HysteresisState| {
-            let (ex, ey) = exy(45.0, 8.0); // steady coherent orientation
+            let (ex, ey) = exy(45.0, 8.0);
             let inp = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None };
             compose_cell(&inp, &lut, &uni, &p, st, 0, 0).glyph()
         };
-        // Arm just above the floor, then dither across it: no switching.
         assert_eq!(at(p.quad_e_on + 1, &mut st), '▝');
         for _ in 0..8 {
             assert_eq!(at(p.quad_e_on, &mut st), '▝', "hold threshold absorbs the dip");
             assert_eq!(at(p.quad_e_on + 1, &mut st), '▝');
         }
-        // Below the hold threshold it drops, and the arm threshold alone is
-        // then required to come back (same shape as the edge gate).
         assert_eq!(at(p.quad_e_off, &mut st), '▀', "below the hold threshold: half-block");
         assert_eq!(at(p.quad_e_on, &mut st), '▀', "the hold threshold cannot re-arm");
         assert_eq!(at(p.quad_e_on + 1, &mut st), '▝');
-        // Scene-cut reset clears the memory too.
         st.reset();
         assert_eq!(at(p.quad_e_on, &mut st), '▀', "after a cut, arming is required again");
     }
@@ -720,14 +643,12 @@ mod tests {
         let edge = CellInputs { e: 200, ex, ey, ..base_inp(100) };
         let cell = cell_with(&edge, &braille);
         assert_eq!(cell.glyph(), crate::palette::braille_glyph(0x36), "H-mid dot mask");
-        // Non-edge cells never emit braille (no solid fills — §3.4 row 7).
         let flat = cell_with(&base_inp(255), &braille);
         assert!(!('\u{2800}'..='\u{28FF}').contains(&flat.glyph()));
     }
 
     #[test]
     fn frame_backcompat_y_only_is_pure_base() {
-        // M1-era Y(+C) asset: no E/Ex/Ey/H planes → base path only.
         let vp = compute_viewport(40, 12, 2.0).unwrap();
         let (vc, vr) = (vp.cols as usize, vp.rows as usize);
         let set = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::True, vp.cols);
@@ -743,7 +664,6 @@ mod tests {
                 let n = ((lt as u16 + lb as u16 + 1) >> 1) as u8;
                 let cell = grid.get(vp.pad_left + c as u16, vp.pad_top + r as u16);
                 if lt.abs_diff(lb) >= 64 {
-                    // Sub-cell structure may legitimately pick a half-block…
                     assert!(matches!(cell.glyph(), '▀' | '▄'), "({c},{r})");
                 } else {
                     assert_eq!(cell.glyph(), set.base.glyph(hysteresis_idx(n, set.base.len(), crate::hysteresis::IDX_UNSET, crate::hysteresis::IDX_HYST_Q8)), "({c},{r})");
@@ -751,7 +671,6 @@ mod tests {
                 }
             }
         }
-        // Pads blank.
         for r in 0..12u16 {
             for c in 0..40u16 {
                 let in_vp = c >= vp.pad_left
@@ -765,20 +684,16 @@ mod tests {
         }
     }
 
-    /// The LayerMask mirrors the §3.4 priority decision cell-for-cell and
-    /// the masked variant renders byte-identically to the unmasked one.
     #[test]
     fn layer_mask_tags_winning_layers() {
         let vp = compute_viewport(40, 12, 2.0).unwrap();
         let (vc, vr) = (vp.cols as usize, vp.rows as usize);
         let set = select_palettes(GlyphTier::Ascii, ColorDepth::True, vp.cols);
-        // Flat mid-gray field…
         let luma2 = vec![100u8; vc * 2 * vr];
         let mut e = vec![0u8; vc * vr];
         let mut ex = vec![128u8; vc * vr];
         let mut ey = vec![128u8; vc * vr];
         let mut h = vec![0u8; vc * vr];
-        // …with one strong vertical edge, one highlight, one deep shadow.
         let (exb, eyb) = exy(90.0, 200.0);
         e[1] = 200;
         ex[1] = exb;
@@ -796,7 +711,7 @@ mod tests {
         let mut st = HysteresisState::new(vp.cols, vp.rows);
         let mut grid: Grid<Cell> = Grid::new(40, 12);
         let mut mask: Grid<u8> = Grid::new(40, 12);
-        mask.fill(0xEE); // poison: every cell must be written
+        mask.fill(0xEE);
         compose_frame_masked(
             &planes, &vp, &ident(), &set, &ComposeParams::default(), &mut st, &mut grid, &mut mask,
         );
@@ -808,7 +723,6 @@ mod tests {
         assert_eq!(mask.get(0, 11), layer::BASE, "pads are BASE");
         assert_eq!(grid.get(vp.pad_left + 1, vp.pad_top).glyph(), '|');
 
-        // Byte-identical to the unmasked path (fresh state: same decisions).
         let mut st2 = HysteresisState::new(vp.cols, vp.rows);
         let mut grid2: Grid<Cell> = Grid::new(40, 12);
         compose_frame(&planes, &vp, &ident(), &set, &ComposeParams::default(), &mut st2, &mut grid2);

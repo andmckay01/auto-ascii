@@ -1,25 +1,23 @@
-//! Input events (PLAN §3.1: `Resize(c,r) | Key | Quit`; SIGWINCH self-pipe).
+//! Input events: `Resize(cols, rows) | Key | Quit`.
 
 use std::collections::VecDeque;
 
 /// Minimal key model — deliberately not crossterm's `KeyEvent`: the pub API
 /// stays dependency-free above `std` types (crossterm is an implementation
-/// detail of `AnsiBackend`, PLAN §8).
+/// detail of `AnsiBackend`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Char(char),
     /// Ctrl-modified letter, lowercase (`Ctrl('c')`).
     Ctrl(char),
     Esc,
-    /// Left arrow — scrub back 5 s (M5 scrub UX, PLAN §7 M5).
+    /// Left arrow — scrub back 5 s.
     Left,
     /// Right arrow — scrub forward 5 s.
     Right,
 }
 
-/// Backend event (PLAN §3.1). Resize carries the new `(cols, rows)`; the
-/// SIGWINCH handler only sets an atomic — the event is synthesized at drain
-/// time from `TIOCGWINSZ` (PLAN §3.6 step 1).
+/// Backend event. `Resize` carries the new `(cols, rows)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     Resize(u16, u16),
@@ -27,9 +25,8 @@ pub enum Event {
     Quit,
 }
 
-/// FIFO event queue drained once per frame (PLAN §3.6 step 1). Backends push
-/// (from crossterm polls / the SIGWINCH atomic / test scripts); the player
-/// pops until empty.
+/// FIFO event queue drained once per frame. Backends push (from crossterm
+/// polls or test scripts); the caller pops until empty.
 #[derive(Debug, Default)]
 pub struct EventQueue {
     q: VecDeque<Event>,

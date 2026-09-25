@@ -1,6 +1,6 @@
-//! Per-frame feature-plane orchestration (PLAN §5 stages 3–4, M3): one rgb24
-//! frame in → the six quantized ASCI planes out (Y, E, Ex, Ey, H, C — PLAN
-//! §4 registry order).
+//! Per-frame feature-plane orchestration (extraction + temporal smoothing):
+//! one rgb24 frame in → the six quantized ASCI planes out (Y, E, Ex, Ey, H,
+//! C — registry order).
 //!
 //! ## Stage order (one frame)
 //!
@@ -20,20 +20,20 @@
 //! Downstream stages read the EMA'd Y (not raw luma): edges must trace the
 //! plane the player renders, and H/E inherit the EMA's temporal stability
 //! at the source instead of chasing it afterwards. All EMAs reset at shot
-//! cuts (PLAN §5 stage 4); pass 1 replicates the same reset schedule for
+//! cuts; pass 1 replicates the same reset schedule for
 //! its levels pooling (build.rs), which keeps NORM levels equal to the
 //! stored-plane percentiles.
 //!
-//! ## Quantization (factory⇄player wire contract, PLAN §4)
+//! ## Quantization (factory⇄player wire contract)
 //!
 //! - `Y`, `E`: u8 as computed (E ≈ L\* contrast, see edges.rs).
 //! - `Ex/Ey`: `128 + (v >> 1)` — the ±255 doubled-angle components halved
-//!   into bias-128 u8. Decode: `v ≈ (byte − 128) · 2`; coherence per §3.3
-//!   is `2·|(Ex−128, Ey−128)| / E`.
+//!   into bias-128 u8. Decode: `v ≈ (byte − 128) · 2`; coherence is
+//!   `2·|(Ex−128, Ey−128)| / E`.
 //! - `H`: bit0 highlight, bit1 deep shadow (highlights.rs).
 //! - `C`: RGB565 LE from the EMA'd channel planes.
 //!
-//! ## Memory strategy (PLAN context: planes are ~130 KB/frame — stream!)
+//! ## Memory strategy (planes are ~130 KB/frame — stream!)
 //!
 //! Everything here is O(plane), allocated ONCE at construction and reused
 //! for every frame: ~1.8 MB of edge scratch (edges.rs), ~0.9 MB of EMA
@@ -73,7 +73,6 @@ pub struct FeatureExtractor {
     cg_s: Vec<u8>,
     cb_s: Vec<u8>,
 
-    // The six wire planes of the current frame (PLAN §4).
     y: Vec<u8>,
     e: Vec<u8>,
     ex_q: Vec<u8>,
@@ -83,7 +82,7 @@ pub struct FeatureExtractor {
 }
 
 impl FeatureExtractor {
-    /// `w`/`h` = base plane dims (even, ≥ 2 — the §4 geometry term);
+    /// `w`/`h` = base plane dims (even, ≥ 2 — C is stored at half res);
     /// `params` must be validated.
     pub fn new(w: u16, h: u16, params: &Params) -> FeatureExtractor {
         let n = w as usize * h as usize;
@@ -123,7 +122,7 @@ impl FeatureExtractor {
     }
 
     /// Extract all six planes from one rgb24 frame. `cut` resets every EMA
-    /// first (PLAN §5 stage 4: never blend across a hard cut).
+    /// first (never blend across a hard cut).
     pub fn process(&mut self, rgb: &[u8], cut: bool) {
         if cut {
             self.ema_y.reset();
@@ -135,11 +134,9 @@ impl FeatureExtractor {
             self.ema_b.reset();
         }
 
-        // Y: L* then temporal EMA — the stored plane feeds everything else.
         self.extractor.luma(rgb, &mut self.luma_raw);
         self.ema_y.apply_u8(&self.luma_raw, &mut self.y);
 
-        // E / Ex / Ey from the stored Y.
         self.edges.run(&self.y, &self.edge_cfg);
         self.ema_e.apply_u8(self.edges.e(), &mut self.e);
         self.ema_vx.apply_i16(self.edges.vx(), &mut self.vx_s);
@@ -151,10 +148,8 @@ impl FeatureExtractor {
             *o = (128 + i32::from(v >> 1)).clamp(0, 255) as u8;
         }
 
-        // H from the stored Y (flags are not EMA'd — their input is).
         self.highlights.run(&self.y, &self.hi_cfg, &mut self.h);
 
-        // C: per-channel EMA between the 2×2 average and the 565 packing.
         self.extractor.chroma_channels(rgb, &mut self.cr, &mut self.cg, &mut self.cb);
         self.ema_r.apply_u8(&self.cr, &mut self.cr_s);
         self.ema_g.apply_u8(&self.cg, &mut self.cg_s);
@@ -195,12 +190,10 @@ mod tests {
     const W: u16 = 64;
     const H: u16 = 64;
 
-    /// Solid sRGB gray frame.
     fn flat(v: u8) -> Vec<u8> {
         vec![v; W as usize * H as usize * 3]
     }
 
-    /// Bright disc (sRGB 230 gray) on dark ground, center (`cx`, 32), r=14.
     fn disc(cx: i32) -> Vec<u8> {
         let mut rgb = vec![40u8; W as usize * H as usize * 3];
         for y in 0..i32::from(H) {
@@ -221,8 +214,6 @@ mod tests {
 
     #[test]
     fn cut_resets_all_temporal_state() {
-        // A cut must make frame B come out exactly as if the extractor had
-        // never seen frame A — for every plane.
         let (a, b) = (disc(20), disc(40));
 
         let mut fresh = fx();
@@ -238,8 +229,6 @@ mod tests {
         assert_eq!(cut.h(), fresh.h(), "H must not differ across a cut");
         assert_eq!(cut.c(), fresh.c(), "C must not blend across a cut");
 
-        // ...and WITHOUT the cut flag the same pair genuinely blends
-        // (otherwise the reset test proves nothing).
         let mut blend = fx();
         blend.process(&a, false);
         blend.process(&b, false);
@@ -249,18 +238,14 @@ mod tests {
 
     #[test]
     fn moving_disc_leaves_a_decaying_edge_trail_ema() {
-        // Disc jumps 20 → 40: the new rim is strong immediately; the old
-        // rim fades over the following frames (Y-ghost + E-EMA compound —
-        // the player's dual edge threshold rides this decay); a cut wipes
-        // it instantly.
         let mut f = fx();
         f.process(&disc(20), false);
         let e_before = f.e().to_vec();
         f.process(&disc(40), false);
 
         let w = W as usize;
-        let old_rim = 32 * w + (20 - 14); // left rim of the old disc
-        let new_rim = 32 * w + (40 + 14); // right rim of the new disc
+        let old_rim = 32 * w + (20 - 14);
+        let new_rim = 32 * w + (40 + 14);
         assert!(e_before[old_rim] > 0, "old rim must exist on frame 1");
         assert!(f.e()[new_rim] > 0, "new rim must be present immediately");
         let ghost1 = f.e()[old_rim];
@@ -269,15 +254,12 @@ mod tests {
             "old rim must decay, not vanish or persist: {ghost1} vs {}",
             e_before[old_rim]
         );
-        // Trail keeps decaying monotonically while the disc holds still.
         f.process(&disc(40), false);
         let ghost2 = f.e()[old_rim];
         assert!(ghost2 < ghost1, "trail must keep decaying: {ghost2} vs {ghost1}");
 
-        // Flat interior of the new disc carries no edge energy.
         assert_eq!(f.e()[32 * w + 40], 0, "disc interior must stay clean");
 
-        // Same jump ACROSS A CUT: zero trail, full new rim at once.
         let mut f = fx();
         f.process(&disc(20), false);
         f.process(&disc(40), true);
@@ -287,7 +269,6 @@ mod tests {
 
     #[test]
     fn highlight_and_shadow_flags_fire_on_the_right_pixels() {
-        // Mid-gray frame with a 3×3 glint and a dark band.
         let mut rgb = flat(120);
         let w = W as usize;
         for y in 30..33 {
@@ -312,8 +293,6 @@ mod tests {
 
     #[test]
     fn ex_ey_quantization_is_bias_128_halved() {
-        // A vertical contour: field vx ≈ +m (§3.3) → stored Ex ≈ 128 + m/2,
-        // Ey ≈ 128; empty regions store exactly (128, 128).
         let mut rgb = flat(40);
         let w = W as usize;
         for y in 0..H as usize {
@@ -324,7 +303,7 @@ mod tests {
         }
         let mut f = fx();
         f.process(&rgb, false);
-        let i = 32 * w + 32; // on the contour
+        let i = 32 * w + 32;
         assert!(f.e()[i] > 0);
         let ex = i32::from(f.ex()[i]);
         let ey = i32::from(f.ey()[i]);

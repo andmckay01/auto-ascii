@@ -1,17 +1,17 @@
-//! `auto-ascii-factory font-table` — offline glyph ink-coverage table generator
-//! (PLAN §3.4, M5 item B).
+//! `auto-ascii-factory font-table` — offline glyph ink-coverage table
+//! generator.
 //!
 //! Rasterizes **every glyph the 8 shipped palettes can emit** (enumerated
 //! from the palette data via `auto_ascii_core::palette::all_palette_glyphs` — never
-//! a hardcoded list) into a 64×128 px cell (§3.4's raster size) with
+//! a hardcoded list) into a 64×128 px cell with
 //! `ab_glyph`, and emits a deterministic TOML coverage table:
 //!
 //! - `coverage` = Σ antialiased ink / (64·128) — the same fractional-ink
-//!   integral the M2 `derive_coverage.py` reference used (mean pixel value,
+//!   integral the `derive_coverage.py` reference uses (mean pixel value,
 //!   not a threshold), so per-font tables are directly comparable to the
 //!   committed conservative constants.
 //! - `lstar` = CIE L\* of that coverage taken as linear luminance (white ink
-//!   on black): the §3.4 "coverage → L\*" axis ramps are picked on.
+//!   on black): the "coverage → L\*" axis ramps are picked on.
 //!
 //! **Cell model.** The font is scaled so its monospace advance equals the
 //! 64 px cell width (how terminals actually size text: by advance, not em);
@@ -21,12 +21,12 @@
 //! may integrate slightly above/below 1.0× of their true cell — clipping
 //! keeps coverage honest in `0..=1`.
 //!
-//! **Missing-glyph policy** (task contract): a codepoint the font has no
+//! **Missing-glyph policy:** a codepoint the font has no
 //! glyph for (`.notdef`) gets `coverage = 0`, joins the one-line `missing`
 //! array (the font's repertoire gap — `--font-table` palette veto input) and
 //! is WARN-listed on stderr.
 //!
-//! **Determinism** (acceptance: same font file → byte-identical table): the
+//! **Determinism** (same font file → byte-identical table): the
 //! output is a pure function of the font bytes + `--name`; entries are
 //! sorted by codepoint, floats are emitted with fixed precision, and the
 //! source path only contributes its basename + sha256. Unit-tested below;
@@ -39,7 +39,7 @@ use ab_glyph::{Font, FontRef, PxScale};
 use crate::ffmpeg::BoxErr;
 use crate::sha256::sha256_hex;
 
-/// §3.4 raster cell: 64×128 px (1:2 — the engine's default cell aspect).
+/// Raster cell: 64×128 px (1:2 — the engine's default cell aspect).
 pub const CELL_W: u32 = 64;
 /// See [`CELL_W`].
 pub const CELL_H: u32 = 128;
@@ -98,16 +98,11 @@ pub fn run(args: &FontTableArgs) -> Result<(), BoxErr> {
     Ok(())
 }
 
-/// CIE L\* (0..100) of a linear luminance `y` in `0..=1` — white ink covering
-/// fraction `y` of a black cell reflects `y` of the light.
 fn lstar(y: f64) -> f64 {
-    // CIE 1976: L* = 116·f(Y/Yn) − 16 with the standard cube-root spline.
     let f = if y > 216.0 / 24389.0 { y.cbrt() } else { (24389.0 / 27.0 * y + 16.0) / 116.0 };
     116.0 * f - 16.0
 }
 
-/// TOML basic-string escape for a single glyph (the emitter's dual of
-/// `auto_ascii_core::FontTable::parse`).
 fn toml_ch(ch: char) -> String {
     match ch {
         '"' => "\"\\\"\"".into(),
@@ -116,15 +111,12 @@ fn toml_ch(ch: char) -> String {
     }
 }
 
-/// One rasterized glyph.
 struct GlyphRow {
     ch: char,
     coverage: f64,
     missing: bool,
 }
 
-/// Shared TOML emitter — one fixed field order + fixed float precision so
-/// byte-identity is a property of the *data*, not the code path.
 fn emit(
     name: &str,
     source: &str,
@@ -177,9 +169,6 @@ pub fn generate_from_font(
     let font = FontRef::try_from_slice(bytes).map_err(|e| format!("parse font: {e}"))?;
     let sha = sha256_hex(bytes);
 
-    // Terminals size monospace text by ADVANCE: scale so one advance == the
-    // cell width. Reference advance from ' ' (every monospace glyph shares
-    // it; verified against '@' below).
     let units_per_em =
         f64::from(font.units_per_em().ok_or("font has no units_per_em (not a scalable font)")?);
     let space = font.glyph_id(' ');
@@ -198,8 +187,6 @@ pub fn generate_from_font(
              but advance('@') = {at_units}"
         ));
     }
-    // px per font unit so that advance == CELL_W; ab_glyph's PxScale is the
-    // scaled line box (ascent − descent), so convert through height_unscaled.
     let px_per_unit = f64::from(CELL_W) / adv_units;
     let scale = PxScale::from((px_per_unit * f64::from(font.height_unscaled())) as f32);
     let px_per_em = px_per_unit * units_per_em;
@@ -208,19 +195,16 @@ pub fn generate_from_font(
     for ch in auto_ascii_core::palette::all_palette_glyphs() {
         let id = font.glyph_id(ch);
         if id.0 == 0 {
-            // .notdef → repertoire gap: coverage 0 + missing + WARN (policy).
             warns.push(format!("U+{:04X} {ch:?} has no glyph in {source} (coverage 0)", ch as u32));
             rows.push(GlyphRow { ch, coverage: 0.0, missing: true });
             continue;
         }
         let glyph = id.with_scale(scale);
         let coverage = match font.outline_glyph(glyph) {
-            None => 0.0, // present but blank (space)
+            None => 0.0,
             Some(og) => {
                 let b = og.px_bounds();
                 let (w, h) = (b.width().ceil() as i64, b.height().ceil() as i64);
-                // Center the ink box in the cell; clip to the cell (see the
-                // module docs — matches a real 1:2 terminal cell).
                 let ox = (i64::from(CELL_W) - w) / 2;
                 let oy = (i64::from(CELL_H) - h) / 2;
                 let mut sum = 0.0f64;
@@ -262,13 +246,9 @@ mod tests {
     const DEJAVU: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf";
 
     fn dejavu_bytes() -> Option<Vec<u8>> {
-        // System-font dependent: skip (not fail) where the font package is
-        // absent — same posture as the corpus-gated eval stages. CI-critical
-        // determinism is also covered by the conservative (font-free) half.
         std::fs::read(DEJAVU).ok()
     }
 
-    /// Acceptance (M5 item B): same font file → byte-identical table.
     #[test]
     fn generator_is_deterministic() {
         let (a, wa) = generate_conservative("conservative");
@@ -284,8 +264,6 @@ mod tests {
         assert_eq!(a, b, "same font bytes must produce a byte-identical table");
     }
 
-    /// The emitted table round-trips through the auto-ascii-core parser and covers
-    /// the full palette enumeration.
     #[test]
     fn table_roundtrips_through_core_parser() {
         let (toml, _) = generate_conservative("conservative");
@@ -302,10 +280,6 @@ mod tests {
         let (toml, warns) =
             generate_from_font(&bytes, "dejavu-sans-mono", "DejaVuSansMono.ttf").unwrap();
         let t = auto_ascii_core::FontTable::parse(&toml).unwrap();
-        // DejaVu Sans Mono covers the whole block/box-drawing surface but —
-        // verified against fontconfig (`fc-list :charset=2809`) — has NO
-        // braille block (that lives in DejaVu Sans/Serif): the poster child
-        // for §3.4's "braille verified-support only" gate.
         for ch in auto_ascii_core::palette::all_palette_glyphs() {
             let braille = ('\u{2800}'..='\u{28FF}').contains(&ch);
             assert_eq!(t.has_glyph(ch), !braille, "{ch:?} repertoire surprise");
@@ -314,9 +288,6 @@ mod tests {
         use auto_ascii_core::GlyphTier;
         assert_eq!(t.veto_tier(GlyphTier::BrailleVerified), GlyphTier::UnicodeBlocks);
         assert_eq!(t.veto_tier(GlyphTier::UnicodeBlocks), GlyphTier::UnicodeBlocks);
-        // Sanity vs the committed conservative constants (same font, same
-        // 64×128 fractional-ink model, different rasterizer): '@' within a
-        // few percent, ramps ordered, space blank, full block near-solid.
         let c = |ch| t.coverage(ch).unwrap();
         assert_eq!(c(' '), 0.0);
         assert!((c('@') - 0.2627).abs() < 0.02, "@ = {}", c('@'));
@@ -325,8 +296,6 @@ mod tests {
         assert!(c('▓') > c('▒') && c('▒') > c('░'), "shade ramp ordered");
     }
 
-    /// Missing-glyph policy: coverage 0 + `missing` + WARN. Liberation Mono
-    /// has no braille block — exactly the veto case §3.4 exists for.
     #[test]
     fn missing_glyphs_warn_and_record() {
         let path = "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf";

@@ -1,18 +1,3 @@
-//! Compile-time pipeline source fingerprint (M2 review fix).
-//!
-//! `auto-ascii-factory eval` caches built corpus assets keyed by
-//! `(input sha, build-params sha, PIPELINE_FINGERPRINT)`. The third
-//! component is emitted here: an FNV-1a 64 hash over every `.rs` file in
-//! this crate's `src/` and auto-ascii-format's `src/` (the two crates whose code
-//! determines asset bytes — extract/shots/lut/build stages and the ASCI
-//! writer). Any code change therefore invalidates the eval cache; without
-//! this, an M3 pipeline change would silently reuse assets built by M2 code
-//! and eval would measure the old pipeline. Over-invalidation (an edit to
-//! the eval driver itself) just costs a rebuild — the safe direction.
-//!
-//! Deterministic: files are hashed in sorted relative-path order with their
-//! path and length mixed in; no timestamps, no host state.
-
 use std::path::{Path, PathBuf};
 
 fn main() {
@@ -24,9 +9,8 @@ fn main() {
         let start = files.len();
         collect_rs(dir, dir, &mut files);
         for (rel, _) in &mut files[start..] {
-            *rel = format!("{tag}/{rel}"); // disambiguate the two src roots
+            *rel = format!("{tag}/{rel}");
         }
-        // Directory-level rerun: new/removed files retrigger the hash.
         println!("cargo:rerun-if-changed={}", dir.display());
     }
     files.sort();
@@ -49,8 +33,6 @@ fn main() {
     println!("cargo:rustc-env=ASCII_PIPELINE_FINGERPRINT={h:016x}");
 }
 
-/// Recursively collect `.rs` files under `dir`, keyed by path relative to
-/// `root` (checkout-location independent).
 fn collect_rs(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     let entries = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("build.rs: read_dir {}: {e}", dir.display()));

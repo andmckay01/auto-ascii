@@ -1,18 +1,18 @@
-//! `auto-ascii-format` — the ASCI v1 chunked container (PLAN §4): 64-byte fixed
-//! header, RIFF-style chunks (META / NORM / FRAM / FIDX / TRLR), per-frame
-//! zstd-compressed feature planes. Container only — no I/O policy (PLAN §2):
-//! the writer takes `Write + Seek`, the reader takes `&[u8]` (mmap-friendly).
+//! `auto-ascii-format` — the ASCI v1 chunked container: 64-byte fixed header,
+//! RIFF-style chunks (META / NORM / FRAM / FIDX / TRLR), per-frame
+//! zstd-compressed feature planes. Container only — no I/O policy: the writer
+//! takes `Write + Seek`, the reader takes `&[u8]` (mmap-friendly).
 //!
-//! Determinism is a contract (PLAN §4): hand-rolled fixed layout everywhere,
-//! CBOR only inside META, per-chunk CRC32, byte-identical writer output for
-//! identical input — enforced by the committed byte-golden tests.
+//! Determinism is a contract: hand-rolled fixed layout everywhere, CBOR only
+//! inside META, per-chunk CRC32, byte-identical writer output for identical
+//! input — enforced by byte-golden tests.
 //!
-//! M1 status (PLAN §7 M1): full ASCI v1 — temporal byte-delta filter with
-//! keyframes every `keyframe_ivl` frames (default 60, FRAM/FIDX flags bit0),
-//! 64-B-aligned plane subblocks, FIDX seek (keyframe binary search + delta
-//! rolls, [`AsciiReader::seek_plane_into`]), NORM per-shot runtime levels +
-//! cut flags ([`ShotRecord`]), chroma plane C (RGB565, half res). Version
-//! minor bumped to 1 (additive); M0 minor-0 intra assets remain readable.
+//! Format features: temporal byte-delta filter with keyframes every
+//! `keyframe_ivl` frames (default 60, FRAM/FIDX flags bit0), 64-B-aligned
+//! plane subblocks, FIDX seek (keyframe binary search + delta rolls,
+//! [`AsciiReader::seek_plane_into`]), NORM per-shot runtime levels + cut flags
+//! ([`ShotRecord`]), chroma plane C (RGB565, half res). Minor versions are
+//! additive: minor-0 (intra-only) files remain readable.
 
 pub mod chunk;
 pub mod error;

@@ -5,22 +5,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-# Unpublished, like auto-ascii-factory, and for the same reason: it depends
-# on the factory, whose ffmpeg-subprocess ingest is not a crates.io artifact.
 publish = false
 
 [lints]
 workspace = true
 
-# PLAN-M6-M8 §2. The facade cannot host this binary (the factory already
-# depends on the facade), so the CLI is its own crate depending on both.
-# NO new external dependencies: every dep below is already in the workspace
-# table.
 [dependencies]
-# Direct path dep, not `workspace = true`: the workspace entry sets
-# default-features = false (the embedder configuration the factory wants)
-# and `play` needs the terminal Player, which the default `bin` feature
-# implies. Version req keeps `cargo package`'s manifest check honest.
 auto-ascii = { path = "../auto-ascii", version = "0.2.0" }
 auto-ascii-factory = { path = "../auto-ascii-factory" }
 auto-ascii-format = { workspace = true }
@@ -29,8 +19,6 @@ memmap2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# The integration tests write raw BGR24 AVI input fixtures through the same
-# writer the factory's determinism guard uses (M7 item 3).
 [dev-dependencies]
 auto-ascii-eval = { workspace = true }
 

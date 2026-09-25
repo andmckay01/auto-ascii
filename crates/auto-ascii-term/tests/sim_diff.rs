@@ -1,7 +1,3 @@
-//! SimBackend diff-renderer behavior (PLAN §3.6 step 6, M0 task tests):
-//! tiny single-cell frames, SGR run-length elision, invalidate = full frame,
-//! skip-vs-move span heuristic, resize realloc, throttle accounting.
-
 use auto_ascii_core::{Cell, Grid, Rgb};
 use auto_ascii_term::{Backend, ColorTier, Event, Key, SimBackend};
 
@@ -19,7 +15,6 @@ fn count(hay: &[u8], needle: &[u8]) -> usize {
     hay.windows(needle.len()).filter(|w| *w == needle).count()
 }
 
-/// Count CUP sequences: ESC '[' [0-9;]* 'H'.
 fn count_cups(out: &[u8]) -> usize {
     let mut n = 0;
     let mut i = 0;
@@ -76,7 +71,6 @@ fn sgr_elision_one_sgr_for_uniform_run() {
     let stats = sim.present(&g);
     let out = sim.take_output();
 
-    // 64 same-colored cells across 4 rows: exactly ONE fg and ONE bg SGR.
     assert_eq!(count(&out, b"38;2"), 1, "fg SGR must be run-length elided");
     assert_eq!(count(&out, b"48;2"), 1, "bg SGR must be run-length elided");
     assert_eq!(count(&out, b"x"), 64);
@@ -92,13 +86,11 @@ fn unchanged_frame_emits_nothing_and_invalidate_emits_full_frame() {
     sim.present(&g);
     let first = sim.take_output();
 
-    // Same grid again: zero damage, zero bytes (diff mode).
     let second = sim.present(&g);
     assert_eq!(second.bytes, 0);
     assert_eq!(second.cells_damaged, 0);
     assert!(sim.take_output().is_empty());
 
-    // invalidate() forces a full repaint — byte-identical to the first frame.
     sim.invalidate();
     let third = sim.present(&g);
     let out = sim.take_output();
@@ -113,7 +105,6 @@ fn gap_of_six_is_rewritten_not_moved() {
     sim.present(&base);
     sim.take_output();
 
-    // Changed cells at cols 0 and 7 → 6 unchanged cells between → ONE span.
     let mut g = base.clone();
     g.set(0, 1, Cell::new('A', Rgb::gray(255), Rgb::BLACK));
     g.set(7, 1, Cell::new('B', Rgb::gray(255), Rgb::BLACK));
@@ -130,7 +121,6 @@ fn gap_of_seven_splits_into_two_spans() {
     sim.present(&base);
     sim.take_output();
 
-    // Changed cells at cols 0 and 8 → 7 unchanged between → TWO spans.
     let mut g = base.clone();
     g.set(0, 1, Cell::new('A', Rgb::gray(255), Rgb::BLACK));
     g.set(8, 1, Cell::new('B', Rgb::gray(255), Rgb::BLACK));
@@ -165,13 +155,12 @@ fn present_with_stale_grid_size_panics() {
 #[test]
 fn throttle_accounts_simulated_drain_time() {
     let mut sim = SimBackend::new(80, 24);
-    sim.set_throughput(Some(2_000_000)); // 2 MB/s — the M2 gate speed
+    sim.set_throughput(Some(2_000_000));
     let stats = sim.present(&shaded(80, 24));
     assert!(stats.bytes > 0);
     let expected_ns = u64::from(stats.bytes) * 1_000_000_000 / 2_000_000;
     assert_eq!(stats.write_ns, expected_ns);
 
-    // Unthrottled again: write_ns is real (tiny) copy time, not the formula.
     sim.set_throughput(None);
     sim.invalidate();
     let stats = sim.present(&shaded(80, 24));

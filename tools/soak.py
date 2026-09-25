@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tools/soak.py — M5 resize-storm soak harness (PLAN §7 M5 item A).
+"""tools/soak.py — resize-storm soak harness for the player.
 
 Forks the release `auto-ascii-player` onto a fresh pty via `pty.fork()` — the
 pty becomes the child's *controlling* terminal, so TIOCSWINSZ on the master
@@ -27,8 +27,8 @@ as failures. `summary.json` records exit status, byte totals, resize
 counts, whether the RESTORE_SEQ bytes (`ESC[0m ESC[?25h ESC[?7h
 ESC[?1049l`, auto-ascii-term/src/restore.rs) appear in the tail, a post-warmup
 least-squares RSS slope in MB/h, a short escaped tail preview, and the
-**structural escape-stream check** (M5 acceptance A: "no desync in
-captured output — final frames still parse as valid escape streams"):
+**structural escape-stream check** (no desync in captured output: the
+final frames must still parse as valid escape streams):
 both `head.log` and the tail ring are run through a strict VT parser
 (`check_escape_stream`) that accepts EXACTLY what the player is specified
 to emit — the probe volley, the session enter/restore CSI modes, CUP
@@ -41,7 +41,7 @@ just by the exit code.
 Harness exit code: 0 = ran the full duration, player exited 0 on `q`, the
 restore bytes were seen, and both captured logs passed the structural
 check; nonzero otherwise (see `fail_reasons` in summary.json). The
-RSS-slope acceptance (< 1 MB/h after warmup, PLAN §7 M5) is *reported*,
+RSS-slope acceptance (< 1 MB/h after warmup) is *reported*,
 not gated here — the hour-long evidence in rss.csv is evaluated by the
 reviewer.
 
@@ -84,16 +84,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-# Resize storm parameters (PLAN §7 M5 item A).
 RESIZE_MIN_S = 0.050
 RESIZE_MAX_S = 0.200
 COLS_RANGE = (20, 500)
 ROWS_RANGE = (6, 140)
-SUBMIN_SIZE = (5, 3)  # below the 32x9 viewport floor -> "enlarge" card
+SUBMIN_SIZE = (5, 3)
 SUBMIN_PROB = 0.08
 INITIAL_SIZE = (120, 40)
 
-# Log rotation: keep the first 2 MB + the last 10 MB of pty output.
 HEAD_CAP = 2 * 1024 * 1024
 TAIL_CAP = 10 * 1024 * 1024
 TAIL_FLUSH_IVL_S = 30.0
@@ -103,8 +101,6 @@ PROGRESS_IVL_S = 60.0
 QUIT_GRACE_S = 15.0
 KILL_GRACE_S = 5.0
 
-# auto-ascii-term/src/restore.rs RESTORE_SEQ: SGR reset, cursor show, autowrap on,
-# leave alt screen. Emitted by shutdown/atexit/signal/Drop paths.
 RESTORE_SEQ = b"\x1b[0m\x1b[?25h\x1b[?7h\x1b[?1049l"
 
 ABORT = False
@@ -143,7 +139,6 @@ class OutputLog:
                 self._head.flush()
         self._ring.append(data)
         self._ring_len += len(data)
-        # Trim whole chunks while the ring stays >= TAIL_CAP without them.
         while self._ring and self._ring_len - len(self._ring[0]) >= TAIL_CAP:
             self._ring_len -= len(self._ring.popleft())
 
@@ -171,7 +166,7 @@ def read_rss_kb(pid: int) -> int | None:
         with open(f"/proc/{pid}/status") as f:
             for line in f:
                 if line.startswith("VmRSS:"):
-                    return int(line.split()[1])  # kB
+                    return int(line.split()[1])
     except OSError:
         pass
     return None
@@ -196,7 +191,6 @@ def drain(master: int, log: OutputLog) -> bool:
         except BlockingIOError:
             return False
         except OSError:
-            # EIO: slave side fully closed (Linux pty semantics) -> EOF.
             return True
         if not data:
             return True
@@ -218,40 +212,8 @@ def rss_slope_mb_per_h(samples: list[tuple[float, int]], warmup_s: float) -> flo
     kb_per_s = num / den
     return kb_per_s * 3600.0 / 1024.0
 
-
-# ---------------------------------------------------------------------------
-# Structural escape-stream check (M5 acceptance A: "no panics/desync in
-# captured output — final frames still parse as valid escape streams").
-#
-# A strict VT parser over the captured pty bytes, in the spirit of the
-# byte-exact interpreter in crates/auto-ascii/tests/scrub_overlay.rs: it
-# accepts EXACTLY the sequences the player is specified to emit and reports
-# anything else. The player's full output vocabulary (auto-ascii-term/src/{ansi,
-# render,restore,probe}.rs):
-#
-#   * probe volley:  CSI > 0 q | CSI ? 2026 $ p | DCS + q 524742 ST |
-#                    CSI 16 t | CSI c   (one write, start of stream)
-#   * session enter: CSI ? 1049 h, CSI ? 25 l, CSI ? 7 l
-#   * frames:        CUP `CSI row ; col H` (1-based, bounded by the storm's
-#                    max size), SGR runs (truecolor 38/48;2;R;G;B, 256-color
-#                    38/48;5;N, 16-color 30-37/40-47/90-97/100-107, reset 0),
-#                    optional CSI ? 2026 h ... l wrap, glyphs as printable
-#                    ASCII / UTF-8
-#   * restore:       CSI 0 m, CSI ? 25 h, CSI ? 7 h, CSI ? 1049 l
-#
-# A desync (truncated CSI, CUP outside any size the storm ever set, stray
-# control bytes, malformed SGR) is a structural error even when the player
-# survives it — exactly the failure mode the exit code cannot see.
-# ---------------------------------------------------------------------------
-
-# No storm size ever exceeds these; a CUP beyond them is desync evidence
-# even without per-chunk timing (the pty is never larger than the largest
-# size the harness sets).
 MAX_CUP_COLS = max(COLS_RANGE[1], INITIAL_SIZE[0])
 MAX_CUP_ROWS = max(ROWS_RANGE[1], INITIAL_SIZE[1])
-# Longest legitimate CSI body: a full fg+bg truecolor SGR
-# "38;2;255;255;255;48;2;255;255;255" = 33 bytes. Anything much longer is a
-# runaway (missing final byte swallowing the frame).
 CSI_MAX_BODY = 40
 MODE_PARAMS = {b"?1049", b"?25", b"?7", b"?2026"}
 SGR_SIMPLE = frozenset(
@@ -277,11 +239,11 @@ def _sgr_error(body: bytes) -> str | None:
         elif n in (38, 48):
             if i + 1 >= len(nums):
                 return f"truncated {n} SGR in {body!r}"
-            if nums[i + 1] == 2:  # truecolor: 38;2;R;G;B
+            if nums[i + 1] == 2:
                 if i + 4 >= len(nums) or any(v > 255 for v in nums[i + 2 : i + 5]):
                     return f"malformed {n};2 SGR in {body!r}"
                 i += 5
-            elif nums[i + 1] == 5:  # 256-color: 38;5;N
+            elif nums[i + 1] == 5:
                 if i + 2 >= len(nums) or nums[i + 2] > 255:
                     return f"malformed {n};5 SGR in {body!r}"
                 i += 3
@@ -295,7 +257,7 @@ def _sgr_error(body: bytes) -> str | None:
 def _csi_error(final: int, body: bytes) -> str | None:
     """Validate one complete CSI against the player's vocabulary."""
     f = chr(final)
-    if f == "H":  # CUP row;col, 1-based
+    if f == "H":
         parts = body.split(b";")
         if len(parts) != 2 or not all(p.isdigit() for p in parts):
             return f"malformed CUP body {body!r}"
@@ -309,13 +271,13 @@ def _csi_error(final: int, body: bytes) -> str | None:
         return _sgr_error(body)
     if f in "hl":
         return None if body in MODE_PARAMS else f"unexpected mode {body!r} for '{f}'"
-    if f == "q":  # volley XTVERSION query
+    if f == "q":
         return None if body == b">0" else f"unexpected 'q' body {body!r}"
-    if f == "p":  # volley DECRQM 2026 query
+    if f == "p":
         return None if body == b"?2026$" else f"unexpected 'p' body {body!r}"
-    if f == "t":  # volley cell-size query
+    if f == "t":
         return None if body == b"16" else f"unexpected 't' body {body!r}"
-    if f == "c":  # volley DA1 sentinel query
+    if f == "c":
         return None if body == b"" else f"unexpected 'c' body {body!r}"
     return f"CSI final {f!r} the player never emits (body {body!r})"
 
@@ -374,7 +336,7 @@ def check_escape_stream(data: bytes, *, resync_start: bool = False,
                 if data[j] == ord("H"):
                     n_cup += 1
                 i = j + 1
-            elif nxt == ord("P"):  # DCS: only the volley's XTGETTCAP query
+            elif nxt == ord("P"):
                 st = data.find(b"\x1b\\", i + 2)
                 if st < 0:
                     if not allow_truncated_end:
@@ -389,7 +351,7 @@ def check_escape_stream(data: bytes, *, resync_start: bool = False,
                 i += 2
         elif 0x20 <= b <= 0x7E or b in (0x09, 0x0A, 0x0D):
             i += 1
-        elif 0xC2 <= b <= 0xF4:  # UTF-8 lead byte (glyphs above ASCII)
+        elif 0xC2 <= b <= 0xF4:
             need = 1 if b <= 0xDF else 2 if b <= 0xEF else 3
             if i + need >= end:
                 if not allow_truncated_end:
@@ -410,7 +372,7 @@ def check_escape_stream(data: bytes, *, resync_start: bool = False,
         "sequences": n_seq,
         "cups": n_cup,
         "error_count": total_errors,
-        "errors": errors,  # first 20
+        "errors": errors,
     }
 
 
@@ -425,10 +387,6 @@ def check_logs(outdir: Path) -> tuple[dict, list[str]]:
             reasons.append(f"{path.name} missing — nothing to check")
             continue
         data = path.read_bytes()
-        # head.log starts at the stream start and is cut at a byte cap;
-        # tail.log starts at an arbitrary ring cut (unless the run was short
-        # enough that the ring still holds the stream start) and ends at
-        # process EOF, where a clean exit ends on a complete sequence.
         chk = check_escape_stream(
             data,
             resync_start=(name == "tail" and not data.startswith(b"\x1b")),
@@ -484,19 +442,15 @@ def spawn_player(player: Path, asset: Path) -> tuple[int, int]:
     TIOCSWINSZ on the master raises SIGWINCH in the player — the whole
     point of the harness."""
     pid, master = pty.fork()
-    if pid == 0:  # child
+    if pid == 0:
         try:
             env = dict(os.environ)
-            # Deterministic passive hints: a plain 256-color xterm. The
-            # probe volley goes unanswered on this pty (deadline ~250 ms),
-            # exactly like piping through a dumb wrapper. --no-cache keeps
-            # the "no replies" result out of the user's probe cache.
             env["TERM"] = "xterm-256color"
             for k in ("COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
                       "TMUX", "SSH_CONNECTION", "SSH_TTY"):
                 env.pop(k, None)
             os.execve(str(player), [str(player), str(asset), "--loop", "--no-cache"], env)
-        except Exception:  # noqa: BLE001 — child must never unwind into the harness
+        except Exception:
             os._exit(127)
     os.set_blocking(master, False)
     return pid, master
@@ -558,7 +512,7 @@ def main() -> int:
     t0 = time.monotonic()
     deadline = t0 + args.duration
     next_resize = t0 + rng.uniform(RESIZE_MIN_S, RESIZE_MAX_S)
-    next_rss = t0  # sample immediately
+    next_rss = t0
     next_flush = t0 + TAIL_FLUSH_IVL_S
     next_progress = t0 + PROGRESS_IVL_S
 
@@ -615,7 +569,6 @@ def main() -> int:
     aborted = ABORT
     early_exit = early_status is not None or (eof and ran_s < args.duration)
 
-    # Graceful quit: 'q' is the player's quit key. Drain the restore bytes.
     sent_quit = False
     kill_used = None
     status = early_status
@@ -646,7 +599,6 @@ def main() -> int:
                     break
         else:
             early_exit = True
-    # Final drain of anything left in the pty buffer (restore bytes).
     for _ in range(50):
         r, _, _ = select.select([master], [], [], 0.1)
         if not r or drain(master, log):
@@ -656,8 +608,8 @@ def main() -> int:
     if status is None:
         exitcode = None
     elif hasattr(os, "waitstatus_to_exitcode"):
-        exitcode = os.waitstatus_to_exitcode(status)  # < 0 = -signum
-    else:  # pragma: no cover — pre-3.9 fallback
+        exitcode = os.waitstatus_to_exitcode(status)
+    else:
         exitcode = os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
 
     tail = log.tail_bytes()
@@ -680,8 +632,6 @@ def main() -> int:
     if RESTORE_SEQ not in tail:
         fail_reasons.append("RESTORE_SEQ not found in output tail")
 
-    # M5 acceptance A: structural escape-stream check over the captured
-    # output — a desync the player survives must still fail the soak.
     escape_check, escape_reasons = check_logs(args.outdir)
     fail_reasons.extend(escape_reasons)
 

@@ -1,19 +1,3 @@
-//! Glyph codecs in the player (the `/` key, the controls overlay's info row)
-//! and the `letters` goldens.
-//!
-//! * `/` and `s` surface through the REAL event queue and collide with
-//!   nothing already bound;
-//! * a codec switch is a cold start in the new codec, and switching back to
-//!   `pixels` restores the default picture byte for byte;
-//! * the deck carries the codec across clip switches;
-//! * the hints row gains `/ codec` and `s save` where it has room (and is
-//!   unchanged at 80 columns), and the info row sits above it with it;
-//! * two committed `letters` goldens — ascii and unicode tier — over a
-//!   synthetic asset that carries every plane (edges, highlight/shadow
-//!   flags, chroma), so the edge strokes, half variants and dense fill are
-//!   all on the page. Re-bless deliberately:
-//!   `ASCII_UPDATE_GOLDENS=1 cargo test -p auto-ascii --test codecs`.
-
 use std::io::Cursor;
 use std::path::PathBuf;
 
@@ -31,11 +15,6 @@ const W: usize = 192;
 const H: usize = 108;
 const FRAMES: u32 = 6;
 
-/// Six frames, 192×108, every plane: a dark-to-mid diagonal gradient with a
-/// lit disc drifting right (its core near-white — the fill), a hard bright
-/// bar across the top (half variants), edges derived from the luma gradient
-/// in the asset's doubled-angle convention, H highlight specks and a
-/// deep-shadow corner, and a hue sweep in C.
 fn full_asset() -> Vec<u8> {
     let opts = WriterOptions {
         base_w: W as u16,
@@ -51,10 +30,10 @@ fn full_asset() -> Vec<u8> {
             let (cx, cy) = (70.0 + 6.0 * f as f64, 60.0);
             let d = ((x as f64 - cx).powi(2) + (y as f64 - cy).powi(2)).sqrt();
             if (8..14).contains(&y) && x > 20 && x < 170 {
-                return 250; // bright bar
+                return 250;
             }
             if d < 30.0 {
-                return (255.0 - d * 2.0) as u8; // lit disc, near-white core
+                return (255.0 - d * 2.0) as u8;
             }
             ((x + y) as f64 * 0.6).min(150.0) as u8
         };
@@ -78,15 +57,14 @@ fn full_asset() -> Vec<u8> {
             .map(|i| {
                 let (x, yy) = (i % W, i / W);
                 if x % 37 == 5 && yy % 23 == 7 {
-                    1 // highlight speck
+                    1
                 } else if x > 170 && yy > 90 {
-                    2 // deep-shadow corner
+                    2
                 } else {
                     0
                 }
             })
             .collect();
-        // C at half res, RGB565 LE: a hue sweep across x.
         let (cw, ch) = (W / 2, H / 2);
         let mut c = Vec::with_capacity(cw * ch * 2);
         for yy in 0..ch {
@@ -115,7 +93,6 @@ fn player(bytes: &[u8], tier: GlyphTier) -> Player<'_> {
     Player::new(AsciiReader::open(bytes).unwrap(), 2.0, true, ColorDepth::True, tier).unwrap()
 }
 
-/// Render frames `0..=last` (warm, like playback) and return the grid.
 fn render(p: &mut Player<'_>, backend: &mut SimBackend, last: u32) -> Grid<Cell> {
     for f in 0..=last {
         p.render_present(backend, f).unwrap();
@@ -135,7 +112,6 @@ fn slash_and_s_surface_through_the_event_queue() {
     let mut p = player(&asset, GlyphTier::Ascii);
     p.reflow(&mut backend, 80, 24);
 
-    // `/` counts (every press is a visible step), and moves nothing else.
     for _ in 0..3 {
         backend.push_event(Event::Key(Key::Char('/')));
     }
@@ -144,14 +120,12 @@ fn slash_and_s_surface_through_the_event_queue() {
     assert!(!d.save && !d.toggle_hints && !d.toggle_pause && !d.quit);
     assert_eq!((d.jump_digit, d.seek_steps, d.dial_cycle, d.dial_delta), (None, 0, 0, 0));
 
-    // `s` collapses to one save per drain.
     backend.push_event(Event::Key(Key::Char('s')));
     backend.push_event(Event::Key(Key::Char('s')));
     let d = p.drain_events(&mut backend);
     assert!(d.save);
     assert_eq!((d.codec_cycle, d.dial_cycle, d.dial_delta), (0, 0, 0));
 
-    // No existing binding reports either one.
     for key in ['q', ' ', '0', '9', 'd', '[', ']', 'v', 'x', '?'] {
         backend.push_event(Event::Key(Key::Char(key)));
         let d = p.drain_events(&mut backend);
@@ -164,8 +138,6 @@ fn slash_and_s_surface_through_the_event_queue() {
     }
 }
 
-/// A switch is a cold start in the new codec (the same frame as a fresh
-/// player in that codec), and switching back restores pixels exactly.
 #[test]
 fn codec_switch_is_a_cold_start_and_pixels_comes_back_exactly() {
     let asset = full_asset();
@@ -194,8 +166,6 @@ fn codec_switch_is_a_cold_start_and_pixels_comes_back_exactly() {
     }
 }
 
-/// The deck's codec is sticky state: a clip opened after the switch, and a
-/// clip fronted again later, both compose in it.
 #[test]
 fn deck_carries_the_codec_across_clip_switches() {
     let dir = std::env::temp_dir().join(format!("auto-ascii-codecs-deck-{}", std::process::id()));
@@ -221,12 +191,12 @@ fn deck_carries_the_codec_across_clip_switches() {
     let pixels = deck.showing().as_slice().to_vec();
 
     deck.set_codec(Codec::Letters);
-    deck.render_at(at(1)).unwrap(); // opens after the switch
+    deck.render_at(at(1)).unwrap();
     let letters = deck.showing().as_slice().to_vec();
     assert_ne!(letters, pixels);
     let allowed = letters_glyphs(false);
     assert!(letters.iter().all(|c| allowed.contains(&c.glyph())), "clip 1 composes in letters");
-    deck.render_at(at(0)).unwrap(); // opened before the switch, fronted again
+    deck.render_at(at(0)).unwrap();
     assert_eq!(deck.showing().as_slice(), &letters[..], "clip 0 switched with the deck");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -245,7 +215,6 @@ fn hints_row_names_the_new_keys_where_there_is_room() {
         hints.trim_end(),
         " q quit   space pause   0-9 jump   <- -> 5s   d dial   [ ] adjust   / codec   s save   v controls"
     );
-    // At 80 columns the two new items are the first to go: the M6 row, exactly.
     let mut backend = SimBackend::new(80, 24);
     let mut p = player(&asset, GlyphTier::Ascii);
     p.reflow(&mut backend, 80, 24);
@@ -254,9 +223,6 @@ fn hints_row_names_the_new_keys_where_there_is_room() {
     assert!(!row(p.grid(), 22).contains("codec"), "80 columns keep the M6 row");
 }
 
-/// The info row rides with the hints on `rows-3`: set text shows only while
-/// the hints do, prints non-ASCII as `?`, and clearing it while visible
-/// forces the full repaint that wipes it (the overlay-hide contract).
 #[test]
 fn info_row_rides_with_the_hints() {
     let asset = build_fixture(Fixture::GradientMotion);
@@ -265,7 +231,7 @@ fn info_row_rides_with_the_hints() {
     let mut p = Player::new(
         AsciiReader::open(&asset).unwrap(),
         2.0,
-        false, // diff mode: the hide must invalidate on its own
+        false,
         ColorDepth::True,
         GlyphTier::Ascii,
     )
@@ -295,7 +261,6 @@ fn info_row_rides_with_the_hints() {
     assert!(!row(p.grid(), rows - 3).contains("codec"));
 }
 
-/// The facade's public knob: `RenderSession::set_codec` renders letters.
 #[test]
 fn render_session_selects_the_codec() {
     let path = std::env::temp_dir().join(format!("auto-ascii-codecs-session-{}.ascii", std::process::id()));
@@ -306,15 +271,13 @@ fn render_session_selects_the_codec() {
     s.set_codec(Codec::Letters);
     let letters = s.render(3, 100, 30).unwrap().as_slice().to_vec();
     assert_ne!(pixels, letters);
-    let allowed = letters_glyphs(true); // RenderSession defaults to Unicode blocks
+    let allowed = letters_glyphs(true);
     assert!(letters.iter().all(|c| allowed.contains(&c.glyph())));
     assert!(letters.iter().any(|c| c.glyph() == '█'), "the disc core fills");
     let _ = std::fs::remove_file(&path);
 }
 
 fn golden_text(grid: &Grid<Cell>, title: &str) -> String {
-    // Glyph rows framed so trailing spaces survive editors, then one FNV-1a
-    // digest of every fg/bg so a color regression cannot hide either.
     let mut s = format!("{title}\n");
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for r in 0..grid.rows() {
@@ -357,7 +320,6 @@ fn letters_goldens() {
         let grid = render(&mut p, &mut backend, FRAMES - 1);
         let allowed = letters_glyphs(tier != GlyphTier::Ascii);
         assert!(grid.as_slice().iter().all(|c| allowed.contains(&c.glyph())));
-        // The page shows the layers it exists to pin.
         let text: String = grid.as_slice().iter().map(|c| c.glyph()).collect();
         assert!(text.contains(['|', '/', '\\']), "{name}: edge strokes");
         if tier != GlyphTier::Ascii {

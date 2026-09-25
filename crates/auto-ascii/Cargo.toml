@@ -1,17 +1,10 @@
 [package]
 name = "auto-ascii"
 description = "Realtime ASCII-art video: play ASCI feature assets in a terminal, or render them into your own cell grid"
-# 0.2.0, not the workspace 0.1.0: `auto-ascii` 0.1.0 is already published
-# on crates.io — that version depends on the old pre-rename crate names and
-# stays there yanked, and crates.io never lets a version number be reused.
-# The three libraries below are first publishes under new names, so they
-# keep the workspace 0.1.0 — hence the dep reqs here say 0.1.
 version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-# Publish metadata (M4 item C). `license` is the workspace's MIT; the
-# LICENSE file lives at the repo root.
 keywords = ["ascii", "terminal", "video", "tui", "ansi"]
 categories = ["multimedia::video", "command-line-utilities", "rendering"]
 readme = "README.md"
@@ -19,48 +12,19 @@ readme = "README.md"
 [lints]
 workspace = true
 
-# THE public library (M4 item A): the workspace ascii-* crates are
-# implementation details behind this facade. Three tiers of build:
-#
-#   default            — library + the `auto-ascii-player` binary (cargo install works)
-#   --no-default-features --features terminal
-#                      — library only, WITH the blocking terminal Player
-#   --no-default-features
-#                      — pure embedder: RenderSession + Grid/Cell only; the
-#                        dep tree carries NO clap/anyhow/crossterm (M4
-#                        acceptance 4 — verify with
-#                        `cargo tree -p auto-ascii --no-default-features`)
 [features]
 default = ["bin", "compose"]
-# The blocking terminal player (Player/PlayerBuilder): real session entry,
-# caps probe, restore hooks — pulls auto-ascii-term's crossterm/libc session
-# layer. Implies `compose`: the player takes a composition .toml (M8).
 terminal = ["auto-ascii-term/session", "compose"]
-# The `auto-ascii-player` CLI binary (thin argv shim over the facade + the
-# headless --sim harness).
 bin = ["terminal", "dep:clap", "dep:anyhow"]
-# M8 (PLAN-M6-M8 §3): reading composition TOML files
-# (Composition::from_toml_str/from_toml_file, RenderSession::open_composition).
-# The Composition type itself, its timeline math and compose::export are core
-# tier — only the parser needs a dependency.
 compose = ["dep:toml"]
 
 [dependencies]
 auto-ascii-core = { workspace = true }
 auto-ascii-format = { workspace = true }
-# default-features = false: the session layer (crossterm/libc) enters only
-# via the `terminal` feature above. Direct path dep — workspace inheritance
-# cannot subtract default features. The version req keeps `cargo package`'s
-# manifest check green (M5 item F: path deps are stripped to versions there).
 auto-ascii-term = { path = "../auto-ascii-term", version = "0.1.0", default-features = false }
-# PLAN §8: assets are mmap'd read-only. Terminal-free (embedder builds keep it).
 memmap2 = { workspace = true }
-# bin-only (feature-gated; PLAN §8).
 clap = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
-# `compose`-only (M8): composition files are TOML. Parsed through
-# `toml::Table` rather than a serde derive so every rejection can name the
-# offending clip index — which is also why serde is not a direct dep here.
 toml = { workspace = true, optional = true }
 
 [[bin]]
@@ -68,9 +32,6 @@ name = "auto-ascii-player"
 path = "src/bin/auto-ascii-player.rs"
 required-features = ["bin"]
 
-# M4 item C. embedded-loop/headless-dump are RenderSession-only and build in
-# every configuration (including `--no-default-features`); simple-play drives
-# the terminal Player, so it is gated the same way that API is.
 [[example]]
 name = "simple-play"
 required-features = ["terminal"]
@@ -81,11 +42,6 @@ name = "embedded-loop"
 [[example]]
 name = "headless-dump"
 
-# M2 item E: criterion perf gates over the real player pipeline (PLAN §6).
-# Thresholds live in perf/thresholds.toml; scripts/perf-gate.sh compares.
-# auto-ascii-eval (fixture assets) + proptest: the §6 resize-fuzz invariants and
-# the committed goldens exercise THIS crate's pipeline, not a test-harness
-# replica (M2 review fix; moved here with the pipeline at M4).
 [dev-dependencies]
 criterion = { workspace = true }
 auto-ascii-eval = { workspace = true }

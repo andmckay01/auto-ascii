@@ -1,9 +1,3 @@
-//! Glyph-codec properties over random feature planes: the `letters` codec
-//! stays inside its repertoire on every tier (printable ASCII, plus `█▀▄`
-//! only where the tier draws blocks), and dispatching `Codec::Pixels`
-//! through the registry is byte-identical to the plain `compose_frame` path
-//! every golden pins.
-
 use auto_ascii_core::codec::letters::letters_glyphs;
 use auto_ascii_core::compose::{ComposeParams, FramePlanes, compose_frame, compose_frame_masked};
 use auto_ascii_core::hysteresis::HysteresisState;
@@ -28,8 +22,6 @@ fn color(i: u8) -> ColorDepth {
     }
 }
 
-/// Deterministic pseudo-random plane bytes from a seed (xorshift), so a
-/// failing case replays from the proptest seed alone.
 fn plane(seed: u64, len: usize) -> Vec<u8> {
     let mut x = seed | 1;
     (0..len)
@@ -45,9 +37,6 @@ fn plane(seed: u64, len: usize) -> Vec<u8> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
-    /// Every glyph `letters` emits over several frames of random features
-    /// (edges, highlight/shadow flags, chroma, any tier and depth) is in its
-    /// repertoire: printable ASCII anywhere, `█▀▄` only on block tiers.
     #[test]
     fn letters_only_emits_allowed_glyphs(
         seed in any::<u64>(),
@@ -91,9 +80,6 @@ proptest! {
         }
     }
 
-    /// Registry dispatch adds nothing to pixels: `compose_frame_codec(Pixels)`
-    /// (masked and unmasked) matches `compose_frame`/`compose_frame_masked`
-    /// cell for cell, tag for tag, frame after frame.
     #[test]
     fn pixels_through_the_registry_is_the_plain_path(
         seed in any::<u64>(),

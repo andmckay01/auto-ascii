@@ -1,37 +1,17 @@
-//! Per-tier escape-stream byte goldens (PLAN §6 "per-palette golden
-//! escape-byte streams", M2 item C): one small synthetic fixture frame
-//! rendered to a 48×12 grid and presented through `SimBackend` on each color
-//! tier (truecolor / 256 / 16 / mono), asserted byte-exact against committed
-//! files under `tests/goldens/`.
-//!
-//! What these pin, end to end: the painter's quantize→diff→span→SGR-elide
-//! assembly, the per-tier SGR forms (`38;2` / `38;5` / `30–37/90–97` / none),
-//! the `?2026h…l` wrap, CUP emission, and — via the fixture render — the
-//! resample/NORM/compose byte behavior feeding it. Reproducible without the
-//! corpus (repo rule): the fixture is pure integer math through `AsciiWriter`
-//! (dev-dep on auto-ascii-eval; a legal dev-dependency cycle).
-//!
-//! Re-bless deliberately: `ASCII_UPDATE_GOLDENS=1 cargo test -p auto-ascii-term
-//! --test tier_goldens`, then review the diff.
-
 use std::path::PathBuf;
 
 use auto_ascii_core::{Cell, Grid};
 use auto_ascii_eval::fixtures::{Fixture, FixtureRenderer, GoldenPalette, build_fixture};
 use auto_ascii_term::{Backend, Caps, ColorTier, SimBackend};
 
-/// Small but non-trivial: 48×12 → 43×12 viewport with L2/R3 letterbox pads,
-/// coarse ramp (< 70 cols), chroma fg exercising the full color range.
 const COLS: u16 = 48;
 const ROWS: u16 = 12;
-/// Mid-motion gradient frame (same fixture family as the cell-grid goldens).
 const FRAME: u32 = 10;
 
 fn golden_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens").join(name)
 }
 
-/// Render the fixture frame once — the identical grid feeds all four tiers.
 fn fixture_grid() -> Grid<Cell> {
     let asset = build_fixture(Fixture::GradientMotion);
     let mut renderer = FixtureRenderer::new(&asset, GoldenPalette::Ascii);
@@ -39,8 +19,6 @@ fn fixture_grid() -> Grid<Cell> {
     renderer.render(FRAME).clone()
 }
 
-/// First present after construction = full repaint; sync_2026 on so the wrap
-/// is part of every golden.
 fn present_on_tier(grid: &Grid<Cell>, tier: ColorTier) -> Vec<u8> {
     let mut sim = SimBackend::new(COLS, ROWS);
     sim.set_caps(Caps { color: tier, sync_2026: true, ..Caps::default() });
@@ -107,9 +85,6 @@ fn golden_mono_stream() {
     assert_golden(ColorTier::Mono, "gradient_f10_48x12_mono.ansi");
 }
 
-/// The four tier streams must be pairwise distinct (a regression collapsing
-/// two tiers into one code path would otherwise still pass four identical
-/// file compares after a careless re-bless).
 #[test]
 fn tier_streams_are_distinct() {
     let grid = fixture_grid();
@@ -124,7 +99,6 @@ fn tier_streams_are_distinct() {
             assert_ne!(streams[i], streams[j], "tier streams {i} and {j} are identical");
         }
     }
-    // And every one is wrapped (sync_2026 was set).
     for s in &streams {
         assert!(s.starts_with(b"\x1b[?2026h") && s.ends_with(b"\x1b[?2026l"));
     }

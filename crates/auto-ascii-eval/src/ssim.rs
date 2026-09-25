@@ -1,4 +1,4 @@
-//! Windowed SSIM (PLAN §6 downscale-SSIM, step 2).
+//! Windowed SSIM (downscale-SSIM, step 2).
 //!
 //! Implements mean SSIM exactly as specified in the reference paper:
 //! Wang, Bovik, Sheikh & Simoncelli, *"Image Quality Assessment: From Error
@@ -51,8 +51,6 @@ fn gaussian_kernel() -> [f64; SSIM_WINDOW] {
     k
 }
 
-/// Separable valid-mode filter: horizontal then vertical pass with the same
-/// 1-D kernel. Output is `(w − WINDOW + 1) × (h − WINDOW + 1)`.
 fn filter_valid(src: &[f64], w: usize, h: usize, k: &[f64; SSIM_WINDOW]) -> Vec<f64> {
     let ow = w - SSIM_WINDOW + 1;
     let oh = h - SSIM_WINDOW + 1;
@@ -81,8 +79,6 @@ fn filter_valid(src: &[f64], w: usize, h: usize, k: &[f64; SSIM_WINDOW]) -> Vec<
     out
 }
 
-/// Single-window SSIM over the whole image with uniform weights (the
-/// small-image fallback).
 fn global_ssim(a: &[u8], b: &[u8]) -> f64 {
     let n = a.len() as f64;
     let (mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -94,9 +90,6 @@ fn global_ssim(a: &[u8], b: &[u8]) -> f64 {
         syy += y * y;
         sxy += x * y;
     }
-    // No variance clamping (matches the reference implementation): C2 keeps
-    // denominators positive, and clamping would break the exact vx==vy==cov
-    // identity that makes ssim(x, x) == 1.0 bit-exactly.
     let (mx, my) = (sx / n, sy / n);
     let vx = sxx / n - mx * mx;
     let vy = syy / n - my * my;
@@ -144,7 +137,6 @@ pub fn ssim(a: &GrayImage, b: &GrayImage) -> f64 {
     let mut sum = 0.0;
     for i in 0..mx.len() {
         let (ux, uy) = (mx[i], my[i]);
-        // Unclamped, like the reference implementation — see global_ssim.
         let vx = mxx[i] - ux * ux;
         let vy = myy[i] - uy * uy;
         let cov = mxy[i] - ux * uy;
@@ -154,9 +146,9 @@ pub fn ssim(a: &GrayImage, b: &GrayImage) -> f64 {
     sum / mx.len() as f64
 }
 
-/// The §6 downscale-SSIM entry point: resample the source luma plane to the
+/// The downscale-SSIM entry point: resample the source luma plane to the
 /// rendered raster's dimensions through the engine's own separable resampler
-/// (auto-ascii-core §3.3 — same box-average semantics the player uses), then SSIM.
+/// (same box-average semantics the player uses), then SSIM.
 ///
 /// `rendered` should already be cropped to the viewport region
 /// ([`GrayImage::crop`]) so letterbox pads don't enter the comparison.
@@ -175,7 +167,6 @@ pub fn downscale_ssim(rendered: &GrayImage, src_luma: &[u8], src_w: u16, src_h: 
 mod tests {
     use super::*;
 
-    /// Deterministic LCG so tests need no rand dep.
     struct Lcg(u64);
     impl Lcg {
         fn next_u8(&mut self) -> u8 {
@@ -212,13 +203,10 @@ mod tests {
     fn ssim_of_identical_is_exactly_one() {
         let img = gradient(64, 48);
         assert_eq!(ssim(&img, &img), 1.0);
-        // Small-image fallback path too.
         let tiny = gradient(5, 5);
         assert_eq!(ssim(&tiny, &tiny), 1.0);
     }
 
-    /// Sensitivity sanity: increasing noise amplitude lowers SSIM
-    /// monotonically(-ish — one fixed seed per level, strictly ordered).
     #[test]
     fn noise_lowers_ssim_monotonically() {
         let base = gradient(64, 64);
@@ -241,15 +229,12 @@ mod tests {
     #[test]
     fn downscale_ssim_identity_dims_is_one() {
         let img = gradient(48, 27);
-        // 1:1 resample is an identity pass-through of the same bytes.
         let s = downscale_ssim(&img, img.as_slice(), 48, 27);
         assert_eq!(s, 1.0);
     }
 
     #[test]
     fn downscale_ssim_prefers_faithful_render() {
-        // Source at 480×270; "render" = the source downscaled to 96×54
-        // (faithful) vs the same but inverted (unfaithful).
         let src = gradient(480, 270);
         let mut rs = auto_ascii_core::Resampler::build(480, 270, 96, 54);
         let mut faithful = vec![0u8; 96 * 54];

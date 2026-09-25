@@ -3,7 +3,7 @@
 prep_video.py — auto-ascii corpus-preparation front door.
 
 Normalizes any source video onto a consistent canvas (default 1920x1080) so the
-offline factory (docs/PLAN.md §5; the future `auto-ascii-factory` ingest stage) always
+offline factory (`auto-ascii-factory build`) always
 receives canvas-normalized input regardless of source aspect. Pure stdlib;
 shells out to ffmpeg/ffprobe. Originals are never modified.
 
@@ -63,11 +63,6 @@ def run(cmd, verbose=False, capture=True):
             + ("\n  " + "\n  ".join(tail) if tail else ""))
     return proc
 
-
-# --------------------------------------------------------------------------- #
-# Probing
-# --------------------------------------------------------------------------- #
-
 def probe(path: str) -> dict:
     proc = run([FFPROBE, "-v", "error", "-print_format", "json",
                 "-show_format", "-show_streams", path])
@@ -88,7 +83,6 @@ def probe_summary(path: str):
     v = vstreams[0]
     w, h = int(v["width"]), int(v["height"])
 
-    # Sample aspect ratio -> display width.
     sar = v.get("sample_aspect_ratio", "1:1")
     try:
         num, den = (int(x) for x in sar.split(":"))
@@ -97,7 +91,6 @@ def probe_summary(path: str):
     except ValueError:
         pass
 
-    # Rotation side data (portrait phone footage etc.).
     rot = 0
     for sd in v.get("side_data_list", []):
         if "rotation" in sd:
@@ -115,11 +108,6 @@ def probe_summary(path: str):
 
     has_audio = any(s.get("codec_type") == "audio" for s in info.get("streams", []))
     return w, h, dur, has_audio
-
-
-# --------------------------------------------------------------------------- #
-# CLI parsing helpers
-# --------------------------------------------------------------------------- #
 
 def parse_timestamp(s: str, ctx: str) -> float:
     """Accept SS, MM:SS, HH:MM:SS, each with optional fractional seconds."""
@@ -171,25 +159,15 @@ def fmt_ts(t: float) -> str:
     h, m = divmod(int(m), 60)
     return f"{h}:{m:02d}:{s:06.3f}" if h else f"{m}:{s:06.3f}"
 
-
-# --------------------------------------------------------------------------- #
-# Geometry
-# --------------------------------------------------------------------------- #
-
 def contain_fit(dw: int, dh: int, cw: int, ch: int):
     """Largest even WxH that fits in the canvas preserving dw:dh aspect."""
-    if dw * ch >= dh * cw:          # source wider than canvas -> width-limited
+    if dw * ch >= dh * cw:
         sw, sh = cw, min(ch, round(dh * cw / dw))
-    else:                           # taller than canvas -> height-limited
+    else:
         sw, sh = min(cw, round(dw * ch / dh)), ch
     sw -= sw % 2
     sh -= sh % 2
     return max(sw, 2), max(sh, 2)
-
-
-# --------------------------------------------------------------------------- #
-# Filtergraph builders
-# --------------------------------------------------------------------------- #
 
 def build_concat(parts, n_inputs: int, has_audio: bool):
     """Stitch the N seeked inputs (one per --clip) back to back."""
@@ -258,10 +236,10 @@ def build_mirror_axis(parts, cur: str, axis: str, tile: int, canvas: int,
     """
     gap = canvas - tile
     if gap <= 0:
-        return cur                       # source already fills this axis
-    per_side = gap // 2                  # even - even => integral
-    n = math.ceil(per_side / tile)       # tiles PER SIDE — computed, generic
-    total = 2 * n + 1                    # odd strip, original at the center
+        return cur
+    per_side = gap // 2
+    n = math.ceil(per_side / tile)
+    total = 2 * n + 1
     flip = "hflip" if axis == "h" else "vflip"
     stack = "hstack" if axis == "h" else "vstack"
 
@@ -270,12 +248,12 @@ def build_mirror_axis(parts, cur: str, axis: str, tile: int, canvas: int,
 
     outs = []
     for j in range(total):
-        i = j - n                        # signed index; 0 = the original
+        i = j - n
         chain = []
         if abs(i) % 2 == 1:
-            chain.append(flip)           # neighbours are mirrored
+            chain.append(flip)
         if invert and i != 0:
-            chain.append("negate")       # fill tiles only, never the original
+            chain.append("negate")
         if not chain:
             chain.append("null")
         out = f"x{axis}{j}"
@@ -285,18 +263,13 @@ def build_mirror_axis(parts, cur: str, axis: str, tile: int, canvas: int,
     stacked = f"s{axis}"
     parts.append("".join(f"[{o}]" for o in outs) + f"{stack}=inputs={total}[{stacked}]")
 
-    off = (total * tile - canvas) // 2   # exact center: both terms even
+    off = (total * tile - canvas) // 2
     cropped = f"c{axis}"
     if axis == "h":
         parts.append(f"[{stacked}]crop={canvas}:{cross}:{off}:0[{cropped}]")
     else:
         parts.append(f"[{stacked}]crop={cross}:{canvas}:0:{off}[{cropped}]")
     return cropped
-
-
-# --------------------------------------------------------------------------- #
-# Main
-# --------------------------------------------------------------------------- #
 
 EPILOG = """examples:
   # Full video onto the default 1920x1080 canvas, mirror fill:
@@ -357,7 +330,6 @@ def main():
 
     dw, dh, duration, has_audio = probe_summary(src)
 
-    # ---- clips -------------------------------------------------------------
     clips = [parse_clip(c) for c in args.clip]
     for start, end, raw in clips:
         if start >= end:
@@ -368,7 +340,6 @@ def main():
                 f"{fmt_ts(duration)} ({duration:.3f}s)")
     assembled = sum(e - s for s, e, _ in clips) if clips else duration
 
-    # ---- output path -------------------------------------------------------
     if args.out:
         out = os.path.abspath(args.out)
     else:
@@ -378,12 +349,10 @@ def main():
         die("output path equals input path; originals are never modified")
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
 
-    # ---- geometry ----------------------------------------------------------
     sw, sh = contain_fit(dw, dh, cw, ch)
     gx, gy = cw - sw, ch - sh
     needs_fill = gx > 0 or gy > 0
 
-    # ---- boomerang count ---------------------------------------------------
     m = 1
     if args.min_duration is not None and assembled < args.min_duration:
         m = math.ceil(args.min_duration / assembled - 1e-9)
@@ -392,7 +361,6 @@ def main():
                 f"segments of {assembled:.2f}s; refusing (>64). Use a longer "
                 f"source or clips.")
 
-    # ---- assemble the single ffmpeg command --------------------------------
     cmd = [FFMPEG, "-hide_banner", "-nostdin", "-loglevel", "error", "-y"]
     if clips:
         for start, end, _ in clips:
@@ -406,8 +374,6 @@ def main():
     else:
         v, a = "0:v", ("0:a" if has_audio else None)
 
-    # Scale first (tile size), boomerang second (reverse buffers less at tile
-    # resolution than at canvas resolution), then mirror-fill.
     parts.append(f"[{v}]scale={sw}:{sh}:flags=lanczos,setsar=1[scaled]")
     v = "scaled"
 
@@ -415,8 +381,6 @@ def main():
         v, a = build_boomerang(parts, v, a, m)
 
     if needs_fill:
-        # rgb24 for the geometry stage: crop offsets can be odd without ever
-        # shifting 4:2:0 chroma, and negate is an exact RGB negation.
         parts.append(f"[{v}]format=rgb24[base]")
         v = "base"
         invert = args.fill == "mirror-invert"
@@ -432,7 +396,6 @@ def main():
     cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "medium",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", out]
 
-    # ---- report the plan ---------------------------------------------------
     def side_info(gap, tile):
         if gap <= 0:
             return "no fill"
@@ -453,7 +416,6 @@ def main():
 
     run(cmd, verbose=args.verbose, capture=True)
 
-    # ---- verify ------------------------------------------------------------
     ow, oh, odur, oaud = probe_summary(out)
     print(f"  wrote     : {out}")
     print(f"  output    : {ow}x{oh} {odur:.3f}s{' +audio' if oaud else ''}")

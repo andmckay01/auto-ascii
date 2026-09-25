@@ -1,5 +1,5 @@
-//! The 64-byte fixed ASCI header (PLAN §4). Layout is frozen — M1 (full
-//! format) reuses these exact offsets. All integers little-endian.
+//! The 64-byte fixed ASCI header. Layout is frozen; all integers are
+//! little-endian.
 //!
 //! ```text
 //!  0  magic "ASCI" 4B          4  version_major u16 (reader rejects if > supported)
@@ -18,41 +18,40 @@ use crate::error::{Result, AsciiError};
 pub const MAGIC: [u8; 4] = *b"ASCI";
 pub const HEADER_SIZE: u32 = 64;
 pub const VERSION_MAJOR: u16 = 1;
-/// Minor 1 = M1 additions (temporal delta default, NORM chunk). Additive
-/// only (PLAN §4): minor-0 (M0) files remain readable.
+/// Minor 1 adds temporal-delta frames and the NORM chunk. Minor versions are
+/// additive only: minor-0 files remain readable.
 pub const VERSION_MINOR: u16 = 1;
-/// Base analysis resolution (PLAN §4: planes stored at 480×270).
+/// Default base analysis resolution: planes stored at 480×270.
 pub const BASE_W: u16 = 480;
 /// See [`BASE_W`].
 pub const BASE_H: u16 = 270;
 
-/// Plane-ID registry (PLAN §4). Unknown IDs are skippable by construction —
-/// a future motion plane is a new ID, not a version bump.
+/// Plane-ID registry. Unknown IDs are skippable by construction — a new
+/// plane kind is a new ID, not a version bump.
 pub mod plane_id {
-    /// L\* luma, base res u8. The only plane at M0 (ASCI-lite, PLAN §7).
+    /// L\* luma, base res u8.
     pub const Y: u8 = 1;
-    /// Edge magnitude, smoothed, unthinned (M3).
+    /// Edge magnitude, smoothed, unthinned.
     pub const E: u8 = 2;
-    /// Doubled-angle `mag·cos 2θ`, bias-128 (M3).
+    /// Doubled-angle `mag·cos 2θ`, bias-128.
     pub const EX: u8 = 3;
-    /// Doubled-angle `mag·sin 2θ`, bias-128 (M3).
+    /// Doubled-angle `mag·sin 2θ`, bias-128.
     pub const EY: u8 = 4;
-    /// Highlight/deep-shadow flags (M3).
+    /// Highlight/deep-shadow flags.
     pub const H: u8 = 5;
-    /// Chroma RGB565 at half res 240×135 (M1+).
+    /// Chroma RGB565 at half res (240×135 at the default base resolution).
     pub const C: u8 = 6;
 
     /// Whether this build knows the plane's geometry (dims/stride). Unknown
-    /// IDs in a file are skippable data, not errors (PLAN §4 versioning) —
-    /// but this reader cannot claim their dimensions and this writer cannot
-    /// compute their raw size.
+    /// IDs in a file are skippable data, not errors — but this reader cannot
+    /// claim their dimensions and this writer cannot compute their raw size.
     pub const fn is_known(id: u8) -> bool {
         matches!(id, Y..=C)
     }
 }
 
-/// Raw (uncompressed) byte size of a plane at the given base dims (PLAN §4
-/// planes): full-res u8 for Y/E/Ex/Ey/H, half-res RGB565 (2 B/px) for C.
+/// Raw (uncompressed) byte size of a plane at the given base dims: full-res
+/// u8 for Y/E/Ex/Ey/H, half-res RGB565 (2 B/px) for C.
 /// `None` for IDs outside the known registry (their raw size travels in the
 /// FRAM subblock header instead).
 pub fn plane_raw_size(base_w: u16, base_h: u16, id: u8) -> Option<usize> {
@@ -64,20 +63,20 @@ pub fn plane_raw_size(base_w: u16, base_h: u16, id: u8) -> Option<usize> {
     }
 }
 
-/// `codec` field values (PLAN §4).
+/// `codec` field values.
 pub mod codec {
     pub const RAW: u8 = 0;
     pub const LZ4: u8 = 1;
     pub const ZSTD: u8 = 2;
 }
 
-/// `filter` field values (PLAN §4). M0 writes INTRA only; TEMPORAL_DELTA at M1.
+/// `filter` field values.
 pub mod filter {
     pub const INTRA: u8 = 0;
     pub const TEMPORAL_DELTA: u8 = 1;
 }
 
-/// Header `flags` bits (PLAN §4).
+/// Header `flags` bits.
 pub mod header_flags {
     /// bit0: FIDX chunk present.
     pub const INDEX_PRESENT: u32 = 1;
@@ -85,8 +84,8 @@ pub mod header_flags {
     pub const CRCS_PRESENT: u32 = 1 << 1;
 }
 
-/// Parsed/parseable form of the 64-byte header (PLAN §4). `magic`,
-/// `header_size` and the reserved u32 are implicit — enforced/emitted by
+/// Parsed/parseable form of the 64-byte header. `magic`, `header_size` and
+/// the reserved u32 are implicit — enforced/emitted by
 /// [`AsciiHeader::from_bytes`]/[`AsciiHeader::to_bytes`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AsciiHeader {
@@ -106,15 +105,15 @@ pub struct AsciiHeader {
     pub keyframe_ivl: u8,
     /// First `plane_count` entries meaningful; rest zero.
     pub plane_ids: [u8; 8],
-    /// Byte offset of the FIDX chunk header; patched at close (PLAN §4).
+    /// Byte offset of the FIDX chunk header; patched at close.
     pub index_offset: u64,
     /// Byte offset of the META chunk header.
     pub meta_offset: u64,
 }
 
 impl AsciiHeader {
-    /// Serialize to the exact 64-byte layout above (little-endian,
-    /// reserved u32 = 0). Byte-deterministic — golden-tested (PLAN §4/§6).
+    /// Serialize to the exact 64-byte layout in the module docs
+    /// (little-endian, reserved u32 = 0). Byte-deterministic.
     pub fn to_bytes(&self) -> [u8; 64] {
         let mut b = [0u8; 64];
         b[0..4].copy_from_slice(&MAGIC);
@@ -136,13 +135,12 @@ impl AsciiHeader {
         b[36..44].copy_from_slice(&self.plane_ids);
         b[44..52].copy_from_slice(&self.index_offset.to_le_bytes());
         b[52..60].copy_from_slice(&self.meta_offset.to_le_bytes());
-        // 60..64 reserved = 0
         b
     }
 
     /// Parse and validate: magic, `header_size == 64`, and
-    /// `version_major <= VERSION_MAJOR` (PLAN §4: reader rejects if greater;
-    /// minor versions are additive and never rejected).
+    /// `version_major <= VERSION_MAJOR`. Minor versions are additive and
+    /// never rejected.
     pub fn from_bytes(b: &[u8; 64]) -> Result<AsciiHeader> {
         let le16 = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
         let le32 = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
@@ -214,15 +212,15 @@ mod tests {
     fn layout_offsets_frozen() {
         let b = sample().to_bytes();
         assert_eq!(&b[0..4], b"ASCI");
-        assert_eq!(u32::from_le_bytes(b[8..12].try_into().unwrap()), 64); // header_size @8
-        assert_eq!(u16::from_le_bytes(b[16..18].try_into().unwrap()), 30); // fps_num @16
-        assert_eq!(u16::from_le_bytes(b[20..22].try_into().unwrap()), 480); // base_w @20
-        assert_eq!(u32::from_le_bytes(b[28..32].try_into().unwrap()), 900); // frame_count @28
-        assert_eq!(b[32], 1); // plane_count
+        assert_eq!(u32::from_le_bytes(b[8..12].try_into().unwrap()), 64);
+        assert_eq!(u16::from_le_bytes(b[16..18].try_into().unwrap()), 30);
+        assert_eq!(u16::from_le_bytes(b[20..22].try_into().unwrap()), 480);
+        assert_eq!(u32::from_le_bytes(b[28..32].try_into().unwrap()), 900);
+        assert_eq!(b[32], 1);
         assert_eq!(b[33], codec::ZSTD);
-        assert_eq!(b[36], plane_id::Y); // plane_ids @36
-        assert_eq!(u64::from_le_bytes(b[44..52].try_into().unwrap()), 0xDEAD_BEEF); // index_offset @44
-        assert_eq!(&b[60..64], &[0, 0, 0, 0]); // reserved
+        assert_eq!(b[36], plane_id::Y);
+        assert_eq!(u64::from_le_bytes(b[44..52].try_into().unwrap()), 0xDEAD_BEEF);
+        assert_eq!(&b[60..64], &[0, 0, 0, 0]);
     }
 
     #[test]
@@ -237,7 +235,7 @@ mod tests {
         assert_eq!(plane_raw_size(480, 270, plane_id::H), Some(480 * 270));
         assert_eq!(plane_raw_size(480, 270, plane_id::C), Some(240 * 135 * 2));
         assert_eq!(plane_raw_size(480, 270, 0), None);
-        assert_eq!(plane_raw_size(480, 270, 7), None); // future plane: size from wire
+        assert_eq!(plane_raw_size(480, 270, 7), None);
         assert!(plane_id::is_known(plane_id::Y) && plane_id::is_known(plane_id::C));
         assert!(!plane_id::is_known(0) && !plane_id::is_known(7));
     }

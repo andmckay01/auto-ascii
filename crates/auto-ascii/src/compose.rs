@@ -1,13 +1,11 @@
-//! Flattening a [`Composition`] into one `.ascii` file (PLAN-M6-M8 §3).
-//!
-//! Playback never needs this — a composition plays virtually, switching
-//! decoders at clip boundaries (§0.4) — but one file is sometimes what you
-//! want to hand someone, and `auto-ascii cut` is exactly an export of a
+//! Playback never needs an export — a composition plays virtually,
+//! switching decoders at clip boundaries — but one file is sometimes what
+//! you want to hand someone, and `auto-ascii cut` is exactly an export of a
 //! one-clip composition.
 //!
 //! What it does per output frame: locate the clip on top, decode its planes
 //! (sequential roll where the walk is sequential, FIDX seek otherwise) and
-//! hand them to [`AsciiWriter::write_frame`] unchanged — planes are copied,
+//! hand them to [`AsciiWriter::write_frame`](auto_ascii_format::AsciiWriter::write_frame) unchanged — planes are copied,
 //! never re-derived, so the export is exactly what the composition plays.
 //! Gaps write black planes. The NORM table is built in one pre-pass over
 //! the clips' own shot tables, with no decoding at all: one record per
@@ -27,19 +25,16 @@ use crate::composition::Composition;
 use crate::error::Error;
 
 /// Encode knobs for [`export`]. The defaults mirror the factory's
-/// committed `params.toml` `[build]` section — a flattened composition is
-/// the same kind of asset the factory writes, and an export that quietly
-/// used a different cadence or level would be a second profile nobody
-/// asked for. (`auto-ascii-format`'s own `WriterOptions::default()`
-/// deliberately stays at zstd-19: the format crate's default is not the
-/// factory's policy.)
+/// committed `params.toml` `[build]` section, so a flattened composition is
+/// encoded like any asset the factory writes. (`auto-ascii-format`'s own
+/// `WriterOptions::default()` differs: it stays at zstd-19.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExportOptions {
     /// Keyframe cadence for the temporal-delta filter (params.toml
-    /// `[build] keyframe_ivl`, PLAN §4).
+    /// `[build] keyframe_ivl`).
     pub keyframe_ivl: u8,
-    /// zstd level for frame payloads (params.toml `[build] zstd_level`:
-    /// 15, audited against 19 at +0.91% bytes for 2.84× the build speed).
+    /// zstd level for frame payloads (params.toml `[build] zstd_level`,
+    /// default 15).
     pub zstd_level: i32,
 }
 
@@ -61,12 +56,12 @@ pub struct ExportReport {
     /// NORM records written: one per (clip slice ∩ source shot), plus one
     /// per gap.
     pub shots: u32,
-    /// How many of those carry the CUT flag (PLAN §3.5: the player resets
-    /// hysteresis there).
+    /// How many of those carry the CUT flag (the player resets hysteresis
+    /// there).
     pub cuts: u32,
 }
 
-/// Flatten `comp` into one ASCI asset at `out` (PLAN-M6-M8 §3).
+/// Flatten `comp` into one ASCI asset at `out`.
 ///
 /// `comp` must be resolved ([`Composition::resolve`]) and every clip must
 /// share one base resolution and one plane set — mixed shapes play fine but
@@ -138,10 +133,6 @@ pub fn export(
         })
         .collect::<Result<Vec<usize>, Error>>()?;
 
-    // One mapping per clip — address space, not memory, and it proves
-    // every clip is there before a byte is written. The decoders behind
-    // them are built on demand (see `SourcePool`), because a decoder is
-    // where the megabytes are.
     let mut maps: Vec<Mmap> = Vec::with_capacity(spans.len());
     for clip in comp.clips() {
         let file = std::fs::File::open(&clip.path)
@@ -154,9 +145,6 @@ pub fn export(
     }
 
     let frames = comp.frame_count();
-    // The NORM pre-pass reads shot tables and nothing else, so it opens
-    // each clip, copies its handful of 24-byte records and lets the reader
-    // (and its frame index) go again.
     let mut clip_shots: Vec<Vec<ShotRecord>> = Vec::with_capacity(maps.len());
     for (idx, map) in maps.iter().enumerate() {
         let reader = AsciiReader::open(map).map_err(|source| Error::Format {
@@ -185,14 +173,9 @@ pub fn export(
     };
     let meta = Meta {
         factory_version: concat!("auto-ascii ", env!("CARGO_PKG_VERSION"), " compose").to_owned(),
-        // A name, never a path: META must stay byte-deterministic (PLAN §4).
         source: comp.name().to_owned(),
         palette_hints: Vec::new(),
     };
-    // Write to `<out>.part` and rename on success, exactly as the factory's
-    // build pass does: a half-written asset (no FIDX, no TRLR, frame_count
-    // 0) must never replace a good one, and a failed export must leave
-    // nothing behind to be mistaken for one.
     let part = part_path(out);
     let mut pool = SourcePool::new(maps.len(), raw_sizes);
     let written = write_asset(&part, wopts, &meta, &shots, comp, &mut pool, &maps, &plane_ids);
@@ -205,25 +188,18 @@ pub fn export(
     };
     std::fs::rename(&part, out).map_err(|source| {
         let _ = std::fs::remove_file(&part);
-        // Error::Io names the path and carries the OS reason; the failure
-        // is the rename, which is why the part file goes with it.
         Error::Io { path: out.into(), source }
     })?;
     Ok(ExportReport { frames, fps: comp.fps(), bytes, shots: shots.len() as u32, cuts })
 }
 
-/// `<out>.part` — the scratch name [`export`] writes through.
 fn part_path(out: &Path) -> PathBuf {
     let mut os = out.as_os_str().to_os_string();
     os.push(".part");
     PathBuf::from(os)
 }
 
-/// Write the whole flattened asset to `path` and return its size. Every
-/// failure leaves the caller to remove the file — nothing here is
-/// recoverable in place.
-#[allow(clippy::too_many_arguments)] // one call site; the alternative is a
-// struct that exists only to be destructured back into these eight
+#[allow(clippy::too_many_arguments)]
 fn write_asset<'a>(
     path: &Path,
     wopts: WriterOptions,
@@ -236,9 +212,6 @@ fn write_asset<'a>(
 ) -> Result<u64, Error> {
     let file = std::fs::File::create(path)
         .map_err(|source| Error::Io { path: path.into(), source })?;
-    // Writer failures are an OS problem (a full disk) or a broken invariant
-    // in what we handed it; report the first as what it is and let the
-    // second surface as the container error it carries.
     let fmt = |source| match source {
         AsciiError::Io(source) => Error::Io { path: path.into(), source },
         source => Error::Format { path: path.into(), source },
@@ -246,8 +219,6 @@ fn write_asset<'a>(
     let mut writer = AsciiWriter::new(BufWriter::new(file), wopts, meta).map_err(fmt)?;
     writer.write_norm(shots).map_err(fmt)?;
 
-    // Black planes for gap frames: zero is black luma, and zero RGB565 is
-    // black chroma, so one zeroed buffer per plane serves.
     let black: Vec<Vec<u8>> = pool.raw_sizes.iter().map(|&n| vec![0u8; n]).collect();
     for frame in 0..comp.frame_count() {
         match comp.locate_frame(frame) {
@@ -282,25 +253,12 @@ fn write_asset<'a>(
         .len())
 }
 
-/// How many clip decoders an export keeps live at once. Each one holds a
-/// full set of plane buffers (roughly a megabyte for a 480×270 six-plane
-/// clip) plus that asset's frame index, and a composition may stitch an
-/// unbounded number of clips — so, as the player's deck does, the export
-/// keeps the most recently used few. Four is enough that no realistic cut
-/// pattern thrashes: an export walks the timeline in order, so at any
-/// moment it needs the clip on top and, at an overlap, the ones around it.
-/// Re-opening costs one FIDX parse and one keyframe seek.
 const MAX_LIVE_SOURCES: usize = 4;
 
-/// The export's clip decoders, opened on first use and capped at
-/// [`MAX_LIVE_SOURCES`] (LRU). Memory is bounded by how many clips are
-/// live, not by how many the composition names.
 struct SourcePool<'a> {
     sources: Vec<Option<ClipSource<'a>>>,
-    /// `clock` when each clip was last used — the LRU key.
     used: Vec<u64>,
     clock: u64,
-    /// Raw plane sizes, shared by every decoder (one shape per export).
     raw_sizes: Vec<usize>,
 }
 
@@ -314,8 +272,6 @@ impl<'a> SourcePool<'a> {
         }
     }
 
-    /// The decoder for clip `idx`, opened over `maps[idx]` if it is not
-    /// live, evicting the least recently used one to make room.
     fn front(
         &mut self,
         idx: usize,
@@ -340,8 +296,6 @@ impl<'a> SourcePool<'a> {
         self.sources.iter().filter(|s| s.is_some()).count()
     }
 
-    /// Drop the least recently used decoder (never `keep`); `false` when
-    /// there was nothing to drop.
     fn evict(&mut self, keep: usize) -> bool {
         let victim = self
             .sources
@@ -352,7 +306,7 @@ impl<'a> SourcePool<'a> {
             .map(|(i, _)| i);
         match victim {
             Some(i) => {
-                self.sources[i] = None; // reader + plane buffers go together
+                self.sources[i] = None;
                 true
             }
             None => false,
@@ -360,21 +314,16 @@ impl<'a> SourcePool<'a> {
     }
 }
 
-/// One clip's reader plus the standing plane buffers the delta filter needs
-/// (PLAN §3.6 step 3: a sequential successor is one memadd; anything else
-/// is a FIDX keyframe seek).
 struct ClipSource<'a> {
     reader: AsciiReader<'a>,
-    /// Parallel to the composition's plane registry.
     planes: Vec<Vec<u8>>,
-    /// Frame currently in `planes`.
     loaded: Option<u32>,
 }
 
 impl ClipSource<'_> {
     fn load(&mut self, frame: u32, plane_ids: &[u8]) -> Result<(), Error> {
         if self.loaded == Some(frame) {
-            return Ok(()); // a slowed clip can show the same frame twice
+            return Ok(());
         }
         let sequential = frame > 0 && self.loaded == Some(frame - 1);
         for (&id, dst) in plane_ids.iter().zip(&mut self.planes) {
@@ -390,22 +339,12 @@ impl ClipSource<'_> {
     }
 }
 
-/// Which source shot (if any) an output frame draws from — the identity a
-/// NORM record covers a run of.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Segment {
-    /// No clip is on top: black frames with identity levels.
     Gap,
-    /// Clip `idx`, inside the source shot starting at `shot` (`None` when
-    /// the clip carries no NORM table at all).
     Clip { idx: usize, shot: Option<u32> },
 }
 
-/// The NORM pre-pass (PLAN-M6-M8 §3): walk the output frames, break them
-/// into runs of one (clip, source shot), and emit one record per run —
-/// levels copied from the source shot (the plane registries are identical,
-/// so the position-indexed levels transfer verbatim), cut-flagged at every
-/// clip boundary and gap edge. No frame payload is touched.
 fn norm_records(
     comp: &Composition,
     clip_shots: &[Vec<ShotRecord>],
@@ -428,10 +367,6 @@ fn norm_records(
         if prev == Some(segment) {
             continue;
         }
-        // A clip boundary or a gap edge is a hard cut by construction: the
-        // picture is unrelated to the one before it. Inside one clip slice
-        // the source's own flag decides. Record 0 keeps the source's flag —
-        // there is nothing before frame 0 to cut away from.
         let boundary = prev.is_some_and(|p| clip_of(p) != clip_of(segment));
         let flags = if boundary || source_cut { norm_flags::CUT } else { 0 };
         records.push(ShotRecord { first_frame: frame, flags, levels });
@@ -440,16 +375,11 @@ fn norm_records(
     records
 }
 
-/// The shot covering `frame` in a clip's own NORM table (`None` when the
-/// clip carries none) — `AsciiReader::shot_for_frame` over the copy the
-/// pre-pass kept.
 fn shot_at(shots: &[ShotRecord], frame: u32) -> Option<&ShotRecord> {
     let p = shots.partition_point(|s| s.first_frame <= frame);
     (p > 0).then(|| &shots[p - 1])
 }
 
-/// The clip a segment belongs to (`None` for a gap) — what a boundary is
-/// measured against.
 fn clip_of(segment: Segment) -> Option<usize> {
     match segment {
         Segment::Gap => None,

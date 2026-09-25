@@ -1,6 +1,5 @@
-//! `SimBackend` — in-memory backend with a throttleable writer
-//! (PLAN §3.1, §6). All headless verification runs against this: M0 fps
-//! acceptance at 213×58 / 320×90, and from M2 the 2 MB/s ≥ 24 fps hard gate.
+//! `SimBackend` — in-memory backend with a throttleable writer, for headless
+//! tests and benchmarks.
 
 use std::time::Instant;
 
@@ -12,17 +11,13 @@ use crate::event::{Event, EventQueue};
 use crate::render::FramePainter;
 
 /// In-memory `Backend`: runs the exact same diff → spans → SGR-elide pipeline
-/// as `AnsiBackend` (the shared crate-private painter), but the write lands
-/// in a byte buffer, optionally paced to a simulated link speed
-/// (PLAN §6 "SimBackend @ 2 MB/s").
+/// as `AnsiBackend`, but the write lands in a byte buffer, optionally paced
+/// to a simulated link speed (e.g. 2 MB/s).
 pub struct SimBackend {
     caps: Caps,
     events: EventQueue,
-    /// Shared diff/assembly pipeline — identical code to `AnsiBackend`.
     painter: FramePainter,
-    /// Captured escape-stream output (per-palette golden streams, PLAN §6).
     out: Vec<u8>,
-    /// Simulated link speed; `None` = unthrottled.
     throughput_bps: Option<u64>,
 }
 
@@ -42,7 +37,7 @@ impl SimBackend {
     /// Throttle the simulated writer to `bytes_per_sec` (`None` or 0 =
     /// unlimited). `present` accounts the simulated drain time in
     /// `FrameStats::write_ns` — no real sleeping — so pacing logic
-    /// is testable headlessly (PLAN §6).
+    /// is testable headlessly.
     pub fn set_throughput(&mut self, bytes_per_sec: Option<u64>) {
         self.throughput_bps = bytes_per_sec;
     }
@@ -57,9 +52,9 @@ impl SimBackend {
         std::mem::take(&mut self.out)
     }
 
-    /// Replace the simulated terminal's capabilities (tier/sync/glyph tests
-    /// — M1 acceptance 5/6). `cells` stays owned by `resize()`: whatever the
-    /// passed caps claim, the current grid size is kept.
+    /// Replace the simulated terminal's capabilities (e.g. for tier/sync/glyph
+    /// tests). `cells` stays owned by `resize()`: whatever the passed caps
+    /// claim, the current grid size is kept.
     pub fn set_caps(&mut self, caps: Caps) {
         let cells = self.caps.cells;
         self.caps = caps;
@@ -76,8 +71,8 @@ impl Backend for SimBackend {
         &mut self.events
     }
 
-    /// Same pipeline as `AnsiBackend::present`, output captured not written
-    /// (PLAN §3.1). Throttled drain time reported via `write_ns`.
+    /// Same pipeline as `AnsiBackend::present`, output captured not written.
+    /// Throttled drain time reported via `write_ns`.
     fn present(&mut self, grid: &Grid<Cell>) -> FrameStats {
         let cells_damaged = self.painter.paint(grid, self.caps.color, self.caps.sync_2026);
         let frame = &self.painter.buf;
@@ -107,6 +102,5 @@ impl Backend for SimBackend {
     }
 
     fn shutdown(&mut self) {
-        // Nothing to restore in-memory.
     }
 }

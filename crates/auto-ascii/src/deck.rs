@@ -1,5 +1,5 @@
-//! [`ClipDeck`] — one decode pipeline per composition clip, created on
-//! first use (M8, PLAN-M6-M8 §3).
+//! [`ClipDeck`](crate::deck::ClipDeck) — one decode pipeline per composition clip, created on
+//! first use.
 //!
 //! A composition plays virtually: nothing is re-encoded, so an unbounded
 //! stitch costs one mmap and one [`pipeline::Player`] per clip that is
@@ -30,7 +30,6 @@ use crate::pipeline::{
     draw_enlarge_card, draw_hint_overlay, draw_info_overlay, draw_progress_overlay_clips,
 };
 
-/// Add two per-stage accumulators.
 fn add_stage(a: StageNs, b: StageNs) -> StageNs {
     StageNs {
         decode: a.decode + b.decode,
@@ -40,14 +39,14 @@ fn add_stage(a: StageNs, b: StageNs) -> StageNs {
     }
 }
 
-/// How every clip player in a deck is built (the §3.4 selection inputs the
-/// caller already resolved: probed caps for the terminal player, headless
-/// defaults for [`crate::RenderSession`]).
+/// How every clip player in a deck is built — inputs the caller already
+/// resolved: probed caps for the terminal player, headless defaults for
+/// [`crate::RenderSession`].
 #[derive(Clone, Copy, Debug)]
 pub struct DeckConfig {
-    /// §3.2 cell aspect `cell_h_px / cell_w_px`.
+    /// Cell aspect `cell_h_px / cell_w_px`.
     pub cell_aspect: f64,
-    /// Invalidate before every present (PLAN §3.1 `RepaintMode::Full`).
+    /// Invalidate before every present (`RepaintMode::Full`).
     pub repaint_full: bool,
     /// Color depth of the output medium.
     pub color: ColorDepth,
@@ -57,63 +56,35 @@ pub struct DeckConfig {
 
 /// How many clip pipelines stay live at once. Each one holds decode
 /// buffers sized for its base resolution plus the asset's FIDX — order
-/// megabytes for a 480×270 six-plane clip — and PLAN-M6-M8 §0.4 promises a
-/// composition can stitch an UNBOUNDED number of clips, so the deck keeps
-/// the most recently fronted few and drops the rest. Eight covers any
-/// plausible cut rate at the player's ~2 s scrub granularity while keeping
-/// the resident cost flat; re-opening an evicted clip is the ordinary lazy
-/// path, and it comes back cold — which is the temporal reset a return to
-/// a clip wants anyway.
+/// megabytes for a 480×270 six-plane clip — and a composition can stitch
+/// an unbounded number of clips, so the deck keeps the most recently
+/// fronted few and drops the rest. Re-opening an evicted clip is the
+/// ordinary lazy path, and it comes back cold — which is the temporal
+/// reset a return to a clip wants anyway.
 pub const MAX_LIVE_CLIPS: usize = 8;
 
 /// One [`pipeline::Player`] per clip, opened on demand (module docs).
 pub struct ClipDeck {
-    /// Each borrows `maps[i]` (see SAFETY in [`ClipDeck::open`]). Declared
-    /// BEFORE `maps` so declaration-order drop kills every borrow before
-    /// the mapping it points into.
     players: Vec<Option<pipeline::Player<'static>>>,
-    /// The mapping behind each opened player. Cleared only by
-    /// [`ClipDeck::evict_one`], and only AFTER the player borrowing it.
     maps: Vec<Option<Mmap>>,
     paths: Vec<PathBuf>,
-    /// Grid dims each player was last reflowed to (`None` = never).
     dims: Vec<Option<(u16, u16)>>,
-    /// `activations` value when each clip was last fronted — the LRU key.
     used: Vec<u64>,
-    /// Monotonic activation counter (never wraps in any real session: one
-    /// tick per fronted frame at 60 fps is 9.7 billion years to overflow).
     activations: u64,
-    /// The clip on top right now; `None` during a gap and before the first
-    /// activation.
     active: Option<usize>,
     size: (u16, u16),
     cfg: DeckConfig,
-    /// Presentation state re-applied to whichever player is fronted, so a
-    /// clip switch never drops an overlay or a turned dial.
     compose_params: Option<ComposeParams>,
-    /// The glyph codec every clip composes with (the `/` key).
     codec: Codec,
     progress_visible: bool,
     hint_visible: bool,
-    /// The controls overlay's info row (see `pipeline::draw_info_overlay`).
     info: Option<String>,
-    /// M6 pause: how the progress row PRINTS while the run loop holds the
-    /// picture — re-applied on every clip, like the overlays themselves.
     paused: bool,
     dial: Option<(&'static str, u8, u8)>,
     progress_ctx: Option<ProgressContext>,
     layer_mask: bool,
-    /// A clip switch, a gap transition or an overlay hide during a gap: the
-    /// diff baseline describes a picture that is no longer there, so the
-    /// next present must repaint in full.
     repaint_pending: bool,
-    /// Stage time that no live player can account for any more: whatever an
-    /// evicted clip had spent, plus every gap present. Without this a
-    /// `--sim` run over a long composition would report a stage budget that
-    /// shrinks as clips are dropped.
     carried: StageNs,
-    /// The all-blank grid a gap frame presents (PLAN-M6-M8 §3: "a gap is
-    /// black"), with the overlays drawn on top.
     blank: Grid<Cell>,
 }
 
@@ -130,7 +101,8 @@ impl std::fmt::Debug for ClipDeck {
 
 impl ClipDeck {
     /// A deck over `paths` (a composition's clips, in file order). Nothing
-    /// is opened until [`activate`](ClipDeck::activate).
+    /// is opened until a clip is first fronted by
+    /// [`render_at`](ClipDeck::render_at) or [`present_at`](ClipDeck::present_at).
     pub fn new(paths: Vec<PathBuf>, cfg: DeckConfig) -> ClipDeck {
         let n = paths.len();
         ClipDeck {
@@ -181,22 +153,10 @@ impl ClipDeck {
         self.size
     }
 
-    /// Open clip `idx` if needed, front it, and reflow it to the current
-    /// size. A switch resets that clip's temporal state and schedules a
-    /// full repaint. Called for you by [`render_at`](ClipDeck::render_at)
-    /// and [`present_at`](ClipDeck::present_at).
-    ///
-    /// Each clip owns its own [`pipeline::Player`], so hysteresis, NORM
-    /// levels and decode buffers can never leak from one clip into the
-    /// next — the switch itself starts fresh by construction. The explicit
-    /// reset is for the other direction: coming BACK to a clip whose
-    /// remembered ramp indices and edge memory describe the frame it
-    /// showed before we left, which is a temporal discontinuity exactly
-    /// like a seek (PLAN §3.5).
     fn activate(&mut self, idx: usize) -> Result<(), Error> {
         self.open(idx)?;
         self.activations += 1;
-        self.used[idx] = self.activations; // most recently used: never evicted next
+        self.used[idx] = self.activations;
         if self.active != Some(idx) {
             self.player(idx).reset_temporal_state();
             self.active = Some(idx);
@@ -229,7 +189,7 @@ impl ClipDeck {
     /// [`Composition::locate_frame`]: crate::Composition::locate_frame
     pub fn render_at(&mut self, located: Option<Located>) -> Result<(), Error> {
         let Some(loc) = located else {
-            self.compose_gap(); // a gap is black (PLAN-M6-M8 §3)
+            self.compose_gap();
             return Ok(());
         };
         self.activate(loc.clip_idx)?;
@@ -250,8 +210,6 @@ impl ClipDeck {
             if self.cfg.repaint_full || std::mem::take(&mut self.repaint_pending) {
                 backend.invalidate();
             }
-            // Timed like any other present, so a composition's stage budget
-            // still adds up over its gaps.
             let t = Instant::now();
             let stats = backend.present(&self.blank);
             self.carried.present += t.elapsed().as_nanos() as u64;
@@ -260,7 +218,7 @@ impl ClipDeck {
         self.activate(loc.clip_idx)?;
         self.apply_sticky(loc.clip_idx);
         if std::mem::take(&mut self.repaint_pending) {
-            backend.invalidate(); // clip switch / gap edge: repaint the baseline
+            backend.invalidate();
         }
         self.player(loc.clip_idx).render_present(backend, loc.local_frame)
     }
@@ -275,10 +233,10 @@ impl ClipDeck {
         }
     }
 
-    /// Drain the backend's events (PLAN §3.6 step 1) for the whole deck: a
-    /// resize is adopted by the deck (and by the fronted player now, the
-    /// rest when they are next fronted) and a seek resets the fronted
-    /// clip's temporal state — the same contract as
+    /// Drain the backend's events for the whole deck: a resize is adopted
+    /// by the deck (and by the fronted player now, the rest when they are
+    /// next fronted) and a seek resets the fronted clip's temporal state —
+    /// the same contract as
     /// [`pipeline::Player::drain_events`], which is also what a gap frame
     /// needs when no clip is fronted at all.
     pub fn drain_events<B: Backend>(&mut self, backend: &mut B) -> Drained {
@@ -304,7 +262,7 @@ impl ClipDeck {
         self.progress_visible = visible;
     }
 
-    /// Show/hide the key-hints row (M6).
+    /// Show/hide the key-hints row.
     pub fn set_hint_overlay(&mut self, visible: bool) {
         self.mark_hidden_during_gap(self.hint_visible, visible);
         self.hint_visible = visible;
@@ -326,21 +284,21 @@ impl ClipDeck {
         }
     }
 
-    /// Report playback as frozen in the progress row (M6 pause): `|` bar
-    /// head, ` PAUSED ` where the percentage goes. The deck holds no
+    /// Report playback as frozen in the progress row: `|` bar head,
+    /// ` PAUSED ` where the percentage goes. The deck holds no
     /// transport state of its own — this is the run loop's flag, forwarded.
     pub fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
     }
 
-    /// Show/clear the live-dial readout (M6).
+    /// Show/clear the live-dial readout.
     pub fn set_dial_overlay(&mut self, dial: Option<(&'static str, u8, u8)>) {
         self.mark_hidden_during_gap(self.dial.is_some(), dial.is_some());
         self.dial = dial;
     }
 
     /// Report the COMPOSITION's position in the progress row instead of the
-    /// fronted clip's own (M8). `None` keeps the M6 reading.
+    /// fronted clip's own. `None` keeps the clip's own reading.
     pub fn set_progress_context(&mut self, ctx: Option<ProgressContext>) {
         self.progress_ctx = ctx;
     }
@@ -384,7 +342,7 @@ impl ClipDeck {
         }
     }
 
-    /// Override the §3.2 cell aspect on every clip (next reflow).
+    /// Override the cell aspect on every clip (next reflow).
     pub fn set_cell_aspect(&mut self, cell_aspect: f64) {
         self.cfg.cell_aspect = cell_aspect;
         for (idx, player) in self.players.iter_mut().enumerate() {
@@ -422,13 +380,6 @@ impl ClipDeck {
         self.players.iter().filter(|p| p.is_some()).count()
     }
 
-    /// Drop the least recently fronted clip (never `keep`) so a new one can
-    /// open within [`MAX_LIVE_CLIPS`]. `false` when there was nothing to
-    /// drop.
-    ///
-    /// Order matters and is the whole safety argument: `players[i]` is
-    /// cleared FIRST, so the borrow into `maps[i]` is gone before the
-    /// mapping is unmapped one line later.
     fn evict_one(&mut self, keep: usize) -> bool {
         let victim = self
             .players
@@ -438,22 +389,18 @@ impl ClipDeck {
             .min_by_key(|(i, _)| self.used[*i])
             .map(|(i, _)| i);
         let Some(i) = victim else { return false };
-        // Keep its stage time before it goes — `stage()` reports the whole
-        // composition, not just what is resident.
         if let Some(player) = &self.players[i] {
             self.carried = add_stage(self.carried, player.stage());
         }
-        self.players[i] = None; // the borrow dies here...
-        self.maps[i] = None; // ...before the mapping it pointed into
-        self.dims[i] = None; // a re-opened player has never been reflowed
+        self.players[i] = None;
+        self.maps[i] = None;
+        self.dims[i] = None;
         if self.active == Some(i) {
-            self.active = None; // whatever fronts next starts cold
+            self.active = None;
         }
         true
     }
 
-    /// Open clip `idx`: map the file, build its pipeline player, inherit
-    /// the deck's sticky render state.
     fn open(&mut self, idx: usize) -> Result<(), Error> {
         if self.players.get(idx).is_none() {
             return Err(Error::Config(format!("no clip {idx} in this composition")));
@@ -505,14 +452,10 @@ impl ClipDeck {
         Ok(())
     }
 
-    /// The player at `idx` (opened by [`open`](ClipDeck::open) first).
     fn player(&mut self, idx: usize) -> &mut pipeline::Player<'static> {
         self.players[idx].as_mut().expect("clip is open")
     }
 
-    /// Push the deck's presentation state onto the fronted player. Every
-    /// setter is edge-aware, so re-applying an unchanged value is free and
-    /// the hide→`invalidate()` contract still fires exactly once.
     fn apply_sticky(&mut self, idx: usize) {
         let (progress, hints, dial, ctx) =
             (self.progress_visible, self.hint_visible, self.dial, self.progress_ctx);
@@ -527,30 +470,21 @@ impl ClipDeck {
         player.set_paused(paused);
     }
 
-    /// An overlay that hides while a gap is on screen has no clip player to
-    /// record the edge, so the deck repaints on its behalf.
     fn mark_hidden_during_gap(&mut self, was: bool, now: bool) {
         if was && !now && self.active.is_none() {
             self.repaint_pending = true;
         }
     }
 
-    /// Paint the gap frame: black, the "enlarge terminal" card when the
-    /// grid is below the §3.2 minimum, then the overlays — the same
-    /// presentation rules `render_grid` applies to a real frame.
     fn compose_gap(&mut self) {
         if self.active.is_some() {
-            self.active = None; // leaving a clip: the next one starts cold
+            self.active = None;
             self.repaint_pending = true;
         }
         let (cols, rows) = self.size;
         if (self.blank.cols(), self.blank.rows()) != (cols, rows) {
             self.blank.resize(cols, rows);
         }
-        // Below the §3.2 minimum a gap says what a picture frame would say
-        // — and, exactly like `render_grid` over the card, the transient
-        // rows still go on top: losing the scrub bar is how you get stuck
-        // in a gap on a small terminal with nothing to steer by.
         let tiny = cols < MIN_COLS || rows < MIN_ROWS;
         if tiny {
             draw_enlarge_card(&mut self.blank);
@@ -574,9 +508,6 @@ impl ClipDeck {
         if let Some((label, value, max)) = self.dial {
             draw_dial_overlay(&mut self.blank, label, value, max, scale);
         }
-        // The hints row is the one thing the card outranks: `rows-2` is
-        // where its second line sits on a 4-row screen (the same gate
-        // `render_grid` applies through `vp.is_some()`).
         if self.hint_visible && !tiny {
             draw_hint_overlay(&mut self.blank, scale);
             if let Some(info) = &self.info {
@@ -593,10 +524,6 @@ mod tests {
     use auto_ascii_term::SimBackend;
     use auto_ascii_eval::fixtures::{Fixture, build_fixture};
 
-    /// Self-cleaning temp folder of `n` identical fixture clips (no
-    /// tempfile dep — pinned workspace dep set). Identical bytes on
-    /// purpose: eviction is about how many pipelines are resident, and
-    /// identical clips make "same frame after a round trip" exact.
     struct Clips(PathBuf, Vec<PathBuf>);
 
     impl Clips {
@@ -623,8 +550,6 @@ mod tests {
         }
     }
 
-    /// Frame 7 of clip `idx` — what `Composition::locate_frame` would hand
-    /// the deck for a clip that is on top.
     fn at(idx: usize) -> Option<Located> {
         Some(Located { clip_idx: idx, local_frame: 7 })
     }
@@ -638,9 +563,6 @@ mod tests {
         }
     }
 
-    /// PLAN-M6-M8 §0.4 promises an unbounded stitch, so the deck must not
-    /// hold a pipeline per clip: the most recently fronted MAX_LIVE_CLIPS
-    /// stay, the rest are dropped, and coming back re-opens cold.
     #[test]
     fn live_clips_are_capped_and_the_oldest_goes_first() {
         let clips = Clips::new("evict", 12);
@@ -660,16 +582,11 @@ mod tests {
         }
         assert_eq!(deck.live_clips(), MAX_LIVE_CLIPS, "the cap is reached, not exceeded");
 
-        // Clip 0 was evicted eleven activations ago; returning re-opens it
-        // through the ordinary lazy path and renders the same frame.
         deck.render_at(at(0)).unwrap();
         assert_eq!(deck.showing().as_slice(), &before[..], "a re-opened clip is itself");
         assert!(deck.live_clips() <= MAX_LIVE_CLIPS);
     }
 
-    /// `--sim` reports one stage budget for the whole composition, so the
-    /// deck's total must survive eviction (an evicted clip's time is kept)
-    /// and count gap presents (nothing else times those).
     #[test]
     fn stage_time_survives_eviction_and_counts_gaps() {
         let clips = Clips::new("stage", 12);
@@ -691,8 +608,6 @@ mod tests {
         assert!(deck.live_clips() <= MAX_LIVE_CLIPS, "clips were evicted during the walk");
         assert!(last.decode > 0 && last.compose > 0, "the walk did real work: {last:?}");
 
-        // A gap present is timed too, or a composition's budget would
-        // quietly stop adding up across its gaps.
         let before = deck.stage().present;
         for _ in 0..8 {
             deck.present_at(&mut backend, None).unwrap();
@@ -701,10 +616,6 @@ mod tests {
         assert!(deck.stage().present > before, "gap presents are not being timed");
     }
 
-    /// A gap below the §3.2 minimum shows the enlarge card AND keeps the
-    /// transient rows — being stuck in a gap with no scrub bar is exactly
-    /// when a small terminal needs one. The hints row is the exception:
-    /// `rows-2` is the card's own second line.
     #[test]
     fn a_tiny_gap_keeps_the_progress_row_under_the_card() {
         let clips = Clips::new("tinygap", 1);
@@ -729,9 +640,6 @@ mod tests {
         assert!(row(6).trim().is_empty(), "the hints row stays off the card: {:?}", row(6));
     }
 
-    /// A gap draws the overlays at the clip's scale — the same
-    /// `OverlayScale::for_grid` a playing clip uses — so the controls do not
-    /// shrink back to one-cell text between clips on a zoomed-out terminal.
     #[test]
     fn a_gap_scales_the_overlay_text_like_a_clip() {
         let clips = Clips::new("biggap", 1);
@@ -744,7 +652,6 @@ mod tests {
             let grid = deck.showing();
             let row = |r: u16| -> String { (0..cols).map(|c| grid.get(c, r).glyph()).collect() };
             if big {
-                // Hints band rows-6..rows-3, info band above it, in blocks.
                 for r in rows - 9..rows - 3 {
                     assert!(row(r).chars().all(|c| " ▀▄█".contains(c)), "row {r}: {:?}", row(r));
                 }

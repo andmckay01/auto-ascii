@@ -1,175 +1,218 @@
 # auto-ascii
 
-Realtime ASCII-art video for terminals — and a library you can drop into your
-own project.
+Realtime ASCII-art video for terminals, and a Rust library you can drop into
+your own renderer.
 
-An offline **factory** distills a reference video into a resolution-independent
-feature asset (`.ascii`: luma, edge magnitude + orientation, highlights, chroma —
-never glyphs). A runtime **player** maps that asset onto whatever cell grid you
-have *right now*: glyph ramps, directional edge strokes, highlights and
-half-blocks, letterboxed to 16:9, reflowing live on resize, with temporal
-hysteresis so nothing flickers. Because glyph choice happens at render time, one
-asset looks right at 80×24 in a Linux console and at 320×90 in a GPU terminal —
-and equally right inside *your* renderer, if you'd rather draw the cells
-yourself.
+An offline **factory** distills a video into a resolution-independent feature
+asset (`.ascii`). The asset holds luma, edge magnitude and orientation,
+highlights and chroma, but never glyphs. A runtime **player** maps that asset
+onto whatever cell grid you have right now. It picks glyph ramps, directional
+edge strokes, highlights and half-blocks, letterboxes to the video's aspect,
+reflows live on resize, and applies temporal hysteresis so nothing flickers.
+Because every glyph is chosen at render time, one asset looks right at 80×24
+in a Linux console, at 320×90 in a GPU terminal, and inside your own renderer.
 
-All Rust, one workspace: one library crate (`auto-ascii`), two engine binaries
-(`auto-ascii-factory`, `auto-ascii-player`) and the `auto-ascii` CLI that files
-clips in a library and stitches them into compositions. ffmpeg is used by the
-factory as a subprocess; the player links no codecs.
-
-**Status.** The engine milestones (M0–M5) are complete and signed off; the tool
-layer (M6–M8: on-screen key hints, the `auto-ascii` CLI, compositions) landed on
-2026-09-20. `auto-ascii` 0.2.0 and `auto-ascii-core` / `-format` / `-term`
-0.1.0 are on crates.io. `scripts/eval.sh` is the gate: workspace tests, clippy
-at `-D warnings`, a resize fuzz, criterion perf gates, and a corpus eval when
-local clips are present. [CONTRIBUTING.md](CONTRIBUTING.md) has the build, the
-gate and the rules.
-
-## Quickstart
-
-```bash
-# 1. distill a video into an asset (offline, minutes; needs ffmpeg on PATH)
-cargo run --release -p auto-ascii-factory -- build clip.mp4 -o intro.ascii
-
-# 2. play it
-cargo run --release -p auto-ascii --bin auto-ascii-player -- intro.ascii
-#    q/Esc quit · space pause · 0-9 jump · ←/→ 5 s · d dial · [ ] adjust
-#    / codec · s save · v controls
-
-# 3. no terminal? render frames as text instead
-cargo run --release -p auto-ascii --example headless-dump -- intro.ascii 3 100x28
+```text
+|BBBBBMMMMMMMMMMMMMMBBBBBB8888DDDDGGSSSSSSSSSGGGGDDDDDDDDGGGSSeeeon
+|888888BBBBBMMMMBBMMMBBBBBB8888DDDGGGSSSSSSSSSSSGGDDDDDDDDGGGSSeeen
+|DGDDGDDDD88BBBBBBBBBBBBBBBBB88DDGGGGSSSSeeeeeSSSGGGGDDDGGGSSeeooon
+|GSSGSGDDDD8BBBBBBBBMMMMMMMBBBB88GPFTFPoSeeeeeeeeSSGGGGGGGGSeeoooon
+|GoeeeeSGGDBBBBBBBBBMMMMMMMMMMMMDo    .;oDeoooooeeeSGGGDDGGSeonnnnx
+|SooonoeooeG88DGMMPPPGBMMMMMMMMMDx     :cPooooooooeSGGGDGGSSonxxxxx
+|enonYTxeeeGDeT     :x8MMBMMMMMMBe,    .+uoxc".:xSeeSGSF" ;eonxxxnn
+|ennc  ;FeSSex      :+eeS88MMBMMMDn     ;nex;  .;oSeeeo:  .+xxT7TxF
+|Y.+c: .+onooc.     .;xGSG: .YD/"""    ,gee+   .:xoSSSSo,  ;o+   ;;
+|. ;:  ,*:;ccc:      .;nee;  :F;,,.,uaa+eeT.    :+x;Tnc: .:+;.   ..
+ .:;c;:Txccx+":.     .,..7:.:++xeoc+PMGxcSa+au;+a+;.. .+xon;""++++:
+      ::cxc:;     .a+*;;  ..   .Fooc;.:ccFeen+++GSc.   .+xxc  :c+xc
+       .:xc:c:. :+cxoexnnwc:     .++:    :cn;: +oe++....:xc+  :;oo;
+       ..+;:cxx+;;xccnccnSn+   ...++.:.+anc++. +eGn;+c; .+:. :+:nec
+   .    ..  :;ncx+;+;;+oeno+:   :+u|.++xen:;+;.+eDeXX:  .;:  .c;++;
+    .   .;c:.  . : '  ;nGn+:;    .;cu;;*xc.;cc.7FGDSo;   ::  .++;;+
+          .+:  .  .   :+nc..+    ;xeex...:.:cnwa_-X;T+u ..;:.  ..:;
+          .      .:aaxcw+:.:c.    .+oea:.  :+xncoeSeX++a.   '.=.+..
+         .;+,     :FncSGx:.:x;     :nSSa.  .::;xc+cc:..""":.    ..
+         .+c"      .++SDn:.:x:      .7nSw,  ..:;;   ....    .   ..
+         .:;      .:x+xSo;.;x:        .;cY+u.. .:::,,   .      .:
+          .;.     .;eSeSSou;o+        . .,:;*.,    .;c+
+    .:;;+:        .:eSenSGeSSoc.         ."7+xx;     .;.
+     .:::.         "PPnnnooowxxc,             .".
+       .:               "7FPooeeSoa,
 ```
 
-Useful player flags: `--loop`, `--fps-cap 30`, `--seek 1:30`, `--palette
-ascii|unicode|braille`, `--tier truecolor|256|16|mono`, `--no-query` (skip the
-capability probe), `--codec pixels|letters`, `--sim 213x58:300` (headless
-render + one JSON stats line).
-`auto-ascii-factory inspect intro.ascii` prints the container's header, chunks and
-CRC status.
+<sub>One frame of Apple's "1984" ad on a 90×26 grid, `letters` codec, colors
+dropped (`headless-dump` example). In a terminal every cell also carries the
+source's color.</sub>
 
-**Glyph codecs.** How a cell becomes a glyph is a pluggable codec: `pixels`
-(the default — shade ramps and half-blocks, a low-res picture) or `letters`
-(printable characters ordered by ink, ASCII strokes on edges, blocks only
-where the picture is lit: `█` for near-white, `▀▄` for a bright half). `/` cycles them while playing; `v` shows the clip
-name, active codec and grid size above the key hints. The dials (`d`, `[ ]`) and the
-codec are per video: `s` saves them beside the asset as
-`<name>.player.toml`, and they load the next time that video plays.
-
-**Zoom out for detail.** The asset is resolution-independent, so a smaller
-terminal font means more cells and a sharper picture: Cmd - (Ctrl - off
-macOS) is the cheapest detail there is. The player cannot change the font
-itself (docs/research/zoom.md), so below 160 columns the `v` overlay says
-so. It shows the grid size (`213x58 cells`), updating as you zoom. From
-240 columns its text is drawn in big block letters so it stays readable.
-
-`auto-ascii-player comp.toml` plays a **composition** — an unbounded stitch of
-clips on one timeline, each placed with `at` and trimmed with `in`/`out`, gaps
-black — without re-encoding anything; the `schema = 1` file is documented in
-[docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md).
-
-## The `auto-ascii` CLI
-
-One command that takes a video from anywhere, processes it, and files the
-result in `~/auto-ascii/library/` (override with `AUTO_ASCII_HOME`) beside a
-JSON sidecar recording where it came from:
-
-```bash
-cargo install --path crates/auto-ascii-cli   # or: cargo run -p auto-ascii-cli --
-
-auto-ascii import ~/Desktop/clip.mp4   # ffmpeg-ingest -> library/clip.ascii
-auto-ascii list                        # name, duration, fps, frames, bytes, source
-auto-ascii play clip                   # the player above, on a library clip
-
-auto-ascii cut clip --in 0:05 --out 0:20        # -> library/clip-0m05s-0m20s.ascii
-auto-ascii compose new demo                     # -> compositions/demo.toml
-auto-ascii compose add demo clip --at 0:10      # append a [[clip]] table
-auto-ascii compose play demo                    # or: compose export demo
-```
-
-`import` also takes `--name`, `--ss`/`--t` (`SS`, `MM:SS` or `HH:MM:SS`),
-`--fps`, `--res WxH` and `--force`; `info <clip>` prints one clip's header
-plus sidecar, `compose show <name>` prints a composition's resolved timeline
-with its gaps and overlaps, and `home` prints the folder. Every command
-accepts `--json`, which makes stdout exactly one JSON value to parse — see
-[docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md), which `auto-ascii agent-guide`
-prints verbatim.
+The workspace is all Rust. It has a library (`auto-ascii`), two engine
+binaries (`auto-ascii-factory` and `auto-ascii-player`), and the `auto-ascii`
+CLI, which files clips in a library folder and stitches them into
+compositions. The factory runs ffmpeg as a subprocess; the player links no
+video codecs.
 
 ## Install
 
-The fast path is a prebuilt player binary — copy it, run it, done (measured
-0.2 s from binary-in-hand to the first presented frame on a 2-core Linux box,
-probe deadline included; the M5 acceptance budget was 2 *minutes*):
+You need a recent stable Rust toolchain (edition 2024). The factory also needs
+`ffmpeg` on `PATH` (`brew install ffmpeg`, `apt install ffmpeg`); the player
+does not.
 
 ```bash
-# from a release tarball / dist/ directory produced by scripts/release.sh:
-install -m 0755 auto-ascii-player-x86_64-unknown-linux-musl ~/.local/bin/auto-ascii-player
-auto-ascii-player intro.ascii        # the musl build is fully static: zero deps
+git clone https://github.com/andmckay01/auto-ascii && cd auto-ascii
+cargo install --path crates/auto-ascii           # auto-ascii-player
+cargo install --path crates/auto-ascii-factory   # auto-ascii-factory
+cargo install --path crates/auto-ascii-cli       # auto-ascii (the CLI)
 ```
 
-Building each flavor yourself (`scripts/release.sh` does all of this and
-enforces the < 5 MB stripped-size gate):
+macOS (Apple Silicon or Intel) and Linux build from source. On Linux,
+`scripts/release.sh` builds stripped native, fully static musl and Windows
+cross player binaries into `dist/`, each under 5 MB. The static musl binary
+runs on any x86-64 Linux with nothing else installed.
 
-| target | how | notes |
-|---|---|---|
-| Linux (native) | `cargo build --release -p auto-ascii --features bin` | binary at `target/release/auto-ascii-player`; `strip` it |
-| Linux (static musl) | `rustup target add x86_64-unknown-linux-musl` + `apt install musl-tools`, then `cargo build --release --target x86_64-unknown-linux-musl -p auto-ascii --features bin` | `ldd` reports "statically linked" — runs on any x86-64 Linux |
-| Windows (cross) | `rustup target add x86_64-pc-windows-gnu` + `apt install mingw-w64`, then `cargo build --release --target x86_64-pc-windows-gnu -p auto-ascii --features bin` | **untested-cross**: it compiles and links here (headless Linux CI, no wine); the session layer uses crossterm's Windows console API — report issues |
-| macOS | build **on a Mac**: `make build` or the native cargo line above (see the Makefile's macOS section) | no osxcross by policy; Apple Silicon and Intel both build from source |
-
-A from-source build on a clean checkout (fresh `target/`, warm crates.io
-cache) takes 30–45 s on a 2-core Linux box — `time cargo build --release -p
-auto-ascii --features bin`.
-
-To embed the library (turn the `bin` feature off if you only want
-`RenderSession`):
+To use the library, add it as a dependency:
 
 ```toml
 auto-ascii = "0.2"
 ```
 
-Note the **0.2**: `auto-ascii` 0.1.0 was published under the project's
-previous crate names and is yanked — 0.2.0 is the first release of the
-renamed engine, built on `auto-ascii-core` / `-format` / `-term` 0.1.0.
+## Quick start
 
-## Embedding it
+```bash
+# a 6-second test clip (or use any video you have)
+ffmpeg -f lavfi -i testsrc2=size=640x360:rate=30 -t 6 clip.mp4
+
+# distill it into an asset (offline; seconds for short clips)
+auto-ascii-factory build clip.mp4 -o clip.ascii
+
+# play it (q quits)
+auto-ascii-player clip.ascii
+
+# no terminal handy? render headlessly
+auto-ascii-player clip.ascii --sim 213x58:300        # one JSON stats line
+cargo run --release -p auto-ascii --example headless-dump -- clip.ascii 3 100x28
+```
+
+From a checkout without installing, use `cargo run --release -p
+auto-ascii-factory -- …` and `cargo run --release -p auto-ascii --bin
+auto-ascii-player -- …`. `auto-ascii-factory inspect clip.ascii` prints the
+container's header and chunks and verifies every CRC.
+
+## Playing
+
+| key | does |
+|---|---|
+| `q` / `Esc` / Ctrl-C | quit (the terminal is always restored, even on panic) |
+| space | pause / resume |
+| `0`–`9` | jump to 0%–90% |
+| `←` / `→` | seek back / forward 5 s |
+| `d` | show the dial readout, then cycle **shadow lift → edge strength → hysteresis** |
+| `[` / `]` | turn the selected dial down / up |
+| `/` | cycle the glyph codec (`pixels` → `letters`) |
+| `s` | save this video's dials and codec |
+| `v` | pin or hide the controls overlay |
+
+**Glyph codecs** decide how a cell becomes a glyph. `pixels` (the default)
+paints a low-resolution picture from shade ramps, half-blocks and quadrants.
+`letters` draws with type: printable characters ordered by ink, ASCII strokes
+on edges, and blocks only where the picture is lit (`█` for near-white, `▀▄`
+for a bright half).
+
+**Dials** retune the renderer while the video plays. Shadow lift opens dark
+scenes. Edge strength sets how many contours get strokes. Hysteresis trades
+flicker against responsiveness. Nothing is rebuilt: the same asset re-renders
+at the new setting. `s` saves the dials and codec beside the asset as
+`<name>.player.toml`, and they load the next time that video plays.
+
+**The controls overlay** (`v`, and briefly at start-up) lists the keys. Above
+them is the clip name, the active codec, whether the settings are saved, and
+the grid size (`213x58 cells`).
+
+**Zoom out for detail.** The asset is resolution-independent, so a smaller
+terminal font means more cells and a sharper picture. Cmd - (Ctrl - off macOS)
+is the cheapest detail you can get. The player can't change the font itself
+([docs/research/zoom.md](docs/research/zoom.md)), so below 160 columns the
+overlay says so. From 240 columns the overlay text is drawn in big block
+letters so it stays readable.
+
+Useful flags:
+- `--loop`, `--seek 1:30`, `--fps-cap 30`
+- `--codec pixels|letters`
+- `--palette ascii|unicode|braille`, `--tier truecolor|256|16|mono`
+- `--no-query` (skip the capability probe)
+- `--font-table NAME|PATH` (tell the player which font your terminal uses)
+
+`auto-ascii-player --help` lists everything.
+
+## The `auto-ascii` CLI
+
+One command takes a video from anywhere and files it in
+`~/auto-ascii/library/` (override with `AUTO_ASCII_HOME`). A JSON sidecar
+beside it records where the video came from.
+
+```bash
+auto-ascii import ~/Desktop/clip.mp4        # ffmpeg ingest -> library/clip.ascii
+auto-ascii list                             # name, duration, fps, frames, bytes, source
+auto-ascii info clip                        # one clip's header + sidecar
+auto-ascii play clip                        # the player, on a library clip
+
+auto-ascii cut clip --in 0:01 --out 0:04    # -> library/clip-0m01s-0m04s.ascii
+auto-ascii compose new demo                 # -> compositions/demo.toml
+auto-ascii compose add demo clip --at 0:10  # append a clip at 0:10 (black before it)
+auto-ascii compose show demo                # the resolved timeline, gaps and overlaps
+auto-ascii compose play demo                # play it without re-encoding anything
+auto-ascii compose export demo              # flatten to exports/demo.ascii
+```
+
+`import` also takes `--name`, `--ss`/`--t` (times as `SS`, `MM:SS` or
+`HH:MM:SS`), `--fps`, `--res WxH` and `--force`. `home` prints the folder.
+
+A **composition** is a TOML file that stitches any number of clips on one
+timeline. Each clip is placed with `at` and trimmed with `in`/`out`; gaps are
+black and a later clip draws on top. The file is the source of truth, so you
+can write it by hand; `auto-ascii-player demo.toml` plays one directly.
+
+Every command accepts `--json`, which makes stdout exactly one JSON value.
+[docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) (also printed by `auto-ascii
+agent-guide`) documents the folder layout, the JSON shapes and the composition
+schema.
+
+## Embedding
 
 ```rust
-// Cargo.toml:  auto-ascii = "0.2"
 auto_ascii::Player::builder().asset("intro.ascii").looping(true).build()?.run()?;
 ```
 
-That is the whole player: capability probe, letterbox, live resize, terminal
-restore on quit/Ctrl-C/panic. If you own your event loop and your output layer —
-a game engine, a GUI widget, a test — use the terminal-free entry instead:
+That one call is the whole player: capability probe, letterbox, live resize,
+and terminal restore on quit, Ctrl-C or panic. If you own the event loop and
+the output layer (a game engine, a GUI widget, a test), use the terminal-free
+`RenderSession`:
 
 ```rust
 use auto_ascii::RenderSession;
 
 let mut session = RenderSession::open("intro.ascii")?;
-let grid = session.render(/*frame*/ 0, /*cols*/ 120, /*rows*/ 40)?; // -> &Grid<Cell>
+let grid = session.render(0, 120, 40)?; // frame 0 on a 120x40 grid -> &Grid<Cell>
 for row in 0..grid.rows() {
     for cell in grid.row(row) {
-        draw(cell.glyph(), cell.fg, cell.bg); // char + RGB, that's the whole contract
+        draw(cell.glyph(), cell.fg, cell.bg); // a char and two RGB colors
     }
 }
 ```
 
-Build it with `default-features = false` and the dependency tree is the engine
-and nothing else — no clap, no crossterm ([`crates/auto-ascii`](crates/auto-ascii)
-documents the three feature tiers). Runnable examples:
-[`simple-play`](crates/auto-ascii/examples/simple-play.rs) (12 lines, the whole
-player), [`embedded-loop`](crates/auto-ascii/examples/embedded-loop.rs)
-(`RenderSession` in a hand-rolled loop, with a mid-run resize) and
-[`headless-dump`](crates/auto-ascii/examples/headless-dump.rs) (frames to stdout
-as text). API docs: `cargo doc -p auto-ascii --open`.
+With `default-features = false` the dependency tree is the engine and nothing
+else: no clap, no crossterm. [crates/auto-ascii](crates/auto-ascii/README.md)
+lists the feature tiers. There are three runnable examples:
+[`simple-play`](crates/auto-ascii/examples/simple-play.rs) (the player in one
+call), [`embedded-loop`](crates/auto-ascii/examples/embedded-loop.rs)
+(`RenderSession` in a hand-rolled loop with a mid-run resize) and
+[`headless-dump`](crates/auto-ascii/examples/headless-dump.rs) (frames to
+stdout as text). API docs: `cargo doc -p auto-ascii --open`.
 
 ## Palettes
 
-Eight shipped palettes, keyed **charset tier × layer role** — density (cell
-count) picks the ramp *length* within a tier and color depth caps it (color
-already carries luminance, so truecolor gets shorter ramps than mono). Pick a
-charset tier with `--palette` / `PaletteChoice`; the rest is automatic.
+Eight palettes are keyed by charset tier and layer role. Density (cell count)
+picks ramp length within a tier, and color depth caps it: color already
+carries luminance, so truecolor gets shorter ramps than mono. Choose the tier
+with `--palette` or `PaletteChoice`; the rest is automatic.
 
 | # | key | ramp / LUT |
 |---|-----|------------|
@@ -179,27 +222,24 @@ charset tier with `--palette` / `PaletteChoice`; the rest is automatic.
 | 4 | `ascii/highlight` | `" .+*"` |
 | 5 | `unicode/base` | `" ·░▒▓█"` + quadrants `▖▘▝▗▀▄▌▐` |
 | 6 | `unicode/edge` | `‾ ─ _` / `│` / `╱` `╲`, junction `┼` |
-| 7 | `unicode/detail` (fine density, verified fonts) | braille U+2800–28FF, edge/texture only — never solid fills |
-| 8 | `mono-fallback/base` (16-color / no color / Linux console) | `" .:coO8@"` (CP437-safe) |
+| 7 | `unicode/detail` (fine density, verified fonts) | braille U+2800–28FF, edge/texture only |
+| 8 | `mono-fallback/base` (16-color, no color, Linux console) | `" .:coO8@"` (CP437-safe) |
 
-Sub-cell vertical structure (the two luma taps per cell) draws half-blocks
-`▀▄` and corner quadrants on the unicode tiers, and the `" - _` subposition
-triplet on the ASCII tiers. Everything an ASCII tier can emit is printable
-ASCII `0x20..=0x7E` — a strict subset of CP437, so the Linux console never
-sees a glyph its font lacks.
+Everything an ASCII tier emits is printable ASCII, so the Linux console never
+gets a glyph its font lacks. Terminal support is capability data, not
+per-terminal code: one ANSI backend is parameterized by a probed color tier,
+glyph repertoire, synchronized-output support and cell size.
+[docs/TERMINAL-CHECKLIST.md](docs/TERMINAL-CHECKLIST.md) is the manual
+per-terminal pass.
 
-Terminal support is capability *data*, not per-terminal code: one ANSI backend
-parameterized by a probed `Caps` (color tier, glyph repertoire, synchronized
-output, cell pixel size). See [`docs/TERMINAL-CHECKLIST.md`](docs/TERMINAL-CHECKLIST.md)
-for the per-terminal manual pass.
+## Tuning and evaluation
 
-## Corpus & tuning workflow
-
-Every tunable — edge thresholds, EMA constants, hysteresis deltas, highlight
-percentiles — lives in [`params.toml`](params.toml), never in code. The loop is
-`build → eval → read metrics → edit params → repeat`, driven by whatever
-reference videos you keep in `corpus/` (local and gitignored, see
-[`corpus/README.md`](corpus/README.md)):
+Every tunable lives in [`params.toml`](params.toml): edge thresholds, EMA
+constants, hysteresis widths, highlight percentiles. The factory embeds it as
+its defaults, and `--params FILE` overrides any subset.
+[docs/FEATURE-MAP.md](docs/FEATURE-MAP.md) documents every key. The tuning loop
+runs against whatever reference videos you keep in `corpus/` (local and
+gitignored; see [corpus/README.md](corpus/README.md)):
 
 ```bash
 auto-ascii-factory eval --corpus corpus/ --params params.toml \
@@ -208,37 +248,45 @@ auto-ascii-factory eval --corpus corpus/ --params params.toml \
     --baseline runs/base.json --out runs/latest.json --html runs/latest.html
 ```
 
-`eval` builds each clip (cached by input+params hash), renders it headlessly,
-and writes metrics JSON plus a self-contained HTML contact sheet — SSIM, edge F1
-against a Canny ground truth, flicker (glyph switches/cell/s), damage rate and
-bytes/frame, per-stage frame times. Nonzero exit on a tolerance breach against
-the baseline. `runs/` is gitignored output. `auto-ascii-factory sweep` runs the
-same eval over a grid of parameter overrides and ranks the combos; the sweep
-file format is documented at the top of
-[`crates/auto-ascii-factory/src/sweep.rs`](crates/auto-ascii-factory/src/sweep.rs).
+`eval` builds each clip, cached by input, params and pipeline code. It then
+renders headlessly through the real player pipeline. It writes metrics JSON
+and a self-contained HTML contact sheet: SSIM, edge F1 against Canny on the
+source, flicker, damage rate, bytes per frame and per-stage frame times. It
+exits nonzero when a tolerance against the baseline breaks.
+`auto-ascii-factory sweep` runs the same eval over a grid of parameter
+overrides and ranks the combinations; the grid format is in the feature map.
 
-## Repo map & development
+## How it's built
 
 | path | what |
 |---|---|
-| `crates/auto-ascii` | **the public library** + the `auto-ascii-player` binary |
-| `crates/auto-ascii-cli` | the `auto-ascii` CLI: a library of clips, `cut`, `compose`, `--json` |
-| `crates/auto-ascii-format` | ASCI v1 container (zstd + temporal delta, O(1) seek) |
-| `crates/auto-ascii-core` | pure engine: viewport, resampler, compositor, palettes, hysteresis |
+| `crates/auto-ascii` | the public library + the `auto-ascii-player` binary |
+| `crates/auto-ascii-core` | pure engine: viewport, resampler, glyph codecs, palettes, hysteresis |
+| `crates/auto-ascii-format` | the ASCI container (zstd + temporal delta, fast seek) |
 | `crates/auto-ascii-term` | `Backend` trait, ANSI backend, capability probe, simulator |
-| `crates/auto-ascii-factory` | offline factory (lib + bin) + the eval and sweep drivers |
-| `crates/auto-ascii-eval` | metrics, fixtures, report schema |
-| `scripts/eval.sh` | the one-command gate: tests, clippy, resize fuzz, perf gates, corpus eval |
-| `docs/AGENT-GUIDE.md` | the CLI for agents (also `auto-ascii agent-guide`) |
-| `docs/TERMINAL-CHECKLIST.md` | the manual per-terminal pass |
-| `docs/PLAN.md`, `docs/PLAN-M6-M8.md` | the build plans: the engine, then the CLI and compositions |
-| `docs/INTERFACES.md` | the internal API registry, milestone by milestone |
-| `docs/research/` | pre-implementation research digests (they use the project's earlier working name) |
+| `crates/auto-ascii-factory` | the offline factory (lib + bin), eval and sweep drivers |
+| `crates/auto-ascii-cli` | the `auto-ascii` CLI |
+| `crates/auto-ascii-eval` | metrics, synthetic fixtures, report schema |
+| `scripts/eval.sh` | the gate: tests, clippy, resize fuzz, perf gates, corpus eval |
 | `tools/` | `prep_video.py` (canvas-normalize a source video), `soak.py` (resize-storm soak) |
 
-`scripts/eval.sh` is what "green" means here; it runs in a few minutes on a
-2-core box, and the corpus section skips itself when `corpus/` holds no videos —
-committed tests never depend on them.
+`auto-ascii` 0.2 and `auto-ascii-core`, `-format` and `-term` 0.1 are on
+crates.io; the factory, eval and CLI crates are workspace-only.
+
+Docs:
+- [docs/FEATURE-MAP.md](docs/FEATURE-MAP.md): every feature and exactly how the
+  pipeline works, with code pointers.
+- [CONTRIBUTING.md](CONTRIBUTING.md): build, the gate and the determinism
+  rules.
+- [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md): the CLI for agents.
+- [docs/PLAN.md](docs/PLAN.md) and [docs/PLAN-M6-M8.md](docs/PLAN-M6-M8.md):
+  the original designs.
+- [docs/INTERFACES.md](docs/INTERFACES.md): the internal API registry.
+- [docs/research/](docs/research/): the research digests.
+
+`scripts/eval.sh` is what "green" means here. It runs in a few minutes, and
+its corpus section skips itself when `corpus/` holds no videos; committed tests
+never depend on them.
 
 ## License
 

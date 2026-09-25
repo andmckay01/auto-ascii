@@ -1,9 +1,9 @@
-//! Edge extraction (PLAN §5 stage 3, M3): Scharr gradients on the stored
+//! Edge extraction: Scharr gradients on the stored
 //! (EMA'd) L\* plane → doubled-angle orientation field → two passes of
 //! orientation-aware bilateral smoothing → hysteresis-thresholded
-//! **unthinned** edge magnitude (thinning breaks under resampling, PLAN §5).
+//! **unthinned** edge magnitude (thinning breaks under resampling).
 //!
-//! ## The doubled-angle field (PLAN §3.3 / §4)
+//! ## The doubled-angle field
 //!
 //! Orientation is π-periodic; averaging angles is wrong. We store the
 //! doubled-angle vector, which is linear under averaging/resampling:
@@ -18,12 +18,12 @@
 //! Scharr magnitude. The edge *tangent* doubled-angle vector is `−(vx, vy)`
 //! (doubling turns the 90° tangent rotation into a negation) — the player's
 //! LUT accounts for that; the asset stores the gradient convention.
-//! Canonical bins (§3.3 sign tests): vertical edge → `vx ≈ +m`; horizontal
+//! Canonical bins: vertical edge → `vx ≈ +m`; horizontal
 //! edge → `vx ≈ −m`; the two diagonals → `vy ≈ ±m`.
 //!
 //! ## Orientation-aware bilateral smoothing (2 passes)
 //!
-//! Pragmatist cut of Kang-style ETF (PLAN §5): each pass replaces a pixel's
+//! Pragmatist cut of Kang-style ETF: each pass replaces a pixel's
 //! vector with a weighted average over a `(2r+1)²` window; the weight is a
 //! spatial falloff times `max(dot(v_c, v_n), 0)` — magnitude-proportional
 //! (strong edges dominate) and alignment-gated (perpendicular doubled
@@ -34,11 +34,11 @@
 //! Like real ETF, the passes smooth the ORIENTATION only. E itself stays
 //! the *local* Scharr magnitude — spatially smoothing E would smear thin
 //! contours into plateaus (the exact failure thinning-free extraction must
-//! avoid); E's "smoothed" in PLAN §4 is delivered temporally by the EMA
+//! avoid); E's smoothing is delivered temporally by the EMA
 //! stage. After the passes the field is re-capped to `|v| ≤ E` per pixel:
 //! coherent neighborhoods keep full magnitude, incoherent ones (window
-//! cancellation) store a shorter vector — exactly the §3.3 coherence
-//! signal, now baked in per pixel and preserved by resampling.
+//! cancellation) store a shorter vector — exactly the player's coherence
+//! signal, baked in per pixel and preserved by resampling.
 //!
 //! E is hysteresis-thresholded (strong ≥ `t_hi` seeds, `t_lo..t_hi` kept
 //! when 8-connected to a seed), never thinned; suppressed pixels zero the
@@ -74,23 +74,17 @@ pub struct EdgeExtractor {
     h: usize,
     gx: Vec<i16>,
     gy: Vec<i16>,
-    /// Doubled-angle field, ping-pong pair (±255 domain).
     vx: Vec<i16>,
     vy: Vec<i16>,
     vx2: Vec<i16>,
     vy2: Vec<i16>,
-    /// Local Scharr magnitude (E before thresholding). Fixed across the
-    /// smoothing passes (module docs: orientation smooths, E stays local).
     mag: Vec<u8>,
-    /// Dilated-magnitude activity guard: pixels whose whole bilateral window
-    /// is zero-magnitude are skipped (most of a flat frame).
     active: Vec<u8>,
     tmp: Vec<u8>,
     keep: Vec<u8>,
     stack: Vec<u32>,
 }
 
-/// `n / d` rounded half away from zero, `d > 0`.
 #[inline]
 fn div_round(n: i64, d: i64) -> i64 {
     if n >= 0 { (n + d / 2) / d } else { (n - d / 2) / d }
@@ -123,8 +117,6 @@ impl EdgeExtractor {
         self.scharr(luma);
         self.build_field(cfg.scharr_shift);
         if cfg.passes > 0 {
-            // Activity guard, once: E is fixed across passes, and a pass
-            // never creates vectors outside dilate(E-support, radius).
             let (mag, tmp, active) = (&self.mag, &mut self.tmp, &mut self.active);
             dilate_box(mag, self.w, self.h, cfg.radius, tmp, active);
             for _ in 0..cfg.passes {
@@ -161,8 +153,6 @@ impl EdgeExtractor {
         &self.vy
     }
 
-    /// Scharr 3×3 (PLAN §5: better rotational symmetry than Sobel), border
-    /// pixels replicate-clamped. `|gx|,|gy| ≤ 16·255 = 4080` fits i16.
     fn scharr(&mut self, luma: &[u8]) {
         let (w, h) = (self.w, self.h);
         for y in 0..h {
@@ -182,7 +172,6 @@ impl EdgeExtractor {
         }
     }
 
-    /// Magnitude + rational doubled-angle vector per pixel (module docs).
     fn build_field(&mut self, shift: u32) {
         for i in 0..self.gx.len() {
             let gx = i64::from(self.gx[i]);
@@ -201,8 +190,6 @@ impl EdgeExtractor {
         }
     }
 
-    /// One orientation-aware bilateral pass `(vx,vy) → (vx2,vy2)` within
-    /// the precomputed activity region.
     fn bilateral_pass(&mut self, r: usize) {
         let (w, h) = (self.w, self.h);
         let max_d2 = 2 * (r * r) as i64;
@@ -228,8 +215,6 @@ impl EdgeExtractor {
                         if nx == 0 && ny == 0 {
                             continue;
                         }
-                        // Alignment/magnitude term (module docs): dot for
-                        // oriented centers, |v_n|² fill-in for zero centers.
                         let a = if center_nonzero {
                             let dot = cx * nx + cy * ny;
                             if dot <= 0 {
@@ -239,7 +224,6 @@ impl EdgeExtractor {
                         } else {
                             nx * nx + ny * ny
                         };
-                        // Linear spatial falloff in d² (integer, monotone).
                         let ws = (max_d2 + 1 - (dx * dx + dy * dy) as i64).max(1);
                         let wn = ws * a;
                         ax += wn * nx;
@@ -258,10 +242,6 @@ impl EdgeExtractor {
         }
     }
 
-    /// Re-cap the smoothed field to `|v| ≤ E` per pixel (module docs): the
-    /// passes may bleed strong magnitudes around, but the stored vector
-    /// never claims more edge energy than the local magnitude — and pixels
-    /// with no local edge store no orientation at all.
     fn cap_field(&mut self) {
         for i in 0..self.mag.len() {
             let m = i64::from(self.mag[i]);
@@ -283,7 +263,7 @@ impl EdgeExtractor {
 }
 
 /// Canny-style dual-threshold keep mask, 8-connected flood fill from strong
-/// seeds — but NO thinning (PLAN §5: thinning breaks under resampling).
+/// seeds — but NO thinning (thinning breaks under resampling).
 /// `keep[i] = 1` iff `mag[i] ≥ t_lo` and connected to some `mag ≥ t_hi`.
 pub fn hysteresis_mask(
     mag: &[u8],
@@ -383,7 +363,6 @@ mod tests {
         ex
     }
 
-    /// Bars of period 16 along `axis(x, y)`, values 30/220.
     fn bars(f: impl Fn(usize, usize) -> usize) -> Vec<u8> {
         let mut l = vec![0u8; W * H];
         for y in 0..H {
@@ -394,7 +373,6 @@ mod tests {
         l
     }
 
-    /// Kept pixels away from the raster border (border Scharr is clamped).
     fn kept_interior(ex: &EdgeExtractor) -> Vec<usize> {
         (0..W * H)
             .filter(|&i| {
@@ -411,13 +389,8 @@ mod tests {
         assert!(kept.len() > 100, "vertical contours must survive, kept {}", kept.len());
         for &i in &kept {
             let x = i % W;
-            // E peaks ON the bar boundaries (multiples of 8), never deep
-            // inside a flat bar: magnitude is never spatially smoothed, so
-            // only the 2-px two-sided Scharr support responds.
             let d = (x % 8).min(8 - x % 8);
             assert!(d <= 2, "edge pixel {x} is {d} px from any contour");
-            // §3.3 sign test: vertical edge → gradient horizontal →
-            // cos 2θ = +1: vx strongly positive, vy near zero.
             assert!(
                 ex.vx()[i] > 0 && ex.vx()[i] > 2 * ex.vy()[i].abs(),
                 "vertical bar bin broken at {i}: vx {} vy {}",
@@ -425,7 +398,6 @@ mod tests {
                 ex.vy()[i]
             );
         }
-        // Flat bar interiors carry no edge at all.
         for y in 4..H - 4 {
             assert_eq!(ex.e()[y * W + 4], 0, "bar interior must stay clean at row {y}");
         }
@@ -437,7 +409,6 @@ mod tests {
         let kept = kept_interior(&ex);
         assert!(kept.len() > 100);
         for &i in &kept {
-            // Horizontal edge → gradient vertical → cos 2θ = −1.
             assert!(
                 ex.vx()[i] < 0 && -ex.vx()[i] > 2 * ex.vy()[i].abs(),
                 "horizontal bar bin broken at {i}: vx {} vy {}",
@@ -449,7 +420,6 @@ mod tests {
 
     #[test]
     fn diagonal_bars_split_by_vy_sign() {
-        // x+y bars: contours along "/" (gradient at 45°, sin 2θ = +1).
         let ex = run(&bars(|x, y| x + y));
         let kept = kept_interior(&ex);
         assert!(kept.len() > 100);
@@ -461,7 +431,6 @@ mod tests {
                 ex.vy()[i]
             );
         }
-        // x−y bars: contours along "\" (gradient at −45°, sin 2θ = −1).
         let ex = run(&bars(|x, y| x + 4 * H - y));
         let kept = kept_interior(&ex);
         assert!(kept.len() > 100);
@@ -477,7 +446,6 @@ mod tests {
 
     #[test]
     fn disc_rim_traces_the_contour_with_rotating_orientation() {
-        // Bright disc r=16 on dark ground: E must ring the rim only.
         let mut luma = vec![30u8; W * H];
         let (cx, cy, r) = (24i32, 24i32, 16i32);
         for y in 0..H {
@@ -503,8 +471,6 @@ mod tests {
             ring += 1;
         }
         assert!(ring >= 60, "rim ring too sparse: {ring} pixels");
-        // Orientation rotates with the contour: right rim has a horizontal
-        // gradient (vx > 0), top rim a vertical one (vx < 0).
         let right = (24 + 16) as usize + 24 * W;
         let top = 24 + (24 - 16) * W;
         assert!(ex.e()[right] > 0 && ex.vx()[right] > 0, "right rim: {}", ex.vx()[right]);
@@ -513,8 +479,6 @@ mod tests {
 
     #[test]
     fn smoothing_keeps_orientation_coherent_along_a_line() {
-        // A single vertical contour: after two bilateral passes every kept
-        // pixel on the contour must agree on the bin (no speckle).
         let mut luma = vec![30u8; W * H];
         for y in 0..H {
             for x in 24..W {
@@ -536,12 +500,10 @@ mod tests {
     fn hysteresis_keeps_connected_weak_drops_isolated_weak() {
         let (w, h) = (16usize, 5usize);
         let mut mag = vec![0u8; w * h];
-        // A weak chain (t_lo..t_hi) touching one strong seed...
         for x in 2..10 {
             mag[2 * w + x] = 15;
         }
-        mag[2 * w + 2] = 40; // seed
-        // ...and an isolated weak pixel far from any seed.
+        mag[2 * w + 2] = 40;
         mag[4 * w + 14] = 15;
         let (mut keep, mut stack) = (Vec::new(), Vec::new());
         hysteresis_mask(&mag, w, h, 28, 12, &mut keep, &mut stack);
@@ -549,14 +511,11 @@ mod tests {
             assert_eq!(keep[2 * w + x], 1, "seed-connected weak pixel {x} must survive");
         }
         assert_eq!(keep[4 * w + 14], 0, "isolated weak pixel must die");
-        // Below t_lo never survives, even adjacent to the seed.
         assert_eq!(keep[2 * w + 1], 0);
     }
 
     #[test]
     fn unthinned_soft_edges_stay_wide() {
-        // A 2-px luminance ramp: both flanking columns respond; no thinning
-        // may collapse them to one (PLAN §5: unthinned).
         let mut luma = vec![30u8; W * H];
         for y in 0..H {
             luma[y * W + 24] = 125;

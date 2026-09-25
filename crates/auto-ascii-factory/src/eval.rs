@@ -1,10 +1,9 @@
-//! `auto-ascii-factory eval` — the M2 agent socket (PLAN §5/§6, item B).
+//! `auto-ascii-factory eval` — the agent socket.
 //!
 //! For every video in `--corpus`: build (or reuse) the asset, then drive the
-//! REAL player pipeline (`auto_ascii::pipeline::Player`, extracted to a
-//! lib at M2 exactly so this driver measures the renderer and not a
-//! reimplementation) headlessly against `SimBackend`, collecting the §6
-//! metrics:
+//! REAL player pipeline (`auto_ascii::pipeline::Player`, a library type so
+//! this driver measures the renderer and not a reimplementation) headlessly
+//! against `SimBackend`, collecting these metrics:
 //!
 //! - **downscale-SSIM** at the truecolor tier: grid rasterized through the
 //!   conservative ink-coverage table, viewport-cropped, compared against the
@@ -26,15 +25,15 @@
 //! `--baseline` compare (per-metric tolerances from params.toml, nonzero
 //! exit on breach) and an optional `--html` contact sheet — self-contained,
 //! base64-embedded PNGs, source frame vs rasterized render at
-//! `eval.contact_frames` timestamps per clip (PLAN §6 "the human loop").
+//! `eval.contact_frames` timestamps per clip, for human review.
 //!
 //! Assets are cached under `--cache-dir` keyed by
 //! `(input sha256, build-params sha256, pipeline source fingerprint)` —
 //! eval-only knobs never invalidate the cache
 //! ([`Params::build_fingerprint`]), but any code change to auto-ascii-factory
-//! or auto-ascii-format DOES ([`PIPELINE_FINGERPRINT`], M2 review fix: an M3
-//! extract-stage change must never be measured against stale cached
-//! assets built by older code).
+//! or auto-ascii-format DOES ([`PIPELINE_FINGERPRINT`]), so an extract-stage
+//! change is never measured against stale cached assets built by older
+//! code.
 
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
@@ -63,33 +62,17 @@ use crate::params::Params;
 use crate::reel::{GIF_FPS, GIF_SECS, REEL_ROWS, ReelClip, ReelRow, encode_gray_gif, render_reel_html};
 use crate::sha256::{sha256_file, sha256_hex};
 
-/// Video extensions scanned in the corpus directory (non-recursive).
 const VIDEO_EXTS: &[&str] = &["mp4", "mov", "mkv", "webm", "avi", "m4v"];
 
-/// Tiers measured per clip: full metrics at truecolor, damage/bytes at the
-/// degraded tiers (M2 item B contract). Tags are the `ColorTier` canonical
-/// forms used across the JSON schema.
 const TIERS: &[(ColorTier, &str)] =
     &[(ColorTier::True, "truecolor"), (ColorTier::C256, "256"), (ColorTier::Mono, "mono")];
 
-/// FNV-1a 64 hash of every `.rs` source file in auto-ascii-factory + auto-ascii-format
-/// (computed by build.rs at compile time). Part of the asset cache key: a
-/// factory/format code change invalidates cached corpus assets so eval never
-/// measures stale pipeline output (M2 review fix). Over-invalidation (e.g. an
-/// eval-driver-only edit) merely costs a rebuild — the safe direction.
 const PIPELINE_FINGERPRINT: &str = env!("ASCII_PIPELINE_FINGERPRINT");
 
-/// Cache file name for one (clip, params, code) combination.
 fn asset_cache_name(name: &str, input_sha: &str, params_sha: &str) -> String {
     format!("{name}-{}-{}-{PIPELINE_FINGERPRINT}.ascii", &input_sha[..12], &params_sha[..12])
 }
 
-/// Eval-owned percentiles for the SSIM reference normalization. Fixed here —
-/// deliberately NOT params `[levels]` and NOT the factory's NORM output: the
-/// reference must stay independent of the tunables under test, or the metric
-/// grades the factory against its own damage (M2 review fix — the SSIM
-/// source side previously ran through `player.levels_lut()`, so a params
-/// change that destroyed shot detection barely moved the score).
 const SSIM_REF_LO_PCT: u64 = 2;
 const SSIM_REF_HI_PCT: u64 = 98;
 
@@ -99,24 +82,20 @@ pub struct EvalArgs {
     pub baseline: Option<PathBuf>,
     pub out: PathBuf,
     pub html: Option<PathBuf>,
-    /// Review-reel HTML path (M3 sign-off artifact — see `reel.rs`).
+    /// Review-reel HTML path (human sign-off artifact — see `reel.rs`).
     pub reel: Option<PathBuf>,
     pub cache_dir: PathBuf,
-    /// Sweep mode (M3 Tune): only the truecolor pass runs (it carries every
+    /// Sweep mode: only the truecolor pass runs (it carries every
     /// gated render metric — ssim/flicker/edge-F1/stage times); the 256/mono
     /// damage passes are skipped. `auto-ascii-factory eval` always sets false —
     /// baseline reports keep full tier coverage.
     pub truecolor_only: bool,
-    /// `--font-table NAME|PATH` (M5 item B, PLAN §3.4): ink-coverage table
-    /// for the SSIM rasterizer. `None` = the conservative default (what the
-    /// committed baseline was scored with).
+    /// `--font-table NAME|PATH`: ink-coverage table for the SSIM rasterizer.
+    /// `None` = the conservative default (the table baselines are scored
+    /// with unless told otherwise).
     pub font_table: Option<String>,
 }
 
-/// Resolve `--font-table NAME|PATH` into a rasterizer coverage table:
-/// built-in names first (`conservative` = the M2 constants; the four
-/// committed `fonts/*.toml` per-font tables by name), else a path to a
-/// `auto-ascii-factory font-table` TOML.
 pub(crate) fn resolve_font_table(spec: Option<&str>) -> Result<CoverageTable, BoxErr> {
     let Some(spec) = spec else {
         return Ok(CoverageTable::conservative().clone());
@@ -141,20 +120,17 @@ pub(crate) fn resolve_font_table(spec: Option<&str>) -> Result<CoverageTable, Bo
     .into())
 }
 
-/// Edge-truth memo across sweep combos (M3 Tune): the source Canny masks
+/// Edge-truth memo across sweep combos: the source Canny masks
 /// depend only on (clip, ingest fps, grid, sampled frame set) — never on the
 /// tunables under test — so a sweep computes them once per clip, not once
 /// per combo. Keyed by every input that shapes the mask set.
 pub type TruthCache = BTreeMap<String, BTreeMap<u32, EdgeMask>>;
 
-/// One contact-sheet snapshot (truecolor tier).
 struct Snap {
     frame: u32,
     secs: f64,
     ssim: f64,
-    /// Viewport-cropped render raster (1×2 px/cell).
     raster: GrayImage,
-    /// PNGs filled in after the render pass (ffmpeg subprocess).
     src_png: Vec<u8>,
     render_png: Vec<u8>,
 }
@@ -162,7 +138,6 @@ struct Snap {
 pub(crate) struct ClipEval {
     pub(crate) report: ClipReport,
     snaps: Vec<Snap>,
-    /// Reel material, collected only under `--reel`.
     reel: Option<ReelClip>,
 }
 
@@ -181,9 +156,6 @@ pub fn run(args: &EvalArgs) -> Result<(), BoxErr> {
     let mut report = EvalReport::new(format!("auto-ascii-factory {}", env!("CARGO_PKG_VERSION")));
     report.clips = evals.iter().map(|e| e.report.clone()).collect();
 
-    // Baseline compare (computed before writing so the HTML can show deltas;
-    // the JSON + HTML are still written on a breach — the artifacts are the
-    // evidence — and the breach is the exit code).
     let compare = match &args.baseline {
         None => None,
         Some(bp) => {
@@ -237,8 +209,6 @@ pub fn run(args: &EvalArgs) -> Result<(), BoxErr> {
     if let Some(cmp) = &compare {
         print_compare(cmp);
         if !cmp.pass {
-            // `info:` notes are informational (stage_ms wall-clock drift)
-            // and never findings.
             let failures = cmp.failures().count()
                 + cmp.notes.iter().filter(|n| !n.starts_with("info:")).count();
             return Err(format!(
@@ -250,7 +220,6 @@ pub fn run(args: &EvalArgs) -> Result<(), BoxErr> {
     Ok(())
 }
 
-/// Corpus scan: sorted by file name for deterministic clip order.
 pub(crate) fn discover_corpus(dir: &Path) -> Result<Vec<(String, PathBuf)>, BoxErr> {
     if !dir.is_dir() {
         return Err(format!("--corpus {} is not a directory", dir.display()).into());
@@ -282,9 +251,6 @@ pub(crate) fn discover_corpus(dir: &Path) -> Result<Vec<(String, PathBuf)>, BoxE
     Ok(clips)
 }
 
-/// Build-or-reuse the asset, then run the tier passes and assemble the
-/// clip report + contact snapshots. `truth_cache` (sweep mode) memoizes the
-/// source-Canny ground truth across combos; `None` (plain eval) recomputes.
 pub(crate) fn eval_clip(
     name: &str,
     input: &Path,
@@ -307,7 +273,6 @@ pub(crate) fn eval_clip(
                 t: None,
                 params: params.clone(),
             },
-            // Same destination the info lines always had (M7 lib split).
             &mut std::io::stderr(),
         )?;
     }
@@ -319,7 +284,6 @@ pub(crate) fn eval_clip(
     let mmap = unsafe { Mmap::map(&file) }
         .map_err(|e| format!("mmap {}: {e}", asset_path.display()))?;
 
-    // Metadata pass: fps, frame budget, cut table, source luma dims.
     let reader = AsciiReader::open(&mmap)?;
     let header = reader.header();
     let fps = f64::from(header.fps_num) / f64::from(header.fps_den);
@@ -337,8 +301,6 @@ pub(crate) fn eval_clip(
     let shot_count = reader.shots().len() as u32;
     let (src_w, src_h) =
         reader.plane_dims(plane_id::Y).ok_or("asset has no Y plane")?;
-    // Asset-structure metrics over the WHOLE asset (not just eval_frames):
-    // the factory built all of it, so all of it is gated (M2 review fix).
     let mut keyframe_count = 0u32;
     for i in 0..frames_total {
         if reader.is_keyframe(i)? {
@@ -349,11 +311,8 @@ pub(crate) fn eval_clip(
 
     let (cols, rows_dim) = (params.eval.grid_cols, params.eval.grid_rows);
     let grid_cells = u32::from(cols) * u32::from(rows_dim);
-    // The viewport the player will compute for this grid (aspect 2.0, same
-    // as the SimBackend pass) — the edge-F1 "grid resolution" (PLAN §6).
     let vp = compute_viewport(cols, rows_dim, DEFAULT_CELL_ASPECT);
 
-    // Midpoints of n equal segments — the snapshot/reel timestamp picker.
     let midpoints = |n: u32| -> BTreeSet<u32> {
         (0..n.min(eval_frames))
             .map(|k| {
@@ -362,21 +321,12 @@ pub(crate) fn eval_clip(
             })
             .collect()
     };
-    // Contact snapshots: midpoints of contact_frames equal segments.
     let snap_frames = midpoints(params.eval.contact_frames);
-    // Reel rows (≥ 4 timestamps per clip — PLAN M3 review reel).
     let reel_on = args.reel.is_some();
     let reel_frames: BTreeSet<u32> = if reel_on { midpoints(REEL_ROWS) } else { BTreeSet::new() };
-    // Reel GIF: ~GIF_SECS s of clip time at GIF_FPS, rasterized render.
     let gif_stride = ((fps / f64::from(GIF_FPS)).round() as u32).max(1);
     let gif_max = (GIF_SECS * GIF_FPS) as usize;
 
-    // Edge-F1 ground truth (PLAN §6): Canny on the SOURCE frame at grid
-    // resolution — one streaming ffmpeg pass over the same
-    // scale/fps-normalize chain the factory ingested, masks computed at the
-    // sampled cadence (ssim_every) plus the reel timestamps. Deliberately
-    // NOT the asset's Y plane: the truth must not move when factory
-    // tunables (EMA, levels, edge thresholds) change.
     let mut truth_owned: Option<BTreeMap<u32, EdgeMask>> = None;
     let truth: &BTreeMap<u32, EdgeMask> = match vp {
         None => truth_owned.insert(BTreeMap::new()),
@@ -385,8 +335,6 @@ pub(crate) fn eval_clip(
                 .filter(|i| i.is_multiple_of(params.eval.ssim_every))
                 .collect();
             wanted.extend(reel_frames.iter().copied());
-            // Sweep memo: keyed by everything that shapes the mask set (the
-            // masks themselves depend on no tunable under test).
             match truth_cache {
                 Some(cache) => {
                     let key = format!(
@@ -417,7 +365,6 @@ pub(crate) fn eval_clip(
         ..ClipMetrics::default()
     };
     let mut snaps: Vec<Snap> = Vec::new();
-    // Reel material (truecolor pass): rows pending their PNGs + GIF rasters.
     struct ReelPending {
         frame: u32,
         secs: f64,
@@ -429,9 +376,6 @@ pub(crate) fn eval_clip(
     let mut reel_pending: Vec<ReelPending> = Vec::new();
     let mut gif_rasters: Vec<GrayImage> = Vec::new();
 
-    // M5 item B: the SSIM rasterizer's ink model is table-selectable
-    // (--font-table); the default stays the conservative table the committed
-    // baseline was scored with.
     let coverage_table = resolve_font_table(args.font_table.as_deref())?;
 
     let tiers: &[(ColorTier, &str)] = if args.truecolor_only { &TIERS[..1] } else { TIERS };
@@ -442,19 +386,6 @@ pub(crate) fn eval_clip(
         let mut caps = backend.caps().clone();
         caps.color = tier;
         backend.set_caps(caps);
-        // Pure diff mode (repaint_full = false): damage rate is the metric
-        // here, and invalidate-every-frame would pin it at 100%.
-        // Palette config (M3): every eval pass measures the ASCII charset
-        // tier. Deliberate: the DEFAULT ink-coverage table behind
-        // downscale-SSIM is ASCII-only (unknown glyphs fall back to
-        // mid-gray), so a unicode-tier pass would score blocks/half-blocks
-        // as noise, not signal — and the edge/highlight/hysteresis
-        // DECISIONS under test are charset-independent (only the final
-        // glyph pick differs). The unicode tier is covered by goldens,
-        // parity, fuzz and the sim fps gates. M5 item B: `--font-table`
-        // swaps the table (per-font tables DO measure unicode ink), but the
-        // render tier here stays ASCII so scores remain comparable across
-        // table choices and against the conservative baseline.
         let mut player = Player::new(
             reader,
             DEFAULT_CELL_ASPECT,
@@ -462,12 +393,8 @@ pub(crate) fn eval_clip(
             auto_ascii::pipeline::color_depth(tier),
             auto_ascii_core::GlyphTier::Ascii,
         )?;
-        // §3.5 compositor tunables from params.toml [compose] — the
-        // renderer half of the agent socket (no asset rebuild).
         player.set_compose_params(params.compose.to_core());
         if truecolor {
-            // Winning-layer render metadata: the edge-F1 prediction side
-            // ("cells where the edge layer won", PLAN §6).
             player.enable_layer_mask();
         }
         player.reflow(&mut backend, cols, rows_dim);
@@ -477,8 +404,6 @@ pub(crate) fn eval_clip(
         let mut frame_stats = Vec::with_capacity(eval_frames as usize);
         let mut stage_acc = StageAccum::new();
         let mut prev_stage = player.stage();
-        // Flicker with cut segmentation: a fresh accumulator per shot means
-        // the cut transition contributes no pairs (§6 "static segments").
         let mut flicker = FlickerAccum::new();
         let (mut fl_switches, mut fl_pairs) = (0u64, 0u64);
         let mut ssim_sum = 0.0f64;
@@ -489,7 +414,7 @@ pub(crate) fn eval_clip(
 
         for i in 0..eval_frames {
             let fs = player.render_present(&mut backend, i)?;
-            backend.take_output(); // count bytes via stats; don't hoard RAM
+            backend.take_output();
             frame_stats.push(fs);
             if !truecolor {
                 continue;
@@ -518,9 +443,6 @@ pub(crate) fn eval_clip(
             let want_gif =
                 reel_on && gif_rasters.len() < gif_max && i.is_multiple_of(gif_stride);
 
-            // Edge F1 (sampled cadence + reel rows): prediction = viewport
-            // cells whose winning layer was EDGE, matched against the source
-            // Canny truth with the 1-cell tolerance ring.
             let mut edge_score: Option<EdgeScore> = None;
             if (want_sample || want_reel)
                 && let (Some(vp), Some(t)) = (vp.as_ref(), truth.get(&i))
@@ -539,7 +461,6 @@ pub(crate) fn eval_clip(
 
             if want_sample || want_snap || want_reel || want_gif {
                 let raster = render_raster(&player, table, &ropts)?;
-                // SSIM only where it is reported (GIF-only frames skip it).
                 let value = if want_sample || want_snap || want_reel {
                     frame_ssim(&player, &raster, src_w, src_h, &mut normed)
                 } else {
@@ -563,8 +484,6 @@ pub(crate) fn eval_clip(
                     gif_rasters.push(raster.clone());
                 }
                 if want_reel {
-                    // Flicker-to-date: cumulative switches/cell/s over every
-                    // frame rendered so far (cut segments included).
                     let sw = fl_switches + flicker.switches();
                     let pairs = fl_pairs + flicker.cell_pairs();
                     reel_pending.push(ReelPending {
@@ -596,14 +515,12 @@ pub(crate) fn eval_clip(
         }
     }
 
-    // Contact-sheet PNGs (ffmpeg subprocess — outside the timed passes).
     for snap in &mut snaps {
         snap.render_png = png_from_gray(&snap.raster)?;
         snap.src_png =
             png_source_frame(input, src_w, src_h, params.build.fps, snap.frame)?;
     }
 
-    // Reel assembly: row PNGs + the animated GIF (M3 sign-off artifact).
     let reel_clip = if reel_on {
         let mut rows = Vec::with_capacity(reel_pending.len());
         for p in reel_pending {
@@ -670,8 +587,6 @@ pub(crate) fn eval_clip(
     })
 }
 
-/// Rasterize the player's current grid through the coverage table and crop
-/// the viewport (pads are never scored or shown).
 fn render_raster(
     player: &Player<'_>,
     table: &CoverageTable,
@@ -689,12 +604,6 @@ fn render_raster(
     ))
 }
 
-/// Ground-truth Canny masks for `wanted` frame indices (PLAN §6 edge F1):
-/// one streaming ffmpeg pass over the fps-normalized, base-res-scaled gray
-/// source — the same `scale=W:H:flags=area,fps=N` chain the factory
-/// ingested — each wanted frame downscaled to the viewport grid and Canny'd
-/// by [`canny_edge_truth`] (thresholds documented there). A source that
-/// ends early simply yields fewer masks (those frames go unscored).
 fn source_edge_truth(
     input: &Path,
     src_w: u16,
@@ -735,7 +644,7 @@ fn source_edge_truth(
         while filled < frame_size {
             let n = stdout.read(&mut buf[filled..])?;
             if n == 0 {
-                break 'frames; // clean-or-short EOF: score what we have
+                break 'frames;
             }
             filled += n;
         }
@@ -756,18 +665,6 @@ fn source_edge_truth(
     Ok(masks)
 }
 
-/// Downscale-SSIM for the player's current frame (PLAN §6): the
-/// viewport-cropped raster (from [`render_raster`]) compared against the
-/// source luma normalized by EVAL-OWNED per-frame p2/p98 percentiles
-/// ([`SSIM_REF_LO_PCT`]/[`SSIM_REF_HI_PCT`]).
-///
-/// The reference is deliberately independent of the factory's NORM levels
-/// (M2 review fix — no self-grading): a healthy build's per-shot levels sit
-/// close to the per-frame percentiles, so SSIM stays high; a params change
-/// that kills shot detection or degrades `[levels]` leaves the render
-/// mis-stretched against a still-correct reference and the score drops.
-/// The stretch itself is still not scored — both sides are normalized, just
-/// not by the same knob under test.
 fn frame_ssim(
     player: &Player<'_>,
     cropped: &GrayImage,
@@ -782,10 +679,6 @@ fn frame_ssim(
     downscale_ssim(cropped, normed, src_w, src_h)
 }
 
-/// Per-frame p2/p98 of the raw source luma (nearest-rank on a 256-bin
-/// histogram) — the SSIM reference normalization. `None` on an empty plane;
-/// a flat frame yields a degenerate span, which `build_levels_lut` treats as
-/// identity (matching the player's own convention).
 fn reference_levels(luma: &[u8]) -> Option<auto_ascii_format::PlaneLevels> {
     if luma.is_empty() {
         return None;
@@ -809,13 +702,6 @@ fn reference_levels(luma: &[u8]) -> Option<auto_ascii_format::PlaneLevels> {
     Some(auto_ascii_format::PlaneLevels { p2: rank(SSIM_REF_LO_PCT), p98: rank(SSIM_REF_HI_PCT) })
 }
 
-// ---------------------------------------------------------------------------
-// PNG plumbing — ffmpeg subprocess (PLAN §8: ffmpeg strictly as CLI; the
-// factory already owns that dependency, so no image crate is needed).
-// ---------------------------------------------------------------------------
-
-/// Run ffmpeg with `-v error`, feeding `stdin_data` when given, capturing
-/// stdout. stderr is drained on a thread (same deadlock rule as ffmpeg.rs).
 fn ffmpeg_capture(extra_args: &[&str], stdin_data: Option<&[u8]>) -> Result<Vec<u8>, BoxErr> {
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-v", "error"]);
@@ -831,7 +717,6 @@ fn ffmpeg_capture(extra_args: &[&str], stdin_data: Option<&[u8]>) -> Result<Vec<
         let data = data.to_vec();
         std::thread::spawn(move || {
             let _ = stdin.write_all(&data);
-            // dropped: closes the pipe so ffmpeg sees EOF
         })
     });
     let mut stderr = child.stderr.take().expect("stderr was piped");
@@ -865,7 +750,6 @@ fn ffmpeg_capture(extra_args: &[&str], stdin_data: Option<&[u8]>) -> Result<Vec<
     Ok(out)
 }
 
-/// Grayscale raster → PNG bytes.
 fn png_from_gray(img: &GrayImage) -> Result<Vec<u8>, BoxErr> {
     let size = format!("{}x{}", img.w(), img.h());
     ffmpeg_capture(
@@ -877,9 +761,6 @@ fn png_from_gray(img: &GrayImage) -> Result<Vec<u8>, BoxErr> {
     )
 }
 
-/// Source frame `frame_idx` of the fps-normalized, base-res-scaled stream —
-/// the exact `scale=W:H:flags=area,fps=N` chain the factory ingested
-/// (ffmpeg.rs), so the contact sheet compares what the asset actually saw.
 fn png_source_frame(
     input: &Path,
     w: u16,
@@ -897,10 +778,6 @@ fn png_source_frame(
         None,
     )
 }
-
-// ---------------------------------------------------------------------------
-// Baseline compare output
-// ---------------------------------------------------------------------------
 
 fn print_compare(cmp: &CompareReport) {
     for note in &cmp.notes {
@@ -926,13 +803,6 @@ fn print_compare(cmp: &CompareReport) {
     );
 }
 
-// ---------------------------------------------------------------------------
-// HTML contact sheet (PLAN §6 "the human loop") — fully self-contained:
-// inline CSS, base64 data: URIs, no external requests.
-// ---------------------------------------------------------------------------
-
-/// Standard base64 (RFC 4648, with padding) — 20 lines beat a dependency.
-/// (Shared with the review reel, `reel.rs`.)
 pub(crate) fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -996,8 +866,6 @@ fn render_html(report: &EvalReport, evals: &[ClipEval], compare: Option<&Compare
             cmp.notes.len()
         ));
         for note in &cmp.notes {
-            // `info:` notes are informational (e.g. stage_ms wall-clock
-            // drift) — never render them as failures.
             let class = if note.starts_with("info:") { "meta" } else { "fail" };
             h.push_str(&format!("<p class=\"{class}\">note: {}</p>\n", html_escape(note)));
         }
@@ -1012,7 +880,6 @@ fn render_html(report: &EvalReport, evals: &[ClipEval], compare: Option<&Compare
             c.frames, c.fps, c.grid_cols, c.grid_rows
         ));
 
-        // Headline metrics.
         h.push_str("<table><tr><th>metric</th><th>value</th></tr>");
         h.push_str(&format!(
             "<tr><td>downscale-SSIM (truecolor)</td><td>{}</td></tr>",
@@ -1046,7 +913,6 @@ fn render_html(report: &EvalReport, evals: &[ClipEval], compare: Option<&Compare
         ));
         h.push_str("</table>\n");
 
-        // Per-tier damage table.
         h.push_str(
             "<table><tr><th>tier</th><th>avg B/frame</th><th>max B/frame</th>\
              <th>avg damage</th><th>max damage</th><th>B/s @ fps</th></tr>",
@@ -1065,7 +931,6 @@ fn render_html(report: &EvalReport, evals: &[ClipEval], compare: Option<&Compare
         }
         h.push_str("</table>\n");
 
-        // Stage times.
         if let Some(s) = &m.stage_ms {
             h.push_str(
                 "<table><tr><th>stage</th><th>mean ms</th><th>max ms</th></tr>",
@@ -1082,7 +947,6 @@ fn render_html(report: &EvalReport, evals: &[ClipEval], compare: Option<&Compare
             h.push_str("</table>\n");
         }
 
-        // Deltas vs baseline for this clip.
         if let Some(cmp) = compare {
             let rows: Vec<_> = cmp.deltas.iter().filter(|d| d.clip == c.name).collect();
             if !rows.is_empty() {
@@ -1105,7 +969,6 @@ fn render_html(report: &EvalReport, evals: &[ClipEval], compare: Option<&Compare
             }
         }
 
-        // Side-by-side snapshots.
         h.push_str("<div class=\"snaps\">\n");
         for snap in &eval.snaps {
             h.push_str(&format!(
@@ -1155,9 +1018,6 @@ mod tests {
         assert_eq!(html_escape("a<b>&c"), "a&lt;b&gt;&amp;c");
     }
 
-    /// M2 review fix: the cache key carries all three identity components —
-    /// input bytes, build params AND pipeline code — so a factory/format
-    /// source change can never reuse an asset built by older code.
     #[test]
     fn cache_name_includes_pipeline_fingerprint() {
         assert_eq!(PIPELINE_FINGERPRINT.len(), 16, "FNV-1a 64 as hex");
@@ -1169,37 +1029,26 @@ mod tests {
             name,
             format!("clip-aaaaaaaaaaaa-cccccccccccc-{PIPELINE_FINGERPRINT}.ascii")
         );
-        // Each component changes the key.
         assert_ne!(asset_cache_name("clip", "e00000000000ffff", params_sha), name);
         assert_ne!(asset_cache_name("clip", input_sha, "e00000000000ffff"), name);
     }
 
-    /// The SSIM reference percentiles are computed from the raw source luma
-    /// (nearest-rank), independent of factory NORM output.
     #[test]
     fn reference_levels_nearest_rank() {
         assert_eq!(reference_levels(&[]), None);
-        // Flat plane → degenerate span (identity downstream).
         let flat = reference_levels(&vec![128u8; 1000]).unwrap();
         assert_eq!((flat.p2, flat.p98), (128, 128));
-        // Uniform 0..=255 spread: p2 ≈ 2%, p98 ≈ 98% of the range.
         let spread: Vec<u8> = (0..=255u16).flat_map(|v| [v as u8; 100]).collect();
         let lv = reference_levels(&spread).unwrap();
         assert!((4..=6).contains(&lv.p2), "p2 = {}", lv.p2);
         assert!((249..=251).contains(&lv.p98), "p98 = {}", lv.p98);
-        // Outlier-heavy plane: the bright 2% tail is clipped (p98 = 100, not
-        // 255); the dark tail sits exactly on the rank-20 boundary so
-        // nearest-rank lands on it (p2 = 0).
-        let mut plane = vec![0u8; 20]; // 2% dark outliers
+        let mut plane = vec![0u8; 20];
         plane.extend(std::iter::repeat_n(100u8, 960));
-        plane.extend(std::iter::repeat_n(255u8, 20)); // 2% bright outliers
+        plane.extend(std::iter::repeat_n(255u8, 20));
         let lv = reference_levels(&plane).unwrap();
         assert_eq!((lv.p2, lv.p98), (0, 100));
     }
 
-    /// M5 item B: --font-table resolution — default/`conservative` = the M2
-    /// constants; builtin names load the committed fonts/*.toml; paths load
-    /// generator TOML; anything else is a clean error listing the builtins.
     #[test]
     fn font_table_resolution() {
         let t = resolve_font_table(None).unwrap();

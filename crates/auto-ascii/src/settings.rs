@@ -83,11 +83,7 @@ impl VideoSettings {
             };
             let (key, val) = (key.trim(), val.trim());
             if key == "codec" {
-                // Quoted is the TOML we write; a hand-edited bare name is
-                // just as clear, so it is accepted rather than costing the
-                // whole file (and the dials in it).
                 let name = val.trim_matches('"');
-                // A codec from a newer build: play in the default instead.
                 out.codec = Codec::from_name(name).unwrap_or_default();
             } else if let Some(dial) = Dial::ALL.into_iter().find(|d| d.param_key() == key) {
                 let v: u8 = val
@@ -148,13 +144,10 @@ mod tests {
         let s = turned();
         assert_ne!(s.compose, ComposeParams::default(), "the fixture moved the dials");
         assert_eq!(VideoSettings::parse(&s.to_toml()), Ok(s));
-        // The defaults round-trip too (all keys written, all equal).
         let d = VideoSettings::default();
         assert_eq!(VideoSettings::parse(&d.to_toml()), Ok(d));
     }
 
-    /// A file written before codecs existed has no `codec` line: it loads
-    /// its dials and plays in `pixels`.
     #[test]
     fn a_file_without_codec_defaults_to_pixels() {
         let old = "shadow_lift = 64\nedge_t_on = 40\nidx_hyst_q8 = 96\n";
@@ -164,7 +157,6 @@ mod tests {
             (s.compose.shadow_lift, s.compose.edge_t_on, s.compose.idx_hyst_q8),
             (64, 40, 96)
         );
-        // An empty file is all defaults.
         assert_eq!(VideoSettings::parse(""), Ok(VideoSettings::default()));
     }
 
@@ -173,7 +165,6 @@ mod tests {
         let fwd = "# newer build\ncodec = \"hieroglyphs\"\nsparkle = 9\nshadow_lift = 16\n";
         let s = VideoSettings::parse(fwd).unwrap();
         assert_eq!((s.codec, s.compose.shadow_lift), (Codec::Pixels, 16));
-        // A bare codec name is read as the quoted one.
         assert_eq!(VideoSettings::parse("codec = letters").unwrap().codec, Codec::Letters);
         for bad in ["shadow_lift = 300", "shadow_lift = x", "shadow_lift"] {
             let e = VideoSettings::parse(bad).unwrap_err();
@@ -195,7 +186,6 @@ mod tests {
         assert_eq!(VideoSettings::load(&asset).unwrap(), Some(s));
         assert!(!dir.join("My Clip.player.toml.tmp").exists(), "the temp file is renamed away");
 
-        // Saving again overwrites in place.
         let again = VideoSettings { codec: Codec::Pixels, ..s };
         again.save(&asset).unwrap();
         assert_eq!(VideoSettings::load(&asset).unwrap(), Some(again));

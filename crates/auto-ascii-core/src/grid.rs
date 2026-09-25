@@ -1,8 +1,7 @@
-//! `Grid<T>` — a dense row-major 2-D buffer sized in terminal cells (PLAN §3.1).
+//! `Grid<T>` — a dense row-major 2-D buffer sized in terminal cells.
 //!
 //! `Grid<Cell>` is what `Backend::present` consumes. Allocation happens only in
-//! `new`/`resize` — PLAN §6: "`resize()` is the only allocation point in the
-//! hot path", asserted with a counting allocator at M2.
+//! `new`/`resize`; `resize` is the only allocation point in the hot path.
 
 /// Dense row-major grid, indexed `(col, row)`, `cols × rows` in `u16` like the
 /// terminal itself.
@@ -45,8 +44,8 @@ impl<T: Copy + Default> Grid<T> {
     }
 
     /// Reallocate to the new dimensions and reset every cell to `T::default()`.
-    /// Contents are NOT preserved — a resize invalidates the frame anyway
-    /// (PLAN §3.6 resize path). This is the hot path's only allocation point.
+    /// Contents are NOT preserved — a resize invalidates the frame anyway.
+    /// This is the hot path's only allocation point.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
         self.rows = rows;
@@ -71,7 +70,7 @@ impl<T: Copy + Default> Grid<T> {
         self.data[row as usize * self.cols as usize + col as usize] = v;
     }
 
-    /// One row as a slice — the diff renderer memcmps row pairs (PLAN §3.6).
+    /// One row as a slice — the diff renderer memcmps row pairs.
     #[inline]
     pub fn row(&self, row: u16) -> &[T] {
         let w = self.cols as usize;
@@ -110,6 +109,6 @@ mod tests {
         assert_eq!(g.row(2), &[0, 0, 0, 7]);
         g.resize(2, 2);
         assert_eq!(g.len(), 4);
-        assert_eq!(g.get(1, 1), 0); // contents reset
+        assert_eq!(g.get(1, 1), 0);
     }
 }

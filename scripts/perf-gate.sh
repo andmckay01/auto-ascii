@@ -1,24 +1,4 @@
 #!/usr/bin/env bash
-# M2 item E (PLAN §6): the criterion perf gate.
-#
-# Runs the auto-ascii pipeline benches (decode / resample / compose /
-# present truecolor+256 / end-to-end frame), then compares each criterion
-# median (target/criterion/<id>/new/estimates.json) against the committed
-# thresholds in perf/thresholds.toml. Exits nonzero on any breach.
-#
-# Coverage rules (M2-low fix c — the gate must not silently shrink):
-#   * a thresholds.toml entry with NO estimates.json fails (bench deleted);
-#   * after a bench run, an entry whose estimates were NOT refreshed by that
-#     run fails as STALE — the classic renamed-bench trap, where old
-#     estimates would otherwise keep passing forever;
-#   * a bench that produced estimates but has NO thresholds.toml entry fails
-#     (new/renamed bench must be added to the committed gate).
-#
-# Usage: scripts/perf-gate.sh [--no-run]
-#   --no-run   skip `cargo bench` and only compare existing estimates
-#              (e.g. right after a manual bench run). Staleness cannot be
-#              judged without a run marker, so --no-run checks existence,
-#              thresholds and coverage over whatever estimates exist.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -45,8 +25,6 @@ thresholds = tomllib.load(open("perf/thresholds.toml", "rb"))["bench"]
 marker = os.environ.get("GATE_MARKER") or None
 run_started = os.path.getmtime(marker) if marker else None
 
-# Every bench that has produced estimates, keyed by criterion bench id
-# (directory path under target/criterion, minus the /new/estimates.json).
 root = pathlib.Path("target/criterion")
 estimates = {}
 if root.is_dir():
@@ -57,7 +35,6 @@ if root.is_dir():
         estimates[bench_id] = p
 
 def fresh(path):
-    """Was this estimates.json (re)written by THIS gate's bench run?"""
     return run_started is None or path.stat().st_mtime >= run_started
 
 rows, fail = [], False
@@ -78,9 +55,6 @@ for name, t in thresholds.items():
     fail |= median > limit
     rows.append((name, median, limit, verdict))
 
-# Coverage: benches that ran (fresh estimates) but are not in the committed
-# gate. In --no-run mode every existing estimate dir is checked — delete
-# stray dirs (old drills/renames) or add entries deliberately.
 for name, path in estimates.items():
     if name in thresholds or not fresh(path):
         continue

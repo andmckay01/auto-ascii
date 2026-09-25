@@ -1,31 +1,3 @@
-# M2 item E (PLAN §6): committed criterion perf gates.
-#
-# Keys mirror the bench IDs in crates/auto-ascii/benches/pipeline.rs;
-# scripts/perf-gate.sh runs that bench suite and fails (nonzero exit) when
-# any criterion median (target/criterion/<id>/new/estimates.json,
-# median.point_estimate) exceeds its max_median_ns.
-#
-# Calibration (reference box: 2 physical cores + SMT-2 / 4 logical,
-# EPYC-Milan — long documented as "4-core", corrected 2026-08-31; the
-# thresholds are unaffected, being empirical. Linux, Rust 1.97.1, 2026-07-25, M3
-# renderer): max_median_ns = median-of-medians over 3 consecutive runs ×1.15
-# on an idle box (run spreads were ±3–5%). ×1.15 sits below 1.20 so the
-# M2 acceptance drill — a deliberate 20% regression tripping the gate —
-# stays arithmetically possible (PLAN §6 "CI fails on >15% regression").
-# measured_median_ns is informational; re-calibrate BOTH fields together,
-# deliberately, on the reference box only.
-#
-# M3 re-calibration rationale: the M2-era values gated the pre-layer
-# renderer (compose was a bare luma ramp, ~50 µs). M3 decodes 6 planes
-# (delta roll ×3 new planes), resamples luma at Vc×2Vr + Ex/Ey/E/H, and
-# runs the full §3.5 compositor (hysteresis, edge LUT, coherence,
-# half-blocks) — costs below are the honest M3 medians, all inside the
-# PLAN §3.6 stage budgets @300×80: decode 182 µs < 0.5 ms, resample
-# 309 µs < 1 ms, compose 582 µs < 2 ms, present 791 µs < 1.5 ms; e2e
-# 4.38 ms ≈ the §3.6 "CPU total ≈4.4 ms" estimate (13% of a 33 ms frame).
-# (This file was accidentally git-restored to the M2 version by a drill
-# cleanup during M3 verification; recalibrated from scratch per procedure.)
-
 [bench.decode_delta_roll_480x270]
 max_median_ns = 210000
 measured_median_ns = 182366

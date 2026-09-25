@@ -24,11 +24,10 @@
 //!
 //! **Design constants.** The glyph tables and the handful of thresholds
 //! below (`LETTERS_FILL_MIN`, `FILL_HOLD`, `HALF_BLOCK_MIN_IDX`,
-//! `HALF_HOLD_Q8`, `INK_GAIN_Q8`, the deadband factor in [`held_tone`]) are
-//! this codec's DATA, in the same sense as the §3.4 palettes in `palette.rs`:
-//! they define what `letters` looks like, are pinned by its unit tests and
-//! goldens, and were fixed by the quality loop recorded in INTERFACES note
-//! 27h. What a viewer or the eval sweep tunes stays in `ComposeParams`
+//! `HALF_HOLD_Q8`, `INK_GAIN_Q8`, the deadband factor in `held_tone`) are
+//! this codec's DATA, in the same sense as the palettes in `palette.rs`: they
+//! define what `letters` looks like and are pinned by its unit tests and
+//! goldens. What a viewer or the eval sweep tunes stays in `ComposeParams`
 //! (`params.toml [compose]`), which every codec reads — the hysteresis dial
 //! scales the deadband here, the edge dials gate the strokes, shadow lift
 //! bends the LUT — so no letters threshold is a second home for a tunable.
@@ -69,60 +68,32 @@ pub const LETTERS_FILL: char = '█';
 /// blocks read as speckle rather than light.
 pub const LETTERS_FILL_MIN: u8 = 236;
 
-/// Once filled, a cell stays filled down to this tone — the fill's own dual
-/// threshold. It reads the CURRENT tone, not the held one: the held tone
-/// trails a slow brightening by up to its deadband, which left a white core
-/// lettered inside a ragged ring of blocks.
 const FILL_HOLD: u8 = 208;
 
-/// Top/bottom-heavy variants of the fill.
 const FILL_TOP: char = '▀';
 const FILL_BOTTOM: char = '▄';
 
-/// On block tiers a lit half from this ramp step up (`S`, tone ≳ 186) is a
-/// half block rather than a top/bottom-heavy capital: along a bright limb a
-/// run of `YYFPPP` reads as a word, where `▀▀▀` reads as the edge of light.
-/// The ASCII tier keeps the letter variants.
 const HALF_BLOCK_MIN_IDX: usize = 10;
 
-/// Directional strokes per `[GlyphClass][SubPos]` (top / mid / bottom).
 const EDGE: [[char; 3]; 4] = [
-    ['=', '-', '_'],    // H: raised / mid / low — `=` as ASCII_EDGE's overline stand-in
-    ['\\', '\\', '\\'], // DiagDown
-    ['|', '|', '|'],    // V
-    ['/', '/', '/'],    // DiagUp
+    ['=', '-', '_'],
+    ['\\', '\\', '\\'],
+    ['|', '|', '|'],
+    ['/', '/', '/'],
 ];
-/// Orientation conflict inside the cell (coherence in the junction band).
-/// `X` reads as a crossing and sits in no ramp table (`+` was ramp step 4,
-/// so junctions vanished into mid-dark texture). One glyph at every
-/// magnitude, like the Unicode tier's `┼`: a strong/weak pair swaps glyphs
-/// whenever E dithers across `edge_strong`.
 const JUNCTION: char = 'X';
 
-/// Codec-private flag bits (see `cell_flags`): the held half variant.
 const HALF_SHIFT: u8 = 2;
 const HALF_MASK: u8 = 0b11 << HALF_SHIFT;
 const HALF_NONE: u8 = 0;
 const HALF_TOP: u8 = 1;
 const HALF_BOTTOM: u8 = 2;
-/// Codec-private flag bit: the cell was filled last frame.
 const WAS_FILL: u8 = 1 << 4;
 
-/// Hold threshold for the half variant, as a fraction of the arm threshold
-/// (`halfblock_min_delta`) in Q8: once a cell reads top- or bottom-heavy it
-/// keeps that shape until the taps close to within 5/8 of the arm distance,
-/// so a pair dithering around the threshold cannot swap glyphs every frame.
 const HALF_HOLD_Q8: u16 = 160;
 
-/// Ink gain on the glyph color, Q8 (384 = up to 1.5×). A glyph inks a fifth
-/// of its cell at most where a pixels block inks all of it, so at the same
-/// color a lettered region reads several times darker; lifting the color
-/// toward full value (hue kept, capped at 255) hands luminance to the
-/// glyph's DENSITY, which is what the ramp is for.
 const INK_GAIN_Q8: u32 = 384;
 
-/// Scale `c` by up to [`INK_GAIN_Q8`], stopping where its brightest channel
-/// reaches 255 — the hue survives, the value rises.
 #[inline]
 fn ink(c: Rgb) -> Rgb {
     let m = c.r.max(c.g).max(c.b) as u32;
@@ -134,33 +105,6 @@ fn ink(c: Rgb) -> Rgb {
     Rgb::new(s(c.r), s(c.g), s(c.b))
 }
 
-/// Tone hysteresis: the luma a cell last DISPLAYED, held until the input
-/// moves more than a deadband away from it.
-///
-/// `hysteresis_idx` holds a cell for a fraction of one ramp step — right for
-/// pixels' 6–8 step ramps, but a letters step is a third of that in luma, so
-/// the same fraction let a cell change glyph at roughly twice pixels' rate on
-/// the same video noise. Holding the luma instead makes the band independent
-/// of ramp length (and of the contrast curve, which would otherwise stretch
-/// it in the shadows). It is measured in steps of the tier's PIXELS ramp
-/// (`ref_len` steps): 13/8 × `hyst_q8` of one such step (≈ 43 luma units
-/// at the default 160 on the Unicode tier). At 1× the sample clips still
-/// switched ~1.3× as often as pixels — a finer ramp turns more real motion
-/// into glyph changes — and 13/8 lands within ±3.5% of pixels'
-/// switches/cell/s on four sample clips (dark, bright, faces, high motion)
-/// at 120x40 and 200x56, and below pixels on the ASCII tier, while a fresh
-/// cell still quantizes at letters' full tonal resolution. The hysteresis
-/// dial still scales it and 0 still turns it off.
-///
-/// The cost of that stability: during a slow fade a warm cell moves in
-/// steps of the band — about three letters steps at a time rather than one —
-/// which is the same luma granularity pixels shows (its steps are that wide
-/// to begin with). A narrower band on the ASCII tier, where letters already
-/// switches less than pixels, was not worth a tier-dependent rule.
-///
-/// The held value lives in `CellState::idx` (this codec's own reading of
-/// that byte; a codec switch resets it), capped at 254 so it can never be
-/// mistaken for [`IDX_UNSET`].
 #[inline]
 fn held_tone(n: u8, prev: u8, hyst_q8: u8, ref_len: u8) -> u8 {
     let band = (hyst_q8 as u16 * 13 / 8 / ref_len.max(1) as u16) as u8;
@@ -168,8 +112,6 @@ fn held_tone(n: u8, prev: u8, hyst_q8: u8, ref_len: u8) -> u8 {
     h.min(IDX_UNSET - 1)
 }
 
-/// The ramp's contrast curve: `(n + n²/256) / 2` — endpoints fixed, the
-/// middle pulled down (128 → 96), monotonic, integer-only.
 #[inline]
 fn tone(n: u8) -> u8 {
     ((n as u32 * (256 + n as u32)) >> 9) as u8
@@ -178,8 +120,6 @@ fn tone(n: u8) -> u8 {
 /// The `letters` codec. See the module docs.
 pub struct Letters;
 
-/// Which half (if any) carries the cell's ink this frame — dual threshold
-/// on `|top − bottom|`, remembered in `flags`.
 #[inline]
 fn half_variant(lt: u8, lb: u8, arm: u8, flags: &mut u8) -> u8 {
     let held = (*flags & HALF_MASK) >> HALF_SHIFT;
@@ -194,8 +134,8 @@ fn half_variant(lt: u8, lb: u8, arm: u8, flags: &mut u8) -> u8 {
 impl GlyphCodec for Letters {
     const NAME: &'static str = "letters";
 
-    /// Layer priority mirrors pixels (§3.4): edge → deep shadow →
-    /// highlight → half variant (STRUCTURE) → base ramp.
+    /// Layer priority mirrors pixels: edge → deep shadow → highlight → half
+    /// variant (STRUCTURE) → base ramp.
     #[inline]
     fn cell(
         inp: &CellInputs,
@@ -208,19 +148,9 @@ impl GlyphCodec for Letters {
         let lb = lut[inp.luma_bottom as usize];
         let n = ((lt as u16 + lb as u16 + 1) >> 1) as u8;
         let deep_shadow = inp.h & h_flags::DEEP_SHADOW != 0;
-        // Which half (if any) carries the ink — tracked every frame, like the
-        // edge gate, whichever layer wins.
         let was_half = (s.flags & HALF_MASK) >> HALF_SHIFT;
         let half = half_variant(lt, lb, params.halfblock_min_delta, &mut s.flags);
-        // The INK tone: the bright half for a half variant (its glyph and
-        // color carry that half's light, as `▀` does), the whole cell
-        // otherwise. The mean would index a lit-top/black-bottom cell near
-        // step 2 and draw `'` — nearly blank where pixels paints a strip.
         let ink_tone = if half == HALF_NONE { n } else { lt.max(lb) };
-        // Hold it (see `held_tone`). A change of half variant is a new
-        // reading of the cell — its glyph changes anyway — so it re-seeds
-        // the hold instead of inheriting a value measured the other way.
-        // Deep shadow clamps to black and the clamp IS the held state.
         let prev = if half == was_half { s.idx } else { IDX_UNSET };
         let h = if deep_shadow {
             0
@@ -228,7 +158,6 @@ impl GlyphCodec for Letters {
             held_tone(ink_tone, prev, params.idx_hyst_q8, set.base.len())
         };
         s.idx = h;
-        // Fill judges the CURRENT ink tone, with its own dual threshold.
         let dense = set.halfblock
             && !deep_shadow
             && (ink_tone >= LETTERS_FILL_MIN || (s.flags & WAS_FILL != 0 && ink_tone >= FILL_HOLD));
@@ -237,14 +166,6 @@ impl GlyphCodec for Letters {
         } else {
             s.flags &= !WAS_FILL;
         }
-        // Glyph texture separates tones far more weakly than a shade block
-        // does (mid letters all read as one grey weight), so the ramp index
-        // rides a contrast curve: mid-darks drop to sparse punctuation, lit
-        // areas climb into the dense letters. Glyph choice only — the color
-        // still carries the plain tone. Below one step of the tier's pixels
-        // ramp the cell is black, exactly where pixels' first step is blank:
-        // the curve alone started `.` at 29 and sprinkled near-black
-        // backgrounds that pixels leaves empty.
         let len = LETTERS_RAMP.len() as u8;
         let black = h < (256 / set.base.len() as u16) as u8;
         let idx = if black {
@@ -264,10 +185,6 @@ impl GlyphCodec for Letters {
         let fg = ink(inp.chroma.unwrap_or(Rgb::gray(n)));
         let dx = -debias(inp.ex);
         let dy = -debias(inp.ey);
-        // Pixels' near-white veto EXACTLY — plain tone over the tier's pixels
-        // ramp — so both codecs agree on where an edge may draw. Measured on
-        // the curved index over letters' longer ramp instead, the veto only
-        // bit near n ≈ 247 and strokes dithered on and off across bright fire.
         let base_len = set.base.len() as u32;
         let plain_idx = ((n as u32 * base_len) >> 8).min(base_len - 1);
         let near_white = ((plain_idx + 1) << 8) > params.edge_white_cut_q8 as u32 * base_len;
@@ -297,7 +214,6 @@ impl GlyphCodec for Letters {
 
         let i = idx as usize;
         if half != HALF_NONE && i > 0 {
-            // The ink sits in the bright half, so it takes that half's shade.
             let top = half == HALF_TOP;
             let block = dense || (set.halfblock && i >= HALF_BLOCK_MIN_IDX);
             let g = match (block, top) {
@@ -378,8 +294,6 @@ mod tests {
         t.dedup();
         b.dedup();
         assert!(t.len() > 4 && b.len() > 4, "the variants carry real shape range");
-        // Texture never looks like an edge: no stroke or junction glyph in
-        // any ramp table.
         for g in EDGE.iter().flatten().chain([&JUNCTION]) {
             for table in [LETTERS_RAMP, LETTERS_TOP, LETTERS_BOTTOM] {
                 assert!(!table.contains(g), "{g:?} is an edge stroke");
@@ -387,8 +301,6 @@ mod tests {
         }
     }
 
-    /// The ramp is monotonic in tone on both tiers; blocks appear only for
-    /// true highlights, and only where the tier can draw them.
     #[test]
     fn ramp_is_monotonic_and_fill_is_highlights_only() {
         let (ascii, uni) = sets();
@@ -407,7 +319,6 @@ mod tests {
         assert_eq!(cold(&inp(255, 255), &uni), LETTERS_FILL, "unicode fills a highlight");
         let below = cold(&inp(LETTERS_FILL_MIN - 1, LETTERS_FILL_MIN - 1), &uni);
         assert!(LETTERS_RAMP[LETTERS_RAMP.len() - 2..].contains(&below), "{below:?}");
-        // The contrast curve: mid-gray lands below the middle of the ramp.
         let mid = LETTERS_RAMP.iter().position(|&g| g == cold(&inp(128, 128), &uni)).unwrap();
         assert!(mid < LETTERS_RAMP.len() / 2, "mid-gray at step {mid}");
     }
@@ -422,8 +333,6 @@ mod tests {
         assert_ne!(glyph(&inp(FILL_HOLD, FILL_HOLD), &uni, &mut st), LETTERS_FILL, "no re-arm");
     }
 
-    /// The displayed tone holds inside the deadband and jumps past it; the
-    /// hysteresis dial at 0 turns the hold off.
     #[test]
     fn tone_deadband_holds_small_wobble() {
         let (_, uni) = sets();
@@ -452,15 +361,11 @@ mod tests {
         assert!(LETTERS_TOP.contains(&g), "{g:?} is top-heavy");
         let g = cold(&inp(40, 200), &ascii);
         assert!(LETTERS_BOTTOM.contains(&g), "{g:?} is bottom-heavy");
-        // A near-white half over a dark one on a block tier: the half block.
         assert_eq!(cold(&inp(255, 180), &uni), FILL_TOP);
         assert_eq!(cold(&inp(180, 255), &uni), FILL_BOTTOM);
         assert_ne!(cold(&inp(255, 180), &ascii), FILL_TOP, "never on the ascii tier");
     }
 
-    /// Review fix: a lit half over black is drawn at the LIT half's tone —
-    /// a real top-heavy capital on ASCII, `▀` on a block tier — not the
-    /// mean's near-blank `'`/`"`.
     #[test]
     fn half_variants_carry_the_lit_halfs_tone() {
         let (ascii, uni) = sets();
@@ -468,12 +373,10 @@ mod tests {
         assert!(LETTERS_TOP[HALF_BLOCK_MIN_IDX..].contains(&g), "lit top reads dense: {g:?}");
         assert_eq!(cold(&inp(200, 0), &uni), FILL_TOP);
         assert_eq!(cold(&inp(0, 200), &uni), FILL_BOTTOM);
-        // A dim half keeps the letter variants on every tier.
         let g = cold(&inp(110, 20), &uni);
         assert!(LETTERS_TOP.contains(&g) && g != FILL_TOP, "{g:?}");
     }
 
-    /// Review fix: near-black is blank below one pixels step, like pixels.
     #[test]
     fn near_black_is_blank() {
         let (ascii, uni) = sets();
@@ -484,8 +387,6 @@ mod tests {
         }
     }
 
-    /// The half variant arms at `halfblock_min_delta` and holds down to 5/8
-    /// of it: a pair dithering around the arm threshold keeps its shape.
     #[test]
     fn half_variant_is_dither_stable() {
         let (ascii, _) = sets();
@@ -499,15 +400,12 @@ mod tests {
         }
         let flat = glyph(&inp(100 + 20, 100), &ascii, &mut st);
         assert!(LETTERS_RAMP.contains(&flat), "released to the ramp: {flat:?}");
-        // Re-arming from flat needs the full arm distance again.
         assert_eq!(glyph(&inp(100 + arm - 10, 100), &ascii, &mut st), flat);
     }
 
     #[test]
     fn edges_are_ascii_strokes() {
         let (_, uni) = sets();
-        // Image-space θ (y down) per bin centre, encoded as the asset's
-        // gradient convention (tangent negated), as in compose's tests.
         let expect = ['-', '\\', '\\', '|', '|', '/', '/', '-'];
         for (k, want) in expect.iter().enumerate() {
             let a = (2.0 * (11.25 + k as f64 * 22.5)).to_radians();

@@ -1,15 +1,14 @@
-//! `auto-ascii-eval` — quantitative metrics for the eval harness (PLAN §6, M2).
+//! `auto-ascii-eval` — quantitative metrics for the eval harness.
 //!
 //! Library-only: pure measurement primitives plus the versioned JSON report
 //! schema. The driver that builds assets, runs the player against
 //! `SimBackend` and writes `runs/*.json` + HTML contact sheets is
-//! `auto-ascii-factory eval` (PLAN §5, M2 item B) — this crate deliberately does
-//! no I/O beyond serde, the single exception being
-//! [`fixtures::write_bgr24_avi`] (M7), which writes the raw-video INPUT
-//! fixture that the factory's determinism guard and `auto-ascii import`'s
-//! tests share.
+//! `auto-ascii-factory eval` — this crate deliberately does no I/O beyond
+//! serde, the single exception being [`fixtures::write_bgr24_avi`], which
+//! writes the raw-video INPUT fixture that the factory's determinism guard
+//! and `auto-ascii import`'s tests share.
 //!
-//! The measurement chain for the §6 quality metric:
+//! The measurement chain for the downscale-SSIM quality metric:
 //!
 //! ```text
 //! Grid<Cell> ── rasterize (ink-coverage · fg/bg luma) ──▶ GrayImage
@@ -20,7 +19,7 @@
 //! Everything here is deterministic for fixed inputs; scores land in
 //! `runs/` JSON (data, not test goldens).
 //!
-//! The [`fixtures`] module (M2 items C/D) generates the deterministic
+//! The [`fixtures`] module generates the deterministic
 //! synthetic ASCI assets that the committed goldens and the resize fuzzer
 //! run against — pure integer plane generators through `AsciiWriter`, all in
 //! memory (the repo rule: committed tests never depend on the corpus mp4s).

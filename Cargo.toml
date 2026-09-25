@@ -1,5 +1,3 @@
-# auto-ascii workspace — docs/PLAN.md §2 (crate layout), §8 (dependencies).
-
 [workspace]
 resolver = "3"
 members = [
@@ -18,85 +16,39 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/andmckay01/auto-ascii"
 
-# Every crate opts in with `[lints] workspace = true`, so a toolchain-driven
-# lint decision is made once, here. `scripts/eval.sh` runs clippy with
-# `-D warnings`, which turns a lint a NEW clippy adds into a red gate on a
-# tree nobody touched.
 [workspace.lints.clippy]
-# rustc 1.98: suggests `as_chunks::<N>()` for every constant-size
-# `chunks_exact(N)` — about twenty sites across the sha256, format-reader
-# and pixel-unpack loops. Equivalent code, so it is not worth churning the
-# hot loops (and the perf gate) over; revisit if a rewrite is wanted anyway.
 chunks_exact_to_as_chunks = "allow"
 
 [workspace.dependencies]
-# libs (path deps). Version reqs alongside the paths (M5 item F, publish
-# hygiene): `cargo package` replaces path deps with their version req, so a
-# path-only dep fails the manifest check — `cargo package -p auto-ascii
-# --no-verify` must pass (PLAN §7 M5; nothing is actually published).
 auto-ascii-core = { path = "crates/auto-ascii-core", version = "0.1.0" }
 auto-ascii-term = { path = "crates/auto-ascii-term", version = "0.1.0" }
 auto-ascii-format = { path = "crates/auto-ascii-format", version = "0.1.0" }
-# auto-ascii-eval stays path-ONLY (no version req), deliberately: it is used solely
-# as a dev-dependency (goldens/fixtures) and it dev-dep-cycles with auto-ascii-term.
-# Cargo strips path-only dev-deps when packaging, which is exactly what lets
-# the closure `cargo package -p auto-ascii-core -p auto-ascii-format -p auto-ascii-term
-# -p auto-ascii --no-verify` pass its manifest check (M5 item F).
 auto-ascii-eval = { path = "crates/auto-ascii-eval" }
-# M4: the facade crate replaced the auto-ascii-player lib target (the pipeline
-# moved into it; the `auto-ascii-player` binary now lives there behind the
-# default-on `bin` feature). default-features = false here: consumers of the
-# workspace dep (auto-ascii-factory eval, auto-ascii-eval dev) need only the pipeline —
-# no clap/terminal-session deps.
 auto-ascii = { path = "crates/auto-ascii", default-features = false }
-# auto-ascii-format (PLAN §8): zstd + crc32fast + ciborium (META only; frame payloads hand-rolled)
 zstd = "0.13"
-# auto-ascii-format `parallel` feature: a frame's plane subblocks compress
-# independently, so they fan out across cores. OPTIONAL and off by default —
-# the player only ever READS assets and must not pull in a thread pool.
 rayon = "1"
 crc32fast = "1.4"
 ciborium = "0.2"
-serde = { version = "1", features = ["derive"] } # META struct only (ciborium is serde-based)
-# auto-ascii-term (PLAN §8): crossterm for raw mode/alt screen/events ONLY, libc for ioctl/termios/self-pipe
+serde = { version = "1", features = ["derive"] }
 crossterm = "0.29"
 libc = "0.2"
-# bins
 clap = { version = "4", features = ["derive"] }
-toml = "0.8"                                     # auto-ascii-factory params.toml (M2 item B)
+toml = "0.8"
 indicatif = "0.18"
 serde_json = "1"
 memmap2 = "0.9"
 anyhow = "1"
-# auto-ascii-eval / dev (PLAN §8): goldens + resize fuzzing (M2 items C/D).
 insta = "1"
 proptest = "1"
-# M2 item E: criterion perf gates (thresholds committed at perf/thresholds.toml,
-# compared by scripts/perf-gate.sh). No plotters/rayon: the gate only reads
-# estimates.json — keeps the bench build lean.
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
-# M3 edge-F1 (PLAN §6): ground truth is imageproc's Canny on the SOURCE frame
-# downscaled to grid resolution — never the factory's own E plane. image is
-# codec-less (default-features off): buffers only, PNG/GIF I/O stays with the
-# ffmpeg subprocess + the gif crate.
 image = { version = "0.25", default-features = false }
 imageproc = { version = "0.25", default-features = false }
-# M3 review reel: per-clip animated GIF of the rasterized render (PLAN §7 M3
-# human sign-off artifact), embedded base64 in the reel HTML.
 gif = "0.13"
-# M5 item B: offline font ink-coverage table generator (`auto-ascii-factory
-# font-table`) — pure-Rust glyph rasterization at §3.4's 64×128 cell. Already
-# in the tree transitively via imageproc; this makes it a direct factory dep.
 ab_glyph = "0.2"
 
 [profile.release]
 opt-level = 3
 
-# M2 harness speed (PLAN §6): goldens render 320×90 grids and the resize fuzz
-# pushes up to 10k cases × 1000×1000-cell presents through `cargo test` — the
-# per-cell hot loops live in these crates, so optimize them even under dev.
-# debug-assertions stay ON (only codegen opt changes); the zstd crates are
-# included so the fixture builders' zstd-19 encode stays fast at test time.
 [profile.dev.package.auto-ascii-core]
 opt-level = 3
 [profile.dev.package.auto-ascii-term]
@@ -111,10 +63,6 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.zstd-sys]
 opt-level = 3
-# M2 item B: `auto-ascii-factory eval` runs the player pipeline + the factory
-# extract loops over whole corpus clips under `cargo test`/debug — same
-# rationale as above (hot per-pixel/per-cell loops; debug-assertions stay on).
-# M4: auto-ascii-player's pipeline moved into the auto-ascii facade.
 [profile.dev.package.auto-ascii]
 opt-level = 3
 [profile.dev.package.auto-ascii-factory]

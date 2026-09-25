@@ -1,21 +1,3 @@
-//! The compositions folder's file model (PLAN-M6-M8 §3).
-//!
-//! A composition is a TOML file and IS the source of truth (§0.3): agents
-//! write it directly, and `compose new`/`add` are conveniences that edit
-//! the same bytes. So both are TEXT operations — `new` writes a header and
-//! a comment block naming the clip keys, `add` APPENDS one `[[clip]]`
-//! table — and nothing here ever re-serializes a file, which is what keeps
-//! an agent's (or a human's) comments and ordering intact. The append is
-//! one `O_APPEND` write, so concurrent adds cannot overwrite each other;
-//! it is not a transaction, and a process killed mid-write can still leave
-//! a partial table for its author to finish.
-//!
-//! Reading a composition and analysing it are both the facade's job
-//! ([`Composition::from_toml_file`], then `gaps`/`overlaps`/`mark_for`,
-//! which work on the FRAME GRID so a 1e-16 s sliver between abutting clips
-//! cannot exist). What this module adds is the `compose show` report: the
-//! facade's answers in the shape the CLI prints and serializes.
-
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
@@ -25,8 +7,6 @@ use serde::Serialize;
 use crate::BoxErr;
 use crate::library::absolute;
 
-/// The body `compose new` writes: the two required keys, then a commented
-/// `[[clip]]` table so the schema is readable in the file itself.
 pub fn new_text(name: &str) -> String {
     format!(
         "schema = 1\n\
@@ -45,11 +25,6 @@ pub fn new_text(name: &str) -> String {
     )
 }
 
-/// One `[[clip]]` table, blank-line separated from whatever is above it.
-/// `times` are the `(key, spec)` pairs the caller was given, in schema
-/// order — written back VERBATIM (the schema takes a timestamp string
-/// anywhere it takes seconds), so the file says what the agent meant
-/// rather than a float that re-rounds it.
 pub fn clip_table(asset: &str, times: &[(&str, &str)]) -> String {
     let mut out = format!("\n[[clip]]\nasset = {}\n", toml_string(asset));
     for (key, spec) in times {
@@ -58,9 +33,6 @@ pub fn clip_table(asset: &str, times: &[(&str, &str)]) -> String {
     out
 }
 
-/// Write a new composition file, failing if one is already there. The
-/// create is atomic (`create_new`), so two agents racing cannot both think
-/// they started it.
 pub fn create(path: &Path, name: &str) -> Result<(), BoxErr> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -79,14 +51,6 @@ pub fn create(path: &Path, name: &str) -> Result<(), BoxErr> {
     Ok(())
 }
 
-/// Append `table` to the composition at `path`, leaving every byte above
-/// it exactly as it was.
-///
-/// ONE `O_APPEND` write of a few dozen bytes: two agents adding clips at
-/// the same moment both land, and neither can lose the other's table the
-/// way a read-modify-write would. What is already in the file is read only
-/// to the extent of its LAST BYTE, which is all that decides whether the
-/// table needs a newline in front of it.
 pub fn append_clip(path: &Path, table: &str) -> Result<(), BoxErr> {
     let mut text = String::with_capacity(table.len() + 1);
     if !ends_with_newline(path)? {
@@ -102,9 +66,6 @@ pub fn append_clip(path: &Path, table: &str) -> Result<(), BoxErr> {
     Ok(())
 }
 
-/// Whether the file already ends in a newline — an empty file counts, so
-/// nothing leads with a blank line. Seeks to the last byte rather than
-/// reading a composition that may be thousands of clips long.
 fn ends_with_newline(path: &Path) -> Result<bool, BoxErr> {
     let mut file =
         std::fs::File::open(path).map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -118,10 +79,6 @@ fn ends_with_newline(path: &Path) -> Result<bool, BoxErr> {
     Ok(last[0] == b'\n')
 }
 
-/// Quote `s` as a TOML basic string — the form the schema is documented
-/// in. Only `"`, `\` and control characters need escaping, and a clip name
-/// or an absolute path holds none of them in practice; the escapes are
-/// here so a path that does still produces a file that parses.
 pub fn toml_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -140,106 +97,59 @@ pub fn toml_string(s: &str) -> String {
     out
 }
 
-/// What `compose show` prints: the resolved timeline of one composition.
-/// Build it with [`report`] from a RESOLVED [`Composition`].
 #[derive(Clone, Debug, Serialize)]
 pub struct Report {
-    /// The composition's name (its TOML `name`, else the file stem).
     pub name: String,
-    /// Composition frame rate: the highest clip fps.
     pub fps: f64,
-    /// Length of the timeline, seconds: the latest clip end.
     pub duration_secs: f64,
-    /// Frames on the timeline at `fps`.
     pub frame_count: u32,
-    /// Every clip, in FILE order (`index` is its position in the file).
     pub clips: Vec<ClipRow>,
-    /// Stretches nothing covers, in time order. These play black.
     pub gaps: Vec<Span>,
-    /// Stretches two clips both cover, in time order.
     pub overlaps: Vec<Overlap>,
 }
 
-/// One clip's row: what the file says, and where it landed.
 #[derive(Clone, Debug, Serialize)]
 pub struct ClipRow {
-    /// Position in the file, counting from 0.
     pub index: usize,
-    /// The `asset` string as written.
     pub asset: String,
-    /// The file it resolved to.
     pub path: String,
-    /// Trim start inside the asset, seconds.
     pub in_secs: f64,
-    /// Trim end inside the asset, seconds — RESOLVED, so a clip with no
-    /// `out` reports the asset's own end rather than null.
     pub out_secs: f64,
-    /// The `at` as written: `null` when the clip simply follows the one
-    /// before it (which is what `start_secs` then reports).
     pub at_secs: Option<f64>,
-    /// Start on the composition timeline, seconds (inclusive).
     pub start_secs: f64,
-    /// End on the composition timeline, seconds (EXCLUSIVE).
     pub end_secs: f64,
-    /// The ASSET's own frame rate, which is not the composition's unless
-    /// this is the fastest clip — the column that makes a mixed-fps
-    /// composition readable.
     pub fps: f64,
-    /// What this clip does to earlier ones and what later ones do to it,
-    /// from [`Composition::overlaps`] and [`Composition::mark_for`]. Not
-    /// part of the JSON shape — `overlaps` already carries every pair, and
-    /// this is the table's last column.
     #[serde(skip)]
     pub marks: Vec<Mark>,
 }
 
-/// A `[start, end)` stretch of composition time.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Span {
-    /// Start, seconds (inclusive).
     pub start_secs: f64,
-    /// End, seconds (exclusive).
     pub end_secs: f64,
 }
 
-/// Where two clips both own the timeline. The later-listed clip is on top
-/// (PLAN-M6-M8 §3), so `over` is what actually plays there.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Overlap {
-    /// Start of the shared stretch, seconds.
     pub start_secs: f64,
-    /// End of the shared stretch, seconds.
     pub end_secs: f64,
-    /// The covered clip's index.
     pub under: usize,
-    /// The covering clip's index — the one that plays.
     pub over: usize,
 }
 
-/// What one overlap does to a clip's row in the `compose show` table.
-/// Every overlap is TWO facts — the later clip covers, the earlier one is
-/// covered — and a reader needs both: a clip nothing ever shows is exactly
-/// the mistake a table of start/end numbers hides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mark {
-    /// This clip covers part of clip `n`, which is listed before it.
     Over(usize),
-    /// Clip `n`, listed after this one, covers part of it.
     Under(usize),
-    /// Clip `n` covers ALL of it: not one frame of this clip ever plays.
     Hidden(usize),
 }
 
-/// One line of the `compose show` table, in timeline order.
 pub enum Row<'a> {
-    /// A clip, with the marks it already carries.
     Clip(&'a ClipRow),
-    /// A stretch nothing covers.
     Gap(&'a Span),
 }
 
 impl Row<'_> {
-    /// Where this row starts on the timeline — what the table sorts by.
     pub fn start_secs(&self) -> f64 {
         match self {
             Row::Clip(clip) => clip.start_secs,
@@ -249,10 +159,6 @@ impl Row<'_> {
 }
 
 impl Report {
-    /// The table's lines in TIMELINE order, gaps interleaved — file order
-    /// is what `index` reports, and a composition whose `at` jumps around
-    /// reads as the timeline it plays. Stable, so clips that start
-    /// together stay in file order.
     pub fn rows(&self) -> Vec<Row<'_>> {
         let mut rows: Vec<Row<'_>> = self
             .clips
@@ -265,12 +171,7 @@ impl Report {
     }
 }
 
-/// The `compose show` report for a RESOLVED composition (an unresolved one
-/// has no timeline, so its report is empty rather than wrong).
 pub fn report(comp: &Composition) -> Report {
-    // Both questions are the facade's, answered on the frame grid: two
-    // clips that abut cannot report a sliver of overlap, and a gap shorter
-    // than one frame cannot exist to be printed.
     let overlaps: Vec<Overlap> = comp
         .overlaps()
         .iter()
@@ -314,11 +215,6 @@ pub fn report(comp: &Composition) -> Report {
     }
 }
 
-/// The table's last column for one clip: what it covers, then how much of
-/// it survives. The verdict is [`Composition::mark_for`] — whether a clip
-/// is merely under something or never seen at all is a question about
-/// FRAMES, and summing covered stretches is how it is answered; the first
-/// overlap that covers this clip names the culprit for the reader.
 fn marks_for(comp: &Composition, index: usize, overlaps: &[Overlap]) -> Vec<Mark> {
     let mut marks: Vec<Mark> =
         overlaps.iter().filter(|o| o.over == index).map(|o| Mark::Over(o.under)).collect();
@@ -365,9 +261,6 @@ mod tests {
         assert_eq!(toml_string("bell\u{7}"), "\"bell\\u0007\"");
     }
 
-    /// Rows are the report's own rows plus its gaps, in TIMELINE order —
-    /// the only thing left in this module once the facade answers what a
-    /// gap and an overlap are. Built by hand: no composition, no assets.
     fn row(index: usize, start: f64, end: f64, marks: Vec<Mark>) -> ClipRow {
         ClipRow {
             index,
@@ -390,7 +283,6 @@ mod tests {
             fps: 30.0,
             duration_secs: 9.0,
             frame_count: 270,
-            // File order puts the later clip first; the table must not.
             clips: vec![
                 row(0, 6.0, 9.0, vec![Mark::Over(1)]),
                 row(1, 0.0, 2.0, vec![Mark::Under(0)]),

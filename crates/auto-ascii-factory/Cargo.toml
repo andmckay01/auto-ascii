@@ -1,6 +1,6 @@
 [package]
 name = "auto-ascii-factory"
-description = "auto-ascii offline factory: ffmpeg ingest -> feature planes -> ASCI asset (PLAN §5)"
+description = "auto-ascii offline factory: ffmpeg ingest -> feature planes -> ASCI asset"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,14 +9,6 @@ repository.workspace = true
 [lints]
 workspace = true
 
-# PLAN §8 lists image/imageproc/ndarray/rayon for the factory; M0 is luma-only
-# (grayscale from ffmpeg rawvideo, no gradients, single-threaded encode), so
-# per the M0 dependency guidance they are deferred until a stage needs them.
-# M2 (item B) adds the eval driver: params.toml (serde/toml), the player
-# pipeline reused verbatim (M4: `auto_ascii::pipeline`, the facade's hidden
-# engine room — default-features = false via the workspace dep, so no
-# clap/terminal-session pull), SimBackend + metrics
-# (auto-ascii-term/auto-ascii-core/auto-ascii-eval), mmap'd asset reads (memmap2).
 [dependencies]
 auto-ascii-format = { workspace = true, features = ["parallel"] }
 auto-ascii-core = { workspace = true }
@@ -29,10 +21,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 memmap2 = { workspace = true }
-# M3 review reel: animated GIF encoder (grayscale palette, rasterized render).
 gif = { workspace = true }
-# M5 item B: `font-table` subcommand — offline glyph rasterization for the
-# per-font ink-coverage tables (PLAN §3.4).
 ab_glyph = { workspace = true }
 
 [[bin]]

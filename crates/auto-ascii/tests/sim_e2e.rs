@@ -1,13 +1,3 @@
-//! End-to-end player tests against the real binary via `--sim` (the M0
-//! headless acceptance path — this box has no TTY/kitty; PLAN §7).
-//!
-//! A tiny synthetic ASCI asset is written with `AsciiWriter`, then the
-//! `auto-ascii-player` binary is driven with `CARGO_BIN_EXE_auto-ascii-player`.
-
-// These drive the real `auto-ascii-player` binary via CARGO_BIN_EXE_*, which
-// only exists when the `bin` feature is on (its required-features).
-// Without this gate the harness silently reuses a stale binary left on
-// disk by an earlier default-feature build (M4 review).
 #![cfg(feature = "bin")]
 
 use std::fs;
@@ -16,7 +6,6 @@ use std::process::Command;
 
 use auto_ascii_format::{Meta, PlaneRef, AsciiWriter, WriterOptions, header::plane_id};
 
-/// Self-cleaning temp file (no tempfile dep — pinned workspace dep set).
 struct TmpFile(PathBuf);
 
 impl TmpFile {
@@ -36,9 +25,6 @@ impl Drop for TmpFile {
     }
 }
 
-/// Write a small synthetic luma-only asset: `frames` frames of a moving
-/// gradient at 480x270 (fast zstd level — determinism is auto-ascii-format's test
-/// concern, not this one's).
 fn write_test_asset(path: &PathBuf, frames: u32) {
     let opts = WriterOptions { zstd_level: 3, ..WriterOptions::default() };
     let (w, h) = (opts.base_w as usize, opts.base_h as usize);
@@ -74,7 +60,6 @@ fn run_player(args: &[&str]) -> (bool, String, String) {
     )
 }
 
-/// Pull a bare (unquoted) JSON scalar out of the one-line stats report.
 fn json_field<'a>(json: &'a str, key: &str) -> &'a str {
     let pat = format!("\"{key}\":");
     let start = json.find(&pat).unwrap_or_else(|| panic!("no {key} in {json}")) + pat.len();
@@ -93,7 +78,7 @@ fn sim_renders_all_frames_and_reports_stats() {
     let (ok, stdout, stderr) = run_player(&[
         asset.0.to_str().unwrap(),
         "--sim",
-        "80x24:30", // 30 > 12 frames: wraps modulo frame_count
+        "80x24:30",
     ]);
     assert!(ok, "player failed: {stderr}");
     let line = stdout.lines().last().unwrap();
@@ -102,16 +87,12 @@ fn sim_renders_all_frames_and_reports_stats() {
     assert!(json_field(line, "fps").parse::<f64>().unwrap() > 0.0);
     assert!(json_field(line, "bytes_total").parse::<u64>().unwrap() > 0);
     assert!(json_field(line, "avg_bytes_per_frame").parse::<f64>().unwrap() > 0.0);
-    // stage_ms block present with all four stages
     for stage in ["decode", "resample", "compose", "present"] {
         assert!(
             json_field(line, stage).parse::<f64>().unwrap() >= 0.0,
             "missing stage {stage}: {line}"
         );
     }
-    // M3: winning-layer counts (the §3.4 priority decision, observable
-    // headlessly). Y-only asset: every rendered cell is base or sub-cell
-    // structure; edge/highlight/shadow must be zero (auto-disabled planes).
     let mut layer_total = 0u64;
     for layer in ["base", "edge", "highlight", "shadow", "structure"] {
         layer_total += json_field(line, layer).parse::<u64>().unwrap();
@@ -127,7 +108,6 @@ fn sim_resize_reflows_mid_run() {
     let asset = TmpFile::new("resize.ascii");
     write_test_asset(&asset.0, 8);
 
-    // Explicit resize target.
     let (ok, stdout, stderr) = run_player(&[
         asset.0.to_str().unwrap(),
         "--sim",
@@ -140,7 +120,6 @@ fn sim_resize_reflows_mid_run() {
     assert_eq!(json_field(line, "frames"), "20");
     assert_eq!(json_field(line, "grid_after"), "320x90");
 
-    // Flag with no value uses the default (100x40).
     let (ok, stdout, stderr) = run_player(&[
         asset.0.to_str().unwrap(),
         "--sim",
@@ -162,7 +141,7 @@ fn sim_resize_below_minimum_renders_card_without_panic() {
         "--sim",
         "40x12:8",
         "--sim-resize",
-        "20x5", // below MIN_COLS x MIN_ROWS -> "enlarge terminal" card path
+        "20x5",
     ]);
     assert!(ok, "player failed: {stderr}");
     let line = stdout.lines().last().unwrap();
@@ -173,8 +152,6 @@ fn sim_resize_below_minimum_renders_card_without_panic() {
 #[test]
 fn diff_repaint_mode_emits_fewer_bytes_on_static_content() {
     let asset = TmpFile::new("diff.ascii");
-    // One unique frame rendered repeatedly (loop wraps modulo 1): after the
-    // first paint, diff mode should emit ~0 bytes; full mode repaints.
     write_test_asset(&asset.0, 1);
 
     let run = |mode: &str| -> u64 {
@@ -200,12 +177,10 @@ fn diff_repaint_mode_emits_fewer_bytes_on_static_content() {
 
 #[test]
 fn invalid_inputs_fail_cleanly() {
-    // Missing asset.
     let (ok, _, stderr) = run_player(&["/nonexistent/nope.ascii", "--sim", "80x24:1"]);
     assert!(!ok);
     assert!(stderr.contains("opening"), "unexpected stderr: {stderr}");
 
-    // Not a ASCI file.
     let junk = TmpFile::new("junk.ascii");
     fs::write(&junk.0, b"definitely not a ascii asset, but long enough to mmap")
         .unwrap();
@@ -213,7 +188,6 @@ fn invalid_inputs_fail_cleanly() {
     assert!(!ok);
     assert!(stderr.contains("not a valid ASCI asset"), "unexpected stderr: {stderr}");
 
-    // Bad --sim spec.
     let asset = TmpFile::new("spec.ascii");
     write_test_asset(&asset.0, 1);
     let (ok, _, _) = run_player(&[asset.0.to_str().unwrap(), "--sim", "80x24"]);

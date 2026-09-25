@@ -1,33 +1,14 @@
-//! `auto-ascii` end-to-end through the real binary (PLAN-M6-M8 §2 accept).
-//!
-//! Every test points `AUTO_ASCII_HOME` at its own temp dir, so the suite
-//! never touches the developer's `~/auto-ascii` and the cases run in
-//! parallel. `import` runs the genuine ffmpeg ingest over a Rust-written
-//! raw BGR24 AVI (`auto_ascii_eval::fixtures::write_bgr24_avi`, the same
-//! writer the factory's determinism guard uses) — no corpus, and no
-//! dependence on how a particular ffmpeg build renders a synthetic source.
-//!
-//! The M8 half (`cut`, `compose …`) needs no ffmpeg at all: its clips are
-//! the deterministic `auto_ascii_eval::fixtures` assets, written straight
-//! into `library/` the way a human dropping a file in would.
-//!
-//! This box guarantees ffmpeg on PATH (Linux CI, macOS dev boxes).
-
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
 
-/// Fixture geometry: small enough that a build is ~a second, and 160 is a
-/// multiple of 4 so the DIB rows need no padding.
 const FIX_W: u32 = 160;
 const FIX_H: u32 = 90;
 const FIX_FPS: u32 = 30;
 const FIX_FRAMES: u32 = 12;
 
-/// Self-cleaning per-test scratch dir (no tempfile dep in the workspace):
-/// `home/` is `AUTO_ASCII_HOME`, `src/` holds the input videos.
 struct Scratch(PathBuf);
 
 impl Scratch {
@@ -51,9 +32,6 @@ impl Scratch {
         self.home().join("compositions")
     }
 
-    /// Write a fixture asset into `library/<fixture>.ascii` — 72 frames at
-    /// 30 fps (2.4 s), with NO sidecar, which is exactly the shape a clip
-    /// a human dropped into the folder by hand has.
     fn clip(&self, fixture: Fixture) -> PathBuf {
         std::fs::create_dir_all(self.library()).unwrap();
         let path = self.library().join(format!("{}.ascii", fixture.name()));
@@ -61,9 +39,6 @@ impl Scratch {
         path
     }
 
-    /// `compose new demo` + the two clips of the §3 example: clip A whole
-    /// from 0, then a 1 s slice of clip B placed at 4 s, which leaves a
-    /// 1.6 s gap between them.
     fn demo(&self) -> PathBuf {
         self.clip(Fixture::GradientMotion);
         self.clip(Fixture::HardCut);
@@ -79,7 +54,6 @@ impl Scratch {
         self.compositions().join("demo.toml")
     }
 
-    /// Write the fixture AVI as `src/<name>.avi` and return its path.
     fn video(&self, name: &str) -> PathBuf {
         let path = self.0.join("src").join(format!("{name}.avi"));
         auto_ascii_eval::fixtures::write_bgr24_avi(
@@ -100,13 +74,10 @@ impl Drop for Scratch {
     }
 }
 
-/// One fixture frame in DIB order (rows bottom-up, pixels B,G,R): a colour
-/// gradient with a hard-edged bar sweeping across it, so the extracted
-/// planes carry real luma, edge and chroma signal.
 fn fixture_frame(f: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity((FIX_W * FIX_H * 3) as usize);
     for row in 0..FIX_H {
-        let y = FIX_H - 1 - row; // bottom-up
+        let y = FIX_H - 1 - row;
         for x in 0..FIX_W {
             let (r, g, b) = if x / 8 == (f + y / 32) % 20 {
                 (250u8, 250, 250)
@@ -144,16 +115,11 @@ fn ok(out: &Output) -> String {
     stdout_of(out)
 }
 
-/// Parse the single JSON value a `--json` run must have put on stdout.
 fn json_of(out: &Output) -> serde_json::Value {
     let text = ok(out);
     serde_json::from_str(&text)
         .unwrap_or_else(|e| panic!("stdout is not one JSON value ({e}):\n{text}"))
 }
-
-// ---------------------------------------------------------------------------
-// home
-// ---------------------------------------------------------------------------
 
 #[test]
 fn home_prints_and_creates_the_three_folders() {
@@ -166,17 +132,12 @@ fn home_prints_and_creates_the_three_folders() {
         assert!(s.home().join(sub).is_dir(), "{sub}/ was not created");
     }
 
-    // JSON form names all four paths; a second run is a no-op.
     let v = json_of(&cli(&s, &["--json", "home"]));
     assert_eq!(v["home"], s.home().display().to_string());
     assert_eq!(v["library"], s.library().display().to_string());
     assert_eq!(v["compositions"], s.home().join("compositions").display().to_string());
     assert_eq!(v["exports"], s.home().join("exports").display().to_string());
 }
-
-// ---------------------------------------------------------------------------
-// import
-// ---------------------------------------------------------------------------
 
 #[test]
 fn import_writes_the_clip_and_a_sidecar() {
@@ -188,7 +149,6 @@ fn import_writes_the_clip_and_a_sidecar() {
     assert!(stdout.starts_with("imported clip-a\n"), "stdout:\n{stdout}");
     assert!(stdout.contains("frames:       12 (0.40s @ 30 fps)"), "stdout:\n{stdout}");
     assert!(stdout.contains("base res:     480x270"), "stdout:\n{stdout}");
-    // The factory's own progress/info lines belong to stderr, always.
     assert!(!stdout.contains("wrote "), "factory lines leaked to stdout:\n{stdout}");
     assert!(stderr_of(&out).contains("pass 1/2:"), "stderr:\n{}", stderr_of(&out));
 
@@ -230,7 +190,6 @@ fn import_writes_the_clip_and_a_sidecar() {
     assert!(v["created_unix"].as_u64().unwrap() > 1_700_000_000, "created_unix: {v}");
     assert!(created.ends_with('Z') && created.len() == 20, "created: {created}");
 
-    // --json import prints exactly the sidecar it wrote, and nothing else.
     let out = cli(&s, &["--json", "import", video.to_str().unwrap(), "--name", "My Clip"]);
     let printed = json_of(&out);
     assert_eq!(printed["name"], "my-clip", "--name must be kebab-cased");
@@ -252,17 +211,14 @@ fn import_collision_needs_force() {
     let err = stderr_of(&out);
     assert!(err.contains("already exists") && err.contains("--force"), "stderr:\n{err}");
     assert!(stdout_of(&out).is_empty(), "stdout:\n{}", stdout_of(&out));
-    // The collision is checked BEFORE ffmpeg runs: nothing was rebuilt.
     assert!(!err.contains("pass 1/2:"), "the build ran anyway:\n{err}");
 
-    // The same failure under --json is one {"error": ...} object on stderr.
     let out = cli(&s, &["--json", "import", arg]);
     assert!(!out.status.success());
     let v: serde_json::Value = serde_json::from_str(stderr_of(&out).trim()).unwrap();
     assert!(v["error"].as_str().unwrap().contains("already exists"), "{v}");
     assert!(stdout_of(&out).is_empty());
 
-    // --force rebuilds in place (same input ⇒ same bytes, byte-deterministic).
     ok(&cli(&s, &["import", arg, "--force"]));
     assert_eq!(std::fs::read(s.library().join("clip-a.ascii")).unwrap(), first);
 }
@@ -292,9 +248,6 @@ fn bad_timecode_fails_cleanly_in_both_modes() {
     );
 }
 
-/// The old provenance is retired only once the NEW bytes are in place, so
-/// a rebuild that fails leaves the clip it did not replace fully
-/// described, and one that succeeds replaces the sidecar with it.
 #[test]
 fn force_keeps_the_old_provenance_when_the_rebuild_fails() {
     let s = Scratch::new("stale");
@@ -305,7 +258,6 @@ fn force_keeps_the_old_provenance_when_the_rebuild_fails() {
     let before = std::fs::read(&asset).unwrap();
     let provenance = std::fs::read(&sidecar).unwrap();
 
-    // A file ffmpeg cannot read: the ingest fails, and nothing was touched.
     let junk = s.0.join("src/junk.avi");
     std::fs::write(&junk, b"this is not a video").unwrap();
     let out = cli(&s, &["import", junk.to_str().unwrap(), "--name", "clip-a", "--force"]);
@@ -322,8 +274,6 @@ fn force_keeps_the_old_provenance_when_the_rebuild_fails() {
         clips[0]
     );
 
-    // A rebuild that SUCCEEDS replaces it: never the old provenance over
-    // new bytes.
     let other = s.video("clip-b");
     ok(&cli(&s, &["import", other.to_str().unwrap(), "--name", "clip-a", "--force"]));
     let after = json_of(&cli(&s, &["--json", "info", "clip-a"]));
@@ -333,16 +283,11 @@ fn force_keeps_the_old_provenance_when_the_rebuild_fails() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// list / info
-// ---------------------------------------------------------------------------
-
 #[test]
 fn list_merges_sidecars_and_still_shows_orphans() {
     let s = Scratch::new("list");
     let video = s.video("clip-a");
     ok(&cli(&s, &["import", video.to_str().unwrap()]));
-    // An asset with no sidecar beside it: still a clip, just no provenance.
     std::fs::copy(s.library().join("clip-a.ascii"), s.library().join("orphan.ascii")).unwrap();
 
     let v = json_of(&cli(&s, &["--json", "list"]));
@@ -351,7 +296,6 @@ fn list_merges_sidecars_and_still_shows_orphans() {
     assert_eq!(clips[0]["name"], "clip-a");
     assert_eq!(clips[1]["name"], "orphan", "clips are sorted by name");
     assert!(clips[0]["source"]["path"].as_str().unwrap().ends_with("clip-a.avi"));
-    // The orphan's header facts are real; its provenance is explicitly null.
     assert_eq!(clips[1]["source"], serde_json::Value::Null);
     assert_eq!(clips[1]["created_unix"], serde_json::Value::Null);
     assert_eq!(clips[1]["created"], serde_json::Value::Null);
@@ -375,19 +319,14 @@ fn list_of_an_untouched_home_is_empty() {
     assert!(ok(&cli(&s, &["list"])).contains("no clips in"));
 }
 
-/// One bad file must not hide the library. Every broken shape still gets a
-/// row, carries an `error`, and leaves the exit code at 0.
 #[test]
 fn list_survives_broken_entries() {
     let s = Scratch::new("brokenlist");
     let video = s.video("clip-a");
     ok(&cli(&s, &["import", video.to_str().unwrap()]));
     let lib = s.library();
-    // Too short to even hold an ASCI header.
     std::fs::write(lib.join("broken.ascii"), [0u8; 19]).unwrap();
-    // A directory that happens to be named like a clip.
     std::fs::create_dir(lib.join("adir.ascii")).unwrap();
-    // A valid asset whose sidecar is not JSON.
     std::fs::copy(lib.join("clip-a.ascii"), lib.join("z-corrupt.ascii")).unwrap();
     std::fs::write(lib.join("z-corrupt.json"), b"{ not json at all").unwrap();
 
@@ -411,18 +350,15 @@ fn list_survives_broken_entries() {
         "{broken}"
     );
 
-    // A corrupt sidecar loses only the provenance: the header still reads.
     let corrupt = by_name("z-corrupt");
     assert_eq!(corrupt["asset"]["frames"], 12);
     assert_eq!(corrupt["source"], serde_json::Value::Null);
     assert!(corrupt["error"].as_str().unwrap().contains("not a valid sidecar"), "{corrupt}");
 
-    // The healthy clip is untouched, and carries no `error` key at all.
     let good = by_name("clip-a");
     assert_eq!(good["asset"]["frames"], 12);
     assert!(good.get("error").is_none(), "{good}");
 
-    // Human table: `?` where the numbers would be, the reason last.
     let out = cli(&s, &["list"]);
     let stdout = ok(&out);
     let row = stdout.lines().find(|l| l.starts_with("broken ")).expect(&stdout);
@@ -448,7 +384,6 @@ fn info_reads_the_header_and_the_sidecar() {
     assert_eq!(v["name"], "clip-a");
     assert_eq!(v["asset"]["frames"], 12);
 
-    // A path resolves too, and beats the library lookup.
     let by_path = s.library().join("clip-a.ascii");
     let w = json_of(&cli(&s, &["--json", "info", by_path.to_str().unwrap()]));
     assert_eq!(v, w);
@@ -458,9 +393,6 @@ fn info_reads_the_header_and_the_sidecar() {
     assert!(stderr_of(&out).contains("no clip \"nope\""), "stderr:\n{}", stderr_of(&out));
 }
 
-/// Sidecars are read for provenance only, so a hand-written one that
-/// names nothing but a source loads — the header facts come off the asset
-/// either way.
 #[test]
 fn a_hand_written_sidecar_loads() {
     let s = Scratch::new("handwritten");
@@ -477,15 +409,10 @@ fn a_hand_written_sidecar_loads() {
     assert_eq!(v["name"], "by-hand");
     assert_eq!(v["source"]["path"], "/somewhere/else.mov");
     assert_eq!(v["source"]["bytes"], 7);
-    // Not in the file, so null — and the asset block still came off disk.
     assert_eq!(v["created_unix"], serde_json::Value::Null);
     assert_eq!(v["asset"]["frames"], 12);
     assert!(v.get("error").is_none(), "{v}");
 }
-
-// ---------------------------------------------------------------------------
-// agent-guide / play
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agent_guide_prints_the_committed_file() {
@@ -493,7 +420,6 @@ fn agent_guide_prints_the_committed_file() {
     let stdout = ok(&cli(&s, &["agent-guide"]));
     assert!(stdout.starts_with("# auto-ascii for agents\n"), "stdout:\n{stdout:.60}");
     assert!(stdout.contains("## Composition schema"), "stdout:\n{stdout}");
-    // include_str! pins it to the file; prove the two are the same bytes.
     let committed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/AGENT-GUIDE.md");
     assert_eq!(stdout, std::fs::read_to_string(committed).unwrap());
 
@@ -501,11 +427,6 @@ fn agent_guide_prints_the_committed_file() {
     assert!(v["guide"].as_str().unwrap().starts_with("# auto-ascii for agents"));
 }
 
-/// `play` takes a clip OR a composition (PLAN-M6-M8 §3). The player is
-/// interactive, so what is checked here is the resolution and the
-/// before-the-terminal validation — `PlayerBuilder::build` parses the file
-/// and reads every clip's header before any screen state changes, which is
-/// why a composition with no clips fails as a plain error.
 #[test]
 fn play_resolves_clips_and_compositions() {
     let s = Scratch::new("play");
@@ -526,14 +447,11 @@ fn play_resolves_clips_and_compositions() {
         );
     }
 
-    // A clip still wins the name it always won.
     s.clip(Fixture::GradientMotion);
     let out = cli(&s, &["play", "gradient-motion"]);
     assert!(!stderr_of(&out).contains("no clip or composition"), "{}", stderr_of(&out));
 }
 
-/// The player owns stdout for its whole run, so there is no stdout left to
-/// put one JSON value on. Refused before any terminal session starts.
 #[test]
 fn play_refuses_json_up_front() {
     let s = Scratch::new("playjson");
@@ -542,10 +460,8 @@ fn play_refuses_json_up_front() {
     assert!(stdout_of(&out).is_empty(), "stdout:\n{}", stdout_of(&out));
     let v: serde_json::Value = serde_json::from_str(stderr_of(&out).trim()).unwrap();
     assert_eq!(v["error"], "play is interactive; run it without --json");
-    // The refusal beats even the resolve step: no home folder was needed.
     assert!(!s.home().exists(), "play --json touched the home folder");
 
-    // `compose play` is the same refusal, for the same reason.
     let out = cli(&s, &["--json", "compose", "play", "demo"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(stdout_of(&out).is_empty(), "stdout:\n{}", stdout_of(&out));
@@ -554,8 +470,6 @@ fn play_refuses_json_up_front() {
     assert!(!s.home().exists(), "compose play --json touched the home folder");
 }
 
-/// `agent-guide` is pure output, so it must not need a home folder — or a
-/// HOME at all, which is the state a sandboxed agent often runs in.
 #[test]
 fn agent_guide_needs_no_home() {
     let out = Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
@@ -569,10 +483,6 @@ fn agent_guide_needs_no_home() {
     assert!(stdout_of(&out).starts_with("# auto-ascii for agents\n"));
 }
 
-// ---------------------------------------------------------------------------
-// cut (PLAN-M6-M8 §3: an export of a one-clip composition)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn cut_writes_the_slice_and_its_provenance() {
     let s = Scratch::new("cut");
@@ -584,8 +494,6 @@ fn cut_writes_the_slice_and_its_provenance() {
         stdout.starts_with("cut gradient-motion-0m01s-0m02s from gradient-motion\n"),
         "stdout:\n{stdout}"
     );
-    // frames = round((out - in) * fps) = 30, and the asset block is read
-    // back off the header rather than predicted.
     assert!(stdout.contains("frames:       30 (1.00s @ 30 fps)"), "stdout:\n{stdout}");
     assert!(stdout.contains("source:       cut of gradient-motion [1.00s, 2.00s)"), "{stdout}");
 
@@ -610,7 +518,6 @@ fn cut_writes_the_slice_and_its_provenance() {
     );
     assert!(v["created_unix"].as_u64().unwrap() > 1_700_000_000, "{v}");
 
-    // The slice is a library clip like any other.
     let listed = json_of(&cli(&s, &["--json", "list"]));
     let clips = listed.as_array().unwrap();
     assert_eq!(clips.len(), 2, "{listed}");
@@ -641,7 +548,6 @@ fn cut_json_is_the_sidecar_it_wrote() {
             .unwrap();
     assert_eq!(printed, on_disk);
 
-    // A collision needs --force, and --force rebuilds in place.
     let out = cli(&s, &["cut", "hard-cut", "--in", "0.5", "--out", "1", "--name", "my-slice"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr_of(&out).contains("already exists"), "stderr:\n{}", stderr_of(&out));
@@ -652,10 +558,6 @@ fn cut_json_is_the_sidecar_it_wrote() {
     ));
     assert_eq!(std::fs::read(s.library().join("my-slice.ascii")).unwrap(), before);
 }
-
-// ---------------------------------------------------------------------------
-// compose
-// ---------------------------------------------------------------------------
 
 #[test]
 fn compose_new_then_add_writes_the_schema() {
@@ -680,9 +582,6 @@ fn compose_new_then_add_writes_the_schema() {
 
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.starts_with("schema = 1\nname = \"demo\"\n\n#"), "toml:\n{text}");
-    // The clip tables are appended verbatim, in file order, with the
-    // timestamps the agent typed — and the comment block above them is
-    // untouched, which is the whole point of appending.
     assert!(
         text.ends_with(
             "\n[[clip]]\nasset = \"gradient-motion\"\n\
@@ -694,7 +593,6 @@ fn compose_new_then_add_writes_the_schema() {
         assert!(text.contains(key), "{key} missing from:\n{text}");
     }
 
-    // An agent's own comment survives the next add, byte for byte.
     std::fs::write(&path, format!("{text}\n# mine\n")).unwrap();
     ok(&cli(&s, &["compose", "add", "demo", "gradient-motion", "--at", "0:06"]));
     let grown = std::fs::read_to_string(&path).unwrap();
@@ -739,7 +637,6 @@ fn compose_show_reports_the_timeline_and_its_gap() {
     assert_eq!(gaps[0]["end_secs"], 4.0);
     assert!(v["overlaps"].as_array().unwrap().is_empty(), "{v}");
 
-    // Human: the header line, a row per clip, and the gap between them.
     let stdout = ok(&cli(&s, &["compose", "show", "demo"]));
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines[0], "demo  2 clips  5.00s  150 frames @ 30 fps", "stdout:\n{stdout}");
@@ -767,7 +664,6 @@ fn compose_show_marks_an_overlap() {
     assert_eq!(overlaps[0]["over"], 1, "the later-listed clip is on top");
     assert!(v["gaps"].as_array().unwrap().is_empty(), "{v}");
 
-    // Both sides of the overlap are marked: the coverer and the covered.
     let stdout = ok(&cli(&s, &["compose", "show", "demo"]));
     assert!(stdout.lines().any(|l| l.contains("OVERLAP #0")), "stdout:\n{stdout}");
     assert!(
@@ -776,15 +672,12 @@ fn compose_show_marks_an_overlap() {
     );
 }
 
-/// A clip a later one covers END TO END never reaches the screen, and a
-/// table of start/end numbers is exactly where that hides.
 #[test]
 fn compose_show_marks_a_hidden_clip() {
     let s = Scratch::new("composehidden");
     s.clip(Fixture::GradientMotion);
     s.clip(Fixture::HardCut);
     ok(&cli(&s, &["compose", "new", "demo"]));
-    // Clip 0 is half a second at 1 s; clip 1 is the whole 2.4 s from 0.
     ok(&cli(&s, &[
         "compose", "add", "demo", "gradient-motion", "--out", "0:00.5", "--at", "0:01",
     ]));
@@ -805,9 +698,6 @@ fn compose_show_marks_a_hidden_clip() {
     assert!(stdout.lines().any(|l| l.contains("hard-cut") && l.contains("OVERLAP #0")), "{stdout}");
 }
 
-/// Abutting clips abut: the timeline is kept in FRAMES, so a clip whose
-/// length is 0.3 s (0.30000000000000004 in binary) cannot report a sliver
-/// of overlap with the clip placed at 0.3, nor a sliver of gap.
 #[test]
 fn a_float_length_does_not_invent_an_overlap() {
     let s = Scratch::new("phantom");
@@ -822,21 +712,17 @@ fn a_float_length_does_not_invent_an_overlap() {
     let v = json_of(&cli(&s, &["--json", "compose", "show", "demo"]));
     assert!(v["overlaps"].as_array().unwrap().is_empty(), "phantom overlap: {v}");
     assert!(v["gaps"].as_array().unwrap().is_empty(), "phantom gap: {v}");
-    // The handover is exact: one clip's end IS the next one's start.
     assert_eq!(v["clips"][0]["end_secs"], 0.3);
     assert_eq!(v["clips"][1]["start_secs"], 0.3);
     assert_eq!(v["duration_secs"], 2.7);
     assert_eq!(v["frame_count"], 81, "9 frames + 72 at 30 fps");
 
-    // And no marks on either row.
     let stdout = ok(&cli(&s, &["compose", "show", "demo"]));
     assert!(!stdout.contains("OVERLAP"), "stdout:\n{stdout}");
     assert!(!stdout.contains("UNDER"), "stdout:\n{stdout}");
     assert!(!stdout.contains("GAP"), "stdout:\n{stdout}");
 }
 
-/// The folder adds the extension, so a name may carry it: `demo` and
-/// `demo.toml` are one composition, `clip` and `clip.ascii` one clip.
 #[test]
 fn names_may_carry_their_folders_extension() {
     let s = Scratch::new("extensions");
@@ -849,12 +735,10 @@ fn names_may_carry_their_folders_extension() {
     let clip_dotted = json_of(&cli(&s, &["--json", "info", "gradient-motion.ascii"]));
     assert_eq!(clip, clip_dotted);
 
-    // `compose new` strips it too, so the name round-trips.
     ok(&cli(&s, &["compose", "new", "second.toml"]));
     assert!(s.compositions().join("second.toml").is_file(), "compose new kept the extension");
     assert!(!s.compositions().join("second-toml.toml").exists());
 
-    // And the suggestion in the error is a name `compose new` would take.
     let out = cli(&s, &["compose", "show", "ghost.toml"]);
     assert_eq!(out.status.code(), Some(1));
     let err = stderr_of(&out);
@@ -862,9 +746,6 @@ fn names_may_carry_their_folders_extension() {
     assert!(err.contains("`auto-ascii compose new ghost`"), "stderr:\n{err}");
 }
 
-/// A rejected `cut --force` must leave the clip it would have replaced
-/// exactly as it was — bytes AND provenance. The validation happens
-/// before anything on disk moves.
 #[test]
 fn a_rejected_cut_leaves_the_old_clip_whole() {
     let s = Scratch::new("cutreject");
@@ -887,11 +768,6 @@ fn a_rejected_cut_leaves_the_old_clip_whole() {
     assert_eq!(v["asset"]["frames"], 30);
 }
 
-/// `add` resolves the composition it WOULD write before it writes it: a
-/// file that no longer parses, a trim the timeline rejects and a `<clip>`
-/// that is not an asset all fail with the composition byte for byte as it
-/// was. An `add` that exits 1 having appended anyway is the one way this
-/// command could lie.
 #[test]
 fn add_validates_before_it_appends() {
     let s = Scratch::new("addvalidate");
@@ -902,7 +778,6 @@ fn add_validates_before_it_appends() {
     let path = s.compositions().join("demo.toml");
     let sound = std::fs::read_to_string(&path).unwrap();
 
-    // The fixtures are 2.4 s, so either trim is out of range.
     let refuses = |args: &[&str], needle: &str| {
         let out = cli(&s, args);
         assert_eq!(out.status.code(), Some(1), "{args:?} should have failed");
@@ -917,8 +792,6 @@ fn add_validates_before_it_appends() {
     );
     refuses(&["compose", "add", "demo", "hard-cut", "--out", "9"], "past the end");
 
-    // A `<clip>` that resolves as a path but is not an ASCI asset: an
-    // empty file in the working directory wins the first resolution step.
     let work = s.0.join("src");
     std::fs::write(work.join("a"), b"").unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
@@ -935,9 +808,6 @@ fn add_validates_before_it_appends() {
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), sound, "the file was edited");
 
-    // A stray top-level key after a `[[clip]]` is a key INSIDE that clip,
-    // and the schema takes four — the file was already broken, so `add`
-    // reports that and changes nothing.
     std::fs::write(&path, format!("{sound}bogus = 1\n")).unwrap();
     let broken = std::fs::read_to_string(&path).unwrap();
     let out = cli(&s, &["--json", "compose", "add", "demo", "hard-cut"]);
@@ -947,8 +817,6 @@ fn add_validates_before_it_appends() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), broken, "the file was edited");
 }
 
-/// The append is one `O_APPEND` write, so two agents adding a clip at the
-/// same moment both land — a read-modify-write would have lost one.
 #[test]
 fn concurrent_adds_both_land() {
     let s = Scratch::new("addrace");
@@ -976,25 +844,13 @@ fn concurrent_adds_both_land() {
     assert_eq!(text.matches("[[clip]]").count(), 3, "one commented, two added:\n{text}");
     assert!(text.contains("at = \"0:01\""), "toml:\n{text}");
     assert!(text.contains("in = \"0:00.5\""), "toml:\n{text}");
-    // And what landed is still a composition the tools can read.
     let v = json_of(&cli(&s, &["--json", "compose", "show", "demo"]));
     assert_eq!(v["clips"].as_array().unwrap().len(), 2, "{v}");
 }
 
-// ---------------------------------------------------------------------------
-// a reader that goes away, and a sidecar that says less than everything
-// ---------------------------------------------------------------------------
-
-/// `auto-ascii list | head -1` is an ordinary way to use a CLI. Rust
-/// ignores SIGPIPE, so the write fails instead of killing the process —
-/// and `println!` panics on that (exit 101, a stack trace). It must end
-/// quietly with 0 instead.
 #[test]
 fn a_closed_pipe_ends_the_run_quietly() {
     let s = Scratch::new("epipe");
-    // More rows than a 64 KiB pipe buffer holds, so the child is provably
-    // still writing when the reader goes away. Unreadable files are
-    // enough: `list` gives each one a row saying so.
     std::fs::create_dir_all(s.library()).unwrap();
     for i in 0..700 {
         std::fs::write(s.library().join(format!("clip-{i:04}.ascii")), [0u8; 19]).unwrap();
@@ -1019,7 +875,6 @@ fn a_closed_pipe_ends_the_run_quietly() {
     assert_eq!(out.status.code(), Some(0), "stderr:\n{}", stderr_of(&out));
     assert!(!stderr_of(&out).contains("panic"), "stderr:\n{}", stderr_of(&out));
 
-    // The same for a reader that never reads at all.
     let mut child = Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
         .env("AUTO_ASCII_HOME", s.home())
         .arg("agent-guide")
@@ -1033,9 +888,6 @@ fn a_closed_pipe_ends_the_run_quietly() {
     assert!(!stderr_of(&out).contains("panic"), "stderr:\n{}", stderr_of(&out));
 }
 
-/// A sidecar that says less than everything still describes its clip:
-/// only a video source's `path` is required, and what is missing reads
-/// back as null (JSON) or `(unknown)` (the tables).
 #[test]
 fn a_partial_sidecar_still_describes_its_clip() {
     let s = Scratch::new("partial");
@@ -1057,7 +909,6 @@ fn a_partial_sidecar_still_describes_its_clip() {
     assert!(text.contains("source sha:   (unknown)"), "stdout:\n{text}");
     assert!(text.contains("source bytes: (unknown)"), "stdout:\n{text}");
 
-    // A cut that carries nothing but its kind is still a cut.
     std::fs::copy(lib.join("gradient-motion.ascii"), lib.join("slice.ascii")).unwrap();
     std::fs::write(lib.join("slice.json"), br#"{"source": {"kind": "cut"}}"#).unwrap();
     let v = json_of(&cli(&s, &["--json", "info", "slice"]));
@@ -1066,14 +917,12 @@ fn a_partial_sidecar_still_describes_its_clip() {
     let table = ok(&cli(&s, &["list"]));
     assert!(table.contains("cut of (unknown)"), "list:\n{table}");
 
-    // A source that is neither — no path, no kind — names the file it is in.
     std::fs::write(lib.join("slice.json"), br#"{"source": {"sha256": "ab"}}"#).unwrap();
     let out = cli(&s, &["info", "slice"]);
     assert_eq!(out.status.code(), Some(1));
     let err = stderr_of(&out);
     assert!(err.contains("slice.json"), "stderr:\n{err}");
     assert!(err.contains("not a valid sidecar"), "stderr:\n{err}");
-    // `list` keeps the row, with the header facts and the reason.
     let listed = json_of(&cli(&s, &["--json", "list"]));
     let row = listed
         .as_array()
@@ -1099,11 +948,9 @@ fn compose_export_flattens_and_the_file_re_enters_the_library() {
     assert!(v["shots"].as_u64().unwrap() >= 1, "{v}");
     assert!(v["cuts"].as_u64().unwrap() >= 1, "every clip boundary is a cut: {v}");
 
-    // The report's frame count IS the timeline's.
     let show = json_of(&cli(&s, &["--json", "compose", "show", "demo"]));
     assert_eq!(v["frames"], show["frame_count"], "export {v} vs show {show}");
 
-    // A flattened composition is an ordinary clip: `list` reads its header.
     std::fs::copy(&out, s.library().join("demo-flat.ascii")).unwrap();
     let listed = json_of(&cli(&s, &["--json", "list"]));
     let flat = listed
@@ -1117,7 +964,6 @@ fn compose_export_flattens_and_the_file_re_enters_the_library() {
     assert_eq!(flat["source"], serde_json::Value::Null, "no sidecar, still a clip");
     assert!(flat.get("error").is_none(), "{flat}");
 
-    // Overwriting is opt-in, and -o writes anywhere.
     let again = cli(&s, &["compose", "export", "demo"]);
     assert_eq!(again.status.code(), Some(1));
     let err = stderr_of(&again);
@@ -1130,8 +976,6 @@ fn compose_export_flattens_and_the_file_re_enters_the_library() {
     assert!(elsewhere.is_file(), "no export at {}", elsewhere.display());
 }
 
-/// Every way to get it wrong is one `{"error": ...}` on stderr, exit 1,
-/// with stdout left empty for the agent that was parsing it.
 #[test]
 fn compose_and_cut_errors_are_json_objects() {
     let s = Scratch::new("composeerr");
@@ -1151,7 +995,6 @@ fn compose_and_cut_errors_are_json_objects() {
     fails(&["--json", "compose", "add", "demo", "nope"], "no clip \"nope\"");
     fails(&["--json", "compose", "show", "ghost"], "no composition \"ghost\"");
     fails(&["--json", "compose", "new", "demo"], "already exists");
-    // A composition with no clips has no timeline to show.
     fails(&["--json", "compose", "show", "demo"], "has no clips");
     fails(
         &["--json", "cut", "gradient-motion", "--in", "0:02", "--out", "0:01"],
@@ -1159,12 +1002,9 @@ fn compose_and_cut_errors_are_json_objects() {
     );
     fails(&["--json", "cut", "gradient-motion", "--in", "0", "--out", "nope"], "--out \"nope\"");
     fails(&["--json", "cut", "nope", "--in", "0", "--out", "1"], "no clip \"nope\"");
-    // Past the end of the asset is the facade's own check, naming the clip.
     fails(&["--json", "cut", "gradient-motion", "--in", "0", "--out", "9"], "past the end");
 }
 
-/// A composition may live anywhere and name its clips by path, which is
-/// the schema's own rule (`asset` resolves as a path first).
 #[test]
 fn compose_reads_a_toml_from_anywhere() {
     let s = Scratch::new("composepath");
@@ -1182,19 +1022,11 @@ fn compose_reads_a_toml_from_anywhere() {
     assert_eq!(v["clips"][0]["start_secs"], 0.0);
     assert_eq!(v["clips"][0]["end_secs"], 2.4);
 
-    // And `export` defaults to `exports/<stem>.ascii` for it too.
     let report = json_of(&cli(&s, &["--json", "compose", "export", loose.to_str().unwrap()]));
     assert_eq!(report["frames"], 72);
     assert!(s.home().join("exports").join("loose.ascii").is_file());
 }
 
-// ---------------------------------------------------------------------------
-// usage errors, the home variable, and what `play` insists on
-// ---------------------------------------------------------------------------
-
-/// A mistyped command line is an error like any other: under `--json` it
-/// is one `{"error": ...}` object on stderr with exit 1, not clap's usage
-/// block. An agent cannot parse a usage block.
 #[test]
 fn usage_errors_keep_the_json_contract() {
     let s = Scratch::new("usage");
@@ -1218,16 +1050,12 @@ fn usage_errors_keep_the_json_contract() {
         assert!(!text.starts_with("error: "), "the key already says it: {text:?}");
     }
 
-    // A human keeps clap's own rendering, and its own exit code: "you
-    // typed it wrong" stays distinguishable from "it ran and failed".
     let out = cli(&s, &["cut", "clip", "--in", "0"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr_of(&out).contains("--out"), "stderr:\n{}", stderr_of(&out));
     assert!(stdout_of(&out).is_empty());
 }
 
-/// `--help` and `--version` are OUTPUT, not failures — including under
-/// `--json`, where clap owns the stream it prints to.
 #[test]
 fn help_and_version_are_not_errors() {
     let s = Scratch::new("help");
@@ -1241,8 +1069,6 @@ fn help_and_version_are_not_errors() {
     assert!(stdout_of(&out).starts_with("auto-ascii "), "stdout:\n{}", stdout_of(&out));
 }
 
-/// An EMPTY `HOME` is no home at all: resolving it as one would build a
-/// library in whatever directory the agent happened to run in.
 #[test]
 fn an_empty_home_variable_is_no_home() {
     let out = Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
@@ -1261,9 +1087,6 @@ fn an_empty_home_variable_is_no_home() {
     );
 }
 
-/// `play` reads the HEADER, not the sidecar: provenance is not the film,
-/// so a clip whose sidecar is truncated still plays even though `info`,
-/// which is about the sidecar, refuses it.
 #[test]
 fn play_needs_the_header_not_the_sidecar() {
     let s = Scratch::new("playsidecar");
@@ -1274,8 +1097,6 @@ fn play_needs_the_header_not_the_sidecar() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr_of(&out).contains("not a valid sidecar"), "stderr:\n{}", stderr_of(&out));
 
-    // No terminal in the test harness, so the player itself cannot run —
-    // what matters is that the sidecar is never the reason.
     let out = cli(&s, &["play", "gradient-motion"]);
     assert!(
         !stderr_of(&out).contains("not a valid sidecar"),
@@ -1284,8 +1105,6 @@ fn play_needs_the_header_not_the_sidecar() {
     );
 }
 
-/// `Demo.TOML` is a composition too: the extension test ignores ASCII
-/// case, because the file systems this runs on do.
 #[test]
 fn an_uppercase_toml_path_is_a_composition() {
     let s = Scratch::new("upperext");
@@ -1293,8 +1112,6 @@ fn an_uppercase_toml_path_is_a_composition() {
     let loose = s.0.join("src/Demo.TOML");
     std::fs::write(&loose, "schema = 1\n[[clip]]\nasset = \"ghost\"\n").unwrap();
 
-    // Read as a composition it fails on its missing clip; read as an asset
-    // it would have failed as "not a valid ASCI asset" instead.
     let out = cli(&s, &["play", loose.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(1));
     let err = stderr_of(&out);

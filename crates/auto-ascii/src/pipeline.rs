@@ -1,28 +1,26 @@
-//! The frame pipeline: decode → resample → NORM levels → compose → present
-//! (PLAN §3.4–§3.6). Extracted from the binary at M2 (item B decision) so
-//! `auto-ascii-factory eval` drives the EXACT player code path headlessly
-//! against `SimBackend` — metrics measure the real renderer, not a
-//! reimplementation. The event loop, pacing and CLI stay above (`Player`
-//! / the `auto-ascii-player` bin); nothing here touches a clock or a tty.
+//! The frame pipeline: decode → resample → NORM levels → compose → present.
+//! It is shared by the player and `auto-ascii-factory eval`, which drives
+//! the EXACT player code path headlessly against `SimBackend` — metrics
+//! measure the real renderer, not a reimplementation. The event loop,
+//! pacing and CLI stay above (`Player` / the `auto-ascii-player` bin);
+//! nothing here touches a clock or a tty.
 //!
-//! M4: re-homed from `auto-ascii-player` into the `auto-ascii` facade and split
-//! along the backend seam — [`Player::reflow_grid`]/[`Player::render_grid`]
+//! Split along the backend seam: [`Player::reflow_grid`]/[`Player::render_grid`]
 //! carry everything up to the composed [`Grid<Cell>`] with NO backend in
 //! sight (the terminal-free [`crate::RenderSession`] path), and
 //! [`Player::reflow`]/[`Player::render_present`] wrap them with the
-//! `Backend` resize/invalidate/present calls (identical behavior to M3 —
-//! same call order, same bytes). This module is `#[doc(hidden)]`: it is the
-//! workspace harness contract (factory eval, fuzz, benches, goldens), not
-//! the embedding API, and is exempt from facade semver.
+//! `Backend` resize/invalidate/present calls. This module is
+//! `#[doc(hidden)]`: it is the workspace harness contract (factory eval,
+//! fuzz, benches, goldens), not the embedding API, and is exempt from
+//! facade semver.
 //!
-//! M3: the full §3.5 three-layer path. Luma is resampled at Vc×2Vr (§3.3 —
-//! ONE tap-table build at 2× vertical through the same separable code path);
-//! E/Ex/Ey/H are decoded when the plane registry carries them (absent planes
-//! auto-disable their layers, so M1-era Y+C assets still play — PLAN §4
-//! back-compat) and resampled at Vc×Vr; coherence is computed post-resample
-//! inside `compose_cell` from the resampled doubled-angle field; the
-//! per-shot NORM LUT feeds `compose_frame` directly (taps are normalized
-//! per §3.5 line 2); all temporal state lives in a [`HysteresisState`]
+//! The three-layer path: luma is resampled at Vc×2Vr (ONE tap-table build
+//! at 2× vertical through the same separable code path); E/Ex/Ey/H are
+//! decoded when the plane registry carries them (absent planes
+//! auto-disable their layers, so Y+C-only assets still play) and resampled
+//! at Vc×Vr; coherence is computed post-resample inside `compose_cell` from
+//! the resampled doubled-angle field; the per-shot NORM LUT feeds the
+//! compositor directly; all temporal state lives in a [`HysteresisState`]
 //! reset on shot change and realloc+reset on resize.
 
 use std::time::Instant;
@@ -38,49 +36,23 @@ use auto_ascii_term::{Backend, Caps, ColorTier, Event, FrameStats, GlyphFlags, G
 
 use crate::error::Error;
 
-/// Module-local result over the facade [`Error`] (the pipeline reports
-/// through the same coherent type as the public API).
 type Result<T> = std::result::Result<T, Error>;
 
-/// H-mask box-average thresholds (integrator decision, M3): the H plane is
-/// bitflags, so each bit is expanded to a 0/255 mask at source resolution,
-/// box-averaged through the shared feature resampler, and re-thresholded per
-/// cell. Highlights are sparse accents — a quarter of the cell's ink is
-/// enough to keep a star alive at fine grids without letting single-pixel
-/// noise own a coarse cell; deep shadow is an area feature — half the cell.
 const H_HIGHLIGHT_MIN: u8 = 64;
 const H_SHADOW_MIN: u8 = 128;
 
-/// Seconds of asset time one Left/Right arrow press scrubs (M5 scrub UX,
-/// PLAN §7 M5). Presses coalesced within one event drain add up (holding the
-/// key nets one bigger jump); digits 0–9 still jump to 0–90%. It lives here
-/// rather than beside the run loop because the overlays PRINT it (M6 key
-/// hints, PLAN-M6-M8 §1) and this module builds without the `terminal`
-/// feature; `crate::player` re-exports it under its documented name.
+/// Seconds of asset time one Left/Right arrow press scrubs. Presses
+/// coalesced within one event drain add up (holding the key nets one bigger
+/// jump); digits 0–9 jump to 0–90% instead.
 pub const SCRUB_STEP_SECS: f64 = 5.0;
 
-/// Narrowest row that still gets the progress overlay's arrow-hint block
-/// (M6, PLAN-M6-M8 §1). Below it the row is exactly the M5 layout — the
-/// timecode and the bar are worth more than the hint on a narrow terminal.
 const PROGRESS_HINT_MIN_COLS: u16 = 64;
 
-/// Gap between key-hint items (M6, PLAN-M6-M8 §1): wide enough that `[ ]`
-/// and `0-9` read as one item each at a glance.
 const HINT_SEP: &str = "   ";
 
-/// Drop order for [`hint_line`] (M6 review fix), as indices into the display
-/// list — first to go first. `v controls` is deliberately absent: how to
-/// summon the legend back is the one hint a narrow terminal must keep, so it
-/// is the last item standing. `space pause` goes early for its width: eleven
-/// columns is the most any one hint costs, and space is the binding people
-/// try without being told.
-///
-/// `s save` and `/ codec` go first of all: the info row above names the
-/// codec anyway, and dropping them first keeps the row at 80 columns exactly
-/// what it was before codecs existed.
 const HINT_DROP_ORDER: [usize; 8] = [7, 6, 5, 4, 1, 3, 2, 0];
 
-/// Narrowest grid whose info row carries NO zoom hint (docs/research/zoom.md).
+/// Narrowest grid whose info row carries NO zoom hint.
 /// Below it the picture is being drawn with few cells, and the terminal's
 /// own zoom-out is the cheapest detail there is: the asset is
 /// resolution-independent, so every extra column is a sharper picture. The
@@ -88,8 +60,6 @@ const HINT_DROP_ORDER: [usize; 8] = [7, 6, 5, 4, 1, 3, 2, 0];
 /// its font without the user's setup — so the controls overlay says it.
 pub const ZOOM_HINT_MAX_COLS: u16 = 160;
 
-/// The terminal's zoom-out chord as the zoom hint prints it: Cmd on macOS
-/// (Ghostty, Terminal.app, iTerm2), Ctrl everywhere else.
 const ZOOM_KEY: &str = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
 
 /// Smallest grid that draws overlay text [`OverlayScale::Big`]. At 240
@@ -107,12 +77,11 @@ pub const BIG_OVERLAY_MIN_ROWS: u16 = 36;
 /// zoomed out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverlayScale {
-    /// One character per cell, one row per line — every overlay since M5.
+    /// One character per cell, one row per line.
     Normal,
     /// A 3x5 pixel font in half-blocks: 4 cells wide and 3 rows tall per
     /// character (upper case only). Uses `▀ ▄ █`, so only block tiers get
-    /// it. The ASCII tier keeps the printable-ASCII overlay (PLAN-M6-M8
-    /// decision 6) at every size.
+    /// it. The ASCII tier keeps the printable-ASCII overlay at every size.
     Big,
 }
 
@@ -147,40 +116,31 @@ impl OverlayScale {
     }
 }
 
-/// Big-text geometry: 3 pixel columns + 1 of spacing per character; one
-/// pixel row of margin + 5 of glyph, two pixel rows per half-block cell.
 const BIG_CHAR_COLS: u16 = 4;
 const BIG_LINE_ROWS: u16 = 3;
 
-/// The 3x5 pixel font for [`OverlayScale::Big`], `' '..='_'` (0x20..=0x5F).
-/// Lower case draws as upper case. Five 3-bit rows, top row in bits 14..12,
-/// and the left pixel is the high bit of its row.
 #[rustfmt::skip]
 const BIG_FONT: [u16; 64] = [
-    0b000_000_000_000_000, 0b010_010_010_000_010, 0b101_101_000_000_000, 0b101_111_101_111_101, // ' ' ! " #
-    0b011_110_010_011_110, 0b101_001_010_100_101, 0b010_101_010_101_011, 0b010_010_000_000_000, // $ % & '
-    0b001_010_010_010_001, 0b100_010_010_010_100, 0b000_101_010_101_000, 0b000_010_111_010_000, // ( ) * +
-    0b000_000_000_010_100, 0b000_000_111_000_000, 0b000_000_000_000_010, 0b001_001_010_100_100, // , - . /
-    0b111_101_101_101_111, 0b010_110_010_010_111, 0b111_001_111_100_111, 0b111_001_111_001_111, // 0 1 2 3
-    0b101_101_111_001_001, 0b111_100_111_001_111, 0b111_100_111_101_111, 0b111_001_001_010_010, // 4 5 6 7
-    0b111_101_111_101_111, 0b111_101_111_001_111, 0b000_010_000_010_000, 0b000_010_000_010_100, // 8 9 : ;
-    0b001_010_100_010_001, 0b000_111_000_111_000, 0b100_010_001_010_100, 0b111_001_011_000_010, // < = > ?
-    0b111_101_111_100_011, 0b010_101_111_101_101, 0b110_101_110_101_110, 0b011_100_100_100_011, // @ A B C
-    0b110_101_101_101_110, 0b111_100_110_100_111, 0b111_100_110_100_100, 0b011_100_101_101_011, // D E F G
-    0b101_101_111_101_101, 0b111_010_010_010_111, 0b001_001_001_101_010, 0b101_101_110_101_101, // H I J K
-    0b100_100_100_100_111, 0b101_111_111_101_101, 0b110_101_101_101_101, 0b010_101_101_101_010, // L M N O
-    0b110_101_110_100_100, 0b010_101_101_111_011, 0b110_101_110_101_101, 0b011_100_010_001_110, // P Q R S
-    0b111_010_010_010_010, 0b101_101_101_101_111, 0b101_101_101_101_010, 0b101_101_111_111_101, // T U V W
-    0b101_101_010_101_101, 0b101_101_010_010_010, 0b111_001_010_100_111, 0b110_100_100_100_110, // X Y Z [
-    0b100_100_010_001_001, 0b011_001_001_001_011, 0b010_101_000_000_000, 0b000_000_000_000_111, // \ ] ^ _
+    0b000_000_000_000_000, 0b010_010_010_000_010, 0b101_101_000_000_000, 0b101_111_101_111_101,
+    0b011_110_010_011_110, 0b101_001_010_100_101, 0b010_101_010_101_011, 0b010_010_000_000_000,
+    0b001_010_010_010_001, 0b100_010_010_010_100, 0b000_101_010_101_000, 0b000_010_111_010_000,
+    0b000_000_000_010_100, 0b000_000_111_000_000, 0b000_000_000_000_010, 0b001_001_010_100_100,
+    0b111_101_101_101_111, 0b010_110_010_010_111, 0b111_001_111_100_111, 0b111_001_111_001_111,
+    0b101_101_111_001_001, 0b111_100_111_001_111, 0b111_100_111_101_111, 0b111_001_001_010_010,
+    0b111_101_111_101_111, 0b111_101_111_001_111, 0b000_010_000_010_000, 0b000_010_000_010_100,
+    0b001_010_100_010_001, 0b000_111_000_111_000, 0b100_010_001_010_100, 0b111_001_011_000_010,
+    0b111_101_111_100_011, 0b010_101_111_101_101, 0b110_101_110_101_110, 0b011_100_100_100_011,
+    0b110_101_101_101_110, 0b111_100_110_100_111, 0b111_100_110_100_100, 0b011_100_101_101_011,
+    0b101_101_111_101_101, 0b111_010_010_010_111, 0b001_001_001_101_010, 0b101_101_110_101_101,
+    0b100_100_100_100_111, 0b101_111_111_101_101, 0b110_101_101_101_101, 0b010_101_101_101_010,
+    0b110_101_110_100_100, 0b010_101_101_111_011, 0b110_101_110_101_101, 0b011_100_010_001_110,
+    0b111_010_010_010_010, 0b101_101_101_101_111, 0b101_101_101_101_010, 0b101_101_111_111_101,
+    0b101_101_010_101_101, 0b101_101_010_010_010, 0b111_001_010_100_111, 0b110_100_100_100_110,
+    0b100_100_010_001_001, 0b011_001_001_001_011, 0b010_101_000_000_000, 0b000_000_000_000_111,
 ];
 
-/// `|` has no slot below 0x60 but draws the paused progress bar's head.
 const BIG_BAR: u16 = 0b010_010_010_010_010;
 
-/// The [`BIG_FONT`] bitmap for `c`. Lower case folds to upper case, the few
-/// printable characters past `_` borrow a near neighbour, and anything else
-/// — non-ASCII included — draws as `?`, the same rule the info row applies.
 fn big_glyph(c: char) -> u16 {
     let c = match c {
         'a'..='z' => c.to_ascii_uppercase(),
@@ -197,13 +157,6 @@ fn big_glyph(c: char) -> u16 {
     }
 }
 
-/// Paint one overlay line into `slot`: 0 is the bottom line, 1 the one
-/// above it, and so on, each [`OverlayScale::line_rows`] tall. The line is
-/// laid out for [`OverlayScale::line_chars`] characters; shorter lines are
-/// padded with the panel color and longer ones cut, so the band is always
-/// filled edge to edge. Does nothing when the grid has no room for the slot.
-/// A pure function of `(slot, line, colors, scale, grid size)`, so an
-/// unchanged line costs zero damage in diff mode.
 fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, scale: OverlayScale) {
     let (cols, rows) = (grid.cols(), grid.rows());
     let h = scale.line_rows();
@@ -227,13 +180,11 @@ fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, sc
             for col in 0..cols {
                 let px = col % BIG_CHAR_COLS;
                 if px == 0 {
-                    // A trailing partial character (cols % 4) stays blank.
                     glyph = match chars.next() {
                         Some(c) if col + BIG_CHAR_COLS <= cols => big_glyph(c),
                         _ => 0,
                     };
                 }
-                // Pixel row y (0..6) of this column: row 0 is the margin.
                 let lit = |y: u16| -> bool {
                     if px >= 3 || y == 0 {
                         return false;
@@ -256,7 +207,7 @@ fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, sc
 }
 
 /// Map the probed terminal capabilities to the palette-selection charset
-/// tier (PLAN §3.4: `Caps.glyph_support` records the trusted repertoire).
+/// tier (`Caps.glyph_support` records the trusted repertoire).
 /// Braille requires *verified* support (never set from passive hints).
 pub fn glyph_tier_from_caps(caps: &Caps) -> GlyphTier {
     match caps.glyph_support {
@@ -283,7 +234,7 @@ pub fn color_depth(tier: ColorTier) -> ColorDepth {
     }
 }
 
-/// Per-stage wall-time accumulators (ns) — the §3.6 stage split reported by
+/// Per-stage wall-time accumulators (ns) — the stage split reported by
 /// `--sim` JSON and consumed by the eval driver (per-frame deltas).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StageNs {
@@ -298,16 +249,16 @@ pub struct Drained {
     pub quit: bool,
     /// Digit key 0–9 → jump to that ×10% of the asset (interactive seek).
     /// When set, `drain_events` has ALREADY reset all per-cell hysteresis
-    /// state (M3 review fix): a seek is a temporal discontinuity, so the
-    /// caller just repoints its clock and renders the landing frame.
+    /// state: a seek is a temporal discontinuity, so the caller just
+    /// repoints its clock and renders the landing frame.
     pub jump_digit: Option<u8>,
-    /// Net arrow-key scrub steps this drain (M5 scrub UX): each `Right` is
-    /// +1, each `Left` −1; the caller converts steps to ±5 s
+    /// Net arrow-key scrub steps this drain: each `Right` is +1, each
+    /// `Left` −1; the caller converts steps to ±5 s
     /// (`auto_ascii::SCRUB_STEP_SECS`) of asset time and repoints its clock.
     /// When nonzero, hysteresis state has ALREADY been reset (same temporal-
     /// discontinuity rule as `jump_digit`).
     pub seek_steps: i32,
-    /// `Tab` presses this drain — each advances the live-dial selection by one
+    /// `d` presses this drain — each advances the live-dial selection by one
     /// (wrapping). Dials retune the renderer during playback; see
     /// [`Dial`](crate::Dial).
     pub dial_cycle: u32,
@@ -317,12 +268,12 @@ pub struct Drained {
     /// moves resets the per-cell hysteresis memory. A renderer change — no
     /// asset is touched.
     pub dial_delta: i32,
-    /// `v` pressed this drain (M6 key hints, PLAN-M6-M8 §1) — the
-    /// caller flips the sticky key-hints row. Coalesced to a flag like the
-    /// arrows: holding the key must not race the row on and off.
+    /// `v` pressed this drain — the caller flips the sticky key-hints row.
+    /// Coalesced to a flag like the arrows: holding the key must not race
+    /// the row on and off.
     pub toggle_hints: bool,
-    /// Space pressed this drain (M6 pause) — the caller freezes or resumes
-    /// playback. Coalesced to a flag for the same reason as `toggle_hints`:
+    /// Space pressed this drain — the caller freezes or resumes playback.
+    /// Coalesced to a flag for the same reason as `toggle_hints`:
     /// a key repeat is one intent, not a pause/resume stutter.
     pub toggle_pause: bool,
     /// `/` presses this drain — each advances the active glyph codec by one
@@ -335,8 +286,8 @@ pub struct Drained {
 }
 
 /// What the progress overlay prints instead of this clip's own numbers
-/// while a COMPOSITION is playing (M8, PLAN-M6-M8 §3): the composition's
-/// position, and which clip of how many is on screen.
+/// while a COMPOSITION is playing: the composition's position, and which
+/// clip of how many is on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProgressContext {
     /// Frame on the composition timeline.
@@ -364,10 +315,9 @@ impl ProgressContext {
 /// Coalesce a backend's event queue into a [`Drained`] plus the latest
 /// resize, touching no player state.
 ///
-/// Split out of [`Player::drain_events`] at M8 (PLAN-M6-M8 §3): a
-/// composition's gap frames have no active clip player, and the key mapping
-/// must not exist in two copies. Quit wins and stops the drain, exactly as
-/// before.
+/// Shared by [`Player::drain_events`] and the clip deck, whose gap frames
+/// have no active clip player, so the key mapping exists in one place.
+/// Quit wins and stops the drain.
 pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u16, u16)>) {
     let mut resize: Option<(u16, u16)> = None;
     let mut jump_digit = None;
@@ -396,29 +346,13 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
             }
             Event::Resize(c, r) => resize = Some((c, r)),
             Event::Key(Key::Char(c @ '0'..='9')) => jump_digit = Some(c as u8 - b'0'),
-            // M5 scrub UX: ±5 s per arrow press, coalesced per drain
-            // (holding the key nets one bigger jump, not N renders).
             Event::Key(Key::Left) => seek_steps = seek_steps.saturating_sub(1),
             Event::Key(Key::Right) => seek_steps = seek_steps.saturating_add(1),
-            // Live dials: `d` selects which one, `[`/`]` turn it. Coalesced
-            // per drain like the arrows, so holding a key nets one bigger
-            // move rather than N renders. Digits, arrows and q/Esc are
-            // already spoken for; these three are not.
             Event::Key(Key::Char('d')) => dial_cycle = dial_cycle.saturating_add(1),
             Event::Key(Key::Char('[')) => dial_delta = dial_delta.saturating_sub(1),
             Event::Key(Key::Char(']')) => dial_delta = dial_delta.saturating_add(1),
-            // M6 key hints (PLAN-M6-M8 §1): `v` for the controls legend —
-            // one unshifted key, and the row itself names it, so there is
-            // nothing to guess. Collapsed to a flag, not counted — two
-            // presses in one drain are a key repeat, not a request to
-            // flicker the row.
             Event::Key(Key::Char('v')) => toggle_hints = true,
-            // M6 pause: space is the one binding every player shares, and
-            // it is the last printable key not already spoken for.
             Event::Key(Key::Char(' ')) => toggle_pause = true,
-            // Glyph codecs: `/` cycles them live. Unshifted on US layouts and
-            // bound to nothing else; `s` saves the dials and codec for this
-            // video. Neither letter nor symbol was spoken for.
             Event::Key(Key::Char('/')) => codec_cycle = codec_cycle.saturating_add(1),
             Event::Key(Key::Char('s')) => save = true,
             Event::Key(_) => {}
@@ -440,137 +374,64 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
 
 /// The frame pipeline: decode → resample → NORM levels → compose into a
 /// term-sized grid. All buffers are (re)allocated only in `new`/`reflow` —
-/// the hot loop is allocation-free (PLAN §6 discipline).
+/// the hot loop is allocation-free.
 pub struct Player<'a> {
     reader: AsciiReader<'a>,
     frame_count: u32,
     src_w: u16,
     src_h: u16,
-    /// C plane dims when the asset has chroma (half res, PLAN §4).
     chroma_dims: Option<(u16, u16)>,
-    /// Decode + composite chroma (asset has C and the tier shows color;
-    /// mono keeps glyph-only and skips the C subblocks entirely, PLAN §4).
     use_chroma: bool,
-    /// Plane-registry detection (PLAN §4 back-compat): the edge layer needs
-    /// all of E/Ex/Ey; H is independent. Absent planes are never decoded and
-    /// their layers compose disabled (M1-era Y+C assets play unchanged).
     has_edges: bool,
     has_h: bool,
-    /// The asset's picture aspect from the header (`aspect_num/den`, PLAN
-    /// §4) — the viewport's target ratio (M5 fix 2: the letterbox targets
-    /// the ASSET's aspect, not a hard-coded 16:9). Degenerate (zero) header
-    /// fields are normalized to 16:9 at `new`.
     aspect_num: u16,
     aspect_den: u16,
     cell_aspect: f64,
     repaint_full: bool,
-    /// Palette-selection inputs derived from Caps by the caller (§3.4 key:
-    /// charset tier × color depth; density comes from the viewport).
     glyph_tier: GlyphTier,
     color: ColorDepth,
-    /// The selected §3.4 palette configuration (rebuilt on reflow — density
-    /// band depends on viewport cols).
     palette: Option<PaletteSet>,
-    /// §3.5 compositor tunables (defaults = the untuned M3 baseline; the
-    /// eval driver overrides from params.toml `[compose]`).
     compose_params: ComposeParams,
-    /// The glyph codec composing every cell (default [`Codec::Pixels`]).
     codec: Codec,
-    /// Per-cell temporal state (§3.5): ramp-index hysteresis, edge on/off
-    /// memory, orientation bin. Reset on shot change, realloc+reset on
-    /// resize.
     state: HysteresisState,
     vp: Option<Viewport>,
-    /// Luma resampler, built at Vc × 2Vr (§3.3: two vertical taps per cell
-    /// through the ONE separable path — no second luma resampler).
     resampler: Option<Resampler>,
-    /// Feature-plane resampler (E/Ex/Ey + H masks) at Vc × Vr.
     feat_resampler: Option<Resampler>,
     chroma_resampler: Option<Resampler>,
-    /// Decoded planes at source res — the standing delta double buffers.
     luma_src: Vec<u8>,
     e_src: Vec<u8>,
     ex_src: Vec<u8>,
     ey_src: Vec<u8>,
     h_src: Vec<u8>,
-    /// H bits expanded to 0/255 masks at source res (resampler inputs).
     hl_mask: Vec<u8>,
     sh_mask: Vec<u8>,
-    /// Resampled planes at viewport res (`luma2_dst` at Vc × 2Vr).
     luma2_dst: Vec<u8>,
     e_dst: Vec<u8>,
     ex_dst: Vec<u8>,
     ey_dst: Vec<u8>,
     hl_dst: Vec<u8>,
     sh_dst: Vec<u8>,
-    /// Re-thresholded H flags at cell res (see `H_HIGHLIGHT_MIN`).
     h_dst: Vec<u8>,
-    /// Decoded C plane (RGB565 LE) — the chroma delta double buffer.
     chroma_src: Vec<u8>,
-    /// C unpacked to 8-bit channels at chroma res (resampler inputs).
     cr_src: Vec<u8>,
     cg_src: Vec<u8>,
     cb_src: Vec<u8>,
-    /// Resampled chroma channels, `vp.cols × vp.rows`.
     cr_dst: Vec<u8>,
     cg_dst: Vec<u8>,
     cb_dst: Vec<u8>,
-    /// Per-shot NORM levels folded into one LUT (PLAN §3.5: n =
-    /// clamp((L − shot_lo) · shot_inv_range)); rebuilt only on shot change.
-    /// Transient live-dial readout for the bottom row, `(label, value, max)`.
-    /// Shares the row with the progress overlay and takes precedence while up.
     dial_overlay: Option<(&'static str, u8, u8)>,
     levels_lut: [u8; 256],
-    /// What `levels_lut` was built for: the shot's `first_frame` (`None` on
-    /// assets without NORM, where the window is the identity) and the
-    /// `shadow_lift` folded into it. `None` = not built yet. Keyed on both
-    /// so a lift turned on a NORM-less asset rebuilds too — keyed on the
-    /// shot alone, `None == None` there and the dial did nothing.
     lut_key: Option<(Option<u32>, u8)>,
-    /// Frame currently decoded in the source buffers — drives the
-    /// sequential-roll vs FIDX-seek decode policy on delta assets.
     loaded: Option<u32>,
-    /// Full terminal grid (viewport + letterbox pads).
     grid: Grid<Cell>,
-    /// Winning-layer render metadata (`auto_ascii_core::compose::layer` ids, same
-    /// dims as `grid`), collected only when the eval driver asks
-    /// ([`enable_layer_mask`](Player::enable_layer_mask)) — `None` keeps the
-    /// interactive hot path untouched. M3: an enabled mask is filled by
-    /// `compose_frame_masked` (byte-identical cells, tags observable) — the
-    /// §6 edge-F1 prediction side.
     layer_mask: Option<Grid<u8>>,
     stage: StageNs,
-    /// M5 scrub UX: the transient 1-line progress overlay (bottom terminal
-    /// row). Drawn OVER the composed grid in `render_grid` when visible; it
-    /// never touches hysteresis or the layer mask — presentation only.
     overlay_visible: bool,
-    /// M8: what the progress overlay reports while a composition plays —
-    /// the composition's position and ` c/N `, not this clip's own frame
-    /// counter. `None` (the default, and every single-asset path) leaves
-    /// the M6 row byte for byte.
     progress_ctx: Option<ProgressContext>,
-    /// M6 key hints (PLAN-M6-M8 §1): the one-line key legend on `rows-2`.
-    /// Driven entirely by the run loop (it rides with the transient
-    /// overlays, the start-up window and `v`), so `--sim`, the eval
-    /// harness and `RenderSession` never raise it and their grids are
-    /// untouched. Presentation only, exactly like `overlay_visible`.
     hint_visible: bool,
-    /// The info row above the hints (clip name, codec, settings state),
-    /// drawn only while the hints row is — the controls overlay `v` toggles.
-    /// Kept as an owned string that is re-copied only when the text changes,
-    /// so re-applying it every frame allocates nothing.
     info: Option<String>,
-    /// M6 pause: the run loop has frozen the picture, so the progress row
-    /// reads ` PAUSED ` with a `|` bar head instead of a percentage. Purely
-    /// how the row PRINTS — the pipeline never decides what frame to show.
     paused: bool,
-    /// Set on the visible→hidden transition; consumed by `render_present`,
-    /// which invalidates the backend so the row under the overlay is
-    /// repainted from a clean baseline (the diff state can never be left
-    /// describing overlay cells that are no longer drawn).
     overlay_hide_pending: bool,
-    /// Asset fps from the header (`fps_num/fps_den`) — the overlay's
-    /// frame→seconds conversion. The reader rejects zero fps at open.
     fps: f64,
 }
 
@@ -592,15 +453,10 @@ impl<'a> Player<'a> {
         let chroma_dims = reader.plane_dims(plane_id::C);
         let use_chroma = color != ColorDepth::Mono && chroma_dims.is_some();
         let chroma_len = chroma_dims.map_or(0, |(w, h)| w as usize * h as usize);
-        // Plane-registry detection (PLAN §4): the edge layer runs only when
-        // E, Ex AND Ey all travel; a partial set is auto-disabled too.
         let has_edges = reader.plane_dims(plane_id::E).is_some()
             && reader.plane_dims(plane_id::EX).is_some()
             && reader.plane_dims(plane_id::EY).is_some();
         let has_h = reader.plane_dims(plane_id::H).is_some();
-        // Viewport target ratio = the asset's header aspect; zero fields
-        // (degenerate headers) fall back to 16:9, matching RenderSession's
-        // documented `aspect()` fallback.
         let header = reader.header();
         let (aspect_num, aspect_den) = if header.aspect_num == 0 || header.aspect_den == 0 {
             (16, 9)
@@ -608,11 +464,9 @@ impl<'a> Player<'a> {
             (header.aspect_num, header.aspect_den)
         };
         let src_len = src_w as usize * src_h as usize;
-        // Overlay timekeeping (M5 scrub UX). Zero fps is rejected by
-        // AsciiReader::open since M1; the max(ε) is belt-and-braces only.
         let fps = (f64::from(header.fps_num) / f64::from(header.fps_den.max(1))).max(1e-9);
         let mut levels_lut = [0u8; 256];
-        build_levels_lut(&mut levels_lut, None); // identity until NORM says otherwise
+        build_levels_lut(&mut levels_lut, None);
         Ok(Player {
             reader,
             frame_count,
@@ -680,7 +534,7 @@ impl<'a> Player<'a> {
         self.compose_params
     }
 
-    /// Override the §3.5 compositor tunables (the eval driver wires
+    /// Override the compositor tunables (the eval driver wires
     /// params.toml `[compose]` here; interactive playback starts from the
     /// defaults, which are pinned to the committed params.toml by test, and
     /// turns them with the live dials). A change resets ALL per-cell
@@ -688,19 +542,9 @@ impl<'a> Player<'a> {
     /// position; an equal value is a no-op.
     pub fn set_compose_params(&mut self, params: ComposeParams) {
         if params == self.compose_params {
-            return; // a press on a dial's stop moves nothing, so resets nothing
+            return;
         }
         self.compose_params = params;
-        // A change of rules is a discontinuity for every remembered ramp
-        // index, `was_edge` bit and orientation bin: each was decided under
-        // the OLD thresholds and is stale by construction — the same
-        // reasoning as the reset on a LUT rebuild in `update_levels`.
-        // Without this the picture moved only when a turn cleared the
-        // hysteresis band, which is direction-dependent: lowering T_on armed
-        // edges that T_off then held whatever the dial did next, and a
-        // lifted ramp index stayed held after the lift came off — the dial
-        // worked one way and not the other. The lift itself reaches the
-        // picture through the LUT key in `update_levels` on the next render.
         self.state.reset();
     }
 
@@ -721,7 +565,7 @@ impl<'a> Player<'a> {
     }
 
     /// Start collecting the per-cell winning-layer mask (render metadata for
-    /// the eval harness — §6 edge-F1 prediction side). Costs one `Grid<u8>`
+    /// the eval harness — the edge-F1 prediction side). Costs one `Grid<u8>`
     /// kept in step with the terminal grid; interactive playback never calls
     /// this.
     pub fn enable_layer_mask(&mut self) {
@@ -746,7 +590,7 @@ impl<'a> Player<'a> {
     /// The composed full terminal grid (viewport + letterbox pads) as of the
     /// last [`render_present`](Player::render_present) — the eval driver
     /// rasterizes this for downscale-SSIM and feeds it to the flicker
-    /// accumulator (PLAN §6).
+    /// accumulator.
     pub fn grid(&self) -> &Grid<Cell> {
         &self.grid
     }
@@ -757,14 +601,14 @@ impl<'a> Player<'a> {
     }
 
     /// `(src_dims, dst_dims)` of the current LUMA resampler (`None` below
-    /// the viewport minimum). M3: dst is `(Vc, 2·Vr)` — the §3.3 two-taps-
-    /// per-cell plane; the resize fuzz asserts exactly that.
+    /// the viewport minimum). dst is `(Vc, 2·Vr)` — the two-taps-per-cell
+    /// plane; the resize fuzz asserts exactly that.
     pub fn resampler_dims(&self) -> Option<((u16, u16), (u16, u16))> {
         self.resampler.as_ref().map(|r| (r.src_dims(), r.dst_dims()))
     }
 
     /// Dimensions of the per-cell hysteresis state (viewport cells) — the
-    /// §6 fuzz invariant "hysteresis buffers realloc'd to the new grid".
+    /// fuzz invariant "hysteresis buffers realloc'd to the new grid".
     pub fn hysteresis_dims(&self) -> (u16, u16) {
         (self.state.cols(), self.state.rows())
     }
@@ -788,32 +632,29 @@ impl<'a> Player<'a> {
         self.stage
     }
 
-    /// Resize path (PLAN §3.6 step 1): backend + grid realloc, viewport
-    /// recompute, resampler tap rebuilds, palette reselection (density band
-    /// tracks viewport cols), hysteresis realloc+reset (§3.5 graft from C),
-    /// invalidate. The next rendered frame lands on the new grid.
+    /// Resize path: backend + grid realloc, viewport recompute, resampler
+    /// tap rebuilds, palette reselection (density band tracks viewport
+    /// cols), hysteresis realloc+reset, invalidate. The next rendered frame
+    /// lands on the new grid.
     pub fn reflow<B: Backend>(&mut self, backend: &mut B, cols: u16, rows: u16) {
         backend.resize(cols, rows);
         self.reflow_grid(cols, rows);
         backend.invalidate();
     }
 
-    /// Backend-free reflow (M4): everything [`reflow`](Player::reflow) does
+    /// Backend-free reflow: everything [`reflow`](Player::reflow) does
     /// except the backend `resize`/`invalidate` calls — grid realloc,
     /// viewport, tap tables, palette, hysteresis realloc+reset. The
     /// terminal-free [`crate::RenderSession`] resize path.
     pub fn reflow_grid(&mut self, cols: u16, rows: u16) {
         self.grid.resize(cols, rows);
         if let Some(mask) = &mut self.layer_mask {
-            mask.resize(cols, rows); // realloc + reset with the grid (§6 discipline)
+            mask.resize(cols, rows);
         }
-        // Letterbox to the ASSET's header aspect (M5 fix 2) — 16:9 assets
-        // take the exact pre-M5 code path bit-for-bit.
         self.vp =
             compute_viewport_for(cols, rows, self.cell_aspect, self.aspect_num, self.aspect_den);
         if let Some(vp) = self.vp {
             self.palette = Some(select_palettes(self.glyph_tier, self.color, vp.cols));
-            // §3.3: luma at Vc × 2Vr — one build with doubled vertical dst.
             self.resampler = Some(Resampler::build(self.src_w, self.src_h, vp.cols, 2 * vp.rows));
             self.state.resize(vp.cols, vp.rows);
             let cells = vp.cols as usize * vp.rows as usize;
@@ -840,7 +681,6 @@ impl<'a> Player<'a> {
                 self.cb_dst.resize(cells, 0);
             }
         } else {
-            // Below 32x9 (PLAN §3.2): "enlarge terminal" card until regrown.
             self.palette = None;
             self.resampler = None;
             self.feat_resampler = None;
@@ -849,32 +689,26 @@ impl<'a> Player<'a> {
         }
     }
 
-    /// Drain the event queue (PLAN §3.6 step 1): Quit wins, resizes coalesce
-    /// to the latest and trigger one reflow, digit keys report a jump.
+    /// Drain the event queue: Quit wins, resizes coalesce to the latest and
+    /// trigger one reflow, digit keys report a jump.
     ///
-    /// M3 review fix (seek ghosting): a digit jump is an explicit temporal
-    /// discontinuity — the landing frame has no relation to what is on
-    /// screen — so ALL per-cell hysteresis memory (`was_edge`, held ramp
-    /// idx, orientation bin) is reset HERE, before the caller renders the
-    /// landing frame. Same class as the §3.5 cut and resize resets; the
-    /// shot-change reset in `update_levels` only covers jumps that cross a
-    /// shot boundary — a same-shot jump would otherwise render edge glyphs
-    /// a cold start at that frame would not (m3_layers regression test).
+    /// A digit jump or an arrow scrub is an explicit temporal discontinuity
+    /// — the landing frame has no relation to what is on screen — so ALL
+    /// per-cell hysteresis memory (`was_edge`, held ramp idx, orientation
+    /// bin) is reset HERE, before the caller renders the landing frame, as
+    /// at a cut or a resize. Without it a same-shot jump would render edge
+    /// glyphs a cold start at that frame would not.
     pub fn drain_events<B: Backend>(&mut self, backend: &mut B) -> Drained {
         let (drained, resize) = drain_backend_events(backend);
         if let Some((c, r)) = resize {
-            self.reflow(backend, c, r); // resize path resets state too (realloc)
+            self.reflow(backend, c, r);
         }
         if drained.jump_digit.is_some() || drained.seek_steps != 0 {
-            self.state.reset(); // seek discontinuity: no pre-seek ghosting
+            self.state.reset();
         }
-        // A dial move resets hysteresis too, but not here: the drain only
-        // counts presses, and a press on a dial's stop moves nothing. The
-        // reset rides the actual change, in `set_compose_params`.
         drained
     }
 
-    /// Sequential-roll or FIDX-seek one plane into its standing buffer.
     fn load_plane(
         reader: &mut AsciiReader<'a>,
         sequential: bool,
@@ -891,15 +725,9 @@ impl<'a> Player<'a> {
         Ok(())
     }
 
-    /// Bring every decoded plane to `frame_idx`. Sequential successors roll
-    /// one delta via `decode_plane_into` (the standing double buffer, PLAN
-    /// §3.6 step 3); anything else — startup, `--seek`, digit jumps,
-    /// latest-frame-wins skips, loop wrap — goes through `seek_plane_into`
-    /// (FIDX keyframe bsearch + delta rolls, PLAN §4). Frame-skipping on
-    /// delta assets MUST NOT use plain decode (INTERFACES).
     fn load_frame(&mut self, frame_idx: u32) -> Result<()> {
         if self.loaded == Some(frame_idx) {
-            return Ok(()); // paced repeat: planes already current
+            return Ok(());
         }
         let sequential = frame_idx > 0 && self.loaded == Some(frame_idx - 1);
         Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::Y, &mut self.luma_src)?;
@@ -918,16 +746,6 @@ impl<'a> Player<'a> {
         Ok(())
     }
 
-    /// Rebuild the levels LUT iff `frame_idx` entered a different shot
-    /// (PLAN §3.5 per-shot auto-levels from NORM — per-frame rebuilds would
-    /// pump; per-shot is the contract) or the shadow lift folded into it
-    /// moved. Assets without NORM keep the identity window, lifted or not.
-    ///
-    /// M3: a shot change also resets ALL hysteresis state. This is a
-    /// deliberate superset of the §3.5 "cut flags reset hysteresis" rule:
-    /// when the LUT changes, every remembered ramp index refers to the OLD
-    /// normalization and is stale by construction — and every CUT-flagged
-    /// boundary is a shot change, so the spec case is covered exactly.
     fn update_levels(&mut self, frame_idx: u32) {
         let shot = self.reader.shot_for_frame(frame_idx).map(|s| s.first_frame);
         let key = (shot, self.compose_params.shadow_lift);
@@ -938,17 +756,10 @@ impl<'a> Player<'a> {
                 key.1,
             );
             self.lut_key = Some(key);
-            self.state.reset(); // scene-cut / shot-change reset (§3.5)
+            self.state.reset();
         }
     }
 
-    /// Show/hide the transient bottom-row progress overlay (M5 scrub UX).
-    /// The overlay is drawn over the composed grid by `render_grid`; hiding
-    /// it schedules a one-shot backend invalidate consumed by the next
-    /// [`render_present`](Player::render_present), so the diff baseline is
-    /// rebuilt from a full repaint and can never keep describing overlay
-    /// cells that are no longer drawn. Presentation-only: temporal state,
-    /// the layer mask and the composed viewport are untouched.
     /// Show (or clear) the live-dial readout on the bottom row. Same
     /// hide-repaint contract as [`set_progress_overlay`](Self::set_progress_overlay):
     /// clearing it schedules the invalidate that repaints the row underneath.
@@ -959,6 +770,13 @@ impl<'a> Player<'a> {
         self.dial_overlay = dial;
     }
 
+    /// Show/hide the transient bottom-row progress overlay. The overlay is
+    /// drawn over the composed grid by `render_grid`; hiding it schedules a
+    /// one-shot backend invalidate consumed by the next
+    /// [`render_present`](Player::render_present), so the diff baseline is
+    /// rebuilt from a full repaint and can never keep describing overlay
+    /// cells that are no longer drawn. Presentation-only: temporal state,
+    /// the layer mask and the composed viewport are untouched.
     pub fn set_progress_overlay(&mut self, visible: bool) {
         if self.overlay_visible && !visible {
             self.overlay_hide_pending = true;
@@ -967,21 +785,20 @@ impl<'a> Player<'a> {
     }
 
     /// Make the progress overlay report a COMPOSITION's position instead of
-    /// this clip's own (M8, PLAN-M6-M8 §3). `None` restores the asset
-    /// reading, which is what every single-asset path keeps — the M6 row is
-    /// unchanged to the byte.
+    /// this clip's own. `None` restores the asset reading, which is what
+    /// every single-asset path keeps.
     pub fn set_progress_context(&mut self, ctx: Option<ProgressContext>) {
         self.progress_ctx = ctx;
     }
 
-    /// Tell the progress row that playback is frozen (M6 pause): the bar
-    /// head becomes `|` and the percent block reads ` PAUSED `. Presentation
+    /// Tell the progress row that playback is frozen: the bar head becomes
+    /// `|` and the percent block reads ` PAUSED `. Presentation
     /// only — pausing is the run loop's business, and this just reports it.
     pub fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
     }
 
-    /// Show/hide the key-hints row on `rows-2` (M6, PLAN-M6-M8 §1). Same
+    /// Show/hide the key-hints row on `rows-2`. Same
     /// hide-repaint contract as [`set_progress_overlay`](Self::set_progress_overlay):
     /// the visible→hidden edge schedules the invalidate that repaints the row
     /// underneath, so the diff baseline never keeps describing hint cells.
@@ -1012,17 +829,15 @@ impl<'a> Player<'a> {
         }
     }
 
-    /// Decode → resample → NORM levels → compose → present one asset frame
-    /// (PLAN §3.6 steps 3–6). Renders the "enlarge terminal" card when the
-    /// terminal is below the 32x9 minimum.
+    /// Decode → resample → NORM levels → compose → present one asset frame.
+    /// Renders the "enlarge terminal" card when the terminal is below the
+    /// 32x9 minimum.
     pub fn render_present<B: Backend>(
         &mut self,
         backend: &mut B,
         frame_idx: u32,
     ) -> Result<FrameStats> {
         self.render_grid(frame_idx)?;
-        // Full-repaint mode, or the overlay just hid (M5 scrub UX): the diff
-        // baseline must not survive an overlay transition.
         if self.repaint_full || std::mem::take(&mut self.overlay_hide_pending) {
             backend.invalidate();
         }
@@ -1032,7 +847,7 @@ impl<'a> Player<'a> {
         Ok(stats)
     }
 
-    /// Backend-free frame render (M4): decode → resample → NORM levels →
+    /// Backend-free frame render: decode → resample → NORM levels →
     /// compose into [`grid`](Player::grid), stopping short of `present` —
     /// the terminal-free [`crate::RenderSession`] frame path. Identical
     /// composition (and identical temporal-state mutations) to
@@ -1055,8 +870,6 @@ impl<'a> Player<'a> {
                     feat.apply(&self.ey_src, &mut self.ey_dst);
                 }
                 if self.has_h {
-                    // Bitflags don't box-average: expand each bit to a 0/255
-                    // mask, resample, re-threshold (see H_HIGHLIGHT_MIN).
                     for (i, &h) in self.h_src.iter().enumerate() {
                         self.hl_mask[i] = if h & auto_ascii_core::h_flags::HIGHLIGHT != 0 { 255 } else { 0 };
                         self.sh_mask[i] = if h & auto_ascii_core::h_flags::DEEP_SHADOW != 0 { 255 } else { 0 };
@@ -1091,8 +904,6 @@ impl<'a> Player<'a> {
                     .use_chroma
                     .then(|| (&self.cr_dst[..], &self.cg_dst[..], &self.cb_dst[..])),
             };
-            // One dispatch per frame: the codec's per-cell loop is
-            // monomorphized, so the pixels path is the pre-codec loop.
             compose_frame_codec(
                 self.codec,
                 &planes,
@@ -1113,9 +924,6 @@ impl<'a> Player<'a> {
         }
         let scale = OverlayScale::for_grid(self.grid.cols(), self.grid.rows(), self.glyph_tier);
         if self.overlay_visible {
-            // Drawn last, over pads/viewport alike (bottom row only); the
-            // layer mask is deliberately NOT updated — the overlay is
-            // presentation, not composition (eval never enables it).
             match self.progress_ctx {
                 Some(ctx) => draw_progress_overlay_clips(
                     &mut self.grid,
@@ -1140,12 +948,6 @@ impl<'a> Player<'a> {
         if let Some((label, value, max)) = self.dial_overlay {
             draw_dial_overlay(&mut self.grid, label, value, max, scale);
         }
-        // One row above the progress/dial row, same presentation-only rules:
-        // no layer mask, no temporal state (M6, PLAN-M6-M8 §1). Gated on the
-        // viewport so it never lands on the enlarge card — when the terminal
-        // is too small to play, "enlarge terminal" is the only message that
-        // matters, and `rows-2` is exactly where the card's second line sits
-        // on a 4-row screen.
         if self.hint_visible && self.vp.is_some() {
             draw_hint_overlay(&mut self.grid, scale);
             if let Some(info) = &self.info {
@@ -1156,7 +958,7 @@ impl<'a> Player<'a> {
     }
 
     /// Reset ALL per-cell temporal state (ramp-index hysteresis, edge
-    /// on/off memory, orientation bins) — the §3.5 discontinuity reset.
+    /// on/off memory, orientation bins) — the discontinuity reset.
     /// [`crate::RenderSession`] calls this on a backward frame jump; the
     /// interactive digit-seek path resets through
     /// [`drain_events`](Player::drain_events).
@@ -1164,24 +966,25 @@ impl<'a> Player<'a> {
         self.state.reset();
     }
 
-    /// Re-key palette selection (PLAN §3.4 charset tier axis). Takes effect
+    /// Re-key palette selection (the charset-tier axis). Takes effect
     /// at the next [`reflow_grid`](Player::reflow_grid)/[`reflow`](Player::reflow)
     /// — palette objects are (re)built there, keyed on the viewport density.
     pub fn set_glyph_tier(&mut self, glyph_tier: GlyphTier) {
         self.glyph_tier = glyph_tier;
     }
 
-    /// Override the §3.2 cell aspect (`cell_h_px / cell_w_px`). Takes effect
+    /// Override the cell aspect (`cell_h_px / cell_w_px`). Takes effect
     /// at the next reflow (viewport math is recomputed there).
     pub fn set_cell_aspect(&mut self, cell_aspect: f64) {
         self.cell_aspect = cell_aspect;
     }
 }
 
-/// Fold per-shot p2/p98 NORM levels into a 256-entry LUT (PLAN §3.5:
-/// `n = clamp((L − shot_lo) · shot_inv_range)`, rounded). `None` levels or a
+/// Fold per-shot p2/p98 NORM levels into a 256-entry LUT:
+/// `n = clamp((L − shot_lo) · shot_inv_range)`, rounded. `None` levels or a
 /// degenerate span (p98 ≤ p2 — flat shot, or the (0,0) rows of unused plane
-/// slots / NORM-less assets) → identity, keeping M0 assets byte-identical.
+/// slots / NORM-less assets) → identity, so assets without NORM render
+/// unchanged.
 pub fn build_levels_lut(lut: &mut [u8; 256], levels: Option<PlaneLevels>) {
     build_levels_lut_lifted(lut, levels, 0);
 }
@@ -1230,8 +1033,6 @@ pub fn build_levels_lut_lifted(lut: &mut [u8; 256], levels: Option<PlaneLevels>,
     apply_shadow_lift(lut, shadow_lift);
 }
 
-/// Bend an already-built levels LUT toward the shadows, in place. `lift == 0`
-/// returns immediately, so the un-lifted path stays byte-identical.
 fn apply_shadow_lift(lut: &mut [u8; 256], lift: u8) {
     if lift == 0 {
         return;
@@ -1239,14 +1040,12 @@ fn apply_shadow_lift(lut: &mut [u8; 256], lift: u8) {
     let lift = u32::from(lift);
     for out in lut.iter_mut() {
         let n = u32::from(*out);
-        // isqrt(n · 255) — exact integer square root, no float anywhere.
-        // curved >= n for every n in 0..=255, so this only ever lifts.
         let curved = (n * 255).isqrt();
         *out = (n + (curved - n) * lift / 255) as u8;
     }
 }
 
-/// Unpack little-endian RGB565 (factory C plane contract, PLAN §4) into
+/// Unpack little-endian RGB565 (the factory's C plane encoding) into
 /// three 8-bit channel planes, expanding with bit replication
 /// (`r8 = r5<<3 | r5>>2` etc. — 0x1f → 255, canonical).
 pub fn unpack_rgb565(src: &[u8], r: &mut [u8], g: &mut [u8], b: &mut [u8]) {
@@ -1261,7 +1060,7 @@ pub fn unpack_rgb565(src: &[u8], r: &mut [u8], g: &mut [u8], b: &mut [u8]) {
     }
 }
 
-/// Centered "enlarge terminal" card (PLAN §3.2, below 32x9).
+/// Centered "enlarge terminal" card, shown below the 32x9 minimum.
 pub fn draw_enlarge_card(grid: &mut Grid<Cell>) {
     grid.fill(Cell::BLANK);
     let (cols, rows) = (grid.cols(), grid.rows());
@@ -1275,7 +1074,7 @@ pub fn draw_enlarge_card(grid: &mut Grid<Cell>) {
         if row >= rows {
             break;
         }
-        let n = (line.len() as u16).min(cols); // ASCII-only card text
+        let n = (line.len() as u16).min(cols);
         let left = (cols - n) / 2;
         for (j, ch) in line.chars().take(n as usize).enumerate() {
             grid.set(left + j as u16, row, Cell::new(ch, Rgb::gray(220), Rgb::BLACK));
@@ -1283,7 +1082,7 @@ pub fn draw_enlarge_card(grid: &mut Grid<Cell>) {
     }
 }
 
-/// The transient 1-line progress overlay (M5 scrub UX): bottom terminal row,
+/// The transient 1-line progress overlay: bottom terminal row,
 /// `_MM:SS_/_MM:SS_[====>....]_NN%_` in pure ASCII (palette/tier-agnostic —
 /// mono quantizes the colors away and the glyphs still carry everything).
 /// Pure function of `(frame, frame_count, fps, cols)` — byte-deterministic,
@@ -1292,7 +1091,7 @@ pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32, frame_count: u32
     draw_progress_overlay_clips(grid, frame, frame_count, fps, None, false, OverlayScale::Normal);
 }
 
-/// [`draw_progress_overlay`] with the M6 pause reading: `paused` swaps the
+/// [`draw_progress_overlay`] with the pause reading: `paused` swaps the
 /// bar head for `|` and the percent block for ` PAUSED `, so a frozen
 /// picture never reads as a stalled one.
 pub fn draw_progress_overlay_paused(
@@ -1305,12 +1104,12 @@ pub fn draw_progress_overlay_paused(
     draw_progress_overlay_clips(grid, frame, frame_count, fps, None, paused, OverlayScale::Normal);
 }
 
-/// [`draw_progress_overlay`] with the M8 clip block: `clip = Some((c, n))`
-/// adds ` c/N ` right after the timecode while a composition plays
-/// (PLAN-M6-M8 §3). The block is dropped below [`PROGRESS_HINT_MIN_COLS`]
-/// and for single-clip compositions, so `None` — every single-asset path —
-/// prints the M6 row byte for byte. `scale` sizes the text
-/// ([`OverlayScale::Big`] lays the row out for a quarter of the columns).
+/// [`draw_progress_overlay`] with the clip block: `clip = Some((c, n))`
+/// adds ` c/N ` right after the timecode while a composition plays. The
+/// block is dropped below [`PROGRESS_HINT_MIN_COLS`] and for single-clip
+/// compositions, so `None` — every single-asset path — prints no block at
+/// all. `scale` sizes the text ([`OverlayScale::Big`] lays the row out for
+/// a quarter of the columns).
 pub fn draw_progress_overlay_clips(
     grid: &mut Grid<Cell>,
     frame: u32,
@@ -1327,46 +1126,32 @@ pub fn draw_progress_overlay_clips(
     let fg = Rgb::gray(235);
     let bg = Rgb::new(24, 24, 40);
 
-    // The project's one timecode shape (M7, core tier): the row and
-    // `auto-ascii list` cannot drift apart because there is one formatter.
     let mmss = crate::timecode::format_mmss;
     let pos = f64::from(frame) / fps;
     let total = f64::from(frame_count) / fps;
-    // frame_count > 0 is enforced at Player::new; percent of the LAST frame
-    // reads 100 (frame_count−1 maps to the full bar).
     let pct = if frame_count > 1 {
         (u64::from(frame) * 100) / u64::from(frame_count - 1)
     } else {
         100
     };
-    // M6 (PLAN-M6-M8 §1): the arrow-key hint rides at the far left when the
-    // row is wide enough for it; below the threshold this is empty and the
-    // bytes are exactly the M5 row.
     let hint = if cols >= PROGRESS_HINT_MIN_COLS {
         format!(" <- {} -> ", scrub_step_label())
     } else {
         String::new()
     };
     let mut left = format!(" {} / {} ", mmss(pos), mmss(total));
-    // M8 (PLAN-M6-M8 §3): which clip of how many, right after the time
-    // block — only for a real stitch, and only where the row can spare it.
     if let Some((c, n)) = clip
         && n > 1
         && cols >= PROGRESS_HINT_MIN_COLS
     {
         left.push_str(&format!("{c}/{n} "));
     }
-    // M6 pause: the percent block says PAUSED instead, under the same width
-    // rules — the bar simply gets two columns fewer. Printable ASCII, so the
-    // strict overlay parser and every palette keep reading it.
     let right = if paused { " PAUSED ".to_string() } else { format!(" {pct:>3}% ") };
 
-    // Bar fills whatever remains between the text blocks; on absurdly small
-    // grids the texts alone are truncated to the row.
     let mut line = String::with_capacity(cols as usize);
     line.push_str(&hint);
     line.push_str(&left);
-    let fixed = hint.chars().count() + left.chars().count() + right.chars().count() + 2; // []
+    let fixed = hint.chars().count() + left.chars().count() + right.chars().count() + 2;
     if (cols as usize) > fixed {
         let span = cols as usize - fixed;
         let filled = if frame_count > 1 {
@@ -1376,7 +1161,6 @@ pub fn draw_progress_overlay_clips(
         } as usize;
         line.push('[');
         for i in 0..span {
-            // The head reads the transport: `>` playing, `|` frozen.
             let head = if paused { '|' } else { '>' };
             line.push(if i < filled {
                 '='
@@ -1408,8 +1192,6 @@ pub fn draw_dial_overlay(
         return;
     }
     let cols = scale.line_chars(grid.cols());
-    // Warmer than the progress overlay's blue so the two are never confused
-    // at a glance while both are being driven from the keyboard.
     let fg = Rgb::gray(245);
     let bg = Rgb::new(46, 32, 16);
 
@@ -1417,10 +1199,9 @@ pub fn draw_dial_overlay(
     let right = format!(" {value:>3}/{max:<3} ");
     let mut line = String::with_capacity(cols as usize);
     line.push_str(&left);
-    let fixed = left.chars().count() + right.chars().count() + 2; // "[" + "]"
+    let fixed = left.chars().count() + right.chars().count() + 2;
     if (cols as usize) > fixed {
         let span = cols as usize - fixed;
-        // Fill proportional to value/max; max == 0 would be a degenerate dial.
         let filled = if max > 0 {
             (usize::from(value) * span) / usize::from(max)
         } else {
@@ -1436,19 +1217,10 @@ pub fn draw_dial_overlay(
     paint_line(grid, 0, &line, fg, bg, scale);
 }
 
-/// [`SCRUB_STEP_SECS`] as the overlays print it: whole seconds carry no
-/// trailing `.0` (`5s`, not `5.0s`), which is all a one-line row has room to
-/// say. Derived, never a literal — the two rows and the constant cannot drift.
 fn scrub_step_label() -> String {
     format!("{SCRUB_STEP_SECS}s")
 }
 
-/// The key-hints line for a `cols`-wide row (M6, PLAN-M6-M8 §1). Items are
-/// dropped WHOLE, in [`HINT_DROP_ORDER`], until the list fits — so a narrow
-/// terminal shows fewer hints rather than a word cut in half, and the
-/// survivors keep their reading order. One leading and trailing space frame
-/// the list, matching the progress row's blocks. Returns "" when not even
-/// `v controls` fits — the row is still painted, just empty.
 fn hint_line(cols: u16) -> String {
     let arrows = format!("<- -> {}", scrub_step_label());
     let items: [&str; 9] = [
@@ -1462,9 +1234,6 @@ fn hint_line(cols: u16) -> String {
         "s save",
         "v controls",
     ];
-    // Framed width of the kept items: the items, the gaps between them and
-    // the two framing spaces. Every byte here is ASCII, so byte length is
-    // column count (PLAN-M6-M8 §0.6: overlays stay printable ASCII).
     let width = |keep: &[bool; 9]| -> usize {
         let kept = items.iter().zip(keep).filter(|(_, k)| **k);
         let (n, len) = kept.fold((0, 0), |(n, len), (it, _)| (n + 1, len + it.len()));
@@ -1479,32 +1248,26 @@ fn hint_line(cols: u16) -> String {
         keep[i] = false;
     }
     if width(&keep) > cols as usize {
-        return String::new(); // not even the `v controls` hint fits
+        return String::new();
     }
     let kept: Vec<&str> =
         items.iter().zip(keep).filter(|(_, k)| *k).map(|(it, _)| *it).collect();
     format!(" {} ", kept.join(HINT_SEP))
 }
 
-/// The key-hints row (M6, PLAN-M6-M8 §1): one line on `rows-2`, or the
+/// The key-hints row: one line on `rows-2`, or the
 /// line above the bottom one at [`OverlayScale::Big`], in the progress
 /// overlay's colors, listing every bound key. Shown while a transient overlay
 /// is up, for a short window at start-up and whenever `v` pins it (all
 /// run-loop policy — see `Player::set_hint_overlay`). Pure function of
 /// `(cols, rows, scale)`, so an unchanged row costs zero damage in diff mode.
 pub fn draw_hint_overlay(grid: &mut Grid<Cell>, scale: OverlayScale) {
-    // Deliberately the progress overlay's palette: one chrome, two rows.
     let fg = Rgb::gray(235);
     let bg = Rgb::new(24, 24, 40);
     let line = hint_line(scale.line_chars(grid.cols()));
-    // Slot 1 needs two lines of room: nowhere to put it without evicting
-    // the progress row.
     paint_line(grid, 1, &line, fg, bg, scale);
 }
 
-/// The zoom hint for a `cols`-wide line (docs/research/zoom.md): the long
-/// wording where it fits, a short one where that does not, and "" when not
-/// even that fits.
 fn zoom_line(cols: u16) -> String {
     let long = format!(" {ZOOM_KEY} - to zoom out: more cells, a sharper picture ");
     let short = format!(" {ZOOM_KEY} - for a sharper picture ");
@@ -1517,7 +1280,7 @@ fn zoom_line(cols: u16) -> String {
 /// name, the active glyph codec, whether this video's settings are saved —
 /// and, right-aligned, the grid size (` 213x58 cells `), which is
 /// how much detail the picture is getting; the text wins when both do not
-/// fit. Printable ASCII only, like every overlay (PLAN-M6-M8 §0.6):
+/// fit. Printable ASCII only, like every overlay:
 /// anything else in `text` (a clip named in another script) prints as `?`
 /// rather than as a glyph of unknown width. Truncated to the row and
 /// painted to its full width.
@@ -1540,7 +1303,6 @@ pub fn draw_info_overlay(grid: &mut Grid<Cell>, text: &str, scale: OverlayScale)
         line.extend(std::iter::repeat_n(' ', width - used - size.len()));
         line.push_str(&size);
     }
-    // Slot 2: the hints and progress rows own the bottom two.
     paint_line(grid, 2, &line, fg, bg, scale);
     if cols < ZOOM_HINT_MAX_COLS {
         let zoom = zoom_line(width as u16);
@@ -1556,7 +1318,6 @@ mod tests {
 
     #[test]
     fn shadow_lift_opens_shadows_monotonically() {
-        // Off is byte-identical to the un-lifted builder.
         let (mut plain, mut lifted) = ([0u8; 256], [0u8; 256]);
         build_levels_lut(&mut plain, None);
         build_levels_lut_lifted(&mut lifted, None, 0);
@@ -1565,20 +1326,15 @@ mod tests {
         for lift in [1u8, 64, 128, 255] {
             let mut lut = [0u8; 256];
             build_levels_lut_lifted(&mut lut, None, lift);
-            // Endpoints are fixed points: black stays black, white stays white.
             assert_eq!(lut[0], 0, "lift {lift} raised black");
             assert_eq!(lut[255], 255, "lift {lift} clipped white");
-            // Monotonic — a non-monotonic tone curve would invert the ramp.
             assert!(lut.windows(2).all(|w| w[0] <= w[1]), "lift {lift} is not monotonic");
-            // It only ever lifts, never darkens.
             assert!(
                 lut.iter().enumerate().all(|(i, &v)| v as usize >= i),
                 "lift {lift} darkened a value"
             );
         }
 
-        // Full strength is the sqrt curve: a mid-shadow 64 must clear the
-        // first ramp steps rather than sitting at the same glyph as black.
         let mut full = [0u8; 256];
         build_levels_lut_lifted(&mut full, None, 255);
         assert_eq!(full[64], 127, "full lift should take 64 to the sqrt curve");
@@ -1590,7 +1346,6 @@ mod tests {
         let mut lut = [0u8; 256];
         build_levels_lut(&mut lut, None);
         assert!(lut.iter().enumerate().all(|(i, &v)| v as usize == i));
-        // Degenerate spans are identity too (unused (0,0) slots, flat shots).
         build_levels_lut(&mut lut, Some(PlaneLevels { p2: 0, p98: 0 }));
         assert!(lut.iter().enumerate().all(|(i, &v)| v as usize == i));
         build_levels_lut(&mut lut, Some(PlaneLevels { p2: 200, p98: 100 }));
@@ -1605,14 +1360,12 @@ mod tests {
         assert_eq!(lut[50], 0);
         assert_eq!(lut[200], 255);
         assert_eq!(lut[255], 255);
-        assert_eq!(lut[125], 128); // midpoint → mid gray (rounded)
-        // Monotone non-decreasing everywhere.
+        assert_eq!(lut[125], 128);
         assert!(lut.windows(2).all(|w| w[0] <= w[1]));
     }
 
     #[test]
     fn rgb565_unpack_is_canonical() {
-        // Solid red 0xF800, solid green 0x07E0, solid blue 0x001F, white.
         let src: Vec<u8> = [0xF800u16, 0x07E0, 0x001F, 0xFFFF]
             .iter()
             .flat_map(|v| v.to_le_bytes())
@@ -1651,20 +1404,16 @@ mod tests {
         assert_eq!(color_depth(ColorTier::Mono), ColorDepth::Mono);
     }
 
-    /// M5 scrub UX: the overlay is a deterministic pure function of
-    /// (frame, count, fps, cols) — full-width, ASCII-only, endpoints exact.
     #[test]
     fn progress_overlay_is_deterministic_ascii_and_full_width() {
         let mut g: Grid<Cell> = Grid::new(80, 24);
-        draw_progress_overlay(&mut g, 900, 5400, 30.0); // 30 s of 180 s
+        draw_progress_overlay(&mut g, 900, 5400, 30.0);
         let bottom: String = (0..80).map(|c| g.get(c, 23).glyph()).collect();
         assert!(bottom.contains("0:30 / 3:00"), "time text: {bottom:?}");
         assert!(bottom.contains('[') && bottom.contains(']') && bottom.contains('>'));
         assert!(bottom.is_ascii(), "overlay must render on every tier: {bottom:?}");
-        // Rows above the overlay are untouched (BLANK from Grid::new).
         assert!((0..80).all(|c| g.get(c, 22) == Cell::BLANK));
 
-        // Endpoints: frame 0 → 0%, empty bar; last frame → 100%, full bar.
         draw_progress_overlay(&mut g, 0, 5400, 30.0);
         let s: String = (0..80).map(|c| g.get(c, 23).glyph()).collect();
         assert!(s.contains("  0%"), "{s:?}");
@@ -1674,22 +1423,16 @@ mod tests {
         assert!(s.contains("100%"), "{s:?}");
         assert!(!s.contains('.') || !s.contains('>'), "bar full at the end: {s:?}");
 
-        // Determinism: same inputs → byte-identical row (diff-mode presents
-        // of an unchanged overlay row must cost zero damage).
         let mut g2: Grid<Cell> = Grid::new(80, 24);
         draw_progress_overlay(&mut g2, 5399, 5400, 30.0);
         assert_eq!(g.row(23), g2.row(23));
 
-        // Never panics on degenerate grids.
         for (c, r) in [(1u16, 1u16), (7, 2), (12, 1), (31, 8)] {
             let mut t: Grid<Cell> = Grid::new(c, r);
             draw_progress_overlay(&mut t, 10, 20, 30.0);
         }
     }
 
-    /// M8 (PLAN-M6-M8 §3): the ` c/N ` clip block rides right after the
-    /// time block — but only for a real stitch, and only where the row can
-    /// spare it. Everything else is the M6 row to the byte.
     #[test]
     fn progress_overlay_clip_block_is_earned() {
         let row_at = |cols: u16, clip: Option<(usize, usize)>| -> String {
@@ -1707,8 +1450,6 @@ mod tests {
         assert!(wide.contains(" 0:30 / 3:00 2/3 ["), "clip block after the time: {wide:?}");
         assert_eq!(wide.len(), 80, "the row is still painted edge to edge");
 
-        // One clip is not a stitch; a narrow row spends its columns on the
-        // bar; and no context at all is the M5/M6 row.
         assert_eq!(row_at(80, Some((1, 1))), m6(80), "single-clip compositions say nothing");
         assert_eq!(row_at(63, Some((2, 3))), m6(63), "below 64 columns the block is dropped");
         assert_eq!(row_at(80, None), m6(80), "no context = the M6 row");
@@ -1720,7 +1461,7 @@ mod tests {
     fn enlarge_card_fits_tiny_grids() {
         for (c, r) in [(1u16, 1u16), (10, 2), (31, 8), (80, 24)] {
             let mut g = Grid::new(c, r);
-            draw_enlarge_card(&mut g); // must never panic / go OOB
+            draw_enlarge_card(&mut g);
             assert_eq!(g.cols(), c);
         }
         let mut g = Grid::new(40, 9);
@@ -1733,9 +1474,6 @@ mod tests {
         (0..g.cols()).map(|c| g.get(c, row).glyph()).collect()
     }
 
-    /// Read a [`OverlayScale::Big`] band back into text: rebuild each
-    /// character's 3x5 bitmap from the half-blocks and look it up in the
-    /// font. `None` for a bitmap the font does not have.
     fn read_big_line(g: &Grid<Cell>, slot: u16) -> Option<String> {
         let top = g.rows() - BIG_LINE_ROWS * (slot + 1);
         let lit = |col: u16, y: u16| -> bool {
@@ -1756,7 +1494,6 @@ mod tests {
                         bits = bits << 1 | u16::from(lit(i * BIG_CHAR_COLS + px, y));
                     }
                 }
-                // The spacing column and the margin row stay dark.
                 assert!(!lit(i * BIG_CHAR_COLS + 3, 1), "spacing column lit");
                 assert!((0..3).all(|px| !lit(i * BIG_CHAR_COLS + px, 0)), "margin row lit");
                 if bits == BIG_BAR {
@@ -1767,8 +1504,6 @@ mod tests {
             .collect()
     }
 
-    /// The tiers: one-cell text below 240x36 and on the ASCII tier at any
-    /// size (its overlays stay printable ASCII), big text from there up.
     #[test]
     fn overlay_scale_tiers() {
         use GlyphTier::*;
@@ -1790,8 +1525,6 @@ mod tests {
         assert_eq!(OverlayScale::Normal.line_chars(213), 213);
     }
 
-    /// The info row ends in the grid size, and below 160 columns the line
-    /// above it says how to get more: the terminal's own zoom-out.
     #[test]
     fn info_row_reads_the_grid_size_and_the_zoom_hint_on_narrow_grids() {
         let text = " clip   codec: pixels   settings: default ";
@@ -1811,7 +1544,6 @@ mod tests {
         assert!((0..80).all(|c| g.get(c, 19) == Cell::BLANK), "nothing above the zoom hint");
         assert!((0..80).all(|c| g.get(c, 22) == Cell::BLANK), "the hints row is not drawn here");
 
-        // The threshold: 159 columns still hints, 160 does not.
         assert!(row_text(&draw(159, 40), 36).contains("to zoom out"));
         let g = draw(160, 40);
         assert!(row_text(&g, 37).ends_with(" 160x40 cells "));
@@ -1820,8 +1552,6 @@ mod tests {
         assert!(row_text(&g, 55).ends_with(" 213x58 cells "));
         assert!((0..213).all(|c| g.get(c, 54) == Cell::BLANK));
 
-        // Narrow rows fall back to the short wording, then to none; the
-        // mac/other key name comes from the build target.
         let short = format!(" {ZOOM_KEY} - for a sharper picture ");
         assert_eq!(zoom_line(zoom.len() as u16), zoom);
         assert_eq!(zoom_line(zoom.len() as u16 - 1), short);
@@ -1832,8 +1562,6 @@ mod tests {
         assert_eq!(ZOOM_KEY, if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" });
     }
 
-    /// The clip name and codec are what `/` and `s` answer through, so when
-    /// both do not fit the size block is what goes.
     #[test]
     fn info_text_outranks_the_size_block() {
         let text = " a-very-long-clip-name-from-a-stitch   codec: letters   settings: s to save ";
@@ -1841,15 +1569,12 @@ mod tests {
         draw_info_overlay(&mut g, text, OverlayScale::Normal);
         let info = row_text(&g, 21);
         assert!(info.starts_with(text) && !info.contains("cells"), "{info:?}");
-        // One column wider than text + block: the block comes back.
         let cols = (text.len() + " 80x24 cells ".len()) as u16;
         let mut g = Grid::new(cols, 24);
         draw_info_overlay(&mut g, text, OverlayScale::Normal);
         assert!(row_text(&g, 21).ends_with(&format!(" {cols}x24 cells ")));
     }
 
-    /// Big text at 320x90: every row lands in its 3-row band, reads back as
-    /// the upper-cased line, and leaves the rows above untouched.
     #[test]
     fn big_overlay_text_reads_back_in_its_bands() {
         let (cols, rows) = (320u16, 90u16);
@@ -1870,17 +1595,14 @@ mod tests {
         let info = read_big_line(&g, 2).unwrap();
         assert!(info.starts_with(" THE ARCHITECT   CODEC: LETTERS "), "{info:?}");
         assert!(info.ends_with(" 320X90 CELLS "), "{info:?}");
-        // No zoom hint at 320 columns, so nothing above the three bands.
         let top = rows - 3 * BIG_LINE_ROWS;
         for row in 0..top {
             assert!((0..cols).all(|c| g.get(c, row) == Cell::BLANK), "row {row} touched");
         }
-        // The dial row takes the progress row's band.
         draw_dial_overlay(&mut g, "shadow lift", 64, 255, scale);
         let dial = read_big_line(&g, 0).unwrap();
         assert!(dial.starts_with(" SHADOW LIFT [####") && dial.ends_with("  64/255 "), "{dial:?}");
 
-        // A width that is not a multiple of 4 leaves its tail blank but painted.
         let mut g = Grid::new(243, 40);
         draw_hint_overlay(&mut g, OverlayScale::Big);
         assert!(read_big_line(&g, 1).is_some());
@@ -1890,7 +1612,6 @@ mod tests {
         }
     }
 
-    /// Typos in a hand-drawn font show up as two characters with one shape.
     #[test]
     fn big_font_shapes_are_distinct() {
         for (i, a) in BIG_FONT.iter().enumerate() {
@@ -1905,8 +1626,6 @@ mod tests {
         assert_eq!(big_glyph('|'), BIG_BAR);
     }
 
-    /// Every overlay at every scale on degenerate grids: no panic, no
-    /// out-of-bounds write, and a band too tall for the grid is skipped.
     #[test]
     fn overlays_survive_tiny_grids() {
         let sizes = [
@@ -1923,11 +1642,9 @@ mod tests {
                 assert_eq!((g.cols(), g.rows()), (cols, rows));
             }
         }
-        // 10x3: the info row is the top row; no room for a zoom hint.
         let mut g = Grid::new(10, 3);
         draw_info_overlay(&mut g, " clip ", OverlayScale::Normal);
         assert_eq!(row_text(&g, 0), " clip     ");
-        // A Big band that does not fit is not drawn at all.
         let mut g = Grid::new(240, 8);
         draw_info_overlay(&mut g, " clip ", OverlayScale::Big);
         assert!(g.as_slice().iter().all(|c| *c == Cell::BLANK), "slot 2 needs 9 rows");

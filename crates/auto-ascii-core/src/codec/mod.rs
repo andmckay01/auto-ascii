@@ -1,16 +1,16 @@
 //! Glyph codecs — how a cell's features become a glyph and its colors.
 //!
 //! The asset stores features (luma taps, edge magnitude and orientation,
-//! highlight/shadow flags, chroma), never glyphs (PLAN §4). A **codec** is one
-//! complete answer to "which glyph, in which colors, for these features":
+//! highlight/shadow flags, chroma), never glyphs. A **codec** is one complete
+//! answer to "which glyph, in which colors, for these features":
 //!
 //! | codec | module | looks like |
 //! |---|---|---|
-//! | `pixels` | [`pixels`] | the §3.4/§3.5 compositor: tier ramps, half-blocks and quadrants on Unicode tiers — a low-res picture |
+//! | `pixels` | [`pixels`] | the three-layer compositor: tier ramps, half-blocks and quadrants on Unicode tiers — a low-res picture |
 //! | `letters` | [`letters`] | printable characters ordered by ink, directional ASCII strokes on edges, `▓`/`█` only for the densest fill |
 //!
 //! Every codec reads the same [`CellInputs`] through the same NORM LUT and
-//! the same [`PaletteSet`] (the §3.4 selection still tells a codec which
+//! the same [`PaletteSet`] (the palette selection still tells a codec which
 //! repertoire the terminal can draw), writes the same [`CellState`] temporal
 //! memory, and reports the same [`layer`](crate::layer) ids — so the
 //! pipeline, the hysteresis resets, the layer mask and every overlay work
@@ -28,8 +28,7 @@
 //!
 //! Dispatch is once per FRAME, not per cell: [`compose_frame_codec`] picks the
 //! codec with one `match` and runs a per-cell loop monomorphized for it, so
-//! the pixels path is the exact pre-codec loop (the perf gates and every
-//! golden pin that).
+//! choosing a codec adds no per-cell cost.
 
 use crate::cell::Cell;
 use crate::compose::{CellInputs, ComposeParams, FramePlanes, frame_impl};
@@ -47,7 +46,7 @@ pub trait GlyphCodec {
     const NAME: &'static str;
 
     /// Compose one viewport cell. `lut` is the per-shot NORM LUT (shadow
-    /// lift folded in), `set` the §3.4 palette selection for this tier and
+    /// lift folded in), `set` the palette selection for this tier and
     /// density, `state` this cell's temporal memory. Must not allocate.
     fn cell(
         inp: &CellInputs,
@@ -58,8 +57,6 @@ pub trait GlyphCodec {
     ) -> (Cell, u8);
 }
 
-/// Generates the registry from one `Variant => module::Type` line per codec
-/// (see "Adding a codec" in the module docs). The first line is the default.
 macro_rules! registry {
     ($(#[$doc:meta])* $first:ident => $fmod:ident::$fty:ident,
      $($(#[$vdoc:meta])* $variant:ident => $module:ident::$ty:ident),* $(,)?) => {
@@ -98,7 +95,7 @@ macro_rules! registry {
         ///
         /// # Panics
         /// As [`compose_frame_masked`](crate::compose_frame_masked).
-        #[allow(clippy::too_many_arguments)] // compose_frame_masked + the codec it dispatches on
+        #[allow(clippy::too_many_arguments)]
         pub fn compose_frame_codec(
             codec: Codec,
             planes: &FramePlanes<'_>,
@@ -127,10 +124,7 @@ macro_rules! registry {
 }
 
 registry! {
-    /// The §3.4/§3.5 compositor ([`pixels::Pixels`]) — the default, and what
-    /// every committed golden renders.
     Pixels => pixels::Pixels,
-    /// Printable characters for texture and edges ([`letters::Letters`]).
     Letters => letters::Letters,
 }
 
@@ -157,8 +151,6 @@ impl Codec {
 mod tests {
     use super::*;
 
-    /// `ALL` is generated, so it cannot miss a variant; what is left to pin
-    /// is that the default leads the cycle and every entry is distinct.
     #[test]
     fn registry_is_complete_and_default_first() {
         assert_eq!(Codec::ALL[0], Codec::default(), "the default leads the cycle");

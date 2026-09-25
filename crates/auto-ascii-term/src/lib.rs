@@ -1,24 +1,23 @@
-//! `auto-ascii-term` — terminal backend layer (PLAN §2, §3.1).
+//! `auto-ascii-term` — terminal backend layer.
 //!
-//! "Pluggable backends" ≠ N backend structs: terminals differ by capability
-//! *data*, not code shape. One [`AnsiBackend`] parameterized by [`Caps`], plus
-//! [`SimBackend`] (in-memory, throttleable) for tests/benches. The [`Backend`]
-//! trait exists for exactly those two — nothing more.
+//! Terminals differ by capability *data*, not code shape: one [`AnsiBackend`]
+//! parameterized by [`Caps`], plus [`SimBackend`] (in-memory, throttleable)
+//! for tests/benches. The [`Backend`] trait exists for exactly those two —
+//! nothing more.
 //!
-//! M1 scope (PLAN §7): capability probe ([`probe_caps`] — passive env hints,
-//! then the DA1-sentinel volley, cached; `--tier`/`--no-query` escape
-//! hatches), color tiers truecolor/256/16/mono with quantize-BEFORE-diff
-//! (§3.1), DEC 2026 synchronized-output wrap when DECRQM confirmed it, and
-//! the diff renderer with invalidate-every-frame as the config default (one
-//! render path — full repaint is just `invalidate()` each frame, §3.1).
-//! Capability tiers are color depth + glyph repertoire only (Scope
-//! amendment: no throughput/connectivity classification).
+//! Features: capability probe ([`probe_caps`] — passive env hints, then the
+//! DA1-sentinel volley, cached; `--tier`/`--no-query` escape hatches), color
+//! tiers truecolor/256/16/mono with quantize-BEFORE-diff, DEC 2026
+//! synchronized-output wrap when DECRQM confirmed it, and the diff renderer
+//! (one render path — full repaint is just `invalidate()` each frame).
+//! Capability tiers are color depth + glyph repertoire only — no
+//! throughput/connectivity classification.
 //!
-//! M4 (item B): everything that touches a real terminal — [`AnsiBackend`],
-//! the probe volley, the restore hooks — is gated behind the default-on
-//! `session` feature (crossterm + libc). Without it the crate is pure data +
-//! code: the [`Backend`] trait, [`Caps`] types, [`SimBackend`], quantizer and
-//! diff renderer — exactly what a terminal-free embedder build needs.
+//! Everything that touches a real terminal — [`AnsiBackend`], the probe
+//! volley, the restore hooks — is gated behind the default-on `session`
+//! feature (crossterm + libc). Without it the crate is pure data + code: the
+//! [`Backend`] trait, [`Caps`] types, [`SimBackend`], quantizer and diff
+//! renderer — exactly what a terminal-free embedder build needs.
 
 #[cfg(feature = "session")]
 pub mod ansi;

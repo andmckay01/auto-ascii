@@ -1,19 +1,6 @@
-//! M2 item B integration tests via the real `auto-ascii-factory` binary:
-//! params.toml plumbing (`params --dump`, --params overrides, validation),
-//! the determinism guard (default-params build byte-pinned against the
-//! committed pipeline output on a fixture this file writes itself —
-//! reproducible WITHOUT the corpus and WITHOUT a pinned ffmpeg), and the
-//! `eval` agent socket (tiny synthetic corpus → metrics JSON with every §6
-//! metric populated + self-contained HTML contact sheet + baseline compare
-//! gating with nonzero exit on breach).
-//!
-//! This box guarantees ffmpeg + sha256sum or shasum on PATH (Linux CI,
-//! macOS dev boxes).
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// Self-cleaning per-test scratch dir (no tempfile dep in the workspace).
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -48,8 +35,6 @@ fn stderr_of(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// `sha256sum` (Linux CI) or `shasum -a 256` (macOS ships shasum, not
-/// sha256sum); both print the digest as the first whitespace-separated token.
 fn sha256_of(path: &Path) -> String {
     let out = match Command::new("sha256sum").arg(path).output() {
         Ok(out) => out,
@@ -68,18 +53,12 @@ fn sha256_of(path: &Path) -> String {
         .to_string()
 }
 
-/// The committed repo-root params.toml (also embedded in the binary).
 fn repo_params_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../params.toml")
 }
 
-// ---------------------------------------------------------------------------
-// params.toml plumbing
-// ---------------------------------------------------------------------------
-
 #[test]
 fn params_dump_matches_committed_file_and_merges_overrides() {
-    // `params --dump` == the committed repo-root file, modulo TOML noise.
     let out = factory(&[&"params", &"--dump"]);
     assert!(out.status.success(), "params --dump failed:\n{}", stderr_of(&out));
     let dumped: toml::Value =
@@ -91,7 +70,6 @@ fn params_dump_matches_committed_file_and_merges_overrides() {
         "embedded defaults drifted from the committed params.toml"
     );
 
-    // A partial --params file overrides exactly the named keys.
     let dir = TempDir::new("dump");
     let p = dir.path("override.toml");
     std::fs::write(&p, "[build]\nkeyframe_ivl = 12\n\n[eval.tolerances]\nssim_max_drop = 0.5\n")
@@ -102,11 +80,9 @@ fn params_dump_matches_committed_file_and_merges_overrides() {
         toml::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
     assert_eq!(merged["build"]["keyframe_ivl"].as_integer(), Some(12));
     assert_eq!(merged["eval"]["tolerances"]["ssim_max_drop"].as_float(), Some(0.5));
-    // Untouched keys keep the committed defaults.
     assert_eq!(merged["build"]["fps"], committed["build"]["fps"]);
     assert_eq!(merged["shots"], committed["shots"]);
 
-    // `params` without --dump is a clean error, not a silent no-op.
     let out = factory(&[&"params"]);
     assert!(!out.status.success());
     assert!(stderr_of(&out).contains("--dump"), "stderr:\n{}", stderr_of(&out));
@@ -115,9 +91,8 @@ fn params_dump_matches_committed_file_and_merges_overrides() {
 #[test]
 fn params_validation_rejects_degenerate_geometry() {
     let dir = TempDir::new("badparams");
-    let input = dir.path("unused.mp4"); // rejected before any I/O on it
+    let input = dir.path("unused.mp4");
 
-    // params file with the M1-review base_w == 1 case.
     let p = dir.path("bad.toml");
     std::fs::write(&p, "[build]\nbase_w = 1\n").unwrap();
     let out = factory(&[&"build", &input, &"-o", &dir.path("x.ascii"), &"--params", &p]);
@@ -128,79 +103,27 @@ fn params_validation_rejects_degenerate_geometry() {
         stderr_of(&out)
     );
 
-    // CLI --res odd dims: same rule, friendliest error first (clap-level).
     let out = factory(&[&"build", &input, &"-o", &dir.path("x.ascii"), &"--res", &"479x270"]);
     assert!(!out.status.success());
     assert!(stderr_of(&out).contains("even"), "stderr:\n{}", stderr_of(&out));
 
-    // Unknown keys (typos) are hard errors — an agent sweep must not no-op.
     let p2 = dir.path("typo.toml");
     std::fs::write(&p2, "[build]\nfsp = 30\n").unwrap();
     let out = factory(&[&"params", &"--dump", &"--params", &p2]);
     assert!(!out.status.success());
 }
 
-// ---------------------------------------------------------------------------
-// Determinism guard (M2 item B: "default-params asset output must stay
-// byte-identical to the current pipeline output")
-// ---------------------------------------------------------------------------
-
-/// The generated fixture itself. A GENERATOR pin, not an ffmpeg pin: the
-/// bytes come from `synth_fixture` below, so no ffmpeg upgrade can move it.
-/// Pinned so an edit to the generator fails HERE with a clear message instead
-/// of as a mystery asset-sha mismatch below.
 const FIXTURE_AVI_SHA: &str = "4c9a29d515e2184a3f592e30912dedbdb3e453901233136a249d8c56e382cd5d";
-/// Committed pipeline output for the fixture at embedded-default params.
-/// Re-baselining this constant is a deliberate act (it means the default
-/// factory output changed for every user). History:
-/// - M2 (b8e83ee8…): M1 Y+C pipeline pinned at the params.toml refactor.
-/// - M3 (439e6ac8…): DELIBERATE re-pin — the factory now emits the full
-///   §4 plane set (Y+E+Ex+Ey+H+C) with temporal EMA on Y/E/Ex/Ey/C, so
-///   every default build's bytes changed by design (PLAN §5 stages 3–4;
-///   INTERFACES note 18). Verified: two consecutive builds byte-identical
-///   before pinning; corpus plane dumps eyeballed (edges trace contours).
-///   RE-PINNED 2026-08-31: `[build].zstd_level` 19 -> 15 (audited sweep on
-///   600 real frames — +0.91% asset bytes for a 2.84x faster build). zstd is
-///   LOSSLESS, so this changes only the container's compressed bytes: the
-///   decoded planes, and therefore every quality metric, are bit-identical
-///   at any level. Verified before pinning: three consecutive builds all
-///   produced e5bc340e…, and the L15 and L19 assets decode to identical
-///   plane bytes.
-///   RE-PINNED 2026-09-19: the slpy/sleepy -> auto-ascii rename changed the
-///   format's identity bytes — magic `SLPY` -> `ASCI` and the TRLR payload
-///   `SLPY_END` -> `ASCI_END` (both fixed-width, so no offset moved). The
-///   const itself was `FIXTURE_SLPY_SHA` before this. Verified before pinning:
-///   three consecutive builds all produced b00e3ecb…, and — the stronger
-///   check — reverting exactly those 16 bytes in the new asset (4 magic,
-///   8 trailer payload, 4 trailer CRC) reproduces the previous pin
-///   e5bc340e… EXACTLY. So every compressed plane byte is bit-identical and
-///   this is a pure container-identity re-pin, not a pipeline change. Every
-///   render golden and insta snapshot passed unchanged through the rename.
-///   RE-PINNED 2026-09-20: the fixture is now a Rust-written raw BGR24 AVI
-///   instead of an ffmpeg lavfi/libx264 mp4, so the pin no longer depends on
-///   the ffmpeg build — the old mp4 pin died on ffmpeg 9.0.2, which renders
-///   testsrc2 and encodes it differently from the box the pin was taken on.
-///   The PIPELINE is unchanged; only the input bytes are, so the asset sha
-///   necessarily moved with them. Verified before pinning: three consecutive
-///   default builds of the new fixture all produced 7b301c1b… on macOS/aarch64.
-///   Cross-platform (Linux) confirmation is pending.
 const FIXTURE_ASSET_SHA: &str = "7b301c1b2d649cf9ba43ac46010c5b4cb00aab892a404049a3671bdd7a59fb6f";
 
-// Fixture geometry: exactly the default `[build]` grid and rate, which is
-// what makes the ingest a passthrough (see `synth_fixture`).
 const FIX_W: usize = 480;
 const FIX_H: usize = 270;
 const FIX_FPS: u32 = 30;
 const FIX_FRAMES: usize = 30;
-/// Frame of the hard scene change (gives shot detection exactly one cut).
 const FIX_CUT: usize = 15;
 
-/// One rectangle in the pattern: x, y, w, h + RGB.
 type FixRect = (i32, i32, i32, i32, (u8, u8, u8));
 
-/// Integer HSV at full saturation: `hue` walks six 256-wide segments of the
-/// colour wheel, `val` scales 0..=255. Integer-only, like everything else in
-/// the generator — no float rounding to differ between hosts.
 fn hue_rgb(hue: u32, val: u32) -> (u8, u8, u8) {
     let (seg, t) = (hue / 256 % 6, hue % 256);
     let (r, g, b) = match seg {
@@ -221,7 +144,6 @@ fn put_px(rgb: &mut [u8], x: usize, y: usize, c: (u8, u8, u8)) {
     rgb[i + 2] = c.2;
 }
 
-/// Hard-edged filled rectangle (no anti-aliasing), clipped to the frame.
 fn fill_rect(rgb: &mut [u8], x0: i32, y0: i32, w: i32, h: i32, c: (u8, u8, u8)) {
     for y in y0.max(0)..(y0 + h).min(FIX_H as i32) {
         for x in x0.max(0)..(x0 + w).min(FIX_W as i32) {
@@ -230,25 +152,12 @@ fn fill_rect(rgb: &mut [u8], x0: i32, y0: i32, w: i32, h: i32, c: (u8, u8, u8)) 
     }
 }
 
-/// One frame of the synthetic clip, top-down packed RGB24.
-///
-/// Deliberately edge-rich and colourful so every §4 plane gets real content:
-/// a smooth gradient background (Y), hard rectangle and 45° stripe edges
-/// (E + the Ex/Ey orientation field), a pure-white square (H highlights),
-/// saturated primaries against a hue ramp (C), and a hard cut at frame 15
-/// (shot detection sees one cut).
 fn fix_frame_rgb(f: usize) -> Vec<u8> {
     let mut rgb = vec![0u8; FIX_W * FIX_H * 3];
     let cut = f >= FIX_CUT;
-    let phase = (f % FIX_CUT) * 4; // 4 px/frame, restarting after the cut
+    let phase = (f % FIX_CUT) * 4;
     let step = phase as i32;
 
-    // Background: a luma gradient along one axis, a hue ramp along the other.
-    // The cut swaps the two axes AND drops to a dark, narrow luma band: the
-    // §5 stage-2 detector thresholds the SAD of 256-bin L* HISTOGRAMS, which
-    // a mere transpose would leave untouched (it is position-blind). Scene B
-    // barely overlaps scene A's luma range, so the cut is unmissable — and
-    // its shadows give the H plane's deep-shadow bit real work too.
     for y in 0..FIX_H {
         for x in 0..FIX_W {
             let (hue, val) = if cut {
@@ -260,7 +169,6 @@ fn fix_frame_rgb(f: usize) -> Vec<u8> {
         }
     }
 
-    // A band of diagonal stripes: constant x+y is a 45° edge.
     let band = if cut { 20..70 } else { 120..170 };
     for y in band {
         for x in 0..FIX_W {
@@ -269,8 +177,6 @@ fn fix_frame_rgb(f: usize) -> Vec<u8> {
         }
     }
 
-    // Saturated rectangles sliding 4 px/frame, alternating direction so the
-    // motion field is not a single global pan.
     let rects: &[FixRect] = if cut {
         &[
             (250, 90, 90, 70, (255, 32, 0)),
@@ -289,14 +195,11 @@ fn fix_frame_rgb(f: usize) -> Vec<u8> {
         fill_rect(&mut rgb, x + dx, y, w, h, c);
     }
 
-    // A small pure-white square — the H plane's top-hat target.
     let (hx, hy) = if cut { (380 - step, 200) } else { (60 + step, 215) };
     fill_rect(&mut rgb, hx, hy, 24, 24, (255, 255, 255));
     rgb
 }
 
-/// The same frame as the DIB stores it: rows bottom-up (last image row
-/// first), pixels B,G,R.
 fn fix_frame_bgr_bottom_up(f: usize) -> Vec<u8> {
     let rgb = fix_frame_rgb(f);
     let stride = FIX_W * 3;
@@ -309,20 +212,6 @@ fn fix_frame_bgr_bottom_up(f: usize) -> Vec<u8> {
     out
 }
 
-/// Write the determinism fixture: 30 frames of the pattern above through
-/// `auto_ascii_eval::fixtures::write_bgr24_avi` (M7 moved the RIFF
-/// container writer there so `auto-ascii import`'s tests share it — the
-/// bytes, and therefore `FIXTURE_AVI_SHA`, are unchanged).
-///
-/// Written from Rust rather than synthesised with `ffmpeg -f lavfi -i
-/// testsrc2 ...` on purpose. The mp4 this replaced depended on testsrc2's
-/// renderer, on libx264 AND on swscale's YUV->RGB, none of which are
-/// bit-stable across ffmpeg majors — so the pin broke on the first ffmpeg
-/// upgrade, with nothing about the factory having changed. This file is
-/// already at the default `[build]` geometry and rate, so the factory's
-/// `scale=480:270:flags=area,fps=30,format=rgb24` ingest is a passthrough
-/// scale, a 1:1 fps filter and an exact BGR->RGB byte permutation: every
-/// ffmpeg build decodes the identical frames.
 fn synth_fixture(dir: &TempDir) -> PathBuf {
     let input = dir.path("fixture.avi");
     auto_ascii_eval::fixtures::write_bgr24_avi(
@@ -347,7 +236,6 @@ fn default_params_build_is_byte_pinned() {
          edited; re-baseline BOTH constants deliberately"
     );
 
-    // Flagless build == embedded defaults == the committed pipeline bytes.
     let out_default = dir.path("default.ascii");
     let out = factory(&[&"build", &input, &"-o", &out_default]);
     assert!(out.status.success(), "build failed:\n{}", stderr_of(&out));
@@ -359,8 +247,6 @@ fn default_params_build_is_byte_pinned() {
          guard). If deliberate, re-baseline FIXTURE_ASSET_SHA."
     );
 
-    // --params <copy of the committed file> must be byte-identical too:
-    // file-loaded params and embedded params are the same config.
     let params_copy = dir.path("params-copy.toml");
     std::fs::copy(repo_params_path(), &params_copy).unwrap();
     let out_filed = dir.path("filed.ascii");
@@ -369,11 +255,6 @@ fn default_params_build_is_byte_pinned() {
     assert_eq!(sha256_of(&out_filed), FIXTURE_ASSET_SHA, "--params file path diverged");
 }
 
-// ---------------------------------------------------------------------------
-// eval: JSON + HTML + baseline gating on a tiny synthetic corpus
-// ---------------------------------------------------------------------------
-
-/// Two lavfi clips: continuous (1 shot) + two-scene concat (1 cut).
 fn synth_corpus(dir: &TempDir) -> PathBuf {
     let corpus = dir.path("corpus");
     std::fs::create_dir_all(&corpus).unwrap();
@@ -401,12 +282,6 @@ fn synth_corpus(dir: &TempDir) -> PathBuf {
     corpus
 }
 
-/// Eval params: fast fps, a short keyframe cadence (so keyframe_count is a
-/// live metric on 20–30-frame clips — the keyframe-regression drill below
-/// needs headroom to DROP), denser SSIM sampling, and a huge stage-time
-/// tolerance — stage means over ~20 debug frames on a loaded 4-core box are
-/// far noisier than the default +50%; the perf gate (item E) is the precise
-/// instrument, this test gates the deterministic metrics.
 const EVAL_PARAMS: &str = "[build]\nfps = 10\nkeyframe_ivl = 4\n\n\
                            [eval]\nssim_every = 5\n\n\
                            [eval.tolerances]\nstage_ms_frac_max_increase = 1000.0\n";
@@ -422,17 +297,15 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     let out_html = dir.path("runs/run1.html");
     let out_reel = dir.path("runs/run1-reel.html");
 
-    // --- run 1: builds assets, emits JSON + HTML + review reel ------------
     let out = factory(&[
         &"eval", &"--corpus", &corpus, &"--params", &params, &"--out", &out_json,
         &"--html", &out_html, &"--reel", &out_reel, &"--cache-dir", &cache,
     ]);
     assert!(out.status.success(), "eval failed:\n{}", stderr_of(&out));
 
-    // JSON: every §6 metric populated for both clips.
     let json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out_json).unwrap()).unwrap();
-    assert_eq!(json["schema_version"], 2); // M3 bump: edge-F1 metric family
+    assert_eq!(json["schema_version"], 2);
     let clips = json["clips"].as_array().unwrap();
     assert_eq!(clips.len(), 2, "both corpus clips must be evaluated");
     assert_eq!(clips[0]["name"], "clip-a");
@@ -443,9 +316,6 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
         assert!(ssim > 0.0 && ssim <= 1.0, "ssim in (0,1]: {ssim}");
         let flicker = m["flicker_switches_per_cell_sec"].as_f64().expect("flicker populated");
         assert!(flicker >= 0.0);
-        // M3 edge-F1 family: populated (layer mask observed + source Canny
-        // truth computed) and in range. testsrc2 is edge-rich, so truth is
-        // nonempty; the score itself depends on the renderer's edge layer.
         for k in ["edge_f1", "edge_precision", "edge_recall"] {
             let v = m[k].as_f64().unwrap_or_else(|| panic!("{k} unpopulated"));
             assert!((0.0..=1.0).contains(&v), "{k} out of range: {v}");
@@ -456,7 +326,6 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
             assert!(d["avg_bytes_per_frame"].as_f64().unwrap() > 0.0);
             assert!(d["frames"].as_u64().unwrap() > 0);
         }
-        // Truecolor must be the most expensive stream (SGR 38;2 vs 38;5/none).
         let bytes = |t: &str| tiers[t]["avg_bytes_per_frame"].as_f64().unwrap();
         assert!(bytes("truecolor") > bytes("256") && bytes("256") > bytes("mono"));
         for stage in ["decode", "resample", "compose", "present"] {
@@ -466,12 +335,8 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
             );
         }
     }
-    // clip-b has a hard cut; the eval segments flicker on it, so both clips
-    // stay far below catastrophe even though the concat flips every cell.
     let flicker_b = clips[1]["metrics"]["flicker_switches_per_cell_sec"].as_f64().unwrap();
     assert!(flicker_b < 5.0, "cut leaked into flicker: {flicker_b}");
-    // Asset-structure metrics (M2 review fix): populated for every clip,
-    // and clip-b's splice is visible as a cut in the report.
     for clip in clips {
         let m = &clip["metrics"];
         assert!(m["shot_count"].as_u64().unwrap() >= 1);
@@ -484,7 +349,6 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
         "clip-b's concat splice must be a detected cut"
     );
 
-    // HTML contact sheet: self-contained, embedded PNGs, both clips.
     let html = std::fs::read_to_string(&out_html).unwrap();
     assert!(html.contains("<title>auto-ascii eval</title>"));
     assert!(html.contains("clip-a") && html.contains("clip-b"));
@@ -493,8 +357,6 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     assert!(!html.contains("http://") && !html.contains("https://"), "must be self-contained");
     assert!(html.contains("edge F1 vs source Canny"), "contact sheet reports edge F1");
 
-    // Review reel (M3 sign-off artifact): self-contained, per-clip animated
-    // GIF + >= 4 source|render timestamp rows with metric strips.
     let reel = std::fs::read_to_string(&out_reel).unwrap();
     assert!(reel.contains("<title>auto-ascii review reel</title>"));
     assert!(reel.contains("clip-a") && reel.contains("clip-b"));
@@ -507,7 +369,6 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
         assert!(chunk.starts_with("data:"), "reel has a non-data: src");
     }
 
-    // --- run 2: cached assets + self-baseline PASS, exit 0 ----------------
     let out2_json = dir.path("runs/run2.json");
     let out = factory(&[
         &"eval", &"--corpus", &corpus, &"--params", &params, &"--baseline", &out_json,
@@ -517,12 +378,11 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     assert!(stderr_of(&out).contains("cached asset"), "second run must hit the asset cache");
     assert!(stderr_of(&out).contains("baseline: PASS"));
 
-    // --- tampered baseline: gate trips, nonzero exit ----------------------
     let mut tampered: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out_json).unwrap()).unwrap();
-    tampered["clips"][0]["metrics"]["ssim"] = serde_json::json!(0.999); // ssim "regressed"
+    tampered["clips"][0]["metrics"]["ssim"] = serde_json::json!(0.999);
     tampered["clips"][1]["metrics"]["damage_by_tier"]["truecolor"]["avg_bytes_per_frame"] =
-        serde_json::json!(1000.0); // bytes "exploded"
+        serde_json::json!(1000.0);
     let tampered_path = dir.path("runs/tampered.json");
     std::fs::write(&tampered_path, tampered.to_string()).unwrap();
     let out = factory(&[
@@ -535,11 +395,6 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     assert!(err.contains("FAIL clip-a/ssim"), "stderr:\n{err}");
     assert!(err.contains("FAIL clip-b/bytes_per_frame/truecolor"), "stderr:\n{err}");
 
-    // --- deliberate param regression trips the gate (M2 acceptance 4):
-    // a params.toml edit that renders on a much larger grid inflates
-    // bytes/frame deterministically past the +20% tolerance for every tier
-    // vs the 300x80 baseline — nonzero exit, then "reverted" (params files
-    // are per-run inputs; the good file is untouched).
     let regressed = dir.path("p-regressed.toml");
     std::fs::write(
         &regressed,
@@ -556,23 +411,14 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     let err = stderr_of(&out);
     assert!(err.contains("FAIL clip-a/bytes_per_frame/truecolor"), "stderr:\n{err}");
     assert!(err.contains("baseline compare FAILED"), "stderr:\n{err}");
-    // Asset cache was NOT invalidated: eval-only knobs are excluded from the
-    // params fingerprint (no rebuild happened on the regressed run).
     assert!(err.contains("cached asset"), "eval knobs must not rebuild assets:\n{err}");
 
-    // Reverted params pass again (the drill leaves the tree green).
     let out = factory(&[
         &"eval", &"--corpus", &corpus, &"--params", &params, &"--baseline", &out_json,
         &"--out", &dir.path("runs/run5.json"), &"--cache-dir", &cache,
     ]);
     assert!(out.status.success(), "reverted params must pass:\n{}", stderr_of(&out));
 
-    // --- FACTORY-tunable regressions trip the gate (M2 review fix — these
-    // were previously invisible: the SSIM reference self-graded through the
-    // factory's own levels and no shot/keyframe/size metric existed).
-    //
-    // (a) a shot threshold that kills cut detection: clip-b's splice
-    // vanishes from the NORM roster → shot_count/cut_count fail.
     let killed_cuts = dir.path("p-killed-cuts.toml");
     std::fs::write(
         &killed_cuts,
@@ -588,7 +434,6 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     assert!(err.contains("FAIL clip-b/cut_count"), "stderr:\n{err}");
     assert!(err.contains("FAIL clip-b/shot_count"), "stderr:\n{err}");
 
-    // (b) an inflated keyframe cadence: keyframe_count drops → fails.
     let sparse_keys = dir.path("p-sparse-keys.toml");
     std::fs::write(
         &sparse_keys,
@@ -603,9 +448,6 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     let err = stderr_of(&out);
     assert!(err.contains("FAIL clip-a/keyframe_count"), "stderr:\n{err}");
 
-    // (c) keyframe_ivl = 600 (the PLAN acceptance-4 drill value) is a clean
-    // params range error naming the u8 wire limit — not a serde type error,
-    // not a silent build.
     let kf600 = dir.path("p-kf600.toml");
     std::fs::write(&kf600, "[build]\nkeyframe_ivl = 600\n").unwrap();
     let out = factory(&[
@@ -616,10 +458,6 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     assert!(stderr_of(&out).contains("1..=255"), "stderr:\n{}", stderr_of(&out));
 }
 
-// ---------------------------------------------------------------------------
-// sweep: ranked combos + leaderboard on the tiny synthetic corpus (M3 Tune)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn sweep_ranks_combos_and_reuses_the_asset_cache() {
     let dir = TempDir::new("sweep");
@@ -629,9 +467,6 @@ fn sweep_ranks_combos_and_reuses_the_asset_cache() {
     let cache = dir.path("cache");
     let out_dir = dir.path("sweeps/edge");
 
-    // One renderer-only axis (2 sane combos + 1 that fails validation) plus
-    // an absurd-T_on combo: [compose] is excluded from the build fingerprint,
-    // so every combo after the first must hit the asset cache.
     let grid = dir.path("grid.toml");
     std::fs::write(
         &grid,
@@ -652,7 +487,6 @@ fn sweep_ranks_combos_and_reuses_the_asset_cache() {
     assert!(err.contains("cached asset"), "combos 2+ must reuse the asset cache:\n{err}");
     assert!(err.contains("SKIPPED"), "t_off > t_on combo must be a recorded skip:\n{err}");
 
-    // sweep.json: ranked, skip sinks to the tail, per-clip rows present.
     let sweep: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(out_dir.join("sweep.json")).unwrap())
             .unwrap();
@@ -664,9 +498,6 @@ fn sweep_ranks_combos_and_reuses_the_asset_cache() {
     assert!(scores[0].unwrap() >= scores[1].unwrap(), "ranked best-first");
     assert!(scores[2].is_none(), "skipped combo sinks to the tail");
     assert!(results[2]["skip_reason"].as_str().unwrap().contains("edge_t_off"));
-    // The absurd T_on=240 gate must not beat the sane default (edge layer
-    // dies => edge_f1 term collapses) — the aesthetic-regression mechanism
-    // the drill rides.
     let sane = results.iter().find(|r| r["combo"].as_str().unwrap().contains("=32")).unwrap();
     let absurd = results.iter().find(|r| r["combo"].as_str().unwrap().contains("=240")).unwrap();
     assert!(
@@ -675,28 +506,23 @@ fn sweep_ranks_combos_and_reuses_the_asset_cache() {
         sane["edge_f1_mean"],
         absurd["edge_f1_mean"]
     );
-    // Per-clip rows + per-combo EvalReports on disk.
     for r in results.iter().take(2) {
         assert_eq!(r["clips"].as_array().unwrap().len(), 2, "both clips scored");
         let rep = r["report"].as_str().unwrap();
         let combo_report: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(out_dir.join(rep)).unwrap()).unwrap();
         assert_eq!(combo_report["schema_version"], 2);
-        // Sweep mode is truecolor-only (damage tiers trimmed deliberately).
         let tiers =
             combo_report["clips"][0]["metrics"]["damage_by_tier"].as_object().unwrap();
         assert_eq!(tiers.len(), 1, "sweep runs the truecolor pass only");
         assert!(tiers.contains_key("truecolor"));
     }
 
-    // Leaderboard: self-contained, one row per combo, skip labeled.
     let html = std::fs::read_to_string(out_dir.join("leaderboard.html")).unwrap();
     assert!(html.contains("<title>auto-ascii sweep leaderboard</title>"));
     assert!(html.contains("skipped:"));
     assert!(!html.contains("http://") && !html.contains("https://"), "must be self-contained");
 
-    // Typo'd param path: hard error naming the path (agent sweeps must not
-    // silently no-op — the params.toml contract).
     let bad = dir.path("grid-typo.toml");
     std::fs::write(
         &bad,

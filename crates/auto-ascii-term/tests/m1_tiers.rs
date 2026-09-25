@@ -1,9 +1,3 @@
-//! M1 color tiers + DEC 2026 (PLAN §3.1, acceptance 5/6), byte-level via
-//! SimBackend: 256 output is `38;5;N`-only, 16 is `30–37/90–97`-only, mono
-//! has no color SGR at all, truecolor is unchanged M0 bytes; quantization
-//! happens BEFORE diff (equal-after-quantize ⇒ zero damage); frames wrap in
-//! `?2026h…l` exactly when caps say so.
-
 use auto_ascii_core::{Cell, Grid, Rgb};
 use auto_ascii_term::{Backend, Caps, ColorTier, SimBackend};
 
@@ -24,7 +18,6 @@ fn grid_of(cols: u16, rows: u16, f: impl Fn(u16, u16) -> Cell) -> Grid<Cell> {
     g
 }
 
-/// Colorful test frame (hits cube, gray ramp and saturated corners).
 fn colorful(cols: u16, rows: u16) -> Grid<Cell> {
     grid_of(cols, rows, |c, r| {
         let v = ((u32::from(c) * 37 + u32::from(r) * 91) % 256) as u8;
@@ -32,7 +25,6 @@ fn colorful(cols: u16, rows: u16) -> Grid<Cell> {
     })
 }
 
-/// Every SGR (CSI … m) parameter list in `out`, split into `;` tokens.
 fn sgr_bodies(out: &[u8]) -> Vec<Vec<u32>> {
     let mut bodies = Vec::new();
     let mut i = 0;
@@ -58,8 +50,6 @@ fn count(hay: &[u8], needle: &[u8]) -> usize {
     hay.windows(needle.len()).filter(|w| *w == needle).count()
 }
 
-/// M1 acceptance 5: 256-color output contains ONLY `38;5;N` / `48;5;N`
-/// color SGRs — never truecolor `38;2` or 16-color codes.
 #[test]
 fn c256_output_is_385n_only() {
     let mut sim = sim_with_tier(24, 8, ColorTier::C256, false);
@@ -82,8 +72,6 @@ fn c256_output_is_385n_only() {
     assert!(count(&out, b"38;5;") > 0);
 }
 
-/// 16-color output: every SGR token is one of 30–37/90–97 (fg) or
-/// 40–47/100–107 (bg).
 #[test]
 fn c16_output_is_standard16_only() {
     let mut sim = sim_with_tier(24, 8, ColorTier::C16, false);
@@ -107,11 +95,9 @@ fn c16_output_is_standard16_only() {
     assert_eq!(count(&out, b"48;"), 0);
 }
 
-/// M1 acceptance 5: mono contains no color SGR at all — glyphs only.
 #[test]
 fn mono_output_has_no_color_sgr() {
     let mut sim = sim_with_tier(24, 8, ColorTier::Mono, false);
-    // Glyph deliberately not 'm' so the SGR scan below is airtight.
     let stats = sim.present(&colorful(24, 8));
     let out = sim.take_output();
 
@@ -122,8 +108,6 @@ fn mono_output_has_no_color_sgr() {
     assert_eq!(count(&out, b"#"), 24 * 8, "glyphs still render");
 }
 
-/// M1 acceptance 5: truecolor output is byte-identical to the M0 path —
-/// same `38;2;R;G;B` stream, no wrap by default.
 #[test]
 fn truecolor_unchanged_from_m0() {
     let mut m0 = SimBackend::new(16, 4);
@@ -136,13 +120,9 @@ fn truecolor_unchanged_from_m0() {
     assert!(count(&m0_out, b"38;2;") > 0);
 }
 
-/// THE quantize-before-diff test (M1 acceptance 5, PLAN §3.1): two frames
-/// whose cells differ in RGB but quantize equal produce ZERO damage and
-/// ZERO bytes in diff mode.
 #[test]
 fn equal_after_quantize_is_zero_damage() {
     let mut sim = sim_with_tier(12, 4, ColorTier::C256, false);
-    // Gray 100 and gray 102 both quantize to xterm index 241 (ramp 98).
     let a = grid_of(12, 4, |_, _| Cell::new('x', Rgb::gray(100), Rgb::BLACK));
     let b = grid_of(12, 4, |_, _| Cell::new('x', Rgb::gray(102), Rgb::BLACK));
 
@@ -155,7 +135,6 @@ fn equal_after_quantize_is_zero_damage() {
     assert_eq!(second.bytes, 0);
     assert!(sim.take_output().is_empty());
 
-    // Sanity: the same two frames on the truecolor tier DO differ.
     let mut tc = SimBackend::new(12, 4);
     tc.present(&a);
     tc.take_output();
@@ -163,8 +142,6 @@ fn equal_after_quantize_is_zero_damage() {
     assert_eq!(tc_second.cells_damaged, 48, "truecolor sees the raw RGB change");
 }
 
-/// Same property on the 16 tier: distinct RGBs mapping to the same ANSI
-/// color are invisible to the diff.
 #[test]
 fn equal_after_quantize_16_tier() {
     let mut sim = sim_with_tier(8, 2, ColorTier::C16, false);
@@ -177,8 +154,6 @@ fn equal_after_quantize_16_tier() {
     assert_eq!(second.bytes, 0);
 }
 
-/// M1 acceptance 6: with `Caps::sync_2026`, every non-empty frame is wrapped
-/// in `CSI ? 2026 h … l`; empty frames emit nothing (no bare wrap).
 #[test]
 fn sync_2026_wraps_frames() {
     let mut sim = sim_with_tier(10, 3, ColorTier::True, true);
@@ -191,19 +166,16 @@ fn sync_2026_wraps_frames() {
     assert_eq!(count(&out, b"\x1b[?2026h"), 1);
     assert_eq!(count(&out, b"\x1b[?2026l"), 1);
 
-    // Unchanged frame: nothing at all — not even the wrap.
     let idle = sim.present(&g);
     assert_eq!(idle.bytes, 0);
     assert!(sim.take_output().is_empty());
 
-    // Invalidate → full repaint, wrapped again.
     sim.invalidate();
     sim.present(&g);
     let full = sim.take_output();
     assert!(full.starts_with(b"\x1b[?2026h") && full.ends_with(b"\x1b[?2026l"));
 }
 
-/// Caps without sync_2026 (the default) never wrap — truecolor M0 parity.
 #[test]
 fn no_sync_flag_no_wrap() {
     let mut sim = SimBackend::new(10, 3);
@@ -212,7 +184,6 @@ fn no_sync_flag_no_wrap() {
     assert_eq!(count(&out, b"2026"), 0);
 }
 
-/// Mono + sync: wrap applies to glyph-only output too.
 #[test]
 fn sync_2026_wraps_mono_frames() {
     let mut sim = sim_with_tier(6, 2, ColorTier::Mono, true);
@@ -222,7 +193,6 @@ fn sync_2026_wraps_mono_frames() {
     assert!(sgr_bodies(&out).is_empty());
 }
 
-/// `--tier` parsing (M1 acceptance 4): canonical names and rejection.
 #[test]
 fn tier_parsing() {
     assert_eq!("truecolor".parse::<ColorTier>(), Ok(ColorTier::True));

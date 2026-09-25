@@ -1,21 +1,3 @@
-//! `auto-ascii` — the agent-first CLI (PLAN-M6-M8 §2).
-//!
-//! Takes a video from anywhere on the desktop, processes it through the
-//! factory's ffmpeg ingest, and lands it in the folder where the user's
-//! processed clips live — then lists, describes, trims, stitches and plays
-//! what is there (`cut` and `compose …` are M8's half, PLAN-M6-M8 §3).
-//!
-//! Two output modes, one code path: humans get aligned text on stdout,
-//! agents pass `--json` and get **exactly one** JSON value on stdout and
-//! nothing else (errors become `{"error": "..."}` on stderr with exit 1).
-//! Everything chatty — ffmpeg progress, the factory's `input:`/`pass 1/2:`/
-//! `wrote` lines — is written to stderr in both modes, which is what makes
-//! that promise keepable (PLAN §5's "stdout stays clean" rule, extended).
-//!
-//! The crate exists because the facade cannot host it: `auto-ascii-factory`
-//! already depends on `auto-ascii`, so the binary that needs BOTH has to be
-//! a third crate. M7 split the factory into lib + thin bin for exactly this.
-
 mod composition;
 mod home;
 mod library;
@@ -33,39 +15,24 @@ use clap::{Parser, Subcommand};
 use home::{Home, Target, cut_name, kebab_case, library_name, name_for, rfc3339_utc, stem_of};
 use library::{AssetInfo, Sidecar, Source, absolute, clip_ref};
 
-/// The error type the whole CLI funnels into — the factory's, so its errors
-/// pass through unwrapped and read the same in both binaries.
 pub type BoxErr = Box<dyn std::error::Error>;
 
-/// Every byte this CLI puts on stdout goes through here.
-///
-/// Rust ignores SIGPIPE, so when the reader goes away — `auto-ascii list |
-/// head -1`, a quit pager — the next write fails with `BrokenPipe`, and
-/// `outln!` PANICS on that: a stack trace and exit 101 where the user
-/// did something completely ordinary. Ending quietly with 0 is the shell
-/// convention and this repo's precedent (`examples/headless-dump.rs`, M5
-/// fix 7).
 fn emit(text: &str) {
     let mut out = std::io::stdout().lock();
     if let Err(e) = out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
         if e.kind() == std::io::ErrorKind::BrokenPipe {
             std::process::exit(0);
         }
-        // A full disk, a closed descriptor: stdout IS the product here, so
-        // say so where anyone can still see it and fail.
         emit_err(&format!("auto-ascii: write to stdout failed: {e}\n"));
         std::process::exit(1);
     }
 }
 
-/// The same for stderr, where a failed write has nowhere left to report
-/// itself — the exit code still carries the outcome, so it is dropped.
 fn emit_err(text: &str) {
     let mut err = std::io::stderr().lock();
     let _ = err.write_all(text.as_bytes()).and_then(|()| err.flush());
 }
 
-/// `outln!` for this CLI: the same formatting, through [`emit`].
 macro_rules! outln {
     ($($arg:tt)*) => {{
         let mut line = std::fmt::format(format_args!($($arg)*));
@@ -74,17 +41,12 @@ macro_rules! outln {
     }};
 }
 
-/// [`outln!`] without the newline, for text that carries its own.
 macro_rules! out {
     ($($arg:tt)*) => { emit(&std::fmt::format(format_args!($($arg)*))) };
 }
 
-/// The agent guide, embedded so `auto-ascii agent-guide` and the committed
-/// file cannot drift (PLAN-M6-M8 §2).
 const AGENT_GUIDE: &str = include_str!("../../../docs/AGENT-GUIDE.md");
 
-/// Why `play` and `compose play` refuse `--json`. One string: the two
-/// commands are the same refusal for the same reason.
 const PLAY_IS_INTERACTIVE: &str = "play is interactive; run it without --json";
 
 #[derive(Parser)]
@@ -176,10 +138,10 @@ enum Cmd {
     Home,
 }
 
-/// `compose …` (PLAN-M6-M8 §3). `<name>` is a path to a `.toml` if one
-/// exists, else `compositions/<name>.toml` — the file is the source of
-/// truth, and these subcommands only ever edit the same bytes an agent
-/// would have written by hand.
+/// `compose …`. `<name>` is a path to a `.toml` if one exists, else
+/// `compositions/<name>.toml` — the file is the source of truth, and these
+/// subcommands only ever edit the same bytes an agent would have written by
+/// hand.
 #[derive(Subcommand)]
 enum ComposeCmd {
     /// Start `compositions/<name>.toml` (fails if it is already there).
@@ -228,9 +190,6 @@ enum ComposeCmd {
 }
 
 fn main() -> ExitCode {
-    // `--json` is read out of argv, not out of the parsed `Cli`: a usage
-    // error means there IS no parsed `Cli`, and an agent that asked for
-    // JSON must not get clap's usage block on stderr instead of an object.
     let json = std::env::args_os().any(|arg| arg == "--json");
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -245,9 +204,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// One error in the caller's chosen shape. Under `--json` serde_json owns
-/// the escaping, so a message with a quote or a newline in it still leaves
-/// exactly one value on stderr.
 fn fail(message: &str, json: bool) {
     if json {
         let obj = serde_json::json!({ "error": message });
@@ -257,15 +213,6 @@ fn fail(message: &str, json: bool) {
     }
 }
 
-/// What clap produced instead of a `Cli`.
-///
-/// `--help` and `--version` are OUTPUT, not failures: they print where
-/// clap wanted them and exit 0. Everything else is a usage error, and
-/// under `--json` it goes through the same one-object contract as every
-/// other error — an agent that typo'd a flag gets a document it can read
-/// rather than a usage block it cannot. Without `--json` a human keeps
-/// clap's own rendering and clap's own exit code (2), which stays
-/// distinguishable from the exit 1 of a command that ran and failed.
 fn usage_exit(e: &clap::Error, json: bool) -> ExitCode {
     if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
         let _ = e.print();
@@ -275,17 +222,12 @@ fn usage_exit(e: &clap::Error, json: bool) -> ExitCode {
         let _ = e.print();
         return ExitCode::from(2);
     }
-    // `render()` is the unstyled text (`print` is what paints it), and its
-    // leading `error: ` label is what the JSON key already says.
     let rendered = e.render().to_string();
     let message = rendered.trim();
     fail(message.strip_prefix("error: ").unwrap_or(message), true);
     ExitCode::FAILURE
 }
 
-/// The home folder is resolved by the commands that need one, not up
-/// front: `agent-guide` is pure output and must work on a box with no
-/// `HOME` and no `AUTO_ASCII_HOME` at all.
 fn run(cli: &Cli) -> Result<(), BoxErr> {
     match &cli.cmd {
         Cmd::Import { video, name, ss, t, fps, res, force } => {
@@ -319,8 +261,6 @@ fn run(cli: &Cli) -> Result<(), BoxErr> {
     }
 }
 
-/// The `compose …` half of [`run`]. `play` resolves its own home for the
-/// same reason `Cmd::Play` does: the `--json` refusal comes first.
 fn run_compose(cli: &Cli, cmd: &ComposeCmd) -> Result<(), BoxErr> {
     match cmd {
         ComposeCmd::New { name } => cmd_compose_new(cli, &Home::resolve()?, name),
@@ -343,8 +283,6 @@ fn run_compose(cli: &Cli, cmd: &ComposeCmd) -> Result<(), BoxErr> {
     }
 }
 
-/// `import`'s flags, borrowed out of the clap enum so the command function
-/// takes one argument instead of eight.
 struct ImportArgs<'a> {
     video: &'a std::path::Path,
     name: Option<&'a str>,
@@ -368,8 +306,6 @@ fn cmd_import(cli: &Cli, home: &Home, args: &ImportArgs<'_>) -> Result<(), BoxEr
     let t = parse_time(args.t, "--t")?;
     let res = args.res.map(auto_ascii_factory::parse_res).transpose()?;
 
-    // The factory's human lines go to stderr in BOTH modes: under --json
-    // stdout carries the sidecar and nothing else.
     let report = auto_ascii_factory::build(
         &BuildRequest {
             input: args.video,
@@ -383,16 +319,12 @@ fn cmd_import(cli: &Cli, home: &Home, args: &ImportArgs<'_>) -> Result<(), BoxEr
         &mut std::io::stderr(),
     )?;
 
-    // Only NOW does the old provenance go (see `retire_provenance`).
     retire_provenance(&asset)?;
     let (sidecar, sidecar_path) = record_import(&name, args.video, &asset, &report)
         .map_err(|e| orphaned(&e, &asset, "import"))?;
     finish_clip(cli, &format!("imported {name}"), &sidecar, &sidecar_path)
 }
 
-/// Hash the source, describe what the factory wrote, and record it. Split
-/// out so `import` can name the clip it just orphaned when any of these
-/// steps fails.
 fn record_import(
     name: &str,
     video: &Path,
@@ -424,16 +356,6 @@ fn record_import(
     )
 }
 
-// ---------------------------------------------------------------------------
-// The steps `import` and `cut` share (PLAN-M6-M8 §2, §3): both name a clip,
-// refuse to overwrite one, retire the provenance the old bytes had, record
-// the new bytes and print the result. Only what they PUT in the library
-// differs — an ffmpeg ingest or a one-clip export.
-// ---------------------------------------------------------------------------
-
-/// The library name a writing command will use: `--name` kebab-cased (the
-/// documented rule, and the reason a name can hold neither a separator nor
-/// `..`), else the caller's own default.
 fn clip_name(
     flag: Option<&str>,
     default: impl FnOnce() -> Result<String, BoxErr>,
@@ -446,7 +368,6 @@ fn clip_name(
     Ok(kebab)
 }
 
-/// Refuse to write over a clip that is already there, unless `--force`.
 fn refuse_existing(name: &str, asset: &Path, force: bool) -> Result<(), BoxErr> {
     if asset.exists() && !force {
         return Err(format!(
@@ -458,19 +379,10 @@ fn refuse_existing(name: &str, asset: &Path, force: bool) -> Result<(), BoxErr> 
     Ok(())
 }
 
-/// Drop the sidecar describing the bytes that were just replaced.
-///
-/// Called only once the NEW asset is in place, which is the whole point:
-/// before that moment a failed rebuild must leave the old clip AND its
-/// provenance exactly as they were, and after it any sidecar still on disk
-/// describes the wrong file. Missing provenance is visible (`list` says
-/// so); wrong provenance is not.
 fn retire_provenance(asset: &Path) -> Result<(), BoxErr> {
     library::remove_sidecar(asset)
 }
 
-/// Stamp the time and write `library/<name>.json` for bytes that have
-/// already landed.
 fn record(
     name: &str,
     source: Source,
@@ -490,9 +402,6 @@ fn record(
     Ok((sidecar, path))
 }
 
-/// The failure both writers share: a clip is on disk and the provenance
-/// beside it is not. Name the file — the next run would otherwise just hit
-/// the name collision with no idea why.
 fn orphaned(e: &BoxErr, asset: &Path, cmd: &str) -> BoxErr {
     format!(
         "{e} (the clip landed at {} but has no sidecar; re-run the {cmd} with --force)",
@@ -501,8 +410,6 @@ fn orphaned(e: &BoxErr, asset: &Path, cmd: &str) -> BoxErr {
     .into()
 }
 
-/// The tail both writers share: one JSON value, or a headline over the
-/// aligned body.
 fn finish_clip(
     cli: &Cli,
     headline: &str,
@@ -519,11 +426,6 @@ fn finish_clip(
     Ok(())
 }
 
-/// The encode knobs `cut` and `compose export` write with: the factory's
-/// committed `params.toml` `[build]` section, read through the merge the
-/// factory itself uses. A slice or a flattened composition is the same
-/// kind of asset `import` produces, so its cadence and level come from the
-/// same place rather than from a constant that can drift away from it.
 fn export_options() -> Result<ExportOptions, BoxErr> {
     let params = auto_ascii_factory::effective_params(None, None, None)?;
     let keyframe_ivl = u8::try_from(params.build.keyframe_ivl).map_err(|_| {
@@ -535,8 +437,6 @@ fn export_options() -> Result<ExportOptions, BoxErr> {
     Ok(ExportOptions { keyframe_ivl, zstd_level: params.build.zstd_level })
 }
 
-/// `cut`'s flags, borrowed out of the clap enum for the same reason
-/// [`ImportArgs`] is.
 struct CutArgs<'a> {
     clip: &'a str,
     in_spec: &'a str,
@@ -545,9 +445,6 @@ struct CutArgs<'a> {
     force: bool,
 }
 
-/// `cut` is an export of a ONE-CLIP composition (PLAN-M6-M8 §3), so the
-/// slice is the same bytes the composition would have played: planes are
-/// copied out of the source, never re-derived, and no ffmpeg is involved.
 fn cmd_cut(cli: &Cli, home: &Home, args: &CutArgs<'_>) -> Result<(), BoxErr> {
     home.create()?;
     let from_path = home.resolve_clip(args.clip)?;
@@ -568,22 +465,12 @@ fn cmd_cut(cli: &Cli, home: &Home, args: &CutArgs<'_>) -> Result<(), BoxErr> {
     clip.in_secs = in_secs;
     clip.out_secs = Some(out_secs);
     let mut comp = auto_ascii::Composition::from_clips(name.clone(), vec![clip]);
-    // Validated BEFORE anything on disk moves: a slice past the end of the
-    // asset must leave the clip it would have replaced exactly as it was,
-    // provenance included.
     comp.resolve()?;
     let opts = export_options()?;
-    // `export` is atomic (`<out>.part` + rename), which is what makes this
-    // safe to point straight at `library/`: a failed `--force` leaves the
-    // clip already there intact, and a half-written file never shows up in
-    // `list`.
     auto_ascii::compose::export(&comp, &asset, &opts)?;
 
-    // Only NOW does the old provenance go (see `retire_provenance`).
     retire_provenance(&asset)?;
     let from = clip_ref(home, &from_path);
-    // The `asset` block is read back off the header, exactly like `list`
-    // and `info` read it, so it describes the file that actually landed.
     let (sidecar, sidecar_path) = record(
         &name,
         Source::cut(from.clone(), in_secs, out_secs),
@@ -613,8 +500,6 @@ fn cmd_list(cli: &Cli, home: &Home) -> Result<(), BoxErr> {
         "name", "duration", "fps", "frames", "bytes"
     );
     for c in &clips {
-        // An entry we could not read keeps its row and fills the numbers
-        // with `?`; the last column carries the reason instead of a source.
         let (duration, fps, frames, bytes) = match &c.asset {
             Some(a) => (
                 timecode::format_mmss(a.duration_secs),
@@ -636,8 +521,6 @@ fn cmd_list(cli: &Cli, home: &Home) -> Result<(), BoxErr> {
 
 fn cmd_info(cli: &Cli, home: &Home, clip: &str) -> Result<(), BoxErr> {
     let path = home.resolve_clip(clip)?;
-    // The stem verbatim, so `info` and `list` name the same file the same
-    // way; naming one clip is strict, unlike listing all of them.
     let sidecar = library::describe(&stem_of(&path), &path)?;
     if cli.json {
         outln!("{}", serde_json::to_string(&sidecar)?);
@@ -650,11 +533,6 @@ fn cmd_info(cli: &Cli, home: &Home, clip: &str) -> Result<(), BoxErr> {
 
 fn cmd_compose_new(cli: &Cli, home: &Home, name: &str) -> Result<(), BoxErr> {
     home.create()?;
-    // Kebab-cased on the way in, like `import --name`: it is the naming
-    // rule, and it is also why no name can write outside `compositions/`.
-    // The folder's own extension comes off first, so `compose new
-    // demo.toml` starts `demo.toml` rather than `demo-toml.toml` — the
-    // same rule the resolvers apply on the way back.
     let name = kebab_case(library_name(name, "toml"));
     if name.is_empty() {
         return Err("a composition name needs at least one alphanumeric".into());
@@ -672,7 +550,6 @@ fn cmd_compose_new(cli: &Cli, home: &Home, name: &str) -> Result<(), BoxErr> {
     Ok(())
 }
 
-/// `compose add`'s flags, borrowed out of the clap enum.
 struct AddArgs<'a> {
     name: &'a str,
     clip: &'a str,
@@ -684,8 +561,6 @@ struct AddArgs<'a> {
 fn cmd_compose_add(cli: &Cli, home: &Home, args: &AddArgs<'_>) -> Result<(), BoxErr> {
     let path = home.resolve_composition(args.name)?;
     let clip = home.resolve_clip(args.clip)?;
-    // Parsed here for the error and for the JSON; WRITTEN verbatim, so the
-    // file keeps the timestamp the agent typed.
     let in_secs = parse_time(args.in_spec, "--in")?;
     let out_secs = parse_time(args.out_spec, "--out")?;
     let at_secs = parse_time(args.at_spec, "--at")?;
@@ -700,11 +575,6 @@ fn cmd_compose_add(cli: &Cli, home: &Home, args: &AddArgs<'_>) -> Result<(), Box
         .into());
     }
     let asset = clip_ref(home, &clip);
-    // Resolve the composition this WOULD be before touching the file: a
-    // trim the timeline rejects, a `<clip>` that is not an ASCI asset, or
-    // a table above that no longer parses must fail with the file exactly
-    // as it was. An `add` that exits 1 having appended anyway is the one
-    // way this command could lie to an agent.
     let existing = auto_ascii::Composition::from_toml_file(&path, Some(&home.library()))?;
     let mut clips = existing.clips().to_vec();
     clips.push(auto_ascii::Clip {
@@ -768,7 +638,6 @@ fn cmd_compose_show(cli: &Cli, home: &Home, name: &str) -> Result<(), BoxErr> {
 }
 
 fn cmd_compose_play(cli: &Cli, name: &str) -> Result<(), BoxErr> {
-    // Refused before the home folder is resolved, exactly as `play` does.
     if cli.json {
         return Err(PLAY_IS_INTERACTIVE.into());
     }
@@ -777,7 +646,6 @@ fn cmd_compose_play(cli: &Cli, name: &str) -> Result<(), BoxErr> {
     play_composition(&path)
 }
 
-/// `compose export`'s flags, borrowed out of the clap enum.
 struct ExportArgs<'a> {
     name: &'a str,
     out: Option<&'a Path>,
@@ -833,40 +701,24 @@ fn cmd_compose_export(cli: &Cli, home: &Home, args: &ExportArgs<'_>) -> Result<(
     Ok(())
 }
 
-/// Parse a composition file and resolve its timeline, with the home
-/// `library/` as the folder a bare `asset` name looks in — the CLI always
-/// knows which home it is working in, so it never falls back to the
-/// environment sniff `Composition::default_library_dir` does.
 fn open_composition(home: &Home, path: &Path) -> Result<auto_ascii::Composition, BoxErr> {
     let mut comp = auto_ascii::Composition::from_toml_file(path, Some(&home.library()))?;
     comp.resolve()?;
     Ok(comp)
 }
 
-/// `PlayerBuilder::build` parses the file and reads every clip's header
-/// before any terminal state changes, so a broken composition fails as a
-/// plain error here — the same promise `play <clip>` keeps by describing
-/// the asset first.
 fn play_composition(path: &Path) -> Result<(), BoxErr> {
     auto_ascii::Player::builder().composition(path).build()?.run()?;
     Ok(())
 }
 
 fn cmd_play(cli: &Cli, target: &str) -> Result<(), BoxErr> {
-    // Refused before anything else, and long before a terminal session:
-    // the player OWNS stdout for the whole run, so no JSON printed around
-    // it could ever be the only value there. Saying so beats emitting a
-    // document an agent would have to dig out of an animation.
     if cli.json {
         return Err(PLAY_IS_INTERACTIVE.into());
     }
     let home = Home::resolve()?;
     match home.resolve_playable(target)? {
         Target::Clip(path) => {
-            // Read the HEADER before taking over the terminal: a bad asset
-            // should fail as a plain error, not as a dead alternate screen.
-            // Only the header — a clip whose sidecar is truncated or
-            // hand-written still plays, because provenance is not the film.
             library::asset_info(&path)?;
             auto_ascii::Player::builder().asset(&path).build()?.run()?;
             Ok(())
@@ -879,7 +731,6 @@ fn cmd_agent_guide(cli: &Cli) -> Result<(), BoxErr> {
     if cli.json {
         outln!("{}", serde_json::json!({ "guide": AGENT_GUIDE }));
     } else {
-        // out!, not outln!: the file ends with its own newline.
         out!("{AGENT_GUIDE}");
     }
     Ok(())
@@ -901,19 +752,14 @@ fn cmd_home(cli: &Cli, home: &Home) -> Result<(), BoxErr> {
     Ok(())
 }
 
-/// Parse one OPTIONAL time argument (`--ss`, `--t`, `compose add`'s
-/// three) through the facade's shared grammar.
 fn parse_time(spec: Option<&str>, flag: &str) -> Result<Option<f64>, BoxErr> {
     spec.map(|s| parse_one_time(s, flag)).transpose()
 }
 
-/// The same for a REQUIRED one (`cut --in`/`--out`), naming the flag in
-/// the error the way clap would have.
 fn parse_one_time(spec: &str, flag: &str) -> Result<f64, BoxErr> {
     timecode::parse(spec).map_err(|e| format!("{flag} {spec:?}: {e}").into())
 }
 
-/// Now, as seconds since the Unix epoch — the sidecar's `created_unix`.
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -921,9 +767,6 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// The `compose show` table: one row per clip in TIMELINE order with its
-/// place on the composition, a `GAP` row wherever nothing plays, and an
-/// `OVERLAP` note on a clip that covers an earlier one.
 fn print_timeline(report: &composition::Report) {
     let clips = report.clips.len();
     outln!(
@@ -962,7 +805,6 @@ fn print_timeline(report: &composition::Report) {
                     fps_text(c.fps)
                 );
             }
-            // A gap has no clip, no trim and no rate: it plays black.
             composition::Row::Gap(gap) => outln!(
                 "  {:>3}  {:<w$}  {:>7.2}  {:>7.2}",
                 "-", "GAP", gap.start_secs, gap.end_secs
@@ -971,8 +813,6 @@ fn print_timeline(report: &composition::Report) {
     }
 }
 
-/// The aligned body shared by `import` and `info` (the factory's `inspect`
-/// column style: two spaces, a 14-wide label, the value).
 fn print_clip_body(sidecar: &Sidecar) {
     if let Some(a) = &sidecar.asset {
         outln!("  {:<14}{}", "asset:", a.path);
@@ -992,15 +832,12 @@ fn print_clip_body(sidecar: &Sidecar) {
     match &sidecar.source {
         Some(Source::Video { path, sha256, bytes }) => {
             outln!("  {:<14}{}", "source:", path);
-            // A partial sidecar describes what it knows; the rest says so
-            // rather than going missing.
             match bytes {
                 Some(n) => outln!("  {:<14}{n} ({})", "source bytes:", human_bytes(*n)),
                 None => outln!("  {:<14}{}", "source bytes:", library::UNKNOWN),
             }
             outln!("  {:<14}{}", "source sha:", sha256.as_deref().unwrap_or(library::UNKNOWN));
         }
-        // A cut's provenance is the slice, so it fits on the one line.
         Some(cut @ Source::Cut { .. }) => outln!("  {:<14}{}", "source:", cut.summary()),
         None => outln!("  {:<14}(none: no sidecar beside this asset)", "source:"),
     }
@@ -1009,8 +846,6 @@ fn print_clip_body(sidecar: &Sidecar) {
     }
 }
 
-/// `30`, not `30.000`, when the rate is whole — which it is for every asset
-/// the factory writes (fps_den is 1).
 fn fps_text(fps: f64) -> String {
     if (fps - fps.round()).abs() < 1e-9 {
         format!("{}", fps.round() as u64)
@@ -1019,7 +854,6 @@ fn fps_text(fps: f64) -> String {
     }
 }
 
-/// Binary-prefix sizes, like the factory's `inspect` report.
 fn human_bytes(n: u64) -> String {
     const KIB: f64 = 1024.0;
     let v = n as f64;
@@ -1045,9 +879,6 @@ mod tests {
         assert!(err.contains("bad timestamp component"), "{err}");
     }
 
-    /// The knobs a slice is written with come from the factory's params,
-    /// not from a constant beside them: `cut`, `compose export` and
-    /// `import` are all supposed to produce the same kind of asset.
     #[test]
     fn export_knobs_come_from_the_factory_params() {
         let opts = export_options().expect("the committed params load");
@@ -1066,10 +897,6 @@ mod tests {
         assert_eq!(human_bytes(1024 * 1024 * 3 / 2), "1.5 MiB");
     }
 
-    /// The embedded guide IS the committed file (include_str!), so the only
-    /// thing to pin is that it is the guide and that it stayed short — 80
-    /// lines at M8, up from M7's 60 for `cut` and the five `compose …`
-    /// subcommands (PLAN-M6-M8 §3).
     #[test]
     fn agent_guide_is_embedded_and_short() {
         assert!(AGENT_GUIDE.starts_with("# auto-ascii for agents\n"), "{AGENT_GUIDE:.40}");
