@@ -450,7 +450,7 @@ def spawn_player(player: Path, asset: Path) -> tuple[int, int]:
                       "TMUX", "SSH_CONNECTION", "SSH_TTY"):
                 env.pop(k, None)
             os.execve(str(player), [str(player), str(asset), "--loop", "--no-cache"], env)
-        except Exception:
+        except Exception:  # noqa: BLE001 — child must never unwind into the harness
             os._exit(127)
     os.set_blocking(master, False)
     return pid, master

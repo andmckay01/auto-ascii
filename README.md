@@ -44,8 +44,8 @@ in a Linux console, at 320×90 in a GPU terminal, and inside your own renderer.
 dropped (`headless-dump` example). In a terminal every cell also carries the
 source's color.</sub>
 
-The workspace is all Rust. It has a library (`auto-ascii`), two engine
-binaries (`auto-ascii-factory` and `auto-ascii-player`), and the `auto-ascii`
+The Rust workspace, supported by Python tools, has a library (`auto-ascii`),
+two engine binaries (`auto-ascii-factory` and `auto-ascii-player`), and the `auto-ascii`
 CLI, which files clips in a library folder and stitches them into
 compositions. The factory runs ffmpeg as a subprocess; the player links no
 video codecs.
@@ -127,17 +127,18 @@ them is the clip name, the active codec, whether the settings are saved, and
 the grid size (`213x58 cells`).
 
 **Zoom out for detail.** The asset is resolution-independent, so a smaller
-terminal font means more cells and a sharper picture. Cmd - (Ctrl - off macOS)
-is the cheapest detail you can get. The player can't change the font itself
+terminal font means more cells and a sharper picture. Use your terminal's
+zoom-out shortcut (often Cmd - on macOS; bindings vary by terminal). The
+player can't change the font itself
 ([docs/research/zoom.md](docs/research/zoom.md)), so below 160 columns the
-overlay says so. From 240 columns the overlay text is drawn in big block
-letters so it stays readable.
+overlay says so. At 240 or more columns and 36 or more rows, on a non-ASCII
+tier, the overlay text is drawn in big block letters so it stays readable.
 
 Useful flags:
 - `--loop`, `--seek 1:30`, `--fps-cap 30`
 - `--codec pixels|letters`
 - `--palette ascii|unicode|braille`, `--tier truecolor|256|16|mono`
-- `--no-query` (skip the capability probe)
+- `--no-query` (skip capability queries)
 - `--font-table NAME|PATH` (tell the player which font your terminal uses)
 
 `auto-ascii-player --help` lists everything.
@@ -170,7 +171,8 @@ timeline. Each clip is placed with `at` and trimmed with `in`/`out`; gaps are
 black and a later clip draws on top. The file is the source of truth, so you
 can write it by hand; `auto-ascii-player demo.toml` plays one directly.
 
-Every command accepts `--json`, which makes stdout exactly one JSON value.
+Every command except interactive `play` and `compose play` accepts `--json`,
+which makes stdout exactly one JSON value.
 [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) (also printed by `auto-ascii
 agent-guide`) documents the folder layout, the JSON shapes and the composition
 schema.

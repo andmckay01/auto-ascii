@@ -130,7 +130,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - Worked examples at 16:9 are frozen as unit tests: 80×24 → 80×23, 213×58 → 206×58, 320×90 is
     an exact fit.
   - Tap tables are pure integer arithmetic and byte-deterministic across platforms.
-  - `reflow_grid` and `HysteresisState::resize` are the only hot-path allocation points.
+  - `reflow_grid` and `HysteresisState::resize` are the only hot-path allocation points, overlay text aside.
 
 ### 5. Glyph codecs: features → glyphs (`pixels`, `letters`)
 - **Does:** turns each cell's features into one glyph plus fg/bg colors. `pixels` (default)
@@ -170,10 +170,11 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Invariants — every temporal discontinuity resets all per-cell state:**
   - a shot change or shadow-lift change (`crates/auto-ascii/src/pipeline.rs`
     `Player::update_levels`, keyed on `(shot, shadow_lift)`);
-  - a digit jump or arrow scrub (`Player::drain_events`);
+  - a digit jump or arrow scrub (`ClipDeck::drain_events`);
   - a resize (`HysteresisState::resize` in `reflow_grid`);
   - any change to the compose params, including a dial turn that moves
     (`Player::set_compose_params`; an equal value is a no-op);
+  - a codec change (`Player::set_codec`) or clip switch (`ClipDeck::activate`);
   - a backward jump in `RenderSession::render` (`Player::reset_temporal_state`).
   After a reset the next frame is a cold start, identical to seeking straight to that frame.
 
@@ -207,7 +208,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   touching the terminal) → `Player::run`, the event loop over `ClipDeck`
   (`crates/auto-ascii/src/deck.rs`). Keys are decoded in
   `crates/auto-ascii/src/pipeline.rs` `drain_backend_events` into a `Drained` record. The clock
-  is `Transport` (`seek_to`, `toggle_pause`, `freeze_target`). Frame selection uses
+  is `Transport` (`seek_to`, `toggle_pause`), with the free function `freeze_target`. Frame selection uses
   `Composition::frame_after`. `RepaintGate` paints a frozen frame once until something changes.
   Timestamps are parsed by `crates/auto-ascii/src/timecode.rs` `parse` (`SS`, `MM:SS`,
   `HH:MM:SS`, fractions allowed).
@@ -224,8 +225,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   asset, and the next time that video comes to the front its dials and codec load.
 - **Code:** `crates/auto-ascii/src/player.rs` `Dial` (`ALL`, `label`, `step`, `max`, `get`,
   `turn`, `param_key`, `set_param`) and `dial_after_cycle` (the first `d` only reveals the
-  readout). `LiveSettings` (`front`, `cycle`, `save`, `status`, `write_info`) tracks the fronted
-  clip, a `--codec` override and the session's `/` choice. `crates/auto-ascii/src/settings.rs`
+  readout). `LiveSettings` (`front`, `turn`, `cycle`, `save`, `status`, `write_info`) tracks the fronted
+  clip, a `--codec` override and the session's `/` and dial choices. `crates/auto-ascii/src/settings.rs`
   `VideoSettings` (`path_for`, `to_toml`, `parse`, `load`, `save`). Shadow lift bends the NORM
   LUT in `crates/auto-ascii/src/pipeline.rs` `build_levels_lut_lifted` / `apply_shadow_lift`.
 - **Invariants:**
@@ -235,9 +236,12 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     counts from the detent above `max()` (`Dial::turn`; `crates/auto-ascii/tests/dials.rs`).
   - Codec precedence: a `/` press this session beats `--codec`, which beats the saved file,
     which beats the default (`pixels`).
+  - Saved dials load per clip until a turn sets the full session compose override; it survives
+    cuts and wraps. A visible dial readout refreshes when the next clip fronts.
   - The settings file is optional per key. Unknown keys and unknown codec names are ignored. It
     is hand-parsed, so the facade takes no TOML dependency for it.
-  - An unreadable settings file plays defaults, and the info row says `unreadable`.
+  - An unreadable settings file falls back to defaults under session/CLI overrides, and the
+    info row says `unreadable`.
 
 ### 10. Overlays: progress, hints, info row, zoom hint, big text
 - **Does:** event-driven on-screen chrome. Nothing is always on.
@@ -285,14 +289,14 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 
 ### 12. The `auto-ascii` CLI and the library folder
 - **Does:** imports videos into a visible home folder, lists and describes them, cuts and
-  stitches them, plays them. Every command has a `--json` mode for agents.
+  stitches them, plays them. Commands other than `play` and `compose play` have a `--json` mode.
 - **User:** `auto-ascii home | import | list | info | cut | compose … | play | agent-guide`.
   The home is `~/auto-ascii` or `$AUTO_ASCII_HOME`, holding `library/`, `compositions/` and
   `exports/`.
 - **Code:** `crates/auto-ascii-cli/src/main.rs` (`Cli`, `Cmd`, `ComposeCmd`, `cmd_import` →
   `auto_ascii_factory::build`, `cmd_cut`, `cmd_list`, `cmd_info`, `cmd_compose_*`, `cmd_play`,
   `emit` / `emit_err`). `crates/auto-ascii-cli/src/home.rs` `Home` (`resolve`, `create`,
-  `resolve_clip`, `resolve_playable`, `kebab_case`, `cut_name`).
+  `resolve_clip`, `resolve_playable`), plus free functions `kebab_case` and `cut_name`.
   `crates/auto-ascii-cli/src/library.rs` `Sidecar`, `Provenance`, `list`, `describe`,
   `write_sidecar`. `crates/auto-ascii-cli/src/composition.rs` `create`, `append_clip`, `report`.
   `docs/AGENT-GUIDE.md` is embedded and printed by `agent-guide`.

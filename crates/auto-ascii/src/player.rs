@@ -158,6 +158,7 @@ fn dial_after_cycle(idx: usize, presses: u32, readout_up: bool) -> usize {
 struct LiveSettings {
     forced: Option<Codec>,
     session: Option<Codec>,
+    session_compose: Option<ComposeParams>,
     fronted: Option<usize>,
     clip_name: String,
     saved: Option<VideoSettings>,
@@ -172,6 +173,7 @@ impl LiveSettings {
         LiveSettings {
             forced,
             session: None,
+            session_compose: None,
             fronted: None,
             clip_name: String::new(),
             saved: None,
@@ -198,7 +200,7 @@ impl LiveSettings {
             }
         };
         let start = self.saved.unwrap_or_default();
-        self.compose = start.compose;
+        self.compose = self.session_compose.unwrap_or(start.compose);
         self.codec = self.session.or(self.forced).unwrap_or(start.codec);
         true
     }
@@ -208,6 +210,11 @@ impl LiveSettings {
             self.codec = self.codec.next();
         }
         self.session = Some(self.codec);
+    }
+
+    fn turn(&mut self, dial: Dial, steps: i32) {
+        dial.turn(&mut self.compose, steps);
+        self.session_compose = Some(self.compose);
     }
 
     fn save(&mut self, path: &Path) {
@@ -606,6 +613,10 @@ impl Player {
     /// video's settings (`<asset>.player.toml`, loaded whenever the video
     /// fronts); space freezes the picture and resumes it from the frozen
     /// frame (jumps and scrubs still work while frozen, and stay frozen).
+    /// Saved dials load per clip until the first dial turn. That turn keeps
+    /// the full current compose settings for this session across cuts and
+    /// wraps, overriding later clips' saved dials, just as `/` keeps its
+    /// codec choice. Saving writes only the current clip's settings.
     /// Every seek flashes a bottom-row progress overlay that auto-hides
     /// after ~1 s. A key-hints row sits above it whenever an overlay is up,
     /// for the first few seconds of playback, and for as long as `v` pins it
@@ -711,7 +722,7 @@ impl Player {
                 }
                 let dial = Dial::ALL[dial_idx];
                 if drained.dial_delta != 0 {
-                    dial.turn(&mut live.compose, drained.dial_delta);
+                    live.turn(dial, drained.dial_delta);
                     deck.set_compose_params(live.compose);
                 }
                 deck.set_dial_overlay(Some((dial.label(), dial.get(&live.compose), dial.max())));
@@ -762,6 +773,10 @@ impl Player {
             {
                 deck.set_compose_params(live.compose);
                 deck.set_codec(live.codec);
+                if dial_until.is_some() {
+                    let dial = Dial::ALL[dial_idx];
+                    deck.set_dial_overlay(Some((dial.label(), dial.get(&live.compose), dial.max())));
+                }
             }
             live.write_info(&mut info);
             deck.set_info_overlay(Some(&info));
@@ -1117,6 +1132,29 @@ mod tests {
         live.front(1, &b);
         assert_eq!(live.saved, Some(VideoSettings { compose: ComposeParams::default(), codec: Codec::Pixels }));
         assert!(live.problems.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dial_turns_override_saved_values_across_cuts_and_wraps() {
+        let (dir, a, b) = two_clip_dir("dial-cuts");
+        let mut live = LiveSettings::new(None);
+        live.front(0, &a);
+        live.turn(Dial::ShadowLift, 1);
+        live.turn(Dial::EdgeStrength, -2);
+        live.turn(Dial::Hysteresis, 2);
+        let turned = live.compose;
+        assert_eq!(turned.shadow_lift, 80);
+        for (idx, path) in [(1, &b), (0, &a), (1, &b)] {
+            assert!(live.front(idx, path));
+            assert_eq!(live.compose, turned, "session dials survive cuts and wrap");
+            assert_eq!(live.status(), "s to save");
+        }
+        live.save(&b);
+        assert_eq!(VideoSettings::load(&b).unwrap().unwrap().compose, turned);
+        assert_eq!(VideoSettings::load(&a).unwrap().unwrap().compose.shadow_lift, 64);
+        live.front(0, &a);
+        assert_eq!(live.compose, turned, "saving does not clear the session override");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

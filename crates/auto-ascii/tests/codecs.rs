@@ -139,6 +139,45 @@ fn slash_and_s_surface_through_the_event_queue() {
 }
 
 #[test]
+fn letters_fade_to_black_without_a_shadow_plane() {
+    let levels = [120, 80, 40, 32, 0, 0, 0, 0, 120, 40, 0];
+    let opts = WriterOptions {
+        base_w: W as u16,
+        base_h: H as u16,
+        plane_ids: vec![plane_id::Y],
+        zstd_level: 3,
+        ..WriterOptions::default()
+    };
+    let meta = Meta { factory_version: "fade-test".into(), source: "synthetic".into(), palette_hints: vec![] };
+    let mut writer = AsciiWriter::new(Cursor::new(Vec::new()), opts, &meta).unwrap();
+    for n in levels {
+        writer.write_frame(&[PlaneRef { id: plane_id::Y, data: &vec![n; W * H] }]).unwrap();
+    }
+    let bytes = writer.finish().unwrap().into_inner();
+    for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
+        for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
+            for hyst in [160, 255] {
+                let mut p = Player::new(AsciiReader::open(&bytes).unwrap(), 2.0, true, color, tier).unwrap();
+                p.set_codec(Codec::Letters);
+                p.set_compose_params(auto_ascii_core::ComposeParams { idx_hyst_q8: hyst, ..Default::default() });
+                let mut backend = SimBackend::new(80, 24);
+                p.reflow(&mut backend, 80, 24);
+                for (frame, n) in levels.into_iter().enumerate() {
+                    p.render_present(&mut backend, frame as u32).unwrap();
+                    backend.take_output();
+                    let lit = p.grid().as_slice().iter().any(|c| c.glyph() != ' ');
+                    if n == 0 {
+                        assert!(!lit, "black frame {frame}: {tier:?}, {color:?}, hysteresis {hyst}");
+                    } else if frame == 0 || frame == 8 {
+                        assert!(lit, "the sequence must warm visible glyphs before black");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn codec_switch_is_a_cold_start_and_pixels_comes_back_exactly() {
     let asset = full_asset();
     for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks] {

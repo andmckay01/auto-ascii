@@ -1,3 +1,6 @@
+//! Dump cell glyphs from an asset or composition without opening a terminal.
+//! Accepts a frame count, grid size, codec, palette and starting frame.
+
 use std::io::Write;
 
 use auto_ascii::{Cell, Codec, Grid, PaletteChoice, RenderSession};

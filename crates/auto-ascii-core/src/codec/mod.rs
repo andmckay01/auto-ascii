@@ -7,7 +7,7 @@
 //! | codec | module | looks like |
 //! |---|---|---|
 //! | `pixels` | [`pixels`] | the three-layer compositor: tier ramps, half-blocks and quadrants on Unicode tiers — a low-res picture |
-//! | `letters` | [`letters`] | printable characters ordered by ink, directional ASCII strokes on edges, `▓`/`█` only for the densest fill |
+//! | `letters` | [`letters`] | printable characters ordered by ink, directional ASCII strokes on edges, `█` for near-white cells and `▀`/`▄` for lit halves on block tiers |
 //!
 //! Every codec reads the same [`CellInputs`] through the same NORM LUT and
 //! the same [`PaletteSet`] (the palette selection still tells a codec which

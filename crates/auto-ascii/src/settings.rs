@@ -34,6 +34,29 @@ use crate::player::Dial;
 /// Suffix that replaces the asset's extension: `clip.ascii` → `clip.player.toml`.
 pub const EXTENSION: &str = "player.toml";
 
+// This line-based subset accepts both TOML string quote styles. A hash
+// inside a string (including after an escaped quote) is part of its value.
+fn without_comment(line: &str) -> &str {
+    let mut quote = None;
+    let mut escaped = false;
+    for (i, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if quote == Some('"') && ch == '\\' {
+            escaped = true;
+        } else if Some(ch) == quote {
+            quote = None;
+        } else if quote.is_none() {
+            match ch {
+                '"' | '\'' => quote = Some(ch),
+                '#' => return &line[..i],
+                _ => {}
+            }
+        }
+    }
+    line
+}
+
 /// What one video's settings file holds. `compose` carries the dial fields
 /// (see [`Dial::param_key`]); its other fields are always the defaults — they
 /// are not viewer-adjustable, so they are neither written nor read.
@@ -73,8 +96,8 @@ impl VideoSettings {
     pub fn parse(text: &str) -> Result<VideoSettings, String> {
         let mut out = VideoSettings::default();
         for (ln, raw) in text.lines().enumerate() {
-            let line = raw.trim();
-            if line.is_empty() || line.starts_with('#') {
+            let line = without_comment(raw).trim();
+            if line.is_empty() {
                 continue;
             }
             let err = |m: String| format!("line {}: {m}", ln + 1);
@@ -83,7 +106,7 @@ impl VideoSettings {
             };
             let (key, val) = (key.trim(), val.trim());
             if key == "codec" {
-                let name = val.trim_matches('"');
+                let name = val.trim_matches(['"', '\'']);
                 out.codec = Codec::from_name(name).unwrap_or_default();
             } else if let Some(dial) = Dial::ALL.into_iter().find(|d| d.param_key() == key) {
                 let v: u8 = val
@@ -119,7 +142,7 @@ impl VideoSettings {
     /// [`Error::Io`] when the folder is not writable.
     pub fn save(&self, asset: &Path) -> Result<PathBuf, Error> {
         let path = VideoSettings::path_for(asset);
-        let tmp = path.with_extension(format!("{EXTENSION}.tmp"));
+        let tmp = path.with_extension("toml.tmp");
         let io = |source| Error::Io { path: path.clone(), source };
         std::fs::write(&tmp, self.to_toml()).map_err(io)?;
         std::fs::rename(&tmp, &path).map_err(io)?;
@@ -169,6 +192,25 @@ mod tests {
         for bad in ["shadow_lift = 300", "shadow_lift = x", "shadow_lift"] {
             let e = VideoSettings::parse(bad).unwrap_err();
             assert!(e.starts_with("line 1:"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn trailing_comments_preserve_codec_and_numeric_values() {
+        let s = VideoSettings::parse(
+            "codec = \"letters\" # favorite\nshadow_lift = 64 # brighter\n\
+             edge_t_on = 40 # less edge\nidx_hyst_q8 = 96 # responsive\n\
+             future = 'a # value' # ignored\n",
+        ).unwrap();
+        assert_eq!(s.codec, Codec::Letters);
+        assert_eq!((s.compose.shadow_lift, s.compose.edge_t_on, s.compose.idx_hyst_q8), (64, 40, 96));
+        let old = VideoSettings::parse("shadow_lift = 64 # old file\nfuture = 1 # ignored").unwrap();
+        assert_eq!((old.codec, old.compose.shadow_lift), (Codec::Pixels, 64));
+        assert_eq!(VideoSettings::parse("codec = 'letters' # literal").unwrap().codec, Codec::Letters);
+        assert_eq!(VideoSettings::parse("codec = \"letters#future\" # unknown").unwrap().codec, Codec::Pixels);
+        for value in [r#""a # value""#, r#"'a # value'"#, r#""a \" # value""#, r#""a \\""#] {
+            let line = format!("future = {value} # comment");
+            assert_eq!(without_comment(&line).trim_end(), format!("future = {value}"));
         }
     }
 

@@ -1,3 +1,5 @@
+#![cfg(feature = "terminal")]
+
 use std::io::Cursor;
 
 use auto_ascii::Dial;

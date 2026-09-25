@@ -1,3 +1,6 @@
+//! Render frames into a caller-owned loop without a terminal session.
+//! Run with an asset path; `draw` demonstrates consuming the cell grid.
+
 use std::time::Duration;
 
 use auto_ascii::{Cell, Grid, PaletteChoice, RenderSession};

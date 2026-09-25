@@ -2318,18 +2318,16 @@ facade surface + this hidden module.)
     `= - _ | / \` by orientation bin with pixels' own near-white veto, one
     junction glyph `X` (in no ramp table), `█` only for near-white cells on
     block tiers (on at 236, held to 208) and `▀`/`▄` for a lit half from ramp
-    step 10 up there; below one step of the tier's pixels ramp a cell is
-    blank, like pixels. A half variant is drawn at its LIT half's tone (the
-    held "ink tone"), not the mean's, which drew a lit strip as `'` and
-    `"`. Color is the same chroma sample with a ≤1.5× value gain (a glyph
+    step 10 up there; below the fixed tone floor of 32 a cell is
+    blank and clears its held tone, including without a shadow plane. A half
+    variant is drawn at its LIT half's tone (the held "ink tone"), not the
+    mean's, which drew a lit strip as `'` and `"`. Color is the same chroma sample with a ≤1.5× value gain (a glyph
     inks a fifth of its cell). Stability: letters holds the DISPLAYED
-    luma with a deadband of 13/8 × `idx_hyst_q8` of a pixels step (the
-    tier's `PaletteSet.base.len()`) instead of `hysteresis_idx` — its steps
-    are a third the width, and a per-step band flickered ~2× pixels; measured
-    glyph switches/cell/s now sit within ±3.5% of pixels on dark, bright,
-    face and high-motion clips at 120x40 and 200x56 (below pixels on the
-    ASCII tier). The player: `/` (`Drained.codec_cycle`, counted) cycles
-    `Codec::ALL` live, a cold start in the new codec; `s` (`Drained.save`,
+    luma with a deadband of `13/8 × idx_hyst_q8 / 8` tone units on every
+    tier, independent of the pixels palette. This preserves the original
+    eight-step ASCII hold scale; its former per-tier measurements no longer
+    describe the other tiers. The player: `/` (`Drained.codec_cycle`, counted)
+    cycles `Codec::ALL` live, a cold start in the new codec; `s` (`Drained.save`,
     collapsed) saves the dials and codec for the clip on top. The controls
     overlay gained an info row on `rows-3` (`draw_info_overlay`, printable
     ASCII, non-ASCII → `?`) — ` <clip stem>   codec: <name>   settings:
@@ -2338,8 +2336,8 @@ facade surface + this hidden module.)
     precedence when a clip fronts (`player::LiveSettings`): the session's
     last `/` pick, else `--codec`, else the video's saved codec, else pixels
     — so `/` survives composition cuts. A sidecar that will not parse plays
-    defaults, shows `unreadable`, and is reported on stderr after the
-    session; a bare `codec = letters` is accepted. The hints row lists
+    defaults under session/CLI overrides, shows `unreadable`, and is reported
+    on stderr after the session; a bare `codec = letters` is accepted. The hints row lists
     `/ codec` and `s save` and drops them FIRST, so at 80 columns it
     is the M6 row byte for byte. **Per-video settings did not exist before
     this**; they are `<asset>.player.toml` beside the asset (the CLI's
@@ -2349,9 +2347,11 @@ facade surface + this hidden module.)
     names, one per `Dial` (`Dial::param_key/param/set_param`) plus `codec =
     "name"`; every key optional (a file without `codec` plays `pixels`),
     unknown keys and unknown codec names ignored, malformed values an
-    error (the player then shows `unreadable` and uses defaults). They load
-    as each clip fronts (a stitch re-tunes at the cut; a gap keeps what was
-    showing). Tests: `codec::tests` (registry), `codec::letters::tests`,
+    error (the player shows `unreadable` and falls back to defaults under
+    session/CLI overrides). They load as each clip fronts until a dial is turned; the full turned compose
+    settings then override saved dials across cuts and wraps for the session,
+    just as `/` keeps its codec choice. A gap keeps what was showing. Tests:
+    `codec::tests` (registry), `codec::letters::tests`,
     `auto-ascii-core/tests/codec_props.rs` (letters repertoire over random
     planes on every tier; pixels-through-registry ≡ plain path),
     `auto-ascii/tests/codecs.rs` (`/`/`s` via the event queue, cold-start

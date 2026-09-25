@@ -24,7 +24,8 @@
 //!
 //! **Design constants.** The glyph tables and the handful of thresholds
 //! below (`LETTERS_FILL_MIN`, `FILL_HOLD`, `HALF_BLOCK_MIN_IDX`,
-//! `HALF_HOLD_Q8`, `INK_GAIN_Q8`, the deadband factor in `held_tone`) are
+//! `HALF_HOLD_Q8`, `INK_GAIN_Q8`, `TONE_STEPS`, `BLACK_FLOOR`,
+//! the deadband factor in `held_tone`) are
 //! this codec's DATA, in the same sense as the palettes in `palette.rs`: they
 //! define what `letters` looks like and are pinned by its unit tests and
 //! goldens. What a viewer or the eval sweep tunes stays in `ComposeParams`
@@ -94,6 +95,11 @@ const HALF_HOLD_Q8: u16 = 160;
 
 const INK_GAIN_Q8: u32 = 384;
 
+// Fixed tone scale: preserve the eight-step ASCII look on every tier.
+// The pixels palette must not change letters' black floor or deadband.
+const TONE_STEPS: u16 = 8;
+const BLACK_FLOOR: u8 = (256 / TONE_STEPS) as u8;
+
 #[inline]
 fn ink(c: Rgb) -> Rgb {
     let m = c.r.max(c.g).max(c.b) as u32;
@@ -106,8 +112,8 @@ fn ink(c: Rgb) -> Rgb {
 }
 
 #[inline]
-fn held_tone(n: u8, prev: u8, hyst_q8: u8, ref_len: u8) -> u8 {
-    let band = (hyst_q8 as u16 * 13 / 8 / ref_len.max(1) as u16) as u8;
+fn held_tone(n: u8, prev: u8, hyst_q8: u8) -> u8 {
+    let band = (hyst_q8 as u16 * 13 / 8 / TONE_STEPS) as u8;
     let h = if prev == IDX_UNSET || n.abs_diff(prev) > band { n } else { prev };
     h.min(IDX_UNSET - 1)
 }
@@ -152,10 +158,10 @@ impl GlyphCodec for Letters {
         let half = half_variant(lt, lb, params.halfblock_min_delta, &mut s.flags);
         let ink_tone = if half == HALF_NONE { n } else { lt.max(lb) };
         let prev = if half == was_half { s.idx } else { IDX_UNSET };
-        let h = if deep_shadow {
+        let h = if deep_shadow || ink_tone < BLACK_FLOOR {
             0
         } else {
-            held_tone(ink_tone, prev, params.idx_hyst_q8, set.base.len())
+            held_tone(ink_tone, prev, params.idx_hyst_q8)
         };
         s.idx = h;
         let dense = set.halfblock
@@ -167,7 +173,7 @@ impl GlyphCodec for Letters {
             s.flags &= !WAS_FILL;
         }
         let len = LETTERS_RAMP.len() as u8;
-        let black = h < (256 / set.base.len() as u16) as u8;
+        let black = h < BLACK_FLOOR;
         let idx = if black {
             0
         } else {
@@ -336,7 +342,7 @@ mod tests {
     #[test]
     fn tone_deadband_holds_small_wobble() {
         let (_, uni) = sets();
-        let band = held_tone(0, 100, ComposeParams::default().idx_hyst_q8, uni.base.len());
+        let band = held_tone(0, 100, ComposeParams::default().idx_hyst_q8);
         assert_eq!(band, 0, "a 100-unit move always updates");
         let mut st = HysteresisState::new(1, 1);
         let at = |n: u8, st: &mut HysteresisState| glyph(&inp(n, n), &uni, st);
@@ -380,10 +386,29 @@ mod tests {
     #[test]
     fn near_black_is_blank() {
         let (ascii, uni) = sets();
-        for (set, floor) in [(&uni, 256 / uni.base.len() as u16), (&ascii, 256 / ascii.base.len() as u16)] {
-            let f = floor as u8;
+        for set in [&uni, &ascii] {
+            let f = BLACK_FLOOR;
             assert_eq!(cold(&inp(f - 1, f - 1), set), ' ', "just under the floor");
             assert_ne!(cold(&inp(f + 2, f + 2), set), ' ', "just over it");
+        }
+    }
+
+    #[test]
+    fn tone_floor_and_hold_are_independent_of_tier() {
+        let (ascii, _) = sets();
+        for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
+            for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
+                for cols in [40, 100] {
+                    let set = select_palettes(tier, color, cols);
+                    let mut reference = HysteresisState::new(1, 1);
+                    let mut st = HysteresisState::new(1, 1);
+                    for n in [31, 34, 120, 100, 140, 110, 150, 200, 40, 0, 0] {
+                        assert_eq!(glyph(&inp(n, n), &set, &mut st),
+                            glyph(&inp(n, n), &ascii, &mut reference),
+                            "tone {n}, {tier:?}, {color:?}, {cols} cols");
+                    }
+                }
+            }
         }
     }
 
