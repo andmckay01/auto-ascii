@@ -1,4 +1,4 @@
-letters codec, UnicodeBlocks tier, truecolor, 80x24, frame 5
+letters codec, UnicodeBlocks tier, C16, 80x24, frame 5
 |                     ................::::::::::::::;;;;;;;;;;;;;+++++++++++++ccc|
 |        X_____________________________________________________________X++++ccccc|
 |        |█████████████████████████████████████████████████████████████8|+ccccccc|
@@ -7,20 +7,20 @@ letters codec, UnicodeBlocks tier, truecolor, 80x24, frame 5
 |            ...............:::::::::::::::;;;;;;;;;;;;;++++++++++++cccccccccccxx|
 |          ...............;::::::;:::-/-______-\;;;;;;++++++++++++cccccccccccxxxx|
 |        .............:.:;::::;:;:////eGSGSeGSG-\\\;++++++++++++cccccccccccxxxxxx|
-|      .............:.::::::::;:://GGGSGGoGSGGoGSGG\\+++++++++cccccccccccxxxxxxxx|
-|    ..............;::::;::::+://DDDDGGG8GSGGeGSGGeGS\++++++cccccccccccxxxxxxxxxx|
-|  ...............;::::;::::+::|888DDDGGGeGGGGeGGGGSGG|+++cccccccccccxxxxxxxxxxxx|
-|...............::::+::::+::::|BB█████████████GGGSGGGG||ccccccccccccxxxxxxxxxxxnn|
-|.............:::::::::::::::;|MB██████████████DGGGGoGG|ccccccccccxxxxxxxxxxxnnnn|
-|...........:::::::::::::::;;;|MB██████████████DGSGGoGS|ccccccccxxxxxxxxxxxnnnnnn|
-|.........::::::::::+::::+;;;;|BB8███████████GGGGSGGGG|cccccccxxxxxxxxxxxnnnnnnnn|
-|.......::::::::::;::::;;;;;+;;\888DDDGGG8GSGGeGSGGeGS/cccccxxxxxxxxxxxnnnnnnnnnn|
-|.....:::::::::::::;:;;;;;;;;+;;\DDDGGGGDGSGGDGSGGGG//ccccxxxxxxxxxxxnnnnnnnnnnnn|
-|...:::::::::::::::;;;;+;;;;+;;;+\\GGSeGSGSeGSGSeGS/ccccxxxxxxxxxxxnnnnnnnnnnnnnn|
-|..::::::::::::::;;;;;;+;;;;c;+++c+\\\\SeSeoSe--//ccccxxxxxxxxxxxnnnnnnnnnnnnnnnn|
+|      .............:.::::::::;:://GGGSGGGGSGGGGSGG\\+++++++++cccccccccccxxxxxxxx|
+|    ...............:::::::::+://DDDDGGGGGSGGGGSGGeGS\++++++cccccccccccxxxxxxxxxx|
+|  ...............:::::;::::+::|888DDDGGGDG8GGDGGGGSGG|+++cccccccccccxxxxxxxxxxxx|
+|...............::::::::::::::|GG█████████████8GGSGGGG||ccccccccccccxxxxxxxxxxxnn|
+|.............:::::::::::::::;|DG██████████████GGGGGGGG|ccccccccccxxxxxxxxxxxnnnn|
+|...........:::::::::::::::;;;|DG██████████████GGSGGGGS|ccccccccxxxxxxxxxxxnnnnnn|
+|.........::::::::::+::::+;;;;|SG8███████████G8GGDGGGG|cccccccxxxxxxxxxxxnnnnnnnn|
+|.......::::::::::;::::;;;;;+;;\888DDDGGGGG8GGDGSGGeGS/cccccxxxxxxxxxxxnnnnnnnnnn|
+|.....:::::::::::::;:;;;;;;;;+;;\DDDGGGGGGDGGGGSGGGG//ccccxxxxxxxxxxxnnnnnnnnnnnn|
+|...:::::::::::::::;;;;+;;;;+;;;+\\GGSGGSGSDGSGSeGS/ccccxxxxxxxxxxxnnnnnnnnnnnnnn|
+|..::::::::::::::;;;;;;+;;;;c;+++c+\\\\SeSeSSe--//ccccxxxxxxxxxxxnnnnnnnnnnnnnnnn|
 |::::::::::::::;;;;;;;;;;;;++cccc++++++---ccc-ccccccxxxxxxxxxxxnnnnnnnnnn        |
 |::::::::::::;;;;;;;;;;;;;+++++++++++++cccccccccccxxxxxxxxxxxnnnnnnnnnnn         |
 |::::::::::;;;;;;;;;;;;;+++++++++++++cccccccccccxxxxxxxxxxxnnnnnnnnnnnnn         |
 |::::::::;;;;;;;;;;;;;+++++++++++++cccccccccccxxxxxxxxxxxnnnnnnnnnnnnnnn         |
 |                                                                                |
-colors fnv1a64 eb1a1836226967b8
+colors fnv1a64 20fb7688a2b4fc9e

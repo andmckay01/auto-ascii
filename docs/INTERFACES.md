@@ -166,7 +166,8 @@ pub struct RampView;  // &'static glyphs + effective len (per-tier cap, §1b:
                       // the full ramp with exact endpoints
 pub struct PaletteSet { pub base: RampView, pub highlight: RampView,
                         pub edge: &'static EdgeLut, pub halfblock: bool,
-                        pub quadrant: bool, pub braille: bool, pub subpos: bool }
+                        pub quadrant: bool, pub braille: bool, pub subpos: bool,
+                        pub bg_tint: bool }  // True/C256: a dim bg tint survives
 pub fn select_palettes(GlyphTier, ColorDepth, viewport_cols: u16) -> PaletteSet;
 // Key (§1b): C16/Mono → palette 8 base uncapped ("mono longest"); True caps
 // ramps to 8, C256 to 12; Ascii → coarse/fine by density + subpos; unicode
@@ -2397,6 +2398,41 @@ facade surface + this hidden module.)
     picture, every overlay on at 1x1..1000x1000 on both tiers), and
     `resize_fuzz.rs` gained `Op::Overlays`, with the directed corners
     walked with every overlay up.
+    (j) **Letters quality pass** (after the player fixes). Side by side
+    with pixels at 200x56, `letters` lost dark-but-lit faces to brown mush
+    (The Architect f7700) and read far dimmer (Terminator f660): a glyph
+    inks about a fifth of its cell, so the tone lived only in ink coverage
+    on a black background. `PaletteSet` gained `bg_tint` (true on truecolor
+    and 256-color, where a dim background survives quantization; 16-color
+    would snap it to a palette hue and mono drops it), and on those tiers
+    letters colors a cell from the chroma sample scaled by a coverage curve
+    of the tone: `x = (n − 32)/223`, `cov = (x + smoothstep(x))/2`, bg =
+    `0.6·cov·chroma`, glyph fg = `(0.75 + 1.25·cov)·chroma` (so shadow
+    stipple and strokes stay visible), `█` and `▀`/`▄` exactly pixels' own
+    colors. A cell then averages to what pixels draws there: mean luminance
+    of the rendered frame is 1.02–1.06× pixels on six clips (was
+    0.78–0.96×), and midtone bands within about 10%. Also on tinted tiers
+    only (colour carries tone continuously there, so the glyph can hold
+    longer): the tone deadband widened from `13/8` to `5/2 × idx_hyst_q8 /
+    8` and the black floor holds a lit cell down to 16. Glyph switches per
+    cell per second went from 1.40× pixels to 0.99× on truecolor/unicode
+    (90-frame runs, six clips) and from 1.08× to 0.71× on truecolor/ascii.
+    16-color and mono letters are byte-identical to before — black
+    background, ≤1.5× ink gain, `13/8` deadband, hard floor — because there
+    the glyph is the only tone signal: applying the wider band there cut
+    switches to 0.77× pixels (from 1.10×) but left glyphs further from a
+    cold render of the same frame (mean ramp-position gap on Dune 0.049 →
+    0.079, above pixels' 0.046). The glyph repertoire is unchanged. Pixels
+    is byte-identical (goldens, parity and console golden unblessed, and
+    `--sim-dump` streams on four clips × four color tiers × three palettes
+    compared with `cmp`); the two truecolor letters goldens were re-blessed.
+    Tests: `codec::letters::tests` (bg rises with tone and stays black under
+    the floor, the glyph stands off its bg, untinted tiers keep a black bg
+    and the narrow deadband and hard floor, blocks take pixels' pair, the
+    floor hold), `palette::tests::bg_tint_only_where_a_dim_background_survives`,
+    and `auto-ascii/tests/codecs.rs` `letters_goldens_untinted_tiers`
+    (`letters_80x24_unicode_16color.txt`, `letters_80x24_ascii_mono.txt`,
+    blessed from the pre-change build).
 28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
     should take a video from anywhere on the desktop, process it, and land
     it in the folder where the user's processed videos live"). The shape of
