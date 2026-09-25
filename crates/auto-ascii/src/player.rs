@@ -7,7 +7,7 @@
 //! # Ok::<(), auto_ascii::Error>(())
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use std::fmt::Write as _;
@@ -174,6 +174,130 @@ impl Dial {
 fn dial_after_cycle(idx: usize, presses: u32, readout_up: bool) -> usize {
     let advance = presses.saturating_sub(u32::from(!readout_up)) as usize;
     (idx + advance) % Dial::ALL.len()
+}
+
+/// The per-video settings as the run loop lives them: which clip is on top,
+/// what is saved for it, the dials and codec in force, and the info row that
+/// reports them. Split out of [`Player::run`] (which owns the only clock and
+/// hard-wires `AnsiBackend`) so the front-load rules are testable.
+///
+/// Codec precedence when a clip fronts: the viewer's last `/` choice this
+/// session, else the builder's `codec` (`--codec`), else the codec saved for
+/// that video, else the default. A `/` press is therefore never undone at a
+/// composition cut, and it outranks `--codec` from the moment it is made.
+/// The dials always come from the fronted video's saved settings (or the
+/// defaults): they are per video.
+#[derive(Debug)]
+struct LiveSettings {
+    /// The builder's `codec` (`--codec`).
+    forced: Option<Codec>,
+    /// The codec `/` last picked — holds across clip switches.
+    session: Option<Codec>,
+    fronted: Option<usize>,
+    clip_name: String,
+    /// What is on disk for the fronted clip.
+    saved: Option<VideoSettings>,
+    /// A load or save that failed, shown in the info row until the next
+    /// clip switch or successful save.
+    note: Option<&'static str>,
+    /// Every settings failure, printed to stderr once the terminal is back.
+    problems: Vec<String>,
+    compose: ComposeParams,
+    codec: Codec,
+}
+
+impl LiveSettings {
+    fn new(forced: Option<Codec>) -> LiveSettings {
+        LiveSettings {
+            forced,
+            session: None,
+            fronted: None,
+            clip_name: String::new(),
+            saved: None,
+            note: None,
+            problems: Vec::new(),
+            compose: ComposeParams::default(),
+            codec: forced.unwrap_or_default(),
+        }
+    }
+
+    /// Clip `idx` (file `path`) is on top. A clip coming to the front loads
+    /// its saved settings (the defaults when it has none, or when the file
+    /// does not parse — that is reported, not fatal). Returns whether the
+    /// fronted clip changed, i.e. whether the caller must push the new
+    /// dials and codec to the deck.
+    fn front(&mut self, idx: usize, path: &Path) -> bool {
+        if self.fronted == Some(idx) {
+            return false;
+        }
+        self.fronted = Some(idx);
+        self.clip_name = path
+            .file_stem()
+            .map_or_else(|| path.display().to_string(), |s| s.to_string_lossy().into_owned());
+        (self.saved, self.note) = match VideoSettings::load(path) {
+            Ok(s) => (s, None),
+            Err(e) => {
+                self.problem(e.to_string());
+                (None, Some("unreadable"))
+            }
+        };
+        let start = self.saved.unwrap_or_default();
+        self.compose = start.compose;
+        self.codec = self.session.or(self.forced).unwrap_or(start.codec);
+        true
+    }
+
+    /// `presses` of `/`: advance the codec and make it the session's choice.
+    fn cycle(&mut self, presses: u32) {
+        for _ in 0..presses {
+            self.codec = self.codec.next();
+        }
+        self.session = Some(self.codec);
+    }
+
+    /// `s`: save the dials and codec for the fronted clip at `path`.
+    fn save(&mut self, path: &Path) {
+        let current = self.current();
+        match current.save(path) {
+            Ok(_) => (self.saved, self.note) = (Some(current), None),
+            Err(e) => {
+                self.problem(e.to_string());
+                self.note = Some("save failed");
+            }
+        }
+    }
+
+    fn problem(&mut self, msg: String) {
+        if !self.problems.contains(&msg) {
+            self.problems.push(msg);
+        }
+    }
+
+    fn current(&self) -> VideoSettings {
+        VideoSettings { compose: self.compose, codec: self.codec }
+    }
+
+    /// The info row's settings word.
+    fn status(&self) -> &'static str {
+        let current = self.current();
+        self.note.unwrap_or(match self.saved {
+            Some(s) if s == current => "saved",
+            None if current == VideoSettings::default() => "default",
+            _ => "s to save",
+        })
+    }
+
+    /// Rewrite the info row into `out` (a reused buffer).
+    fn write_info(&self, out: &mut String) {
+        out.clear();
+        let _ = write!(
+            out,
+            " {}   codec: {}   settings: {} ",
+            self.clip_name,
+            self.codec.name(),
+            self.status()
+        );
+    }
 }
 
 /// How long the bottom-row progress overlay stays up after a seek before it
@@ -713,17 +837,12 @@ impl Player {
         // The dials open where the pipeline starts: nothing on this path
         // overrides the §3.5 defaults (the eval driver is the only caller
         // that does, and it never builds a terminal Player).
-        let mut compose = ComposeParams::default();
         let mut dial_until: Option<Instant> = None;
-        // Glyph codec (`/` cycles it) and the per-video settings (`s` saves
-        // dials + codec beside the clip; they load as each clip fronts). An
-        // explicit `codec` from the builder wins over a saved one.
-        let mut codec = self.cfg.codec.unwrap_or_default();
-        deck.set_codec(codec);
-        let mut fronted: Option<usize> = None;
-        let mut clip_name = String::new();
-        let mut saved: Option<VideoSettings> = None;
-        let mut settings_note: Option<&'static str> = None; // a load or save that failed
+        // The dials, the glyph codec (`/` cycles it) and the per-video
+        // settings (`s` saves dials + codec beside the clip; they load as
+        // each clip fronts) — see LiveSettings for the precedence rules.
+        let mut live = LiveSettings::new(self.cfg.codec);
+        deck.set_codec(live.codec);
         // `/` and `s` raise the controls overlay for as long as a dial turn
         // does — the info row in it is where their answer shows.
         let mut note_until: Option<Instant> = None;
@@ -788,35 +907,29 @@ impl Player {
                 }
                 let dial = Dial::ALL[dial_idx];
                 if drained.dial_delta != 0 {
-                    dial.turn(&mut compose, drained.dial_delta);
+                    dial.turn(&mut live.compose, drained.dial_delta);
                     // Renderer-only: re-tunes the asset already in memory, no
                     // rebuild. The pipeline resets its hysteresis memory on
                     // the change, so the next frame IS the new position.
-                    deck.set_compose_params(compose);
+                    deck.set_compose_params(live.compose);
                 }
-                deck.set_dial_overlay(Some((dial.label(), dial.get(&compose), dial.max())));
+                deck.set_dial_overlay(Some((dial.label(), dial.get(&live.compose), dial.max())));
                 dial_until = Some(Instant::now() + DIAL_OVERLAY_HIDE_AFTER);
             } else if dial_until.is_some_and(|t| Instant::now() >= t) {
                 deck.set_dial_overlay(None);
                 dial_until = None;
             }
             if drained.codec_cycle > 0 {
-                for _ in 0..drained.codec_cycle {
-                    codec = codec.next();
-                }
+                live.cycle(drained.codec_cycle);
                 // Renderer-only, like a dial: the pipeline resets its
                 // temporal state on the change, so the next frame is a cold
                 // start in the new codec.
-                deck.set_codec(codec);
+                deck.set_codec(live.codec);
             }
             if drained.save
-                && let Some(idx) = fronted
+                && let Some(idx) = live.fronted
             {
-                let current = VideoSettings { compose, codec };
-                match current.save(&self.comp.clips()[idx].path) {
-                    Ok(_) => (saved, settings_note) = (Some(current), None),
-                    Err(_) => settings_note = Some("save failed"),
-                }
+                live.save(&self.comp.clips()[idx].path);
             }
             if drained.codec_cycle > 0 || drained.save {
                 note_until = Some(Instant::now() + DIAL_OVERLAY_HIDE_AFTER);
@@ -860,35 +973,15 @@ impl Player {
             // the defaults): they are per video, so a stitch re-tunes at the
             // cut. A gap keeps whatever was showing.
             if let Some(l) = located
-                && fronted != Some(l.clip_idx)
+                && live.front(l.clip_idx, &self.comp.clips()[l.clip_idx].path)
             {
-                fronted = Some(l.clip_idx);
-                let path = &self.comp.clips()[l.clip_idx].path;
-                clip_name = path.file_stem().map_or_else(
-                    || path.display().to_string(),
-                    |s| s.to_string_lossy().into_owned(),
-                );
-                (saved, settings_note) = match VideoSettings::load(path) {
-                    Ok(s) => (s, None),
-                    Err(_) => (None, Some("unreadable")),
-                };
-                let start = saved.unwrap_or_default();
-                compose = start.compose;
-                codec = self.cfg.codec.unwrap_or(start.codec);
-                deck.set_compose_params(compose);
-                deck.set_codec(codec);
+                deck.set_compose_params(live.compose);
+                deck.set_codec(live.codec);
             }
             // The controls overlay's info row: what is playing, in which
             // codec, and whether that is what is saved for it. Rebuilt in a
             // reused buffer; the deck copies it only when the text changes.
-            let current = VideoSettings { compose, codec };
-            let status = settings_note.unwrap_or(match saved {
-                Some(s) if s == current => "saved",
-                None if current == VideoSettings::default() => "default",
-                _ => "s to save",
-            });
-            info.clear();
-            let _ = write!(info, " {clip_name}   codec: {}   settings: {status} ", codec.name());
+            live.write_info(&mut info);
             deck.set_info_overlay(Some(&info));
             if self.comp.is_stitch() {
                 // Only a composition retimes the row: a plain asset keeps
@@ -936,6 +1029,12 @@ impl Player {
             }
         }
         backend.shutdown();
+        // The session could not say this while it owned the screen: a
+        // settings file that would not parse (the video played on its
+        // defaults) or would not save — say which, now the terminal is back.
+        for problem in &live.problems {
+            eprintln!("auto-ascii-player: settings: {problem}");
+        }
         Ok(())
     }
 }
@@ -1286,6 +1385,75 @@ mod tests {
         // Before the first present there is nothing on screen, so the
         // clock is all there is to freeze on.
         assert_eq!(freeze_target(None, 17), 17);
+    }
+
+    /// Two clips of a stitch, one with saved settings, one without — the
+    /// front-load path `run()` takes at every cut, driven headlessly.
+    fn two_clip_dir(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("auto-ascii-live-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("clip-a.ascii"), dir.join("clip-b.ascii"));
+        std::fs::write(dir.join("clip-a.player.toml"), "codec = \"letters\"\nshadow_lift = 64\n")
+            .unwrap();
+        (dir, a, b)
+    }
+
+    #[test]
+    fn saved_settings_load_per_clip_and_slash_survives_cuts() {
+        let (dir, a, b) = two_clip_dir("cuts");
+        let mut live = LiveSettings::new(None);
+        assert!(live.front(0, &a), "first clip fronts");
+        assert_eq!((live.codec, live.compose.shadow_lift, live.status()), (Codec::Letters, 64, "saved"));
+        assert!(!live.front(0, &a), "same clip again is not a switch");
+        assert!(live.front(1, &b));
+        assert_eq!((live.codec, live.compose, live.status()), (Codec::Pixels, ComposeParams::default(), "default"));
+        let mut info = String::new();
+        live.write_info(&mut info);
+        assert_eq!(info, " clip-b   codec: pixels   settings: default ");
+
+        // `/` on clip b is the session's choice: it survives both cuts,
+        // over clip a's saved codec — while the dials stay per video.
+        live.cycle(1);
+        assert_eq!((live.codec, live.status()), (Codec::Letters, "s to save"));
+        live.front(0, &a);
+        assert_eq!((live.codec, live.compose.shadow_lift), (Codec::Letters, 64));
+        live.cycle(1);
+        live.front(1, &b);
+        assert_eq!((live.codec, live.compose.shadow_lift), (Codec::Pixels, 0), "the / pick holds");
+
+        // `s` saves for the fronted clip; the next visit loads it.
+        live.save(&b);
+        assert_eq!(live.status(), "saved");
+        live.front(0, &a);
+        live.front(1, &b);
+        assert_eq!(live.saved, Some(VideoSettings { compose: ComposeParams::default(), codec: Codec::Pixels }));
+        assert!(live.problems.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn codec_flag_beats_saved_until_slash_beats_it() {
+        let (dir, a, b) = two_clip_dir("forced");
+        let mut live = LiveSettings::new(Some(Codec::Pixels));
+        live.front(0, &a);
+        assert_eq!((live.codec, live.compose.shadow_lift), (Codec::Pixels, 64), "--codec over saved");
+        live.cycle(1);
+        live.front(1, &b);
+        assert_eq!(live.codec, Codec::Letters, "/ over --codec, across the cut");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_sidecar_plays_defaults_and_is_reported() {
+        let (dir, a, _) = two_clip_dir("bad");
+        std::fs::write(dir.join("clip-a.player.toml"), "shadow_lift = lots\n").unwrap();
+        let mut live = LiveSettings::new(None);
+        live.front(0, &a);
+        assert_eq!((live.codec, live.compose, live.status()), (Codec::Pixels, ComposeParams::default(), "unreadable"));
+        assert_eq!(live.problems.len(), 1);
+        assert!(live.problems[0].contains("clip-a.player.toml") && live.problems[0].contains("line 1"), "{:?}", live.problems);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// M6 review fix: the first `d` REVEALS the dial readout rather than

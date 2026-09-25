@@ -8,8 +8,8 @@
 //!
 //! Run: `cargo run --example headless-dump -- asset.ascii [FRAMES] [COLSxROWS]`
 //!
-//! Options (anywhere on the line): `--codec pixels|letters` picks the glyph
-//! codec, `--palette ascii|unicode|braille` the repertoire (default `ascii`),
+//! Options (anywhere on the line): `--codec NAME` picks the glyph codec
+//! (any name in the registry: `pixels`, `letters`, …), `--palette ascii|unicode|braille` the repertoire (default `ascii`),
 //! and `--from FRAME` dumps FRAMES *consecutive* frames starting at FRAME
 //! instead of spreading them across the asset — what you want to look for
 //! frame-to-frame flicker.
@@ -23,8 +23,20 @@ use std::io::Write;
 
 use auto_ascii::{Cell, Codec, Grid, PaletteChoice, RenderSession};
 
-const USAGE: &str = "usage: headless-dump <asset.ascii | composition.toml> [FRAMES] [COLSxROWS] \
-     [--codec pixels|letters] [--palette ascii|unicode|braille] [--from FRAME]";
+/// The usage line — the codec list comes from the registry, so a new codec
+/// shows up here without an edit.
+fn usage() -> String {
+    format!(
+        "usage: headless-dump <asset.ascii | composition.toml> [FRAMES] [COLSxROWS] \
+         [--codec {}] [--palette ascii|unicode|braille] [--from FRAME]",
+        Codec::names("|")
+    )
+}
+
+/// Bad command line: print the usage and stop.
+fn bad() -> ! {
+    panic!("{}", usage())
+}
 
 /// Open an asset — or a composition, when the argument is a `.toml`. Bare
 /// library names inside a composition resolve under `$AUTO_ASCII_HOME`.
@@ -43,8 +55,8 @@ fn open(path: &str) -> Result<RenderSession, auto_ascii::Error> {
 
 /// `"100x28"` → `(100, 28)`.
 fn parse_dims(s: &str) -> (u16, u16) {
-    let (c, r) = s.split_once('x').expect(USAGE);
-    (c.parse().expect(USAGE), r.parse().expect(USAGE))
+    let (c, r) = s.split_once('x').unwrap_or_else(|| bad());
+    (c.parse().unwrap_or_else(|_| bad()), r.parse().unwrap_or_else(|_| bad()))
 }
 
 /// Write one frame as text. Returns the underlying `io::Error` instead of
@@ -71,7 +83,7 @@ fn parse_palette(s: &str) -> PaletteChoice {
         "ascii" => PaletteChoice::Ascii,
         "unicode" => PaletteChoice::Unicode,
         "braille" => PaletteChoice::Braille,
-        _ => panic!("{USAGE}"),
+        _ => bad(),
     }
 }
 
@@ -81,17 +93,17 @@ fn main() -> Result<(), auto_ascii::Error> {
     let mut positional = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        let mut value = || args.next().expect(USAGE);
+        let mut value = || args.next().unwrap_or_else(|| bad());
         match arg.as_str() {
-            "--codec" => codec = Codec::from_name(&value()).expect(USAGE),
+            "--codec" => codec = Codec::from_name(&value()).unwrap_or_else(|| bad()),
             "--palette" => palette = parse_palette(&value()),
-            "--from" => from = Some(value().parse::<u32>().expect(USAGE)),
+            "--from" => from = Some(value().parse::<u32>().unwrap_or_else(|_| bad())),
             _ => positional.push(arg),
         }
     }
     let mut positional = positional.into_iter();
-    let path = positional.next().expect(USAGE);
-    let frames: u32 = positional.next().map_or(3, |s| s.parse().expect(USAGE));
+    let path = positional.next().unwrap_or_else(|| bad());
+    let frames: u32 = positional.next().map_or(3, |s| s.parse().unwrap_or_else(|_| bad()));
     let (cols, rows) = positional.next().map_or((100, 28), |s| parse_dims(&s));
 
     let mut session = open(&path)?;

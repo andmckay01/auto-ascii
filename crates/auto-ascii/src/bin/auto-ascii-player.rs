@@ -143,12 +143,9 @@ struct Cli {
     #[arg(long, value_name = "NAME|PATH")]
     font_table: Option<String>,
 
-    /// Glyph codec — how cell features become glyphs: `pixels` (default;
-    /// shades and half-blocks, picture-like) or `letters` (printable
-    /// characters, blocks only for the densest fill). Interactively it
-    /// overrides the codec saved for the video, and `/` still cycles it;
-    /// with --sim it is the codec the run renders in.
-    #[arg(long, value_name = "NAME", value_parser = parse_codec)]
+    // Glyph codec. The help text is built from the registry (`codec_help`),
+    // so a new codec is listed without an edit here.
+    #[arg(long, value_name = "NAME", value_parser = parse_codec, help = codec_help())]
     codec: Option<Codec>,
 
     /// Headless mode: render NFRAMES frames to SimBackend at COLSxROWS as
@@ -186,7 +183,19 @@ struct Cli {
 
 /// `--codec NAME` → a registered codec (the error lists them all).
 fn parse_codec(name: &str) -> std::result::Result<Codec, String> {
-    Codec::from_name(name).ok_or_else(|| format!("unknown codec {name:?} (known: {})", Codec::names()))
+    Codec::from_name(name)
+        .ok_or_else(|| format!("unknown codec {name:?} (known: {})", Codec::names(", ")))
+}
+
+/// `--codec` help, listing the registry.
+fn codec_help() -> String {
+    format!(
+        "Glyph codec — how cell features become glyphs: {} (default {}). \
+         Interactively it overrides the codec saved for a video until `/` \
+         picks another; with --sim it is the codec the run renders in",
+        Codec::names(", "),
+        Codec::default().name()
+    )
 }
 
 /// Parse "COLSxROWS" (e.g. "213x58").

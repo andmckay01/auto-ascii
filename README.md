@@ -50,8 +50,8 @@ CRC status.
 
 **Glyph codecs.** How a cell becomes a glyph is a pluggable codec: `pixels`
 (the default — shade ramps and half-blocks, a low-res picture) or `letters`
-(printable characters ordered by ink, ASCII strokes on edges, `█▀▄` only for
-near-white highlights). `/` cycles them while playing; `v` shows the clip
+(printable characters ordered by ink, ASCII strokes on edges, blocks only
+where the picture is lit: `█` for near-white, `▀▄` for a bright half). `/` cycles them while playing; `v` shows the clip
 name and active codec above the key hints. The dials (`d`, `[ ]`) and the
 codec are per video: `s` saves them beside the asset as
 `<name>.player.toml`, and they load the next time that video plays.

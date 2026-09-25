@@ -52,13 +52,20 @@ Nothing committed depends on the corpus: synthetic fixtures in
   its defaults, so editing the build-side tables (`[build]`, `[shots]`,
   `[levels]`, `[edges]`, `[highlights]`, `[temporal]`) is a re-baselining
   act: the byte-pin test and any `runs/base.json` you keep will move.
+  Glyph-codec design constants — the `letters` ramps and its fill/hold
+  thresholds, like the §3.4 palettes — are codec *data*, not tunables: they
+  live in their codec module (`auto-ascii-core/src/codec/`), pinned by its
+  tests and goldens. Anything a viewer or a sweep adjusts is a
+  `ComposeParams` field in `[compose]`, which every codec reads.
 - **Perf thresholds are calibrated, not guessed.** Each `perf/thresholds.toml`
   entry is a median over three consecutive runs × 1.15 on an idle machine.
   Recalibrate both fields of an entry together, on the machine the file
   names, never from a single run on a busy box. The gate also fails when a
   bench disappears or a new bench has no threshold, so renaming a bench means
   editing that file.
-- **The player stays codec-free and rayon-free.**
+- **The player stays codec-free and rayon-free.** (Video codecs — decoding
+  is the factory's job. The *glyph* codecs in `auto_ascii_core::codec`,
+  which map cell features to glyphs at render time, are not what this means.)
   `cargo tree -p auto-ascii -e normal | grep -c rayon` is 0, and a
   `--no-default-features` build carries no clap, anyhow or crossterm.
 - **Overlays are event-driven.** No always-on chrome in the player; the parity

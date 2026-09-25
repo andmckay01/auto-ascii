@@ -83,10 +83,10 @@ impl VideoSettings {
             };
             let (key, val) = (key.trim(), val.trim());
             if key == "codec" {
-                let name = val
-                    .strip_prefix('"')
-                    .and_then(|v| v.strip_suffix('"'))
-                    .ok_or_else(|| err(format!("codec must be a quoted name, got {val}")))?;
+                // Quoted is the TOML we write; a hand-edited bare name is
+                // just as clear, so it is accepted rather than costing the
+                // whole file (and the dials in it).
+                let name = val.trim_matches('"');
                 // A codec from a newer build: play in the default instead.
                 out.codec = Codec::from_name(name).unwrap_or_default();
             } else if let Some(dial) = Dial::ALL.into_iter().find(|d| d.param_key() == key) {
@@ -173,7 +173,9 @@ mod tests {
         let fwd = "# newer build\ncodec = \"hieroglyphs\"\nsparkle = 9\nshadow_lift = 16\n";
         let s = VideoSettings::parse(fwd).unwrap();
         assert_eq!((s.codec, s.compose.shadow_lift), (Codec::Pixels, 16));
-        for bad in ["shadow_lift = 300", "shadow_lift = x", "codec = letters", "shadow_lift"] {
+        // A bare codec name is read as the quoted one.
+        assert_eq!(VideoSettings::parse("codec = letters").unwrap().codec, Codec::Letters);
+        for bad in ["shadow_lift = 300", "shadow_lift = x", "shadow_lift"] {
             let e = VideoSettings::parse(bad).unwrap_err();
             assert!(e.starts_with("line 1:"), "{bad}: {e}");
         }
