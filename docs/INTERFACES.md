@@ -1164,7 +1164,7 @@ impl<'a> Player<'a> {
 }
 pub fn build_levels_lut(lut: &mut [u8; 256], levels: Option<PlaneLevels>);
 pub fn unpack_rgb565(src: &[u8], r, g, b: &mut [u8]);
-pub fn draw_enlarge_card(grid: &mut Grid<Cell>);
+pub fn draw_enlarge_card(grid: &mut Grid<Cell>, pad: Cell);  // on Codec::pad (27k)
 pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32,
                              frame_count: u32, fps: f64);  // M5 scrub UX:
     // the bottom-row bar (" M:SS / M:SS [====>....] NN% ", pure ASCII,
@@ -1184,11 +1184,14 @@ pub fn draw_progress_overlay_clips(grid, frame, frame_count, fps,
     // so `draw_progress_overlay` is literally this with clip = None
     // (and paused = false, scale = Normal)
 // Zoom discoverability (note 27 (i)) — every overlay row takes a scale:
-pub enum OverlayScale { Normal, Big }
+pub enum OverlayScale { Normal, Big, Plain }
     // Big = 3x5 half-block font, 4 cols x 3 rows per char, upper case;
     // for_grid(cols, rows, GlyphTier) is Big iff tier != Ascii and
     // cols >= BIG_OVERLAY_MIN_COLS (240) and rows >= BIG_OVERLAY_MIN_ROWS
-    // (36); line_chars(cols) (cols or cols/4), line_rows() (1 or 3)
+    // (36); line_chars(cols) (cols or cols/4), line_rows() (1 or 3).
+    // Plain (27k) = Normal on DEFAULT_BG cells, printable ASCII only;
+    // for_codec(cols, rows, GlyphTier, Codec) is Plain for a codec whose
+    // pad carries DEFAULT_BG (ascii), else for_grid
 pub fn draw_dial_overlay(grid, label, value, max, scale: OverlayScale);
 pub fn draw_hint_overlay(grid, scale: OverlayScale);
 pub fn draw_info_overlay(grid, text: &str, scale: OverlayScale);
@@ -2452,43 +2455,64 @@ facade surface + this hidden module.)
     through, while `bg` stays black for every other reader (eval
     rasterizer, goldens). Cells without the bit paint exactly as before.
     `GlyphCodec::PAD` (default `Cell::BLANK`; generated `Codec::pad`) lets
-    a codec choose its letterbox cell; the frame loop fills with it and
-    `ClipDeck` fills composition gaps with it, so an `ascii` stream emits no
-    background SGR anywhere outside the event-driven overlays, which keep
-    their own colours. With no background to carry tone, it lives in the
-    glyph and the foreground. The glyph comes from the held tone through
-    an 18-step ramp ` .:;+rcxnoeaS#D8B@` ordered by JetBrains Mono 2.304
-    coverage (Ghostty's bundled default, rasterized with CoreText from the
-    release TTF; Menlo swaps only the near-ties `+`/`r` and `#`/`D`).
-    Tone maps linearly from the black floor (32) to `@` at 240, bent
-    down by half a parabola above mid-tone so `@` stays for near-white.
-    The colour is the chroma sample with its brightness `y` mapped to
-    `y·(1 + 2.5·(1 − y)²)` (hue kept, at most 4×). A glyph inks at most
-    0.28 of its cell, so dark colours need the lift, and the curve's slope
-    of 1 at the top keeps a highlight brighter than the lit surface around
-    it. Earlier passes normalized every colour to full brightness, which
-    flattened faces into one tone, then drove brightness from tone alone,
-    which lost highlights. Half variants (`'"TY7PM` / `.,vuawg`) reuse
-    letters' dual threshold (`half_variant`, now `pub(super)`), strokes
-    and junction are letters' own, and highlights use `ASCII_HIGHLIGHT`
-    with `boost`. Stability: a `9/32 × idx_hyst_q8` tone deadband and a
-    floor hold down to 16; the output is identical on every tier (the
-    backend quantizes colour). Measured at 200x56, truecolor, unicode
-    palette selection, on six clips (Architect f7700, Terminator f660,
-    Apple 1984 f1260, Interstellar f900, Rally f7110, Dune f5520):
-    glyph switches per cell per second 1.01× pixels in total (0.96–1.12×
-    per clip). Mean luminance is 0.52–0.89× pixels: a frame of `@` in
-    white averages about 0.28 of white (YAVG ≈ 72), so bright frames
-    cannot reach pixels' mean (Dune's is 96). Pixels and letters
-    `--sim-dump` streams are byte-identical to the previous build (five
-    clips × four colour tiers × three palettes, `cmp`), and every existing
-    golden passes unblessed. Tests: `codec::ascii::tests` (tables, ramp
-    monotonic, the background bit on every tier, the colour curve, the
-    deadband and floor hold, halves and strokes, tier independence),
-    `codec::tests` (registry order, `pad`), `render::tests` (SGR 49),
-    `codec_props.rs` (random planes), `auto-ascii/tests/codecs.rs`
-    `ascii_streams_are_printable_ascii_with_no_background_on_every_tier`
-    (parses the real SimBackend stream on every tier × palette) and the
+    a codec choose its letterbox cell; the frame loop fills with it,
+    `ClipDeck` fills composition gaps with it and `draw_enlarge_card` now
+    takes it. Everything the player draws follows the codec: a codec whose
+    pad carries `DEFAULT_BG` gets `OverlayScale::Plain` from
+    `OverlayScale::for_codec` at every size — the progress, dial, hint,
+    info and zoom rows stay one-cell printable ASCII (never the big
+    half-block font), cleared with default-background spaces and drawn in
+    their usual bright gray. So while `ascii` is active no byte outside an
+    escape sequence is non-ASCII and no background SGR is ever emitted,
+    across overlays, tiny grids, huge grids, resizes and gaps. Under
+    `pixels`/`letters` `for_codec` is `for_grid` and the card's pad is
+    `Cell::BLANK`, so their streams, overlays included, are unchanged.
+    With no background to carry tone, it lives in the glyph and the
+    foreground. The glyph comes from the held tone through an 18-step
+    ramp ` .:;+rcxnoeaS#D8B@` ordered by JetBrains Mono 2.304 coverage
+    (Ghostty's bundled default, rasterized with CoreText from the release
+    TTF; Menlo swaps only the near-ties `+`/`r` and `#`/`D`). Tone maps
+    linearly from the black floor (24) to `@` at 240, bent down by half a
+    parabola above mid-tone so `@` stays for near-white. The colour keeps
+    the chroma sample's hue in three bands of held tone: below 128 its
+    brightness `y` is lifted to `y·(1 + (1 − y)²)` (at most 4×); from 128
+    to 224 it rises to full brightness; from 200 up it runs toward white
+    (75% at 255). A glyph inks at most 0.28 of its cell, so lit cells need
+    full brightness to read, while dark colours get only a gentle lift so
+    shadows stay dark, and the white run keeps a highlight (Interstellar's
+    core, Terminator's fire) above the lit surface around it. The review
+    of the first version found the picture murky: normalised to its
+    brightest band, the darkest band sat at 0.21–0.31 against pixels'
+    0.10–0.14 and the brightest band was capped near YAVG 80. It now tracks
+    pixels' tone curve through the midtones, darks sit at 0.15–0.24 and
+    the brightest band reaches about 92. Earlier passes normalized every
+    colour to full brightness (faces flattened into one tone) and drove
+    brightness from tone alone (highlights lost). Half variants
+    (`'"TY7PM` / `.,vuawg`) reuse letters' dual threshold (`half_variant`,
+    now `pub(super)`), strokes and junction are letters' own, and
+    highlights use `ASCII_HIGHLIGHT` with `boost`. Stability: a `9/32 ×
+    idx_hyst_q8` tone deadband and a floor hold down to 12; the output is
+    identical on every tier (the backend quantizes colour). Measured at
+    200x56, truecolor, unicode palette selection, on six clips (Architect
+    f7700, Terminator f660, Apple 1984 f1260, Interstellar f900, Rally
+    f7110, Dune f5520): glyph switches per cell per second 1.02× pixels in
+    total (0.96–1.14× per clip). Mean luminance is 0.52–0.88× pixels: a
+    glyph covers at most 0.28 of its cell, so even the brightest band of
+    the rendered frames averages only about YAVG 92 where pixels' is
+    220–245, and bright frames cannot reach pixels' mean (Dune's is 96). Pixels and letters `--sim-dump` streams
+    are byte-identical to the previous build (five clips × four colour
+    tiers × three palettes, `cmp`), as are deck streams with every overlay
+    on through 1x1..400x120, gaps and resizes, and every existing golden
+    passes unblessed. Tests: `codec::ascii::tests` (tables, ramp monotonic,
+    the background bit on every tier, the colour bands, the deadband and
+    floor hold, halves and strokes, tier independence), `codec::tests`
+    (registry order, `pad`), `render::tests` (SGR 49), `pipeline::tests`
+    (`Plain` overlays and the card on the pad), `codec_props.rs` (random
+    planes), `auto-ascii/tests/codecs.rs`
+    `ascii_draws_nothing_but_printable_ascii_on_the_terminal_background`
+    (parses the real deck stream on every tier × palette, overlays off and
+    on, through tiny, huge and resized grids and gaps),
+    `other_codecs_keep_their_backgrounds_and_big_overlay_text`, and the
     goldens `ascii_80x24_unicode.txt` / `ascii_80x24_ascii_mono.txt`,
     `settings::tests` (`codec = "ascii"` round trip).
 28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI

@@ -142,8 +142,10 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   On 16-color and mono it keeps a black background and the narrower deadband. `ascii` is
   letters without blocks, tint or any background: printable ASCII on every tier and palette, each
   cell flagged `attrs::DEFAULT_BG` so the painter emits SGR 49 (the terminal's own background)
-  instead of a color. Tone is glyph ink plus a brightened foreground (dark colors lifted up to 4×,
-  hue kept), on an 18-step ramp ordered by JetBrains Mono coverage.
+  instead of a color. Everything else the player draws while `ascii` is active follows the same
+  rule (flow 10). Tone is glyph ink plus the foreground, on an 18-step ramp ordered by
+  JetBrains Mono coverage: dim colors get a gentle lift, lit cells rise to full brightness and
+  highlights run toward white, hue kept.
 - **User:** `/` cycles codecs while playing (`pixels` → `letters` → `ascii`), `--codec
   pixels|letters|ascii` picks one at startup, and `s` saves it for this video (flow 9).
 - **Code:** `crates/auto-ascii-core/src/codec/mod.rs` `GlyphCodec` (trait: `NAME`, `cell`),
@@ -166,10 +168,11 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - Every ASCII-tier glyph is printable ASCII `0x20..=0x7E` (CP437-safe).
     `crates/auto-ascii-core/tests/codec_props.rs` holds `letters` to its repertoire on every
     tier.
-  - `ascii` never emits a non-ASCII byte or a background SGR, on any tier or palette. The pads
-    and a composition's gap frames use `Codec::pad`. `crates/auto-ascii/tests/codecs.rs` parses
-    the real escape stream to check this. Overlays (hints, progress, dials) are chrome and keep
-    their own colors.
+  - While `ascii` is active the player emits no non-ASCII byte and no background SGR, on any
+    tier or palette: the picture, letterbox pads and gap frames (`Codec::pad`), every overlay
+    row (`OverlayScale::Plain`), the enlarge card, and every resize in between.
+    `crates/auto-ascii/tests/codecs.rs` parses the real escape stream through the deck, with
+    every overlay on, from 1x1 to 400x120, to check this.
   - Cells without `attrs::DEFAULT_BG` paint byte for byte as before, so `pixels` and `letters`
     streams are unchanged.
   - Adding a codec means one module plus one `registry!` line. The line generates the `Codec`
@@ -266,18 +269,23 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   overlay is up; `v` pins it. The info row above it shows clip name, codec, settings status and
   grid size (` 213x58 cells `). Below 160 columns a zoom hint appears (`Cmd - to zoom out: more
   cells, a sharper picture`, `Ctrl` off macOS). From 240×36 on block tiers, overlay text is drawn
-  in big 3×5 block letters.
+  in big 3×5 block letters, except under the `ascii` codec, where every row stays one-cell ASCII
+  text in a bright neutral color on the terminal's own background (the row is cleared with
+  default-background spaces, so it reads over the picture).
 - **Code:** `crates/auto-ascii/src/pipeline.rs` `draw_progress_overlay_clips`,
   `draw_dial_overlay`, `draw_hint_overlay` (`hint_line`, which drops items by `HINT_DROP_ORDER`
-  to fit), `draw_info_overlay` (`zoom_line`, `ZOOM_HINT_MAX_COLS`), `OverlayScale::for_grid`
-  (`BIG_OVERLAY_MIN_COLS`, `BIG_OVERLAY_MIN_ROWS`, `BIG_FONT`, `paint_line`). Visibility policy
+  to fit), `draw_info_overlay` (`zoom_line`, `ZOOM_HINT_MAX_COLS`), `OverlayScale::for_codec` /
+  `for_grid` (`BIG_OVERLAY_MIN_COLS`, `BIG_OVERLAY_MIN_ROWS`, `BIG_FONT`, `paint_line`;
+  `Plain` for a codec whose pad keeps the terminal background), `draw_enlarge_card` (on the
+  codec's pad). Visibility policy
   is `crates/auto-ascii/src/player.rs` `ProgressTimer`, `HintState`, `DIAL_OVERLAY_HIDE_AFTER`
   (2.5 s) and `OVERLAY_HIDE_AFTER` (1 s).
 - **Invariants:**
   - Overlays are drawn over the composed grid and never touch temporal state or the layer mask.
     The parity and console goldens render the bare grid unblessed.
   - Overlay text is printable ASCII (other characters print as `?`). Big text needs `▀▄█`, so
-    the ASCII tier keeps one-cell text at every size.
+    the ASCII tier and the `ascii` codec keep one-cell text at every size.
+  - Under `pixels` and `letters` the overlays paint byte for byte as before `ascii` existed.
   - The player cannot change the terminal font. The zoom hint is the whole feature
     (`docs/research/zoom.md`).
 

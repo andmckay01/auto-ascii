@@ -12,13 +12,15 @@
 //! Tone therefore lives in two places only: how much of the cell the glyph
 //! inks, and how bright its color is. The glyph comes from the held tone
 //! through an 18-step ramp that tops out in the densest glyphs (`#`, `D`,
-//! `8`, `B`, `@`, `@` kept for near-white); the color is the cell's chroma
-//! sample (gray fallback) with its brightness `y` lifted to
-//! `y·(1 + 2.5·(1 − y)²)`, hue kept, at most 4× — a glyph inks at most about
-//! a quarter of its cell, so dark colors need the lift to read at all, while
-//! the curve's slope stays 1 at the top so a highlight still outshines the
-//! lit surface around it. Stability follows letters on untinted tiers: the
-//! displayed tone is held within a deadband of `9/32 × idx_hyst_q8` tone
+//! `8`, `B`, `@`, `@` kept for near-white). The color is the cell's chroma
+//! sample (gray fallback), hue kept, in three bands of the same held tone:
+//! below `LIT_FROM` its brightness `y` is lifted to `y·(1 + (1 − y)²)` (at
+//! most 4×) so a dim-but-lit area still reads without the shadows turning
+//! grey; from `LIT_FROM` to `LIT_FULL` it rises to full brightness, since a
+//! glyph inks at most about a quarter of its cell; from `HI_FROM` up it runs
+//! toward white (three quarters of the way at 255), so a highlight outshines
+//! the lit surface around it. Stability follows letters on untinted tiers:
+//! the displayed tone is held within a deadband of `9/32 × idx_hyst_q8` tone
 //! units, a lit cell is held down to half the black floor, and the
 //! top-/bottom-heavy choice reuses letters' dual threshold. The output is the
 //! same on every tier; the backend quantizes the color.
@@ -31,7 +33,8 @@
 //! glyphs `| / \ - _ = X` stay out of every ramp table, as in letters.
 //!
 //! **Design constants.** The glyph tables, [`ASCII_INK`] and the thresholds
-//! below (`BLACK_FLOOR`, `FLOOR_HOLD`, `TONE_TOP`, `GAIN_MAX_Q8`, the curves
+//! below (`BLACK_FLOOR`, `FLOOR_HOLD`, `TONE_TOP`, `GAIN_MAX_Q8`, `LIT_FROM`,
+//! `LIT_FULL`, `HI_FROM`, `HI_WHITE_Q8`, the curves
 //! in `value_table` and `step_table` and the deadband factor in `held_tone`)
 //! are this codec's DATA, pinned by its tests and goldens; what a viewer
 //! tunes stays in `ComposeParams`, exactly as for letters.
@@ -65,13 +68,21 @@ pub const ASCII_BOTTOM: &[char] = &[
     ' ', '.', '.', ',', ',', ',', 'v', 'v', 'u', 'u', 'u', 'a', 'a', 'a', 'w', 'w', 'g', 'g',
 ];
 
-const BLACK_FLOOR: u8 = 32;
+const BLACK_FLOOR: u8 = 24;
 
-const FLOOR_HOLD: u8 = 16;
+const FLOOR_HOLD: u8 = 12;
 
 const TONE_TOP: u8 = 240;
 
 const GAIN_MAX_Q8: u32 = 1024;
+
+const LIT_FROM: u8 = 128;
+
+const LIT_FULL: u8 = 224;
+
+const HI_FROM: u8 = 200;
+
+const HI_WHITE_Q8: u32 = 192;
 
 const STEP: [u8; 256] = step_table();
 
@@ -88,7 +99,7 @@ const fn value_table() -> [u8; 256] {
     let mut m = 0;
     while m < 256 {
         let d = 255 - m as u32;
-        t[m] = (m as u32 + 5 * m as u32 * d * d / (2 * 255 * 255)) as u8;
+        t[m] = (m as u32 + m as u32 * d * d / (255 * 255)) as u8;
         m += 1;
     }
     t
@@ -120,13 +131,20 @@ const fn put(g: char, fg: Rgb) -> Cell {
 }
 
 #[inline]
-fn tint(c: Rgb) -> Rgb {
+fn tint(c: Rgb, h: u8) -> Rgb {
     let m = c.r.max(c.g).max(c.b) as u32;
     if m == 0 {
         return c;
     }
-    let g = GAIN_MAX_Q8.min(((VALUE[m as usize] as u32) << 8) / m);
-    let s = |x: u8| ((x as u32 * g) >> 8).min(255) as u8;
+    let lift = GAIN_MAX_Q8.min(((VALUE[m as usize] as u32) << 8) / m);
+    let full = (255 << 8) / m;
+    let b = (h.clamp(LIT_FROM, LIT_FULL) - LIT_FROM) as u32 * 256 / (LIT_FULL - LIT_FROM) as u32;
+    let g = lift + (((full.max(lift) - lift) * b) >> 8);
+    let w = (h.saturating_sub(HI_FROM) as u32 * HI_WHITE_Q8) / (255 - HI_FROM) as u32;
+    let s = |x: u8| {
+        let v = ((x as u32 * g) >> 8).min(255);
+        (v + (((255 - v) * w) >> 8)) as u8
+    };
     Rgb::new(s(c.r), s(c.g), s(c.b))
 }
 
@@ -181,7 +199,7 @@ impl GlyphCodec for Ascii {
             s.flags &= !cell_flags::WAS_EDGE;
         }
 
-        let fg = tint(inp.chroma.unwrap_or(Rgb::gray(n)));
+        let fg = tint(inp.chroma.unwrap_or(Rgb::gray(n)), h);
         let dx = -debias(inp.ex);
         let dy = -debias(inp.ey);
         let plain_idx = ((n as u32 * len) >> 8).min(len - 1);
@@ -213,7 +231,7 @@ impl GlyphCodec for Ascii {
         if half != HALF_NONE && i > 0 {
             let g = if half == HALF_TOP { ASCII_TOP[i] } else { ASCII_BOTTOM[i] };
             let lit = lt.max(lb);
-            return (put(g, tint(inp.chroma.map_or(Rgb::gray(lit), |c| shade(c, lit, n.max(1))))), layer::STRUCTURE);
+            return (put(g, tint(inp.chroma.map_or(Rgb::gray(lit), |c| shade(c, lit, n.max(1))), h)), layer::STRUCTURE);
         }
 
         (put(ASCII_RAMP[i], fg), layer::BASE)
@@ -341,6 +359,13 @@ mod tests {
         }
         let lit = cold(&CellInputs { chroma: Some(Rgb::gray(200)), ..inp(150, 150) }).fg.r;
         assert!(255 - lit >= 20, "a lit surface stays below white: {lit}");
+        let skin = Rgb::new(160, 120, 80);
+        let at = |n: u8| cold(&CellInputs { chroma: Some(skin), ..inp(n, n) }).fg;
+        assert_eq!(at(100), at(LIT_FROM), "below LIT_FROM the tone leaves the color alone");
+        let full = at(LIT_FULL);
+        assert!(full.r == 255 && full.r > full.g && full.g > full.b, "lit cells reach full brightness: {full:?}");
+        let core = at(255);
+        assert!(core.r == 255 && core.b > 200, "a highlight runs toward white: {core:?}");
     }
 
     #[test]

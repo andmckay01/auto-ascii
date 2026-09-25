@@ -487,11 +487,11 @@ impl ClipDeck {
         }
         let tiny = cols < MIN_COLS || rows < MIN_ROWS;
         if tiny {
-            draw_enlarge_card(&mut self.blank);
+            draw_enlarge_card(&mut self.blank, self.codec.pad());
         } else {
             self.blank.fill(self.codec.pad());
         }
-        let scale = OverlayScale::for_grid(cols, rows, self.cfg.glyph_tier);
+        let scale = OverlayScale::for_codec(cols, rows, self.cfg.glyph_tier, self.codec);
         if self.progress_visible
             && let Some(ctx) = self.progress_ctx
         {

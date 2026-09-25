@@ -2,7 +2,7 @@ use std::io::Cursor;
 use std::path::PathBuf;
 
 use auto_ascii::deck::{ClipDeck, DeckConfig};
-use auto_ascii::pipeline::{Player, color_depth};
+use auto_ascii::pipeline::{Player, ProgressContext, color_depth};
 use auto_ascii::{Codec, Located, RenderSession};
 use auto_ascii_core::cell::attrs;
 use auto_ascii_core::codec::ascii::ascii_glyphs;
@@ -11,7 +11,7 @@ use auto_ascii_core::{Cell, ColorDepth, GlyphTier, Grid, Rgb};
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
 use auto_ascii_format::header::plane_id;
 use auto_ascii_format::{AsciiReader, AsciiWriter, Meta, PlaneRef, WriterOptions};
-use auto_ascii_term::{Caps, ColorTier, Event, Key, SimBackend};
+use auto_ascii_term::{Backend, Caps, ColorTier, Event, Key, SimBackend};
 
 const W: usize = 192;
 const H: usize = 108;
@@ -389,21 +389,6 @@ fn letters_goldens_untinted_tiers() {
     }
 }
 
-fn stream(codec: Codec, tier: GlyphTier, color: ColorTier, cols: u16, rows: u16) -> Vec<u8> {
-    let asset = full_asset();
-    let mut backend = SimBackend::new(cols, rows);
-    backend.set_caps(Caps { color, ..Caps::default() });
-    let mut p = Player::new(AsciiReader::open(&asset).unwrap(), 2.0, true, color_depth(color), tier).unwrap();
-    p.set_codec(codec);
-    p.reflow(&mut backend, cols, rows);
-    let mut out = Vec::new();
-    for f in 0..FRAMES {
-        p.render_present(&mut backend, f).unwrap();
-        out.extend(backend.take_output());
-    }
-    out
-}
-
 fn background_sgrs(bytes: &[u8]) -> Result<Vec<String>, String> {
     let mut found = Vec::new();
     let mut i = 0;
@@ -448,26 +433,86 @@ fn background_sgrs(bytes: &[u8]) -> Result<Vec<String>, String> {
     Ok(found)
 }
 
+const SIZES: [(u16, u16); 10] =
+    [(80, 24), (1, 1), (8, 3), (5, 2), (400, 120), (213, 58), (31, 8), (240, 36), (120, 40), (100, 60)];
+
+fn deck_stream(codec: Codec, tier: GlyphTier, color: ColorTier, overlays: bool) -> Vec<u8> {
+    let tag = format!("{}-{tier:?}-{color:?}-{codec:?}-{overlays}", std::process::id());
+    let dir = std::env::temp_dir().join(format!("auto-ascii-codecs-stream-{tag}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bytes = full_asset();
+    let paths: Vec<PathBuf> = (0..2)
+        .map(|i| {
+            let p = dir.join(format!("clip-{i}.ascii"));
+            std::fs::write(&p, &bytes).unwrap();
+            p
+        })
+        .collect();
+    let cfg = DeckConfig { cell_aspect: 2.0, repaint_full: false, color: color_depth(color), glyph_tier: tier };
+    let mut deck = ClipDeck::new(paths, cfg);
+    deck.set_codec(codec);
+    let mut backend = SimBackend::new(80, 24);
+    backend.set_caps(Caps { color, ..Caps::default() });
+    if overlays {
+        deck.set_hint_overlay(true);
+        deck.set_info_overlay(Some(" Caf\u{e9} clip   codec: ascii   settings: saved "));
+        let ctx = ProgressContext { frame: 90, frame_count: 600, fps_num: 30, fps_den: 1, clip: Some((1, 2)) };
+        deck.set_progress_context(Some(ctx));
+    }
+    let mut out = Vec::new();
+    for (k, (cols, rows)) in SIZES.into_iter().enumerate() {
+        backend.resize(cols, rows);
+        deck.set_size(cols, rows);
+        backend.invalidate();
+        for (step, located) in [Some((0, 2)), None, Some((1, 3)), Some((1, 4))].into_iter().enumerate() {
+            if overlays {
+                let dial = (k + step) % 2 == 1;
+                deck.set_progress_overlay(!dial);
+                deck.set_dial_overlay(dial.then_some(("shadow lift", 64, 255)));
+                deck.set_paused(step == 3);
+            }
+            let at = located.map(|(clip_idx, local_frame)| Located { clip_idx, local_frame });
+            deck.present_at(&mut backend, at).unwrap();
+            out.extend(backend.take_output());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    out
+}
+
 #[test]
-fn ascii_streams_are_printable_ascii_with_no_background_on_every_tier() {
+fn ascii_draws_nothing_but_printable_ascii_on_the_terminal_background() {
     for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
         for color in [ColorTier::True, ColorTier::C256, ColorTier::C16, ColorTier::Mono] {
-            for (cols, rows) in [(80, 24), (100, 60)] {
-                let out = stream(Codec::Ascii, tier, color, cols, rows);
-                let bg = background_sgrs(&out).unwrap_or_else(|e| panic!("{tier:?} {color:?}: {e}"));
-                assert!(bg.is_empty(), "{tier:?} {color:?} {cols}x{rows}: background SGR {bg:?}");
+            for overlays in [false, true] {
+                let what = format!("{tier:?} {color:?} overlays {overlays}");
+                let out = deck_stream(Codec::Ascii, tier, color, overlays);
+                let bg = background_sgrs(&out).unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert!(bg.is_empty(), "{what}: background SGR {bg:?}");
                 let text = String::from_utf8_lossy(&out);
-                assert!(text.contains('@') && text.contains('/'), "{tier:?} {color:?}: a real picture");
+                assert!(text.contains('@') && text.contains('/'), "{what}: a real picture");
+                assert!(text.contains("AUTO-ASCII"), "{what}: the enlarge card was drawn");
+                if overlays {
+                    for want in ["v controls", "shadow lift", "PAUSED", "Caf? clip", "400x120 cells", "zoom out"] {
+                        assert!(text.contains(want), "{what}: overlay {want:?} drawn");
+                    }
+                }
                 if color != ColorTier::Mono {
-                    assert!(text.contains("49m"), "{tier:?} {color:?}: the default background is set");
+                    assert!(text.contains("49m"), "{what}: the default background is set");
                 }
             }
         }
     }
-    let pixels = stream(Codec::Pixels, GlyphTier::Ascii, ColorTier::True, 80, 24);
-    assert!(background_sgrs(&pixels).unwrap().contains(&"48;2;0;0;0".to_string()), "the parser sees backgrounds");
-    let blocks = stream(Codec::Letters, GlyphTier::UnicodeBlocks, ColorTier::C16, 80, 24);
-    assert!(background_sgrs(&blocks).is_err(), "the parser sees non-ASCII glyphs");
+}
+
+#[test]
+fn other_codecs_keep_their_backgrounds_and_big_overlay_text() {
+    let pixels = deck_stream(Codec::Pixels, GlyphTier::Ascii, ColorTier::True, true);
+    let bg = background_sgrs(&pixels).unwrap();
+    assert!(bg.contains(&"48;2;0;0;0".to_string()) && bg.contains(&"48;2;24;24;40".to_string()), "{bg:?}");
+    let letters = deck_stream(Codec::Letters, GlyphTier::UnicodeBlocks, ColorTier::C16, true);
+    assert!(background_sgrs(&letters).is_err(), "letters keeps blocks and big overlay text");
+    assert!(String::from_utf8_lossy(&letters).contains('\u{2580}'), "big text at 400x120");
 }
 
 #[test]
