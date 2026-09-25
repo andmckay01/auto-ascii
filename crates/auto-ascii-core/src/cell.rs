@@ -25,10 +25,13 @@ impl Rgb {
     }
 }
 
-/// Cell attribute bits (`Cell::attrs`). Only [`attrs::NONE`] is defined; the
-/// field is part of the frozen 12-byte layout.
+/// Cell attribute bits (`Cell::attrs`); the field is part of the frozen
+/// 12-byte layout.
 pub mod attrs {
     pub const NONE: u8 = 0;
+    /// Leave the terminal's own background: the painter emits SGR 49
+    /// instead of `bg`, which stays black for every other reader.
+    pub const DEFAULT_BG: u8 = 1;
 }
 
 /// One terminal cell: 12-byte `#[repr(C)]` POD, memcmp-able.

@@ -329,7 +329,7 @@ pub(crate) fn frame_impl<C: GlyphCodec>(
         assert!(r.len() >= vc * vr && g.len() >= vc * vr && b.len() >= vc * vr);
     }
 
-    out.fill(Cell::BLANK);
+    out.fill(C::PAD);
     if let Some(m) = mask.as_deref_mut() {
         m.fill(layer::BASE);
     }

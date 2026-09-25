@@ -172,6 +172,23 @@ mod tests {
     }
 
     #[test]
+    fn ascii_codec_round_trips_as_text_and_on_disk() {
+        let s = VideoSettings { codec: Codec::Ascii, ..turned() };
+        assert!(s.to_toml().contains("codec = \"ascii\"\n"), "{}", s.to_toml());
+        assert_eq!(VideoSettings::parse(&s.to_toml()), Ok(s));
+        assert_eq!(VideoSettings::parse("codec = ascii").unwrap().codec, Codec::Ascii);
+        assert_eq!(VideoSettings::parse("codec = 'ascii' # mine").unwrap().codec, Codec::Ascii);
+
+        let dir = std::env::temp_dir().join(format!("auto-ascii-settings-ascii-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let asset = dir.join("clip.ascii");
+        s.save(&asset).unwrap();
+        assert_eq!(VideoSettings::load(&asset).unwrap(), Some(s));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_file_without_codec_defaults_to_pixels() {
         let old = "shadow_lift = 64\nedge_t_on = 40\nidx_hyst_q8 = 96\n";
         let s = VideoSettings::parse(old).unwrap();

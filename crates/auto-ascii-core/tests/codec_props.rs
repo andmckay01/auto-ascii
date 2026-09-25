@@ -1,8 +1,10 @@
+use auto_ascii_core::cell::attrs;
+use auto_ascii_core::codec::ascii::ascii_glyphs;
 use auto_ascii_core::codec::letters::letters_glyphs;
 use auto_ascii_core::compose::{ComposeParams, FramePlanes, compose_frame, compose_frame_masked};
 use auto_ascii_core::hysteresis::HysteresisState;
 use auto_ascii_core::palette::{ColorDepth, GlyphTier, select_palettes};
-use auto_ascii_core::{Cell, Codec, Grid, compose_frame_codec, compute_viewport};
+use auto_ascii_core::{Cell, Codec, Grid, Rgb, compose_frame_codec, compute_viewport};
 use proptest::prelude::*;
 
 fn tier(i: u8) -> GlyphTier {
@@ -76,6 +78,48 @@ proptest! {
                 if !set.halfblock {
                     prop_assert!(g == ' ' || g.is_ascii_graphic(), "non-ASCII {g:?} on the ascii tier");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn ascii_is_printable_ascii_on_the_terminal_background(
+        seed in any::<u64>(),
+        t in 0u8..3,
+        c in 0u8..4,
+        cols in 32u16..=160,
+        rows in 9u16..=50,
+    ) {
+        let vp = compute_viewport(cols, rows, 2.0).unwrap();
+        let (vc, vr) = (vp.cols as usize, vp.rows as usize);
+        let set = select_palettes(tier(t), color(c), vp.cols);
+        let allowed = ascii_glyphs();
+        let mut st = HysteresisState::new(vp.cols, vp.rows);
+        let mut grid: Grid<Cell> = Grid::new(cols, rows);
+        let lut: [u8; 256] = core::array::from_fn(|i| i as u8);
+        for f in 0..3u64 {
+            let s = seed.wrapping_add(f * 0x9E37_79B9);
+            let luma2 = plane(s, vc * 2 * vr);
+            let (e, ex, ey) = (plane(s ^ 1, vc * vr), plane(s ^ 2, vc * vr), plane(s ^ 3, vc * vr));
+            let h: Vec<u8> = plane(s ^ 4, vc * vr).iter().map(|v| v & 3).collect();
+            let (r, g, b) = (plane(s ^ 5, vc * vr), plane(s ^ 6, vc * vr), plane(s ^ 7, vc * vr));
+            let planes = FramePlanes {
+                luma2: &luma2,
+                e: Some(&e),
+                ex: Some(&ex),
+                ey: Some(&ey),
+                h: Some(&h),
+                chroma: if f == 1 { None } else { Some((&r, &g, &b)) },
+            };
+            compose_frame_codec(
+                Codec::Ascii, &planes, &vp, &lut, &set, &ComposeParams::default(),
+                &mut st, &mut grid, None,
+            );
+            for cell in grid.as_slice() {
+                let g = cell.glyph();
+                prop_assert!(allowed.contains(&g), "{g:?} (U+{:04X}) not allowed on {:?}", g as u32, tier(t));
+                prop_assert!((' '..='~').contains(&g), "non-ASCII {g:?}");
+                prop_assert_eq!((cell.bg, cell.attrs), (Rgb::BLACK, attrs::DEFAULT_BG));
             }
         }
     }

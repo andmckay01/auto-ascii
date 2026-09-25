@@ -106,7 +106,7 @@ container's header and chunks and verifies every CRC.
 | `←` / `→` | seek back / forward 5 s |
 | `d` | show the dial readout, then cycle **shadow lift → edge strength → hysteresis** |
 | `[` / `]` | turn the selected dial down / up |
-| `/` | cycle the glyph codec (`pixels` → `letters`) |
+| `/` | cycle the glyph codec (`pixels` → `letters` → `ascii`) |
 | `s` | save this video's dials and codec |
 | `v` | pin or hide the controls overlay |
 
@@ -117,6 +117,11 @@ on edges, and blocks only where the picture is lit (`█` for near-white, `▀�
 for a bright half). On truecolor and 256-color terminals each character sits
 on a dim tint of its cell's colour, so faces and midtones hold their shape;
 16-color and mono terminals keep a black background.
+`ascii` is letters with only printable ASCII: no blocks, no tint and no
+background color at all (the terminal's own shows through), every glyph in
+its cell's color brightened to make up for the ink a character leaves
+unfilled. Glyph selection is the same on every terminal tier; colours
+follow the terminal's capabilities.
 
 **Dials** retune the renderer while the video plays. Shadow lift opens dark
 scenes. Edge strength sets how many contours get strokes. Hysteresis trades
@@ -134,11 +139,13 @@ zoom-out shortcut (often Cmd - on macOS; bindings vary by terminal). The
 player can't change the font itself
 ([docs/research/zoom.md](docs/research/zoom.md)), so below 160 columns the
 overlay says so. At 240 or more columns and 36 or more rows, on a non-ASCII
-tier, the overlay text is drawn in big block letters so it stays readable.
+tier, the overlay text is drawn in big block letters so it stays readable,
+except under the `ascii` codec, where overlays stay plain one-character-per-cell
+ASCII on the terminal's default background.
 
 Useful flags:
 - `--loop`, `--seek 1:30`, `--fps-cap 30`
-- `--codec pixels|letters`
+- `--codec pixels|letters|ascii`
 - `--palette ascii|unicode|braille`, `--tier truecolor|256|16|mono`
 - `--no-query` (skip capability queries)
 - `--font-table NAME|PATH` (tell the player which font your terminal uses)

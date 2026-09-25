@@ -25,6 +25,7 @@
 
 use std::time::Instant;
 
+use auto_ascii_core::cell::attrs;
 use auto_ascii_core::{
     Cell, Codec, ColorDepth, ComposeParams, FramePlanes, GlyphTier, Grid, HysteresisState,
     PaletteSet, Resampler, Rgb, Viewport, compose_frame_codec, compute_viewport_for,
@@ -83,6 +84,11 @@ pub enum OverlayScale {
     /// character (upper case only). Uses `▀ ▄ █`, so only block tiers get
     /// it. The ASCII tier keeps the printable-ASCII overlay at every size.
     Big,
+    /// [`Normal`](OverlayScale::Normal) on the terminal's own background:
+    /// printable ASCII only, every cell flagged
+    /// [`attrs::DEFAULT_BG`](auto_ascii_core::cell::attrs::DEFAULT_BG), for a
+    /// codec whose pads leave the background alone (`ascii`).
+    Plain,
 }
 
 impl OverlayScale {
@@ -98,11 +104,23 @@ impl OverlayScale {
         }
     }
 
+    /// [`for_grid`](OverlayScale::for_grid) under `codec`: a codec whose
+    /// pad keeps the terminal's background gets
+    /// [`Plain`](OverlayScale::Plain) at every size, so its overlays stay
+    /// printable ASCII with no background either.
+    pub fn for_codec(cols: u16, rows: u16, glyph_tier: GlyphTier, codec: Codec) -> OverlayScale {
+        if codec.pad().attrs & attrs::DEFAULT_BG != 0 {
+            OverlayScale::Plain
+        } else {
+            OverlayScale::for_grid(cols, rows, glyph_tier)
+        }
+    }
+
     /// Characters per overlay line on a `cols`-wide grid — the width every
     /// row lays its text out for.
     pub fn line_chars(self, cols: u16) -> u16 {
         match self {
-            OverlayScale::Normal => cols,
+            OverlayScale::Normal | OverlayScale::Plain => cols,
             OverlayScale::Big => cols / BIG_CHAR_COLS,
         }
     }
@@ -110,7 +128,7 @@ impl OverlayScale {
     /// Grid rows one overlay line occupies.
     pub fn line_rows(self) -> u16 {
         match self {
-            OverlayScale::Normal => 1,
+            OverlayScale::Normal | OverlayScale::Plain => 1,
             OverlayScale::Big => BIG_LINE_ROWS,
         }
     }
@@ -172,6 +190,13 @@ fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, sc
             for col in 0..cols {
                 let ch = chars.next().unwrap_or(' ');
                 grid.set(col, top, Cell::new(ch, fg, bg));
+            }
+        }
+        OverlayScale::Plain => {
+            let mut chars = line.chars();
+            for col in 0..cols {
+                let ch = chars.next().map_or(' ', |c| if c == ' ' || c.is_ascii_graphic() { c } else { '?' });
+                grid.set(col, top, Cell { ch: ch as u32, fg, bg: Rgb::BLACK, attrs: attrs::DEFAULT_BG });
             }
         }
         OverlayScale::Big => {
@@ -917,12 +942,12 @@ impl<'a> Player<'a> {
             );
             self.stage.compose += t.elapsed().as_nanos() as u64;
         } else {
-            draw_enlarge_card(&mut self.grid);
+            draw_enlarge_card(&mut self.grid, self.codec.pad());
             if let Some(mask) = &mut self.layer_mask {
                 mask.fill(auto_ascii_core::layer::BASE);
             }
         }
-        let scale = OverlayScale::for_grid(self.grid.cols(), self.grid.rows(), self.glyph_tier);
+        let scale = OverlayScale::for_codec(self.grid.cols(), self.grid.rows(), self.glyph_tier, self.codec);
         if self.overlay_visible {
             match self.progress_ctx {
                 Some(ctx) => draw_progress_overlay_clips(
@@ -1060,9 +1085,10 @@ pub fn unpack_rgb565(src: &[u8], r: &mut [u8], g: &mut [u8], b: &mut [u8]) {
     }
 }
 
-/// Centered "enlarge terminal" card, shown below the 32x9 minimum.
-pub fn draw_enlarge_card(grid: &mut Grid<Cell>) {
-    grid.fill(Cell::BLANK);
+/// Centered "enlarge terminal" card, shown below the 32x9 minimum, on
+/// `pad` (the codec's [`Codec::pad`]); the text takes its background.
+pub fn draw_enlarge_card(grid: &mut Grid<Cell>, pad: Cell) {
+    grid.fill(pad);
     let (cols, rows) = (grid.cols(), grid.rows());
     if cols == 0 || rows == 0 {
         return;
@@ -1077,7 +1103,7 @@ pub fn draw_enlarge_card(grid: &mut Grid<Cell>) {
         let n = (line.len() as u16).min(cols);
         let left = (cols - n) / 2;
         for (j, ch) in line.chars().take(n as usize).enumerate() {
-            grid.set(left + j as u16, row, Cell::new(ch, Rgb::gray(220), Rgb::BLACK));
+            grid.set(left + j as u16, row, Cell { ch: ch as u32, fg: Rgb::gray(220), ..pad });
         }
     }
 }
@@ -1461,11 +1487,11 @@ mod tests {
     fn enlarge_card_fits_tiny_grids() {
         for (c, r) in [(1u16, 1u16), (10, 2), (31, 8), (80, 24)] {
             let mut g = Grid::new(c, r);
-            draw_enlarge_card(&mut g);
+            draw_enlarge_card(&mut g, Cell::BLANK);
             assert_eq!(g.cols(), c);
         }
         let mut g = Grid::new(40, 9);
-        draw_enlarge_card(&mut g);
+        draw_enlarge_card(&mut g, Cell::BLANK);
         let mid: String = (0..40).map(|col| g.get(col, 3).glyph()).collect();
         assert!(mid.contains("AUTO-ASCII"), "card text missing: {mid:?}");
     }
@@ -1523,6 +1549,36 @@ mod tests {
         assert_eq!(OverlayScale::Big.line_chars(320), 80, "320 columns set an 80-character line");
         assert_eq!(OverlayScale::Big.line_chars(243), 60);
         assert_eq!(OverlayScale::Normal.line_chars(213), 213);
+    }
+
+    #[test]
+    fn plain_overlays_keep_the_terminal_background_at_every_size() {
+        for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
+            for (cols, rows) in [(1, 1), (80, 24), (400, 120), (1000, 1000)] {
+                assert_eq!(OverlayScale::for_codec(cols, rows, tier, Codec::Ascii), OverlayScale::Plain);
+                for codec in [Codec::Pixels, Codec::Letters] {
+                    let want = OverlayScale::for_grid(cols, rows, tier);
+                    assert_eq!(OverlayScale::for_codec(cols, rows, tier, codec), want);
+                }
+            }
+        }
+        let (cols, rows) = (400, 120);
+        let mut g: Grid<Cell> = Grid::new(cols, rows);
+        g.fill(Codec::Ascii.pad());
+        draw_progress_overlay_clips(&mut g, 900, 5400, 30.0, Some((1, 2)), true, OverlayScale::Plain);
+        draw_hint_overlay(&mut g, OverlayScale::Plain);
+        draw_info_overlay(&mut g, " Caf\u{e9} ", OverlayScale::Plain);
+        assert!(row_text(&g, rows - 1).contains("PAUSED"));
+        assert!(row_text(&g, rows - 2).contains("v controls"));
+        assert!(row_text(&g, rows - 3).starts_with(" Caf? "));
+        for c in g.as_slice() {
+            assert!(c.glyph() == ' ' || c.glyph().is_ascii_graphic(), "{:?}", c.glyph());
+            assert_eq!((c.bg, c.attrs), (Rgb::BLACK, attrs::DEFAULT_BG));
+        }
+        let mut card: Grid<Cell> = Grid::new(8, 3);
+        draw_enlarge_card(&mut card, Codec::Ascii.pad());
+        assert!(card.as_slice().iter().all(|c| c.attrs == attrs::DEFAULT_BG));
+        assert!(card.as_slice().iter().any(|c| c.glyph() == 'A'), "the card still reads");
     }
 
     #[test]

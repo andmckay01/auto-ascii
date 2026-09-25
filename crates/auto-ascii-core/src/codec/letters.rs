@@ -87,18 +87,18 @@ const FILL_BOTTOM: char = '▄';
 
 const HALF_BLOCK_MIN_IDX: usize = 10;
 
-const EDGE: [[char; 3]; 4] = [
+pub(super) const EDGE: [[char; 3]; 4] = [
     ['=', '-', '_'],
     ['\\', '\\', '\\'],
     ['|', '|', '|'],
     ['/', '/', '/'],
 ];
-const JUNCTION: char = 'X';
+pub(super) const JUNCTION: char = 'X';
 
-const HALF_SHIFT: u8 = 2;
-const HALF_MASK: u8 = 0b11 << HALF_SHIFT;
-const HALF_NONE: u8 = 0;
-const HALF_TOP: u8 = 1;
+pub(super) const HALF_SHIFT: u8 = 2;
+pub(super) const HALF_MASK: u8 = 0b11 << HALF_SHIFT;
+pub(super) const HALF_NONE: u8 = 0;
+pub(super) const HALF_TOP: u8 = 1;
 const HALF_BOTTOM: u8 = 2;
 const WAS_FILL: u8 = 1 << 4;
 
@@ -163,7 +163,7 @@ fn tone(n: u8) -> u8 {
 pub struct Letters;
 
 #[inline]
-fn half_variant(lt: u8, lb: u8, arm: u8, flags: &mut u8) -> u8 {
+pub(super) fn half_variant(lt: u8, lb: u8, arm: u8, flags: &mut u8) -> u8 {
     let held = (*flags & HALF_MASK) >> HALF_SHIFT;
     let hold = ((arm as u16 * HALF_HOLD_Q8) >> 8) as u8;
     let dir = if lt >= lb { HALF_TOP } else { HALF_BOTTOM };

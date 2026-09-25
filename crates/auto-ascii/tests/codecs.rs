@@ -2,14 +2,16 @@ use std::io::Cursor;
 use std::path::PathBuf;
 
 use auto_ascii::deck::{ClipDeck, DeckConfig};
-use auto_ascii::pipeline::Player;
+use auto_ascii::pipeline::{Player, ProgressContext, color_depth};
 use auto_ascii::{Codec, Located, RenderSession};
+use auto_ascii_core::cell::attrs;
+use auto_ascii_core::codec::ascii::ascii_glyphs;
 use auto_ascii_core::codec::letters::letters_glyphs;
 use auto_ascii_core::{Cell, ColorDepth, GlyphTier, Grid, Rgb};
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
 use auto_ascii_format::header::plane_id;
 use auto_ascii_format::{AsciiReader, AsciiWriter, Meta, PlaneRef, WriterOptions};
-use auto_ascii_term::{Event, Key, SimBackend};
+use auto_ascii_term::{Backend, Caps, ColorTier, Event, Key, SimBackend};
 
 const W: usize = 192;
 const H: usize = 108;
@@ -342,7 +344,7 @@ fn check_golden(name: &str, text: &str) {
     let want = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!("missing golden {} ({e}); bless with ASCII_UPDATE_GOLDENS=1", path.display())
     });
-    assert_eq!(text, want, "letters render diverged from {}", path.display());
+    assert_eq!(text, want, "codec render diverged from {}", path.display());
 }
 
 #[test]
@@ -383,6 +385,154 @@ fn letters_goldens_untinted_tiers() {
         let grid = render(&mut p, &mut backend, FRAMES - 1);
         assert!(grid.as_slice().iter().all(|c| c.bg == Rgb::BLACK), "{name}: no background tint");
         let title = format!("letters codec, {tier:?} tier, {color:?}, 80x24, frame {}", FRAMES - 1);
+        check_golden(name, &golden_text(&grid, &title));
+    }
+}
+
+fn background_sgrs(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b != 0x1b {
+            if !(0x20..=0x7e).contains(&b) {
+                return Err(format!("byte {b:#04x} at {i} outside an escape sequence"));
+            }
+            i += 1;
+            continue;
+        }
+        if bytes.get(i + 1) != Some(&b'[') {
+            return Err(format!("non-CSI escape at {i}"));
+        }
+        let start = i + 2;
+        let end = (start..bytes.len())
+            .find(|&j| (0x40..=0x7e).contains(&bytes[j]))
+            .ok_or_else(|| format!("unterminated CSI at {i}"))?;
+        let params = std::str::from_utf8(&bytes[start..end]).map_err(|e| e.to_string())?;
+        if bytes[end] == b'm' {
+            let ps: Vec<&str> = params.split(';').collect();
+            let mut k = 0;
+            while k < ps.len() {
+                let v: u32 = ps[k].parse().unwrap_or(0);
+                if v == 38 || v == 48 {
+                    let n = if ps.get(k + 1) == Some(&"2") { 5 } else { 3 };
+                    if v == 48 {
+                        found.push(ps[k..(k + n).min(ps.len())].join(";"));
+                    }
+                    k += n;
+                    continue;
+                }
+                if (40..=47).contains(&v) || (100..=107).contains(&v) {
+                    found.push(v.to_string());
+                }
+                k += 1;
+            }
+        }
+        i = end + 1;
+    }
+    Ok(found)
+}
+
+const SIZES: [(u16, u16); 10] =
+    [(80, 24), (1, 1), (8, 3), (5, 2), (400, 120), (213, 58), (31, 8), (240, 36), (120, 40), (100, 60)];
+
+fn deck_stream(codec: Codec, tier: GlyphTier, color: ColorTier, overlays: bool) -> Vec<u8> {
+    let tag = format!("{}-{tier:?}-{color:?}-{codec:?}-{overlays}", std::process::id());
+    let dir = std::env::temp_dir().join(format!("auto-ascii-codecs-stream-{tag}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bytes = full_asset();
+    let paths: Vec<PathBuf> = (0..2)
+        .map(|i| {
+            let p = dir.join(format!("clip-{i}.ascii"));
+            std::fs::write(&p, &bytes).unwrap();
+            p
+        })
+        .collect();
+    let cfg = DeckConfig { cell_aspect: 2.0, repaint_full: false, color: color_depth(color), glyph_tier: tier };
+    let mut deck = ClipDeck::new(paths, cfg);
+    deck.set_codec(codec);
+    let mut backend = SimBackend::new(80, 24);
+    backend.set_caps(Caps { color, ..Caps::default() });
+    if overlays {
+        deck.set_hint_overlay(true);
+        deck.set_info_overlay(Some(" Caf\u{e9} clip   codec: ascii   settings: saved "));
+        let ctx = ProgressContext { frame: 90, frame_count: 600, fps_num: 30, fps_den: 1, clip: Some((1, 2)) };
+        deck.set_progress_context(Some(ctx));
+    }
+    let mut out = Vec::new();
+    for (k, (cols, rows)) in SIZES.into_iter().enumerate() {
+        backend.resize(cols, rows);
+        deck.set_size(cols, rows);
+        backend.invalidate();
+        for (step, located) in [Some((0, 2)), None, Some((1, 3)), Some((1, 4))].into_iter().enumerate() {
+            if overlays {
+                let dial = (k + step) % 2 == 1;
+                deck.set_progress_overlay(!dial);
+                deck.set_dial_overlay(dial.then_some(("shadow lift", 64, 255)));
+                deck.set_paused(step == 3);
+            }
+            let at = located.map(|(clip_idx, local_frame)| Located { clip_idx, local_frame });
+            deck.present_at(&mut backend, at).unwrap();
+            out.extend(backend.take_output());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    out
+}
+
+#[test]
+fn ascii_draws_nothing_but_printable_ascii_on_the_terminal_background() {
+    for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
+        for color in [ColorTier::True, ColorTier::C256, ColorTier::C16, ColorTier::Mono] {
+            for overlays in [false, true] {
+                let what = format!("{tier:?} {color:?} overlays {overlays}");
+                let out = deck_stream(Codec::Ascii, tier, color, overlays);
+                let bg = background_sgrs(&out).unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert!(bg.is_empty(), "{what}: background SGR {bg:?}");
+                let text = String::from_utf8_lossy(&out);
+                assert!(text.contains('@') && text.contains('/'), "{what}: a real picture");
+                assert!(text.contains("AUTO-ASCII"), "{what}: the enlarge card was drawn");
+                if overlays {
+                    for want in ["v controls", "shadow lift", "PAUSED", "Caf? clip", "400x120 cells", "zoom out"] {
+                        assert!(text.contains(want), "{what}: overlay {want:?} drawn");
+                    }
+                }
+                if color != ColorTier::Mono {
+                    assert!(text.contains("49m"), "{what}: the default background is set");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn other_codecs_keep_their_backgrounds_and_big_overlay_text() {
+    let pixels = deck_stream(Codec::Pixels, GlyphTier::Ascii, ColorTier::True, true);
+    let bg = background_sgrs(&pixels).unwrap();
+    assert!(bg.contains(&"48;2;0;0;0".to_string()) && bg.contains(&"48;2;24;24;40".to_string()), "{bg:?}");
+    let letters = deck_stream(Codec::Letters, GlyphTier::UnicodeBlocks, ColorTier::C16, true);
+    assert!(background_sgrs(&letters).is_err(), "letters keeps blocks and big overlay text");
+    assert!(String::from_utf8_lossy(&letters).contains('\u{2580}'), "big text at 400x120");
+}
+
+#[test]
+fn ascii_goldens() {
+    let asset = full_asset();
+    for (tier, color, name) in [
+        (GlyphTier::UnicodeBlocks, ColorDepth::True, "ascii_80x24_unicode.txt"),
+        (GlyphTier::Ascii, ColorDepth::Mono, "ascii_80x24_ascii_mono.txt"),
+    ] {
+        let mut backend = SimBackend::new(80, 24);
+        let mut p = Player::new(AsciiReader::open(&asset).unwrap(), 2.0, true, color, tier).unwrap();
+        p.set_codec(Codec::Ascii);
+        p.reflow(&mut backend, 80, 24);
+        let grid = render(&mut p, &mut backend, FRAMES - 1);
+        let allowed = ascii_glyphs();
+        assert!(grid.as_slice().iter().all(|c| allowed.contains(&c.glyph()) && c.attrs == attrs::DEFAULT_BG));
+        let text: String = grid.as_slice().iter().map(|c| c.glyph()).collect();
+        assert!(text.contains(['|', '/', '\\']), "{name}: edge strokes");
+        assert!(text.contains('@'), "{name}: the disc core is the densest glyph");
+        let title = format!("ascii codec, {tier:?} tier, {color:?}, 80x24, frame {}", FRAMES - 1);
         check_golden(name, &golden_text(&grid, &title));
     }
 }

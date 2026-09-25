@@ -1,3 +1,4 @@
+use auto_ascii_core::cell::attrs;
 use auto_ascii_core::{Cell, Grid, Rgb};
 
 use crate::caps::ColorTier;
@@ -75,7 +76,7 @@ impl FramePainter {
         let full = self.invalidate_next;
         let w = src.cols() as usize;
         let mut fg: Option<Rgb> = None;
-        let mut bg: Option<Rgb> = None;
+        let mut bg: Option<Option<Rgb>> = None;
         let mut damage: u32 = 0;
 
         for r in 0..src.rows() {
@@ -182,12 +183,13 @@ fn emit_cell(
     buf: &mut Vec<u8>,
     cell: &Cell,
     fg: &mut Option<Rgb>,
-    bg: &mut Option<Rgb>,
+    bg: &mut Option<Option<Rgb>>,
     tier: ColorTier,
 ) {
     if tier != ColorTier::Mono {
+        let want_bg = (cell.attrs & attrs::DEFAULT_BG == 0).then_some(cell.bg);
         let fg_new = *fg != Some(cell.fg);
-        let bg_new = *bg != Some(cell.bg);
+        let bg_new = *bg != Some(want_bg);
         if fg_new || bg_new {
             buf.extend_from_slice(b"\x1b[");
             if fg_new {
@@ -198,8 +200,11 @@ fn emit_cell(
                 if fg_new {
                     buf.push(b';');
                 }
-                emit_color(buf, cell.bg, tier, true);
-                *bg = Some(cell.bg);
+                match want_bg {
+                    Some(c) => emit_color(buf, c, tier, true),
+                    None => buf.extend_from_slice(b"49"),
+                }
+                *bg = Some(want_bg);
             }
             buf.push(b'm');
         }
@@ -261,6 +266,30 @@ mod tests {
         let mut painter = FramePainter::new(4, 2);
         let grid: Grid<Cell> = Grid::new(5, 2);
         painter.paint(&grid, ColorTier::True, false);
+    }
+
+    #[test]
+    fn default_bg_cells_emit_sgr_49_and_never_a_color() {
+        let mut keep = Cell::new('x', Rgb::new(200, 40, 40), Rgb::BLACK);
+        keep.attrs = attrs::DEFAULT_BG;
+        for (tier, bg) in [
+            (ColorTier::True, &b"48;2;0;0;0"[..]),
+            (ColorTier::C256, &b"48;5;"[..]),
+            (ColorTier::C16, &b";40m"[..]),
+        ] {
+            let mut painter = FramePainter::new(3, 1);
+            let mut grid: Grid<Cell> = Grid::new(3, 1);
+            grid.fill(keep);
+            painter.paint(&grid, tier, false);
+            let out = painter.buf.clone();
+            assert!(out.windows(3).any(|w| w == b";49"), "{tier:?}");
+            assert!(!out.windows(bg.len()).any(|w| w == bg), "{tier:?}");
+            grid.set(1, 0, Cell::new('y', Rgb::new(200, 40, 40), Rgb::BLACK));
+            painter.invalidate();
+            painter.paint(&grid, tier, false);
+            let n49 = painter.buf.windows(2).filter(|w| *w == b"49").count();
+            assert_eq!(n49, 2, "{tier:?}: back to the default after a colored bg");
+        }
     }
 
     #[test]
