@@ -7,20 +7,20 @@ letters codec, Ascii tier, truecolor, 80x24, frame 5
 |            ...............:::::::::::::::;;;;;;;;;;;;;++++++++++++cccccccccccxx|
 |          ...............;::::::;:::-/-______-\;;;;;;++++++++++++cccccccccccxxxx|
 |        .............:.:;::::;:;:////eGSGSeGSG-\\\;++++++++++++cccccccccccxxxxxx|
-|      .............:.::::::::;:://GGGSGGGGSGGGGSGG\\+++++++++cccccccccccxxxxxxxx|
-|    ...............:::::::::+://DDDDGGGGGSGGGGSGGeGS\++++++cccccccccccxxxxxxxxxx|
-|  ...............:::::;::::+::|888DDDGGGDG8GGDGGGGSGG|+++cccccccccccxxxxxxxxxxxx|
-|...............::::::::::::::|GGB88DDDGB8BB8G8GGSGGGG||ccccccccccccxxxxxxxxxxxnn|
-|.............:::::::::::::::;|DGBB88DMMBBBBBBBGGGGGGGG|ccccccccccxxxxxxxxxxxnnnn|
-|...........:::::::::::::::;;;|DGB888DMBBBBB8BBGGSGGGGS|ccccccccxxxxxxxxxxxnnnnnn|
-|.........::::::::::+::::+;;;;|SG888DDDGB8BBDG8GGDGGGG|cccccccxxxxxxxxxxxnnnnnnnn|
-|.......::::::::::;::::;;;;;+;;\888DDDGGGGG8GGDGSGGeGS/cccccxxxxxxxxxxxnnnnnnnnnn|
-|.....:::::::::::::;:;;;;;;;;+;;\DDDGGGGGGDGGGGSGGGG//ccccxxxxxxxxxxxnnnnnnnnnnnn|
-|...:::::::::::::::;;;;+;;;;+;;;+\\GGSGGSGSDGSGSeGS/ccccxxxxxxxxxxxnnnnnnnnnnnnnn|
-|..::::::::::::::;;;;;;+;;;;c;+++c+\\\\SeSeSSe--//ccccxxxxxxxxxxxnnnnnnnnnnnnnnnn|
+|      .............:.::::::::;:://GGGSGGoGSGGoGSGG\\+++++++++cccccccccccxxxxxxxx|
+|    ..............;::::;::::+://DDDDGGG8GSGGeGSGGeGS\++++++cccccccccccxxxxxxxxxx|
+|  ...............;::::;::::+::|888DDDGGGeGGGGeGGGGSGG|+++cccccccccccxxxxxxxxxxxx|
+|...............::::+::::+::::|BBB88DDDGGGGGSGGGGSGGGG||ccccccccccccxxxxxxxxxxxnn|
+|.............:::::::::::::::;|MBBB88DDDGGDGGGGDGGGGoGG|ccccccccccxxxxxxxxxxxnnnn|
+|...........:::::::::::::::;;;|MBB888DDGGGDGSGGDGSGGoGS|ccccccccxxxxxxxxxxxnnnnnn|
+|.........::::::::::+::::+;;;;|BB888DDDGGGGGBGGGGSGGGG|cccccccxxxxxxxxxxxnnnnnnnn|
+|.......::::::::::;::::;;;;;+;;\888DDDGGG8GSGGeGSGGeGS/cccccxxxxxxxxxxxnnnnnnnnnn|
+|.....:::::::::::::;:;;;;;;;;+;;\DDDGGGGDGSGGDGSGGGG//ccccxxxxxxxxxxxnnnnnnnnnnnn|
+|...:::::::::::::::;;;;+;;;;+;;;+\\GGSeGSGSeGSGSeGS/ccccxxxxxxxxxxxnnnnnnnnnnnnnn|
+|..::::::::::::::;;;;;;+;;;;c;+++c+\\\\SeSeoSe--//ccccxxxxxxxxxxxnnnnnnnnnnnnnnnn|
 |::::::::::::::;;;;;;;;;;;;++cccc++++++---ccc-ccccccxxxxxxxxxxxnnnnnnnnnn        |
 |::::::::::::;;;;;;;;;;;;;+++++++++++++cccccccccccxxxxxxxxxxxnnnnnnnnnnn         |
 |::::::::::;;;;;;;;;;;;;+++++++++++++cccccccccccxxxxxxxxxxxnnnnnnnnnnnnn         |
 |::::::::;;;;;;;;;;;;;+++++++++++++cccccccccccxxxxxxxxxxxnnnnnnnnnnnnnnn         |
 |                                                                                |
-colors fnv1a64 20fb7688a2b4fc9e
+colors fnv1a64 abf37d09bb822359

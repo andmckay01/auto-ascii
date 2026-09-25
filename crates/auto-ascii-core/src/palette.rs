@@ -361,6 +361,10 @@ pub struct PaletteSet {
     pub braille: bool,
     /// ASCII `" - _` subposition glyphs active (ascii tiers).
     pub subpos: bool,
+    /// A dim cell background survives quantization as a tint of the cell's
+    /// own color (truecolor and 256-color; 16-color would snap it to a
+    /// palette hue and mono drops it).
+    pub bg_tint: bool,
 }
 
 /// Select the palette configuration (keyed by charset tier × layer role;
@@ -391,6 +395,7 @@ pub fn select_palettes(tier: GlyphTier, color: ColorDepth, viewport_cols: u16) -
         quadrant: unicode,
         braille: matches!(tier, GlyphTier::BrailleVerified) && density == DensityBand::Fine,
         subpos: !unicode,
+        bg_tint: matches!(color, ColorDepth::True | ColorDepth::C256),
     }
 }
 
@@ -534,6 +539,20 @@ mod tests {
         assert!(p.braille);
         let p = select_palettes(GlyphTier::BrailleVerified, ColorDepth::C256, 60);
         assert!(!p.braille, "coarse density must not enable braille");
+    }
+
+    #[test]
+    fn bg_tint_only_where_a_dim_background_survives() {
+        for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
+            for (color, tint) in [
+                (ColorDepth::True, true),
+                (ColorDepth::C256, true),
+                (ColorDepth::C16, false),
+                (ColorDepth::Mono, false),
+            ] {
+                assert_eq!(select_palettes(tier, color, 100).bg_tint, tint, "{tier:?} {color:?}");
+            }
+        }
     }
 
     #[test]

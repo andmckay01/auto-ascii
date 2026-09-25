@@ -136,7 +136,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Does:** turns each cell's features into one glyph plus fg/bg colors. `pixels` (default)
   paints a low-res picture from shade ramps, half-blocks and quadrants. `letters` draws with
   type: characters ordered by ink, ASCII strokes on edges, `█`/`▀▄` only where the picture is
-  lit.
+  lit. On truecolor and 256-color it sets each cell on a dim tint of its own colour
+  (`PaletteSet::bg_tint`), so midtones and faces keep their shape at pixels' brightness.
 - **User:** `/` cycles codecs while playing, `--codec pixels|letters` picks one at startup, and
   `s` saves it for this video (flow 9).
 - **Code:** `crates/auto-ascii-core/src/codec/mod.rs` `GlyphCodec` (trait: `NAME`, `cell`),
@@ -158,8 +159,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     tier.
   - Adding a codec means one module plus one `registry!` line. The line generates the `Codec`
     variant, its place in the `/` cycle, its name and its dispatch arm.
-  - Codec design constants (the `letters` ramps and thresholds) are codec data, pinned by its
-    tests and goldens. They are not `params.toml` tunables.
+  - Codec design constants (the `letters` ramps, thresholds and color curve) are codec data,
+    pinned by its tests and goldens. They are not `params.toml` tunables.
 
 ### 6. Temporal stability: hysteresis and resets
 - **Does:** stops cells flickering between neighbouring glyphs.

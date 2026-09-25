@@ -114,7 +114,8 @@ container's header and chunks and verifies every CRC.
 paints a low-resolution picture from shade ramps, half-blocks and quadrants.
 `letters` draws with type: printable characters ordered by ink, ASCII strokes
 on edges, and blocks only where the picture is lit (`█` for near-white, `▀▄`
-for a bright half).
+for a bright half). On truecolor and 256-color terminals each character sits
+on a dim tint of its cell's colour, so faces and midtones hold their shape.
 
 **Dials** retune the renderer while the video plays. Shadow lift opens dark
 scenes. Edge strength sets how many contours get strokes. Hysteresis trades
