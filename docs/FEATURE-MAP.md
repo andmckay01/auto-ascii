@@ -137,7 +137,9 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   paints a low-res picture from shade ramps, half-blocks and quadrants. `letters` draws with
   type: characters ordered by ink, ASCII strokes on edges, `█`/`▀▄` only where the picture is
   lit. On truecolor and 256-color it sets each cell on a dim tint of its own colour
-  (`PaletteSet::bg_tint`), so midtones and faces keep their shape at pixels' brightness.
+  (`PaletteSet::bg_tint`), so midtones and faces keep their shape at pixels' brightness, and
+  holds glyphs longer (a wider tone deadband and a floor hold) since the tint carries the tone.
+  On 16-color and mono it keeps a black background and the narrower deadband.
 - **User:** `/` cycles codecs while playing, `--codec pixels|letters` picks one at startup, and
   `s` saves it for this video (flow 9).
 - **Code:** `crates/auto-ascii-core/src/codec/mod.rs` `GlyphCodec` (trait: `NAME`, `cell`),

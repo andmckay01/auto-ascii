@@ -5,7 +5,7 @@ use auto_ascii::deck::{ClipDeck, DeckConfig};
 use auto_ascii::pipeline::Player;
 use auto_ascii::{Codec, Located, RenderSession};
 use auto_ascii_core::codec::letters::letters_glyphs;
-use auto_ascii_core::{Cell, ColorDepth, GlyphTier, Grid};
+use auto_ascii_core::{Cell, ColorDepth, GlyphTier, Grid, Rgb};
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
 use auto_ascii_format::header::plane_id;
 use auto_ascii_format::{AsciiReader, AsciiWriter, Meta, PlaneRef, WriterOptions};
@@ -365,6 +365,24 @@ fn letters_goldens() {
             assert!(text.contains('█'), "{name}: dense fill");
         }
         let title = format!("letters codec, {tier:?} tier, truecolor, 80x24, frame {}", FRAMES - 1);
+        check_golden(name, &golden_text(&grid, &title));
+    }
+}
+
+#[test]
+fn letters_goldens_untinted_tiers() {
+    let asset = full_asset();
+    for (tier, color, name) in [
+        (GlyphTier::UnicodeBlocks, ColorDepth::C16, "letters_80x24_unicode_16color.txt"),
+        (GlyphTier::Ascii, ColorDepth::Mono, "letters_80x24_ascii_mono.txt"),
+    ] {
+        let mut backend = SimBackend::new(80, 24);
+        let mut p = Player::new(AsciiReader::open(&asset).unwrap(), 2.0, true, color, tier).unwrap();
+        p.set_codec(Codec::Letters);
+        p.reflow(&mut backend, 80, 24);
+        let grid = render(&mut p, &mut backend, FRAMES - 1);
+        assert!(grid.as_slice().iter().all(|c| c.bg == Rgb::BLACK), "{name}: no background tint");
+        let title = format!("letters codec, {tier:?} tier, {color:?}, 80x24, frame {}", FRAMES - 1);
         check_golden(name, &golden_text(&grid, &title));
     }
 }

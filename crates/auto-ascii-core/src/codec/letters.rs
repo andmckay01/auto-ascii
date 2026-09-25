@@ -15,12 +15,15 @@
 //! tone rides the background too: fg and bg are the chroma scaled by a
 //! coverage curve of the tone — bg at 0.6×, the glyph brighter, solid blocks
 //! at pixels' own colors — so a cell averages to what pixels draws there and
-//! a dark-but-lit face keeps its shape. On 16-color and mono the background
-//! stays black and the glyph takes a ≤1.5× value gain. Temporal stability
-//! is pixels' too: the ramp index, edge gate and orientation bin ride the
-//! same [`CellState`] hysteresis, the black floor holds a lit cell down to
-//! half its threshold, and the half-variant choice gets its own dual
-//! threshold in the codec-private flag bits.
+//! a dark-but-lit face keeps its shape. Temporal stability is pixels' too:
+//! the ramp index, edge gate and orientation bin ride the same
+//! [`CellState`] hysteresis, and the half-variant choice gets its own dual
+//! threshold in the codec-private flag bits. Because the tint carries tone
+//! continuously, tinted tiers also hold the glyph longer (a `5/2` deadband
+//! instead of `13/8`) and hold a lit cell down to half the black floor. On
+//! 16-color and mono, where the glyph is the only tone signal, none of that
+//! applies: black background, a ≤1.5× value gain, the `13/8` deadband and
+//! a hard floor.
 //!
 //! **Ramp order.** Coverage was measured the way `auto-ascii-factory
 //! font-table` does (antialiased ink over the advance-scaled cell) on Menlo
@@ -144,8 +147,9 @@ fn paint(c: Option<Rgb>, n: u8, set: &PaletteSet) -> (Rgb, Rgb) {
 }
 
 #[inline]
-fn held_tone(n: u8, prev: u8, hyst_q8: u8) -> u8 {
-    let band = (hyst_q8 as u16 * 5 / 2 / TONE_STEPS) as u8;
+fn held_tone(n: u8, prev: u8, hyst_q8: u8, tinted: bool) -> u8 {
+    let (num, den) = if tinted { (5, 2) } else { (13, 8) };
+    let band = (hyst_q8 as u16 * num / den / TONE_STEPS) as u8;
     let h = if prev == IDX_UNSET || n.abs_diff(prev) > band { n } else { prev };
     h.min(IDX_UNSET - 1)
 }
@@ -190,11 +194,12 @@ impl GlyphCodec for Letters {
         let half = half_variant(lt, lb, params.halfblock_min_delta, &mut s.flags);
         let ink_tone = if half == HALF_NONE { n } else { lt.max(lb) };
         let prev = if half == was_half { s.idx } else { IDX_UNSET };
-        let floor = if prev != IDX_UNSET && prev >= BLACK_FLOOR { FLOOR_HOLD } else { BLACK_FLOOR };
+        let lit = set.bg_tint && prev != IDX_UNSET && prev >= BLACK_FLOOR;
+        let floor = if lit { FLOOR_HOLD } else { BLACK_FLOOR };
         let h = if deep_shadow || ink_tone < floor {
             0
         } else {
-            held_tone(ink_tone, prev, params.idx_hyst_q8)
+            held_tone(ink_tone, prev, params.idx_hyst_q8, set.bg_tint)
         };
         s.idx = h;
         let dense = set.halfblock
@@ -386,7 +391,7 @@ mod tests {
     #[test]
     fn tone_deadband_holds_small_wobble() {
         let (_, uni) = sets();
-        let band = held_tone(0, 100, ComposeParams::default().idx_hyst_q8);
+        let band = held_tone(0, 100, ComposeParams::default().idx_hyst_q8, true);
         assert_eq!(band, 0, "a 100-unit move always updates");
         let mut st = HysteresisState::new(1, 1);
         let at = |n: u8, st: &mut HysteresisState| glyph(&inp(n, n), &uni, st);
@@ -438,10 +443,10 @@ mod tests {
     }
 
     #[test]
-    fn tone_floor_and_hold_are_independent_of_tier() {
-        let (ascii, _) = sets();
-        for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
-            for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
+    fn tone_floor_and_hold_are_independent_of_glyph_tier() {
+        for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
+            let ascii = select_palettes(GlyphTier::Ascii, color, 100);
+            for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
                 for cols in [40, 100] {
                     let set = select_palettes(tier, color, cols);
                     let mut reference = HysteresisState::new(1, 1);
@@ -523,6 +528,25 @@ mod tests {
         let cell = cold_cell(&CellInputs { chroma: Some(c), ..inp(255, 180) }, &uni);
         assert_eq!(cell.glyph(), FILL_TOP);
         assert_eq!((cell.fg, cell.bg), (shade(c, 255, 218), shade(c, 180, 218)), "pixels' half-block pair");
+    }
+
+    #[test]
+    fn untinted_tiers_keep_the_narrow_deadband_and_hard_floor() {
+        let wobble = |color: ColorDepth, a: u8, b: u8| {
+            let set = select_palettes(GlyphTier::UnicodeBlocks, color, 100);
+            let mut st = HysteresisState::new(1, 1);
+            (glyph(&inp(a, a), &set, &mut st), glyph(&inp(b, b), &set, &mut st))
+        };
+        for color in [ColorDepth::C16, ColorDepth::Mono] {
+            let (x, y) = wobble(color, 120, 160);
+            assert_ne!(x, y, "{color:?}: a 40-unit move updates under the 13/8 band");
+            assert_eq!(wobble(color, 40, FLOOR_HOLD).1, ' ', "{color:?}: no floor hold");
+        }
+        for color in [ColorDepth::True, ColorDepth::C256] {
+            let (x, y) = wobble(color, 120, 160);
+            assert_eq!(x, y, "{color:?}: held under the 5/2 band");
+            assert_ne!(wobble(color, 40, FLOOR_HOLD).1, ' ', "{color:?}: floor hold");
+        }
     }
 
     #[test]
