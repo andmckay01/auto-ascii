@@ -1,15 +1,11 @@
-//! Timestamps, parsed and printed one way for the whole project
-//! (PLAN-M6-M8 §2: "one shared parser in the facade").
+//! One grammar, three shapes — `SS[.f]`, `MM:SS[.f]`, `HH:MM:SS[.f]` — so
+//! `auto-ascii-player --seek 1:30`, `auto-ascii import --ss 1:30` and a
+//! composition's `in`/`out` never disagree about what a string means.
+//! Fractions are allowed in any field and every field is a plain decimal
+//! number: `90`, `1:30`, `0:01:30` and `0:00:90` are all 90 seconds.
 //!
-//! Every entry point that takes a time takes the same three shapes —
-//! `SS[.f]`, `MM:SS[.f]`, `HH:MM:SS[.f]` — so `auto-ascii-player --seek
-//! 1:30`, `auto-ascii import --ss 1:30` and an M8 composition's `in`/`out`
-//! never disagree about what a string means. Fractions are allowed in any
-//! field and every field is a plain decimal number: `90`, `1:30`, `0:01:30`
-//! and `0:00:90` are all 90 seconds.
-//!
-//! Core tier: no dependencies and no features, so `--no-default-features`
-//! embedders get it too.
+//! Always available: no dependencies and no features, so
+//! `--no-default-features` embedders get it too.
 
 use std::fmt;
 
@@ -104,7 +100,6 @@ mod tests {
         assert_eq!(parse("1:30").unwrap(), 90.0);
         assert_eq!(parse("0:01:30.5").unwrap(), 90.5);
         assert_eq!(parse("2:00:00").unwrap(), 7200.0);
-        // Fields are not range-checked against the unit above them.
         assert_eq!(parse("0:90").unwrap(), 90.0);
         assert_eq!(parse(" 1 : 30 ").unwrap(), 90.0);
     }
@@ -118,7 +113,6 @@ mod tests {
         assert_eq!(parse("-5"), Err(TimecodeError::OutOfRange("-5".into())));
         assert_eq!(parse("inf"), Err(TimecodeError::OutOfRange("inf".into())));
         assert_eq!(parse("1:NaN"), Err(TimecodeError::OutOfRange("NaN".into())));
-        // The messages are what a user sees, so pin them.
         assert_eq!(
             parse("1:2:3:4").unwrap_err().to_string(),
             "expected SECONDS, MM:SS or HH:MM:SS"
@@ -138,7 +132,6 @@ mod tests {
         assert_eq!(format_mmss(f64::NAN), "0:00");
     }
 
-    /// Round-trip at whole seconds: what we print, we can read back.
     #[test]
     fn format_round_trips_through_parse() {
         for secs in [0u64, 7, 59, 60, 61, 599, 3599, 3600, 3661, 86_399] {

@@ -1,26 +1,4 @@
 #!/usr/bin/env bash
-# scripts/release.sh — M5 item E: stripped release player binaries.
-#
-# Targets:
-#   x86_64-unknown-linux-gnu   native (host toolchain)
-#   x86_64-unknown-linux-musl  fully static (rustup target + apt musl-tools);
-#                              verified with `ldd` → "not a dynamic executable"
-#   x86_64-pc-windows-gnu      MinGW cross build (apt mingw-w64). Compiles and
-#                              links here; smoke-tested through wine ONLY when
-#                              wine is already installed, otherwise it ships as
-#                              UNTESTED-CROSS (headless Linux box — documented
-#                              in README "Install").
-#   macOS: no cross build (no osxcross by policy) — build on a Mac:
-#          `cargo build --release -p auto-ascii --features bin` (see Makefile).
-#
-# Output: dist/auto-ascii-player-<target>[.exe], stripped, each REQUIRED < 5 MB
-# (PLAN §7 M5 "binaries <5 MB"). The factory is built natively and reported
-# too (informational — it may be bigger; only the player is gated).
-#
-# Prerequisites are installed on demand (idempotent): rustup targets via
-# `rustup target add`, C toolchains via `sudo -n apt-get install` (musl-tools,
-# mingw-w64). Pass NO_APT=1 to forbid apt (fails if a toolchain is missing).
-
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -32,7 +10,6 @@ NATIVE_TARGET=$(rustc -vV | sed -n 's/^host: //p')
 
 say() { printf '\n== %s\n' "$*"; }
 
-# --- prerequisites ----------------------------------------------------------
 say "prerequisites"
 if ! command -v musl-gcc >/dev/null 2>&1; then
     [ "${NO_APT:-0}" = 1 ] && { echo "musl-gcc missing and NO_APT=1"; exit 1; }
@@ -46,7 +23,6 @@ rustup target add "$MUSL_TARGET" "$WIN_TARGET" >/dev/null
 
 mkdir -p "$DIST"
 
-# --- builds -----------------------------------------------------------------
 say "build: native ($NATIVE_TARGET)"
 cargo build --release -p auto-ascii --features bin
 cp target/release/auto-ascii-player "$DIST/auto-ascii-player-$NATIVE_TARGET"
@@ -63,13 +39,11 @@ say "build: auto-ascii-factory (native, informational)"
 cargo build --release -p auto-ascii-factory
 cp target/release/auto-ascii-factory "$DIST/auto-ascii-factory-$NATIVE_TARGET"
 
-# --- strip ------------------------------------------------------------------
 say "strip"
 strip "$DIST/auto-ascii-player-$NATIVE_TARGET" "$DIST/auto-ascii-player-$MUSL_TARGET" \
       "$DIST/auto-ascii-factory-$NATIVE_TARGET"
 x86_64-w64-mingw32-strip "$DIST/auto-ascii-player-$WIN_TARGET.exe"
 
-# --- report + gates ---------------------------------------------------------
 say "artifacts"
 ls -l "$DIST"
 
@@ -105,7 +79,6 @@ printf '%-55s %8d bytes (%d KiB) [informational, not gated]\n' \
     "$(basename "$DIST/auto-ascii-factory-$NATIVE_TARGET")" "$sz" $((sz / 1024))
 [ "$fail" = 0 ] || exit 1
 
-# --- optional wine smoke ----------------------------------------------------
 say "windows smoke test"
 if command -v wine >/dev/null 2>&1; then
     if timeout 60 wine "$DIST/auto-ascii-player-$WIN_TARGET.exe" --version; then

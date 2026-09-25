@@ -1,8 +1,3 @@
-//! M0 acceptance (3): Ctrl-C / SIGTERM / SIGINT / panic / Drop all restore
-//! the terminal — asserted on real pty output (alt-screen-leave, cursor-show,
-//! SGR-reset bytes). Spawns the `auto-ascii-term-harness` bin under an openpty
-//! pair with the pty as its controlling terminal.
-
 #![cfg(unix)]
 
 use std::io;
@@ -31,8 +26,6 @@ fn spawn_harness(mode: &str) -> (Pty, Child) {
     let mut slave: libc::c_int = 0;
     let mut ws = libc::winsize { ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0 };
     let rc = unsafe {
-        // termp/winp are `*mut` in the macOS libc binding (`*const` on Linux);
-        // `&mut` coerces to either.
         libc::openpty(
             &mut master,
             &mut slave,
@@ -57,8 +50,6 @@ fn spawn_harness(mode: &str) -> (Pty, Child) {
     let slave_for_child = slave;
     unsafe {
         cmd.pre_exec(move || {
-            // New session + make the pty the controlling terminal so
-            // crossterm's /dev/tty resolution lands on it.
             if libc::setsid() < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -96,7 +87,6 @@ fn pump(master: RawFd, acc: &mut Vec<u8>, wait_ms: i32) -> Pump {
     } else if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
         Pump::Quiet
     } else {
-        // 0, or EIO once the child side is gone: EOF.
         Pump::Eof
     }
 }
@@ -165,7 +155,6 @@ fn assert_restored(out: &[u8]) {
         "restore sequence missing from pty output: {:?}",
         String::from_utf8_lossy(out)
     );
-    // The individual M0 acceptance bytes, spelled out:
     assert!(find(out, b"\x1b[0m").is_some(), "SGR reset missing");
     assert!(find(out, b"\x1b[?25h").is_some(), "cursor show missing");
     assert!(find(out, b"\x1b[?1049l").is_some(), "alt-screen leave missing");
@@ -233,7 +222,6 @@ fn ctrl_c_key_quits_and_restores() {
     let (pty, mut child) = spawn_harness("loop");
     let mut out = Vec::new();
     wait_until_contains(pty.master, &mut out, ALT_ENTER);
-    // Raw mode: 0x03 arrives as a key event, maps to Quit → orderly Drop.
     let ctrl_c = [0x03u8];
     let n = unsafe { libc::write(pty.master, ctrl_c.as_ptr().cast(), 1) };
     assert_eq!(n, 1, "failed to type Ctrl-C into the pty");

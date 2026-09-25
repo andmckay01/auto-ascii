@@ -1,6 +1,5 @@
-//! Baseline compare: per-metric tolerances → pass/fail + deltas (PLAN §6,
-//! M2 acceptance: "a deliberate param regression trips the eval baseline
-//! compare").
+//! Baseline compare: per-metric tolerances → pass/fail + deltas, so a
+//! deliberate param regression trips the eval.
 //!
 //! Direction-aware: SSIM regresses downward; flicker, bytes and damage
 //! regress upward. Improvements always pass — tolerances bound regressions
@@ -8,12 +7,11 @@
 //! fails (coverage must not silently shrink); a metric new in the current
 //! run is informational only.
 //!
-//! **Stage times are informational-only** (M2-low fix b, landed at M3
-//! Tune): eval stage timers are wall-clock on a shared box — a co-tenant
-//! browser can double them with zero code change, which made `eval.sh`
-//! spuriously red under load. Their deltas are still recorded (always
-//! `pass`) and an over-tolerance jump earns an `info:` note, but they never
-//! gate the compare; the criterion perf gate (`perf/thresholds.toml`,
+//! **Stage times are informational-only**: eval stage timers are wall-clock
+//! on a shared box, and a co-tenant process can double them with zero code
+//! change. Their deltas are still recorded (always `pass`) and an
+//! over-tolerance jump earns an `info:` note, but they never gate the
+//! compare; the criterion perf gate (`perf/thresholds.toml`,
 //! `scripts/perf-gate.sh`) is the precise instrument for stage-time
 //! regressions. The stage_ms metric *disappearing* still fails (structural
 //! coverage, not a timing).
@@ -24,7 +22,7 @@ use crate::report::EvalReport;
 use crate::stats::Stage;
 
 /// Per-metric regression tolerances. All fields have serde defaults so a
-/// params.toml `[eval.tolerances]` table can override any subset (item B).
+/// params.toml `[eval.tolerances]` table can override any subset.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Tolerances {
@@ -35,8 +33,7 @@ pub struct Tolerances {
     /// scale is "≤ 2", so absolute units are the natural tolerance).
     pub flicker_max_increase: f64,
     /// Max allowed absolute edge-F1 drop (F1 is 0..=1, same reasoning as
-    /// SSIM). The M3 aesthetic-regression drill rides this gate: an absurd
-    /// edge threshold collapses F1 and must trip the compare.
+    /// SSIM). An absurd edge threshold collapses F1 and must trip the compare.
     pub edge_f1_max_drop: f64,
     /// Max allowed fractional increase in avg bytes/frame per tier
     /// (0.20 = +20%).
@@ -44,19 +41,19 @@ pub struct Tolerances {
     /// Max allowed absolute increase in avg damage rate per tier
     /// (rates are 0..=1 fractions of the grid).
     pub damage_rate_max_increase: f64,
-    /// INFORMATIONAL threshold on per-stage mean frame time increases (M2
-    /// low fix b): stage deltas never gate the compare — they are wall-clock
-    /// on a noisy box and the criterion perf gate (item E) is the precise
-    /// instrument — but a fractional increase beyond this earns an `info:`
-    /// note in the report so drift stays visible.
+    /// INFORMATIONAL threshold on per-stage mean frame time increases: stage
+    /// deltas never gate the compare — they are wall-clock on a noisy box and
+    /// the criterion perf gate is the precise instrument — but a fractional
+    /// increase beyond this earns an `info:` note in the report so drift
+    /// stays visible.
     pub stage_ms_frac_max_increase: f64,
     /// Max allowed absolute change (either direction) in `shot_count` and
     /// `cut_count`. Shot structure has no "better" direction — a params
-    /// change that alters the cut roster is exactly what this gate exists
-    /// to flag (M2 review fix: killed cut detection must fail the compare).
+    /// change that alters the cut roster (e.g. killed cut detection) is
+    /// exactly what this gate exists to flag.
     pub shot_structure_max_delta: f64,
     /// Max allowed fractional DROP in `keyframe_count` (fewer keyframes =
-    /// longer delta rolls = worse seeks, PLAN §4). Increases pass on their
+    /// longer delta rolls = worse seeks). Increases pass on their
     /// own; the size cost of extra keyframes is bounded by `asset_bytes`.
     pub keyframes_frac_max_drop: f64,
     /// Max allowed fractional increase in `asset_bytes` (encode-profile
@@ -112,7 +109,7 @@ impl CompareReport {
     }
 }
 
-/// Compare a run against a committed baseline under the given tolerances.
+/// Compare a run against a recorded baseline under the given tolerances.
 pub fn compare_reports(
     current: &EvalReport,
     baseline: &EvalReport,
@@ -120,11 +117,6 @@ pub fn compare_reports(
 ) -> CompareReport {
     let mut rep = CompareReport { pass: true, ..CompareReport::default() };
 
-    // Schema-version skew: an OLDER baseline is fine — the schema has only
-    // ever grown additively, so shared metrics compare 1:1 (the note is
-    // informational; re-baselining is the M3 acceptance act that clears it).
-    // A NEWER baseline means this binary doesn't know the baseline's
-    // semantics — fail fast.
     if current.schema_version < baseline.schema_version {
         rep.notes.push(format!(
             "baseline schema v{} is newer than this tool's v{}",
@@ -149,10 +141,8 @@ pub fn compare_reports(
         let (bm, cm) = (&base_clip.metrics, &cur_clip.metrics);
         let clip = &base_clip.name;
 
-        // SSIM: higher is better; tolerate an absolute drop.
         push_scalar(&mut rep, clip, "ssim", bm.ssim, cm.ssim, |b, c| c >= b - tol.ssim_max_drop);
 
-        // Flicker: lower is better; tolerate an absolute increase.
         push_scalar(
             &mut rep,
             clip,
@@ -162,16 +152,10 @@ pub fn compare_reports(
             |b, c| c <= b + tol.flicker_max_increase,
         );
 
-        // Edge F1 (M3): higher is better; tolerate an absolute drop.
-        // Precision/recall travel in the report but are not gated — F1 is
-        // the single dial (a precision collapse shows up in F1).
         push_scalar(&mut rep, clip, "edge_f1", bm.edge_f1, cm.edge_f1, |b, c| {
             c >= b - tol.edge_f1_max_drop
         });
 
-        // Asset structure (M2 review fix — factory-tunable regressions).
-        // Shot/cut counts: directionless, bounded absolute delta (default 0:
-        // any change to the cut roster is a deliberate re-baselining act).
         for (metric, b, c) in [
             ("shot_count", bm.shot_count, cm.shot_count),
             ("cut_count", bm.cut_count, cm.cut_count),
@@ -180,7 +164,6 @@ pub fn compare_reports(
                 (c - b).abs() <= tol.shot_structure_max_delta
             });
         }
-        // Keyframes: only a drop regresses (seek latency, PLAN §4).
         push_scalar(
             &mut rep,
             clip,
@@ -189,7 +172,6 @@ pub fn compare_reports(
             cm.keyframe_count.map(f64::from),
             |b, c| c >= b * (1.0 - tol.keyframes_frac_max_drop),
         );
-        // Asset size: only bloat regresses.
         push_scalar(
             &mut rep,
             clip,
@@ -199,7 +181,6 @@ pub fn compare_reports(
             |b, c| frac_increase_ok(b, c, tol.asset_bytes_frac_max_increase),
         );
 
-        // Damage/bytes per tier.
         for (tier, base_d) in &bm.damage_by_tier {
             let Some(cur_d) = cm.damage_by_tier.get(tier) else {
                 rep.notes.push(format!("clip {clip:?}: tier {tier:?} missing from current run"));
@@ -224,10 +205,6 @@ pub fn compare_reports(
             );
         }
 
-        // Stage times: INFORMATIONAL-ONLY (M2-low fix b — see module docs).
-        // Deltas are recorded but always pass; an over-tolerance jump earns
-        // an `info:` note. Only the metric family disappearing fails (that
-        // is instrumentation coverage, not box noise).
         if let Some(base_s) = &bm.stage_ms {
             let Some(cur_s) = &cm.stage_ms else {
                 rep.notes.push(format!("clip {clip:?}: stage_ms missing from current run"));
@@ -237,7 +214,7 @@ pub fn compare_reports(
             for stage in Stage::ALL {
                 let (b, c) = (base_s.stage(stage), cur_s.stage(stage));
                 if b.frames == 0 {
-                    continue; // stage never ran in the baseline — nothing to regress against
+                    continue;
                 }
                 let metric = format!("stage_ms/{}", stage.as_str());
                 if !frac_increase_ok(b.mean_ms, c.mean_ms, tol.stage_ms_frac_max_increase) {
@@ -264,8 +241,6 @@ pub fn compare_reports(
     rep
 }
 
-/// A fractional-increase bound that stays meaningful at a zero baseline:
-/// zero → anything nonzero is treated as an unbounded regression.
 fn frac_increase_ok(baseline: f64, current: f64, max_frac: f64) -> bool {
     if baseline <= 0.0 {
         current <= 0.0
@@ -274,9 +249,6 @@ fn frac_increase_ok(baseline: f64, current: f64, max_frac: f64) -> bool {
     }
 }
 
-/// Record one scalar metric comparison. Baseline `None` → skip silently
-/// (nothing to regress against); baseline `Some` + current `None` → fail
-/// with a note (metric disappeared).
 fn push_scalar(
     rep: &mut CompareReport,
     clip: &str,
@@ -356,15 +328,12 @@ mod tests {
         assert!(cmp.pass, "{cmp:?}");
         assert!(cmp.deltas.iter().all(|d| d.delta == 0.0 && d.pass));
         assert!(cmp.notes.is_empty());
-        // ssim + flicker + bytes + damage_rate + 1 recorded stage
         assert_eq!(cmp.deltas.len(), 5);
     }
 
     #[test]
     fn within_tolerance_and_improvements_pass() {
         let base = report(0.8, 1.0, 20000.0, 0.5);
-        // Slightly worse ssim (−0.01 ≤ 0.02), better flicker, fewer bytes,
-        // slightly slower resample (+20% ≤ +50%).
         let cur = report(0.79, 0.5, 15000.0, 0.6);
         let cmp = compare_reports(&cur, &base, &Tolerances::default());
         assert!(cmp.pass, "{cmp:?}");
@@ -373,7 +342,7 @@ mod tests {
     #[test]
     fn ssim_regression_trips() {
         let base = report(0.8, 1.0, 20000.0, 0.5);
-        let cur = report(0.75, 1.0, 20000.0, 0.5); // −0.05 > 0.02
+        let cur = report(0.75, 1.0, 20000.0, 0.5);
         let cmp = compare_reports(&cur, &base, &Tolerances::default());
         assert!(!cmp.pass);
         let fail: Vec<_> = cmp.failures().collect();
@@ -385,38 +354,29 @@ mod tests {
     #[test]
     fn bytes_regression_trips() {
         let base = report(0.8, 1.0, 20000.0, 0.5);
-        let cur = report(0.8, 1.0, 26000.0, 0.5); // +30% > +20%
+        let cur = report(0.8, 1.0, 26000.0, 0.5);
         let cmp = compare_reports(&cur, &base, &Tolerances::default());
         assert!(!cmp.pass);
         assert_eq!(cmp.failures().next().unwrap().metric, "bytes_per_frame/truecolor");
     }
 
-    /// M2-low fix b (deliberate behavior change at M3 Tune): a flicker
-    /// regression still trips, but a stage-time jump is informational-only —
-    /// recorded as a passing delta plus an `info:` note, never a gate. The
-    /// wall-clock stage timers made eval.sh spuriously red on a loaded box;
-    /// the criterion perf gate owns stage-time regressions.
     #[test]
     fn flicker_trips_but_stage_ms_is_informational_only() {
         let base = report(0.8, 1.0, 20000.0, 0.5);
-        let cur = report(0.8, 2.0, 20000.0, 0.9); // +1.0 > 0.5; +80% > +50%
+        let cur = report(0.8, 2.0, 20000.0, 0.9);
         let cmp = compare_reports(&cur, &base, &Tolerances::default());
         assert!(!cmp.pass);
         let metrics: Vec<_> = cmp.failures().map(|d| d.metric.as_str()).collect();
         assert_eq!(metrics, ["flicker"], "stage_ms must not gate");
-        // The stage delta is still recorded (visibility) and passes…
         let stage = cmp.deltas.iter().find(|d| d.metric == "stage_ms/resample").unwrap();
         assert!(stage.pass);
         assert!((stage.delta - 0.4).abs() < 1e-12);
-        // …with an informational note flagging the over-band jump.
         assert!(
             cmp.notes.iter().any(|n| n.starts_with("info:") && n.contains("stage_ms/resample")),
             "notes: {:?}",
             cmp.notes
         );
 
-        // A stage jump ALONE never fails the compare (the eval.sh loaded-box
-        // scenario) and stays note-free inside the band.
         let cmp = compare_reports(&report(0.8, 1.0, 20000.0, 5.0), &base, &Tolerances::default());
         assert!(cmp.pass, "{cmp:?}");
         assert!(cmp.notes.iter().any(|n| n.starts_with("info:")));
@@ -424,7 +384,6 @@ mod tests {
         assert!(cmp.pass);
         assert!(cmp.notes.is_empty(), "within-band stage drift earns no note: {:?}", cmp.notes);
 
-        // stage_ms disappearing entirely is still structural coverage loss.
         let mut gone = report(0.8, 1.0, 20000.0, 0.5);
         gone.clips[0].metrics.stage_ms = None;
         let cmp = compare_reports(&gone, &base, &Tolerances::default());
@@ -448,9 +407,6 @@ mod tests {
         assert!(cmp2.notes.iter().any(|n| n.contains("\"ssim\"")));
     }
 
-    /// Version-skew policy (M3): an OLDER baseline compares (shared metrics,
-    /// informational note); a NEWER baseline fails fast — this tool can't
-    /// know its semantics.
     #[test]
     fn schema_skew_older_baseline_ok_newer_fails() {
         let cur = report(0.8, 1.0, 20000.0, 0.5);
@@ -468,9 +424,6 @@ mod tests {
         assert!(cmp.deltas.is_empty());
     }
 
-    /// M3: an edge-F1 collapse (the aesthetic-regression drill) trips the
-    /// compare on its own; small drops within tolerance and improvements
-    /// pass; precision/recall are never gated.
     #[test]
     fn edge_f1_regression_trips() {
         let with_edge = |f1: f64| {
@@ -489,17 +442,12 @@ mod tests {
         let cmp = compare_reports(&with_edge(0.05), &base, &tol);
         assert!(!cmp.pass);
         assert_eq!(cmp.failures().map(|d| d.metric.as_str()).collect::<Vec<_>>(), ["edge_f1"]);
-        // Baseline without edge metrics (v1-era): nothing to regress against.
         assert!(compare_reports(&with_edge(0.0), &report(0.8, 1.0, 20000.0, 0.5), &tol).pass);
-        // Metric disappearing from the current run fails.
         let cmp = compare_reports(&report(0.8, 1.0, 20000.0, 0.5), &base, &tol);
         assert!(!cmp.pass);
         assert!(cmp.notes.iter().any(|n| n.contains("edge_f1")));
     }
 
-    /// M2 review fix: asset-structure regressions (shot/cut roster,
-    /// keyframe cadence, encode bloat) must trip the compare on their own,
-    /// even when every render-side metric stays flat.
     #[test]
     fn asset_structure_regressions_trip() {
         let with_asset = |shots: u32, cuts: u32, keyframes: u32, bytes: u64| {
@@ -514,31 +462,24 @@ mod tests {
         let base = with_asset(9, 8, 15, 1_000_000);
         let tol = Tolerances::default();
 
-        // Identical structure passes.
         assert!(compare_reports(&base, &base, &tol).pass);
 
-        // Killed cut detection: 1 shot, 0 cuts — fails on both counts.
         let cur = with_asset(1, 0, 15, 1_000_000);
         let cmp = compare_reports(&cur, &base, &tol);
         assert!(!cmp.pass);
         let metrics: Vec<_> = cmp.failures().map(|d| d.metric.as_str()).collect();
         assert_eq!(metrics, ["shot_count", "cut_count"]);
 
-        // Over-segmentation is a change too (directionless, default delta 0).
         assert!(!compare_reports(&with_asset(20, 19, 15, 1_000_000), &base, &tol).pass);
 
-        // keyframe_ivl inflated: fewer keyframes fails; more passes alone.
         let cmp = compare_reports(&with_asset(9, 8, 3, 1_000_000), &base, &tol);
         assert_eq!(cmp.failures().map(|d| d.metric.as_str()).collect::<Vec<_>>(), ["keyframe_count"]);
         assert!(compare_reports(&with_asset(9, 8, 60, 1_000_000), &base, &tol).pass);
 
-        // Encode bloat > +20% fails; shrink passes.
         let cmp = compare_reports(&with_asset(9, 8, 15, 1_300_000), &base, &tol);
         assert_eq!(cmp.failures().map(|d| d.metric.as_str()).collect::<Vec<_>>(), ["asset_bytes"]);
         assert!(compare_reports(&with_asset(9, 8, 15, 700_000), &base, &tol).pass);
 
-        // Metrics absent from an OLD baseline are skipped (back-compat) but
-        // present-in-baseline + missing-from-current still fails.
         let old_base = report(0.8, 1.0, 20000.0, 0.5);
         assert!(compare_reports(&base, &old_base, &tol).pass);
         let cmp = compare_reports(&old_base, &base, &tol);
@@ -556,7 +497,6 @@ mod tests {
 
     #[test]
     fn tolerances_partial_toml_style_override() {
-        // serde(default) lets params.toml override any subset (item B glue).
         let t: Tolerances = serde_json::from_str(r#"{"ssim_max_drop": 0.001}"#).unwrap();
         assert_eq!(t.ssim_max_drop, 0.001);
         assert_eq!(t.bytes_frac_max_increase, Tolerances::default().bytes_frac_max_increase);

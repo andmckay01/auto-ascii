@@ -22,10 +22,11 @@ and RGB colors for your renderer, game engine or test.
 | feature | default | provides |
 |---|---|---|
 | `bin` | **on** | the `auto-ascii-player` CLI binary (implies `terminal`) |
-| `terminal` | via `bin` | `Player` / `PlayerBuilder` — the blocking terminal session |
+| `terminal` | via `bin` | `Player` / `PlayerBuilder` — the blocking terminal session (implies `compose`) |
+| `compose` | **on** | `Composition` TOML timelines (stitched clips) |
 | *(none)* | | `RenderSession` only: no crossterm, no clap (`default-features = false`) |
 
-Examples: `simple-play` (12 lines, the whole player), `embedded-loop`
+Examples: `simple-play` (the whole player in one call), `embedded-loop`
 (`RenderSession` in a hand-rolled loop with a mid-run resize), `headless-dump`
 (frames to stdout as text, no terminal at all).
 

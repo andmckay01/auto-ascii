@@ -1,6 +1,5 @@
-//! Damage/bytes aggregation from backend `FrameStats`, and per-stage frame
-//! timers (PLAN §6 "damage rate & bytes/frame per tier", "frame time per
-//! pipeline stage").
+//! Damage/bytes aggregation from backend `FrameStats` (damage rate and
+//! bytes/frame per tier), and per-stage frame timers.
 
 use std::time::Duration;
 
@@ -8,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use auto_ascii_term::FrameStats;
 
 /// Aggregated present-path statistics for one run at one tier — the JSON
-/// form of a `Vec<FrameStats>` (PLAN §3.6 step 7 feeds these per frame).
+/// form of a `Vec<FrameStats>` (one per presented frame).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DamageStats {
     /// Frames presented (including dropped ones).
@@ -68,8 +67,8 @@ pub fn aggregate_frame_stats(stats: &[FrameStats], grid_cells: u32, fps: f64) ->
     }
 }
 
-/// The four §3.6 pipeline stages the player already reports in its `--sim`
-/// JSON (`stage_ms:{decode,resample,compose,present}`).
+/// The four player pipeline stages, as reported in its `--sim` JSON
+/// (`stage_ms:{decode,resample,compose,present}`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     Decode,
@@ -124,7 +123,6 @@ impl StageTimesMs {
 /// every frame, then `report()` for the serializable summary.
 #[derive(Clone, Debug, Default)]
 pub struct StageAccum {
-    // count, total_ns, max_ns — indexed by Stage::ALL order.
     agg: [(u32, u64, u64); 4],
 }
 

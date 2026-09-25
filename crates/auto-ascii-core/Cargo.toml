@@ -9,9 +9,10 @@ keywords = ["ascii", "terminal", "rendering", "video", "tui"]
 categories = ["rendering", "multimedia::video"]
 readme = "../../README.md"
 
-# PLAN §8: no deps beyond std (pure, golden-testable).
+[lints]
+workspace = true
+
 [dependencies]
 
-# M2 item D: compute_viewport letterbox/aspect property tests (PLAN §6).
 [dev-dependencies]
 proptest = { workspace = true }

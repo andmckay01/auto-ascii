@@ -25,10 +25,10 @@ with `library/` (the `<name>.ascii` clips, each with a `<name>.json` sidecar),
    <clip> [--in T] [--out T] [--at T]` appends one clip, `compose show <name>`
    prints the resolved timeline with gaps and overlaps; `<name>` may be a path.
 5. **play / export** — `auto-ascii play <clip | composition>` and `compose play
-   <name>` are interactive, so they refuse `--json`: `q` quits and `v` shows the
-   controls; clips switch at their boundaries with no re-encode. A bare name means
-   the library clip first, so pass the `.toml` path to force a composition.
-   `compose export <name> [-o path]` flattens one into `exports/<name>.ascii`.
+   <name>` are interactive (no `--json`; no re-encode): `q` quits, `v` controls, `/`
+   glyph codec, `s` saves dials + codec as `<clip>.player.toml`. A bare name is the
+   library clip first (a `.toml` path forces a composition); `compose export <name>
+   [-o path]` flattens one into `exports/<name>.ascii`.
 
 ## Composition schema
 

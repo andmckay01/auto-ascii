@@ -1,4 +1,4 @@
-//! Edge F1 (PLAN §6): cell-level precision/recall/F1 of the renderer's edge
+//! Edge F1: cell-level precision/recall/F1 of the renderer's edge
 //! layer against **Canny on the SOURCE frame at grid resolution**.
 //!
 //! Ground truth is deliberately *never* the factory's own E plane (no
@@ -17,7 +17,7 @@
 //! Matching uses a **1-cell tolerance ring** ([`EDGE_MATCH_TOLERANCE`],
 //! Chebyshev distance): glyph quantization means a contour legitimately
 //! lands one cell off the downscaled Canny ridge, and the renderer's edge
-//! magnitude is unthinned by design (PLAN §4) — off-by-one cells count as
+//! magnitude is unthinned by design — off-by-one cells count as
 //! hits on both the precision and the recall side. Scores are NaN-free by
 //! construction (see [`edge_f1`] for the empty-mask conventions).
 
@@ -29,10 +29,9 @@ use auto_ascii_core::{Grid, Resampler, Viewport};
 /// Canny hysteresis thresholds (imageproc: Sobel gradient magnitude on the
 /// internally Gaussian-blurred image, σ = 1.4). Fixed and eval-owned — like
 /// the SSIM reference percentiles they must stay independent of the params
-/// under test. Chosen on the M3 corpus at the 300×80 reference grid so truth
-/// density lands in the "real contours" band (~4–10% of cells): low 60 /
-/// high 140 keeps subject outlines and limbs while dropping fine
-/// micro-texture (grass blades, grain).
+/// under test. At the 300×80 reference grid, low 60 / high 140 lands truth
+/// density in the "real contours" band (~4–10% of cells): subject outlines
+/// and limbs stay, fine micro-texture (grass blades, grain) drops out.
 pub const CANNY_LOW: f32 = 60.0;
 pub const CANNY_HIGH: f32 = 140.0;
 
@@ -77,7 +76,6 @@ impl EdgeMask {
         self.bits.iter().map(|&b| u32::from(b)).sum()
     }
 
-    /// Any set cell within Chebyshev distance `tol` of `(x, y)`?
     fn hit_near(&self, x: u16, y: u16, tol: u16) -> bool {
         let x0 = x.saturating_sub(tol);
         let y0 = y.saturating_sub(tol);
@@ -87,8 +85,7 @@ impl EdgeMask {
     }
 }
 
-/// Ground truth: Canny on the source luma **downscaled to grid resolution**
-/// (PLAN §6 "source Canny at grid resolution").
+/// Ground truth: Canny on the source luma **downscaled to grid resolution**.
 ///
 /// `src` is the raw source luma at `src_w × src_h` (the factory's ingest
 /// scale, e.g. 480×270); the downscale to `grid_w × grid_h` viewport cells
@@ -229,7 +226,6 @@ mod tests {
     use super::*;
 
     fn rect_mask(w: u16, h: u16, x0: u16, y0: u16, x1: u16, y1: u16) -> EdgeMask {
-        // Rectangle OUTLINE cells (inclusive corners).
         let mut m = EdgeMask::new(w, h);
         for x in x0..=x1 {
             m.set(x, y0, true);
@@ -242,11 +238,8 @@ mod tests {
         m
     }
 
-    /// Synthetic known-edge fixture: a drawn rectangle's Canny truth matched
-    /// by an exact-match renderer scores a perfect 1.0.
     #[test]
     fn drawn_rectangle_exact_match_is_perfect() {
-        // Source image 4× the grid: filled bright rectangle on dark ground.
         let (sw, sh, gw, gh) = (128u16, 80u16, 32u16, 20u16);
         let mut src = vec![20u8; sw as usize * sh as usize];
         for y in 24..56usize {
@@ -256,8 +249,6 @@ mod tests {
         }
         let truth = canny_edge_truth(&src, sw, sh, gw, gh);
         assert!(truth.count() > 0, "canny found no edges on a hard rectangle");
-        // Truth cells hug the rectangle border (8..=24 × 6..=14 in grid
-        // coords) within one cell — sanity that thresholds see the contour.
         for y in 0..gh {
             for x in 0..gw {
                 if truth.get(x, y) {
@@ -270,7 +261,6 @@ mod tests {
                 }
             }
         }
-        // Exact-match renderer: prediction == truth → perfect at tol 0 and 1.
         let s0 = edge_f1(&truth, &truth, 0);
         assert_eq!((s0.precision, s0.recall, s0.f1), (1.0, 1.0, 1.0));
         let s1 = edge_f1(&truth, &truth, EDGE_MATCH_TOLERANCE);
@@ -279,23 +269,18 @@ mod tests {
         assert_eq!(s1.predicted_cells, truth.count());
     }
 
-    /// Off-by-one prediction: 0 at tol 0 unless overlapping, but still a
-    /// perfect 1.0 under the 1-cell tolerance ring.
     #[test]
     fn shifted_by_one_is_perfect_under_tolerance_ring() {
         let truth = rect_mask(32, 20, 8, 5, 24, 14);
-        let shifted = rect_mask(32, 20, 9, 6, 25, 15); // +1 in both axes
+        let shifted = rect_mask(32, 20, 9, 6, 25, 15);
         let s1 = edge_f1(&truth, &shifted, EDGE_MATCH_TOLERANCE);
         assert_eq!((s1.precision, s1.recall, s1.f1), (1.0, 1.0, 1.0));
-        // Two cells apart breaks the ring.
         let far = rect_mask(32, 20, 10, 7, 26, 16);
         let s2 = edge_f1(&truth, &far, EDGE_MATCH_TOLERANCE);
         assert!(s2.f1 < 1.0, "tol 1 must not absorb a 2-cell shift");
-        // …but tol 2 does (ring radius is honored exactly).
         assert_eq!(edge_f1(&truth, &far, 2).f1, 1.0);
     }
 
-    /// Empty-mask conventions: every combination is defined and NaN-free.
     #[test]
     fn empty_masks_are_nan_safe() {
         let empty = EdgeMask::new(16, 10);
@@ -313,7 +298,6 @@ mod tests {
         for s in [both, no_truth, no_pred] {
             assert!(s.precision.is_finite() && s.recall.is_finite() && s.f1.is_finite());
         }
-        // Zero true edges on a real frame: flat source → no Canny edges.
         let flat = vec![128u8; 64 * 36];
         let truth = canny_edge_truth(&flat, 64, 36, 32, 18);
         assert_eq!(truth.count(), 0);
@@ -323,7 +307,6 @@ mod tests {
     #[test]
     fn partial_overlap_scores_between() {
         let truth = rect_mask(32, 20, 8, 5, 24, 14);
-        // Prediction: only the top half of the outline.
         let mut pred = EdgeMask::new(32, 20);
         for x in 8..=24 {
             pred.set(x, 5, true);
@@ -339,10 +322,10 @@ mod tests {
         let vp = Viewport { cols: 6, rows: 4, pad_left: 2, pad_right: 1, pad_top: 1, pad_bottom: 0 };
         let mut layers: Grid<u8> = Grid::new(9, 5);
         layers.fill(layer::BASE);
-        layers.set(2, 1, layer::EDGE); // viewport (0,0)
-        layers.set(4, 2, layer::EDGE); // viewport (2,1)
-        layers.set(3, 3, layer::HIGHLIGHT); // highlight is not an edge
-        layers.set(0, 0, layer::EDGE); // in the pads: cropped away
+        layers.set(2, 1, layer::EDGE);
+        layers.set(4, 2, layer::EDGE);
+        layers.set(3, 3, layer::HIGHLIGHT);
+        layers.set(0, 0, layer::EDGE);
         let mask = edge_cells_from_layers(&layers, &vp);
         assert_eq!((mask.w(), mask.h()), (6, 4));
         assert_eq!(mask.count(), 2);

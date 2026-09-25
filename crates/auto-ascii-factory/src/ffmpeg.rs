@@ -1,12 +1,11 @@
-//! ffmpeg/ffprobe subprocess plumbing (PLAN §5 stage 1: "Subprocess, never
-//! libav bindings").
+//! ffmpeg/ffprobe subprocess plumbing — subprocesses, never libav bindings.
 //!
 //! - [`probe`] runs `ffprobe -print_format json` and validates that the input
 //!   has a video stream (+ extracts duration for the info line).
 //! - [`FrameStream`] spawns `ffmpeg -nostdin [-ss/-t] -i input -vf
 //!   scale=W:H:flags=area,fps=N,format=rgb24 -f rawvideo -` and yields whole
-//!   rgb24 frames off the stdout pipe (M1: ONE decode feeds both the L* luma
-//!   and the RGB565 chroma extraction — PLAN §5 stage 3). stderr is drained
+//!   rgb24 frames off the stdout pipe (ONE decode feeds both the L* luma
+//!   and the RGB565 chroma extraction). stderr is drained
 //!   on a thread (so a chatty ffmpeg can never deadlock the pipe) and
 //!   surfaced verbatim when ffmpeg exits nonzero. Short reads mid-frame are
 //!   a hard error.
@@ -18,7 +17,7 @@ use std::thread::JoinHandle;
 
 pub type BoxErr = Box<dyn std::error::Error>;
 
-/// What `ffprobe` told us about the input (M0: just enough to validate and
+/// What `ffprobe` told us about the input (just enough to validate and
 /// print an info line).
 #[derive(Clone, Debug)]
 pub struct ProbeInfo {
@@ -29,7 +28,7 @@ pub struct ProbeInfo {
 }
 
 /// Run `ffprobe -v error -print_format json -show_format -show_streams` and
-/// require at least one video stream (PLAN §5 stage 1).
+/// require at least one video stream.
 pub fn probe(input: &Path) -> Result<ProbeInfo, BoxErr> {
     let out = Command::new("ffprobe")
         .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
@@ -89,7 +88,6 @@ impl DecodeParams<'_> {
 pub struct FrameStream {
     child: Child,
     stdout: ChildStdout,
-    /// Drains stderr concurrently; joined in [`finish`](FrameStream::finish).
     stderr_thread: JoinHandle<Vec<u8>>,
     frame_size: usize,
 }
@@ -157,7 +155,7 @@ impl FrameStream {
     /// Normal-path teardown: wait for exit, join the stderr drain, and turn a
     /// nonzero exit into an error carrying ffmpeg's stderr.
     pub fn finish(mut self) -> Result<(), BoxErr> {
-        drop(self.stdout); // close the read end; a still-running ffmpeg gets EPIPE
+        drop(self.stdout);
         let status = self.child.wait()?;
         let stderr = self.stderr_thread.join().unwrap_or_default();
         if !status.success() {

@@ -1,4 +1,4 @@
-//! Terminal capability probe (PLAN §3.1, M1).
+//! Terminal capability probe.
 //!
 //! Passive signals (`COLORTERM`, `TERM`, `TERM_PROGRAM`) are hints, not
 //! truth. The active volley goes out in ONE write on the tty:
@@ -10,37 +10,33 @@
 //! or silence → conservative default (256-color, ASCII glyphs). Never hangs.
 //!
 //! Results are cached at `$XDG_CACHE_HOME/auto-ascii/caps` keyed on
-//! `(TERM, TERM_PROGRAM, COLORTERM, tmux?)` — COLORTERM is part of the key
-//! (M1 review low 3: a COLORTERM-stripped run, e.g. under a pipe wrapper,
-//! must not poison later runs where COLORTERM proves truecolor), and a
-//! cache hit can only *upgrade* the passive evidence of the current run,
-//! never downgrade it — with ONE recorded exception (M5 review high 1): an
-//! entry whose store-time volley had an identity-keyed quirk clamp the tier
-//! *below* the passive evidence carries a `quirk_clamped` marker, and a hit
-//! on such an entry re-applies the clamp. The key pins the passive inputs,
-//! so the hit run's passive evidence is the store run's; without the marker
-//! the downgrade-direction quirk (`xterm-no-direct-color`) would only ever
-//! work on the first, cold-cache run. Escape hatches: a forced tier
-//! (`--tier`) overrides the detected color tier, `--no-query` skips the
-//! volley entirely, `--no-quirks` skips the identity-keyed quirk table
-//! ([`crate::quirks`], M5 item C — applied post-volley, before the forced
-//! tier) *and* bypasses the cache in both directions (cached entries embed
-//! quirk adjustments — M5 review medium 2), and `no_cache` bypasses the
+//! `(TERM, TERM_PROGRAM, COLORTERM, tmux?)`. COLORTERM is part of the key so
+//! a COLORTERM-stripped run (e.g. under a pipe wrapper) cannot poison later
+//! runs where COLORTERM proves truecolor. A cache hit can only *upgrade* the
+//! passive evidence of the current run, never downgrade it — with one
+//! exception: an entry whose store-time volley had an identity-keyed quirk
+//! clamp the tier *below* the passive evidence carries a `quirk_clamped`
+//! marker, and a hit on such an entry re-applies the clamp.
+//!
+//! Escape hatches: a forced tier (`--tier`) overrides the detected color
+//! tier, `--no-query` skips the volley entirely, `--no-quirks` skips the
+//! identity-keyed quirk table ([`crate::quirks`], applied post-volley,
+//! before the forced tier) *and* bypasses the cache in both directions
+//! (cached entries embed quirk adjustments), and `no_cache` bypasses the
 //! cache (tests).
 //!
-//! Straggler hygiene (M1 review low 2): replies still in flight at the
-//! deadline are consumed by a bounded quiet-gap grace drain (only when the
-//! terminal was already mid-answer — silent terminals return at the
-//! deadline unchanged), and a crate-private straggler flag tells the
-//! backend's event decoder to filter any reply fragments that arrive later
-//! still, so probe bytes never surface as key events (digits are seek
-//! bindings!).
+//! Straggler hygiene: replies still in flight at the deadline are consumed
+//! by a bounded quiet-gap grace drain (only when the terminal was already
+//! mid-answer — silent terminals return at the deadline unchanged), and a
+//! crate-private straggler flag tells the backend's event decoder to filter
+//! any reply fragments that arrive later still, so probe bytes never surface
+//! as key events.
 //!
 //! Capability tiers are color depth + glyph repertoire only — no
-//! throughput/latency classification (Scope amendment).
+//! throughput/latency classification.
 //!
-//! Reply interpretation is deliberately strict (M4 item D, pinned by the
-//! per-terminal pty identity fixtures in `tests/terminal_identity.rs`):
+//! Reply interpretation is deliberately strict (pinned by the per-terminal
+//! pty identity fixtures in `tests/terminal_identity.rs`):
 //! DECRPM 2026 counts only when the mode is *settable*
 //! ([`ProbeReplies::sync_supported`]), and the XTGETTCAP `RGB` answer is read
 //! by value, because xterm replies `1+r524742=` "-1" — a *valid* reply
@@ -62,34 +58,22 @@ use std::time::Instant;
 use crate::ansi::write_all_fd;
 use crate::caps::{Caps, ColorTier, GlyphFlags, GlyphSupportTier};
 
-/// Default reply deadline (PLAN §3.1: 150–250 ms local).
+/// Default volley reply deadline.
 pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 
-/// Grace-drain quiet gap: once the deadline passed with a reply already in
-/// flight (some bytes arrived, no DA1 yet), keep consuming until the input
-/// has been quiet this long. Only extends the probe when bytes actually
-/// arrived — a silent terminal still returns at the deadline exactly.
 #[cfg(unix)]
 const STRAGGLER_QUIET: Duration = Duration::from_millis(150);
-/// Hard cap on the grace drain past the deadline (never hangs, PLAN §3.1).
 #[cfg(unix)]
 const STRAGGLER_GRACE_CAP: Duration = Duration::from_millis(1000);
 
-/// True when the last volley this process wrote timed out without its DA1
-/// sentinel — reply bytes may still arrive on stdin *after* [`probe_caps`]
-/// returned. `AnsiBackend` reads this to arm its event-decoder straggler
-/// filter (M1 review low 2: late reply fragments must never surface as key
-/// events). Reset on every probe; cache hits / `--no-query` / `!isatty`
-/// never leave stragglers (no volley was written).
 static VOLLEY_STRAGGLERS: AtomicBool = AtomicBool::new(false);
 
-/// See [`VOLLEY_STRAGGLERS`].
 pub(crate) fn volley_stragglers_possible() -> bool {
     VOLLEY_STRAGGLERS.load(Ordering::Relaxed)
 }
 
-/// The active volley, sent as ONE write (PLAN §3.1). Order matters: DA1 last
-/// as sentinel.
+/// The active volley, sent as ONE write. Order matters: DA1 last as
+/// sentinel.
 pub const VOLLEY: &[u8] = b"\x1b[>0q\x1b[?2026$p\x1bP+q524742\x1b\\\x1b[16t\x1b[c";
 
 /// Options for [`probe_caps`] — the `--tier` / `--no-query` / `--no-cache`
@@ -100,12 +84,11 @@ pub struct ProbeOptions {
     pub forced_tier: Option<ColorTier>,
     /// `--no-query`: never write the volley; passive env hints only.
     pub no_query: bool,
-    /// `--no-quirks`: skip the identity-keyed quirk table (M5 item C — see
+    /// `--no-quirks`: skip the identity-keyed quirk table (see
     /// [`crate::quirks`]) that normally adjusts caps after the volley, and
     /// bypass the cache in BOTH directions. Never stored: cached entries
-    /// must be the fully adjusted truth, because cache hits skip the volley
-    /// and can never re-apply an identity-keyed quirk. Never *read* either
-    /// (M5 review medium 2): a cached entry may embed a quirk adjustment, so
+    /// must be the fully adjusted truth, because cache hits skip the volley.
+    /// Never *read* either: a cached entry may embed a quirk adjustment, so
     /// honoring it would silently serve the quirked result the flag promises
     /// to disable — `--no-quirks` always runs the volley and takes the
     /// replies at face value.
@@ -135,7 +118,8 @@ impl Default for ProbeOptions {
 /// What the volley got back (parsed by [`ProbeParser`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProbeReplies {
-    /// XTVERSION text (e.g. `kitty(0.32.2)`), for the future quirk table.
+    /// XTVERSION text (e.g. `kitty(0.32.2)`) — the identity the quirk table
+    /// keys on.
     pub xtversion: Option<String>,
     /// DECRPM `Ps` for mode 2026: 0 = not recognized, 1 = set, 2 = reset,
     /// 3 = permanently set, 4 = permanently reset. Only 1/2 mean the mode is
@@ -174,7 +158,6 @@ impl ProbeReplies {
     }
 }
 
-/// Hex-decode an XTGETTCAP payload (2 ASCII hex digits per byte).
 fn hex_decode(bytes: &[u8]) -> Option<Vec<u8>> {
     if bytes.is_empty() || !bytes.len().is_multiple_of(2) {
         return None;
@@ -194,9 +177,7 @@ fn hex_decode(bytes: &[u8]) -> Option<Vec<u8>> {
 #[derive(Debug)]
 pub struct ProbeParser {
     state: State,
-    /// CSI params+intermediates (final byte excluded), capped.
     seq: Vec<u8>,
-    /// Sequence overflowed the cap — still consumed, contents dropped.
     overflow: bool,
     replies: ProbeReplies,
 }
@@ -207,13 +188,11 @@ enum State {
     Esc,
     Csi,
     Dcs,
-    /// ESC seen inside DCS/OSC (possible ST).
     DcsEsc,
     Osc,
     OscEsc,
 }
 
-/// Cap on stored sequence bytes — anything longer is consumed but dropped.
 const SEQ_CAP: usize = 256;
 
 impl Default for ProbeParser {
@@ -276,7 +255,7 @@ impl ProbeParser {
                 b'[' => self.begin(State::Csi),
                 b'P' => self.begin(State::Dcs),
                 b']' => self.begin(State::Osc),
-                0x1b => {} // stay: ESC ESC
+                0x1b => {}
                 _ => self.state = State::Ground,
             },
             State::Csi => match b {
@@ -285,8 +264,8 @@ impl ProbeParser {
                     self.finish_csi(b);
                     self.state = State::Ground;
                 }
-                0x1b => self.state = State::Esc, // malformed: restart
-                _ => {} // C0 controls inside CSI: ignore
+                0x1b => self.state = State::Esc,
+                _ => {}
             },
             State::Dcs => match b {
                 0x1b => self.state = State::DcsEsc,
@@ -301,9 +280,8 @@ impl ProbeParser {
                     self.finish_dcs();
                     self.state = State::Ground;
                 }
-                0x1b => {} // stay armed
+                0x1b => {}
                 _ => {
-                    // Not ST — treat as DCS payload noise and continue.
                     self.state = State::Dcs;
                 }
             },
@@ -326,7 +304,6 @@ impl ProbeParser {
         }
         let body = std::mem::take(&mut self.seq);
         match final_byte {
-            // DECRPM: CSI ? 2026 ; Ps $ y
             b'y' => {
                 if let Some(rest) = body.strip_prefix(b"?2026;") {
                     let digits: Vec<u8> =
@@ -338,7 +315,6 @@ impl ProbeParser {
                     }
                 }
             }
-            // CSI 16 t reply: CSI 6 ; height ; width t
             b't' => {
                 let parts: Vec<u32> = body
                     .split(|&c| c == b';')
@@ -354,7 +330,6 @@ impl ProbeParser {
                     }
                 }
             }
-            // DA1 sentinel: CSI ? … c
             b'c' if body.first() == Some(&b'?') || body.is_empty() => {
                 self.replies.da1 = true;
             }
@@ -368,12 +343,8 @@ impl ProbeParser {
         }
         let body = std::mem::take(&mut self.seq);
         if let Some(rest) = body.strip_prefix(b">|") {
-            // XTVERSION: DCS > | text ST
             self.replies.xtversion = Some(String::from_utf8_lossy(rest).into_owned());
         } else if let Some(rest) = body.strip_prefix(b"1+r") {
-            // XTGETTCAP valid reply: `name[=hexvalue]` pairs separated by ';'.
-            // Find the RGB cap (name hex "524742", case-insensitive) and read
-            // its VALUE — presence alone is not proof of direct color.
             for entry in rest.split(|&c| c == b';') {
                 let (name, value) = match entry.iter().position(|&c| c == b'=') {
                     Some(at) => (&entry[..at], Some(&entry[at + 1..])),
@@ -383,16 +354,7 @@ impl ProbeParser {
                     continue;
                 }
                 self.replies.xtgettcap_rgb = Some(match value {
-                    // Boolean-cap form (`1+r524742`, no value): terminfo RGB
-                    // is a boolean, so a bare valid reply means yes.
                     None => true,
-                    // Valued form: "8" / "8/8/8" = channel bit widths; xterm
-                    // answers the *valid* reply with the value "-1" when it
-                    // is not in direct-color mode, i.e. NOT truecolor
-                    // (xterm/misc.c: `if (direct_color && has_rgb) {…} else
-                    // unparseputs(xw, "-1")`). Treating that as truecolor
-                    // would promote every plain xterm — the bug this parse
-                    // exists to prevent.
                     Some(hex) => match hex_decode(hex) {
                         Some(v) => !v.starts_with(b"-") && v != b"0",
                         None => false,
@@ -406,8 +368,6 @@ impl ProbeParser {
     }
 }
 
-/// Passive environment hints — read once, testable without touching the
-/// process environment.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EnvHints {
     pub term: String,
@@ -443,8 +403,6 @@ impl EnvHints {
     }
 }
 
-/// Passive tier + glyph hints (PLAN §3.1: hints, not truth). Used directly
-/// under `--no-query`, and as the base the volley upgrades.
 fn apply_passive(caps: &mut Caps, h: &EnvHints) {
     let term = h.term.to_ascii_lowercase();
     caps.color = if h.colorterm.eq_ignore_ascii_case("truecolor")
@@ -463,12 +421,9 @@ fn apply_passive(caps: &mut Caps, h: &EnvHints) {
     } else if term.contains("16color") {
         ColorTier::C16
     } else {
-        // Conservative default (PLAN §9.4).
         ColorTier::C256
     };
 
-    // Glyph repertoire: locale/terminal driven; braille stays unset until
-    // verified (PLAN §3.4 palette 7 — verified-support only).
     if term == "linux" {
         caps.glyphs = GlyphFlags::ASCII.with(GlyphFlags::BLOCKS);
         caps.glyph_support = GlyphSupportTier::Cp437;
@@ -486,10 +441,11 @@ fn apply_passive(caps: &mut Caps, h: &EnvHints) {
     }
 }
 
-/// Probe terminal capabilities (PLAN §3.1). Never hangs, never blocks
-/// longer than `opts.timeout` (+ a non-blocking drain): `!isatty` on
-/// stdin/stdout or a silent terminal (no DA1) → conservative default
-/// (256-color, ASCII glyphs). See module docs for the full flow.
+/// Probe terminal capabilities. Never hangs: waits at most `opts.timeout`
+/// for replies, plus a bounded grace drain if the terminal is still
+/// mid-answer. `!isatty` on stdin/stdout or a silent terminal (no DA1) →
+/// conservative default (256-color, ASCII glyphs). See module docs for the
+/// full flow.
 #[cfg(unix)]
 pub fn probe_caps(opts: &ProbeOptions) -> Caps {
     let in_fd = libc::STDIN_FILENO;
@@ -497,7 +453,6 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
     let tty =
         unsafe { libc::isatty(in_fd) } == 1 && unsafe { libc::isatty(out_fd) } == 1;
 
-    // Conservative base (PLAN §9.4): 256-color, ASCII glyphs.
     let mut caps = Caps {
         color: ColorTier::C256,
         glyphs: GlyphFlags::ASCII,
@@ -527,10 +482,6 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
         apply_passive(&mut caps, &hints);
     } else {
         let key = cache_key(&hints);
-        // `--no-quirks` bypasses cache READS too (M5 review medium 2): a
-        // cached entry may embed a quirk adjustment, and serving it would
-        // make the escape hatch a silent no-op — face value means a fresh
-        // volley.
         let cached =
             if opts.no_cache || opts.no_quirks { None } else { cache_load(opts, &key) };
         if let Some(hit) = cached {
@@ -539,7 +490,6 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
         } else {
             match run_volley(in_fd, out_fd, opts.timeout) {
                 Ok(replies) if replies.da1 => {
-                    // The sentinel answered: passive hints + reply upgrades.
                     apply_passive(&mut caps, &hints);
                     if replies.xtgettcap_rgb == Some(true) {
                         caps.color = ColorTier::True;
@@ -548,23 +498,10 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
                     if replies.cell_px.is_some() {
                         caps.cell_px = replies.cell_px;
                     }
-                    // Identity-keyed quirk table (M5 item C, PLAN §3.1):
-                    // applied post-probe, only here — this is the one path
-                    // that HAS a queried identity. `--tier` (below) still
-                    // overrides whatever a quirk decided.
                     let pre_quirk_color = caps.color;
                     if !opts.no_quirks {
                         let _ = crate::quirks::apply_quirks(&mut caps, &replies);
                     }
-                    // A --no-quirks result is never cached: cache hits skip
-                    // the volley, so entries must be the fully adjusted
-                    // truth (see ProbeOptions::no_quirks). A quirk that
-                    // clamped the tier BELOW this run's passive+reply
-                    // evidence is recorded in the entry, so a later cache
-                    // hit can re-apply the downgrade over the same passive
-                    // evidence (M5 review high 1 — the key pins COLORTERM,
-                    // so the hit run sees the exact passive lie stored
-                    // against).
                     if !opts.no_cache && !opts.no_quirks {
                         cache_store(
                             opts,
@@ -578,11 +515,6 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
                         );
                     }
                 }
-                // Timeout / silence / error: stay on the conservative
-                // default (PLAN §3.1 "!isatty or silence → dumb tier";
-                // never cache a non-answer). The volley went out but its
-                // sentinel never came back — reply bytes may yet arrive, so
-                // arm the backend's straggler filter.
                 _ => VOLLEY_STRAGGLERS.store(true, Ordering::Relaxed),
             }
         }
@@ -594,19 +526,17 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
     caps
 }
 
-/// Windows probe (M5 item E — compiled for the windows-gnu cross build,
-/// untested-cross; see scripts/release.sh): passive-only, exactly the
-/// `--no-query` flow. No volley is ever written (the reply plumbing is
-/// POSIX termios/poll; conhost historically swallows or mangles DCS
-/// queries), so `can_query` is false, the quirk table never fires (no
-/// queried identity) and nothing is cached. `--tier` remains the escape
-/// hatch for e.g. Windows Terminal, which is truecolor but exports no
-/// COLORTERM.
+/// Windows probe (compiled for the windows-gnu cross build, not tested on
+/// Windows): passive-only, exactly the `--no-query` flow. No volley is ever
+/// written (the reply plumbing is POSIX termios/poll; conhost historically
+/// swallows or mangles DCS queries), so `can_query` is false, the quirk
+/// table never fires (no queried identity) and nothing is cached. `--tier`
+/// remains the escape hatch for e.g. Windows Terminal, which is truecolor
+/// but exports no COLORTERM.
 #[cfg(windows)]
 pub fn probe_caps(opts: &ProbeOptions) -> Caps {
     use crossterm::tty::IsTty as _;
 
-    // Conservative base (PLAN §9.4): 256-color, ASCII glyphs.
     let mut caps = Caps {
         color: ColorTier::C256,
         glyphs: GlyphFlags::ASCII,
@@ -631,7 +561,6 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
     caps
 }
 
-/// Terminal size in cells from `TIOCGWINSZ`.
 #[cfg(unix)]
 fn term_cells(fd: libc::c_int) -> Option<(u16, u16)> {
     let ws = winsize(fd)?;
@@ -641,7 +570,6 @@ fn term_cells(fd: libc::c_int) -> Option<(u16, u16)> {
     Some((ws.ws_col, ws.ws_row))
 }
 
-/// Cell pixel size from `TIOCGWINSZ` pixel fields, when reported.
 #[cfg(unix)]
 fn winsize_cell_px(fd: libc::c_int) -> Option<(u16, u16)> {
     let ws = winsize(fd)?;
@@ -660,8 +588,6 @@ fn winsize(fd: libc::c_int) -> Option<libc::winsize> {
     Some(unsafe { ws.assume_init() })
 }
 
-/// Restores the saved termios on drop — the volley can never leave the
-/// terminal in raw mode, whatever path returns.
 #[cfg(unix)]
 struct TermiosGuard {
     fd: libc::c_int,
@@ -677,12 +603,8 @@ impl Drop for TermiosGuard {
     }
 }
 
-/// One write out, poll-read replies until DA1 or deadline, then a final
-/// non-blocking drain so no stray reply bytes are left on stdin.
 #[cfg(unix)]
 fn run_volley(in_fd: libc::c_int, out_fd: libc::c_int, timeout: Duration) -> io::Result<ProbeReplies> {
-    // Reply-readable termios: no echo, no canonical buffering; VMIN=0/VTIME=0
-    // with poll() doing the waiting. Restored by the guard on every path.
     let mut saved = MaybeUninit::<libc::termios>::uninit();
     if unsafe { libc::tcgetattr(in_fd, saved.as_mut_ptr()) } != 0 {
         return Err(io::Error::last_os_error());
@@ -719,7 +641,7 @@ fn run_volley(in_fd: libc::c_int, out_fd: libc::c_int, timeout: Duration) -> io:
             break;
         }
         if rc == 0 {
-            break; // deadline
+            break;
         }
         let n = unsafe { libc::read(in_fd, buf.as_mut_ptr().cast(), buf.len()) };
         if n > 0 {
@@ -728,18 +650,10 @@ fn run_volley(in_fd: libc::c_int, out_fd: libc::c_int, timeout: Duration) -> io:
         } else if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
             continue;
         } else {
-            break; // EOF or hard read error
+            break;
         }
     }
 
-    // Grace drain (M1 review low 2): the deadline hit while the terminal was
-    // mid-answer (bytes arrived but no DA1). Those in-flight reply bytes
-    // MUST NOT leak into the app's input stream, where digits would trigger
-    // the 0–9 seek bindings — keep consuming until the input goes quiet for
-    // STRAGGLER_QUIET or the hard cap lapses. A late DA1 inside this window
-    // still upgrades caps (the replies are perfectly valid, just slow).
-    // Silent terminals (`!got_bytes`) skip this entirely: the probe returns
-    // at the deadline exactly as before.
     if got_bytes && !parser.done() {
         let cap = deadline + STRAGGLER_GRACE_CAP;
         while Instant::now() < cap {
@@ -754,12 +668,12 @@ fn run_volley(in_fd: libc::c_int, out_fd: libc::c_int, timeout: Duration) -> io:
                 break;
             }
             if rc == 0 {
-                break; // quiet gap: nothing more in flight
+                break;
             }
             let n = unsafe { libc::read(in_fd, buf.as_mut_ptr().cast(), buf.len()) };
             if n > 0 {
                 if parser.feed(&buf[..n as usize]) {
-                    break; // late DA1: the volley is complete after all
+                    break;
                 }
             } else if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
                 continue;
@@ -769,8 +683,6 @@ fn run_volley(in_fd: libc::c_int, out_fd: libc::c_int, timeout: Duration) -> io:
         }
     }
 
-    // Final zero-timeout drain: consume any straggler reply bytes so they
-    // never leak into the application's input stream.
     loop {
         let mut pfd = libc::pollfd { fd: in_fd, events: libc::POLLIN, revents: 0 };
         if unsafe { libc::poll(&mut pfd, 1, 0) } <= 0 {
@@ -786,16 +698,8 @@ fn run_volley(in_fd: libc::c_int, out_fd: libc::c_int, timeout: Duration) -> io:
     Ok(parser.replies().clone())
 }
 
-// ---------------------------------------------------------------------------
-// Cache: $XDG_CACHE_HOME/auto-ascii/caps, keyed on
-// (TERM, TERM_PROGRAM, COLORTERM, tmux?)
-// ---------------------------------------------------------------------------
-
 #[cfg(unix)]
 const CACHE_FILE: &str = "caps";
-/// Bumped 1 → 2 when COLORTERM joined the key (M1 review low 3), 2 → 3 when
-/// `quirk_clamped` joined the entry (M5 review high 1) — old-version lines
-/// are ignored on load and dropped on the next store.
 #[cfg(unix)]
 const CACHE_VERSION: &str = "3";
 
@@ -804,15 +708,9 @@ const CACHE_VERSION: &str = "3";
 struct CacheEntry {
     color: ColorTier,
     sync_2026: bool,
-    /// The store-time volley's identity-keyed quirk clamped `color` BELOW
-    /// that run's passive+reply evidence (e.g. `xterm-no-direct-color`
-    /// against a `.bashrc` COLORTERM lie). A hit re-applies the downgrade —
-    /// the only sanctioned exception to the upgrade-only merge (M5 review
-    /// high 1).
     quirk_clamped: bool,
 }
 
-/// Color-tier ordering for the no-downgrade rule (higher = more capable).
 #[cfg(unix)]
 fn tier_rank(t: ColorTier) -> u8 {
     match t {
@@ -823,17 +721,6 @@ fn tier_rank(t: ColorTier) -> u8 {
     }
 }
 
-/// Merge a cache hit over freshly applied passive hints (M1 review low 3):
-/// the cached tier may only *upgrade* what this run's passive evidence
-/// already proves — a stale entry must never downgrade below COLORTERM/
-/// TERM-derived truth. One exception (M5 review high 1): an entry marked
-/// `quirk_clamped` re-applies its store-time downgrade — the queried
-/// identity disproved this exact passive evidence (the key pins TERM /
-/// TERM_PROGRAM / COLORTERM, so "fresh" evidence here is the same lie the
-/// quirk already out-voted), and without this the `xterm-no-direct-color`
-/// clamp would work only on cold-cache runs. `sync_2026` is cache-only
-/// knowledge (passive hints can never prove it), so the cached value is
-/// taken as-is.
 #[cfg(unix)]
 fn apply_cache_hit(caps: &mut Caps, hit: CacheEntry) {
     if tier_rank(hit.color) > tier_rank(caps.color)
@@ -904,8 +791,6 @@ fn cache_load(opts: &ProbeOptions, key: &str) -> Option<CacheEntry> {
     None
 }
 
-/// Best-effort write (cache failures are never user-visible): rewrite the
-/// file with this key's line replaced.
 #[cfg(unix)]
 fn cache_store(opts: &ProbeOptions, key: &str, entry: &CacheEntry) {
     let Some(dir) = cache_dir(opts) else { return };
@@ -913,8 +798,6 @@ fn cache_store(opts: &ProbeOptions, key: &str, entry: &CacheEntry) {
         return;
     }
     let path = dir.join(CACHE_FILE);
-    // Keep only current-version lines for other keys (stale-version lines
-    // are unreadable anyway — self-cleaning).
     let mut lines: Vec<String> = fs::read_to_string(&path)
         .map(|t| {
             t.lines()
@@ -1011,7 +894,6 @@ mod tests {
         assert_eq!(cache_load(&opts, &kitty), Some(entry(ColorTier::True, true, false)));
         assert_eq!(cache_load(&opts, &tmux_key), Some(entry(ColorTier::C256, false, true)));
 
-        // Overwrite in place: same key, new value, no duplicate lines.
         cache_store(&opts, &kitty, &entry(ColorTier::C16, false, false));
         assert_eq!(cache_load(&opts, &kitty), Some(entry(ColorTier::C16, false, false)));
         let text = fs::read_to_string(dir.join(CACHE_FILE)).unwrap();
@@ -1026,8 +908,6 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join(CACHE_FILE),
-            // Garbage, wrong-tier, future-version, stale v2 (no quirk_clamped
-            // field — must not load as a v3 entry) and v3-missing-field lines.
             "junk\n1\tkey\tnot-a-tier\t1\n9\tkey\ttruecolor\t1\t0\n2\tkey\ttruecolor\t1\n3\tkey\ttruecolor\t1\n",
         )
         .unwrap();
@@ -1036,11 +916,6 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
-    /// M1 acceptance 4: `!isatty` → conservative default instantly (no
-    /// volley, no hang) and `--tier` still wins. Only meaningful when the
-    /// test runner's stdio is not a terminal (always true on CI/pipes);
-    /// skipped interactively so a unit test never writes a volley to a real
-    /// terminal.
     #[test]
     fn non_tty_is_conservative_and_forced_tier_wins() {
         let tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1
@@ -1061,17 +936,12 @@ mod tests {
         assert_eq!(forced.color, ColorTier::Mono, "--tier overrides everything");
     }
 
-    /// Regression (M1 review low 3, part 1): COLORTERM is part of the cache
-    /// key — a COLORTERM-stripped run (pipe wrappers, sudo, some multiplexer
-    /// launchers) stores under a *different* key and can never poison a
-    /// later run where COLORTERM proves truecolor.
     #[test]
     fn cache_key_includes_colorterm() {
         let with = cache_key(&hints("xterm-kitty", "", "truecolor", ""));
         let without = cache_key(&hints("xterm-kitty", "", "", ""));
         assert_ne!(with, without, "stripped-COLORTERM run must use its own cache slot");
 
-        // And the stripped run's entry is invisible to the truecolor run.
         let dir = std::env::temp_dir().join(format!("ascii-cache-ct-{}", std::process::id()));
         let opts = ProbeOptions { cache_dir: Some(dir.clone()), ..ProbeOptions::default() };
         cache_store(
@@ -1083,13 +953,8 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
-    /// Regression (M1 review low 3, part 2): a cache hit may only upgrade —
-    /// it must never downgrade below what fresh passive evidence proves in
-    /// THIS run (unless the entry recorded a quirk clamp; see
-    /// [`quirk_clamped_hit_reapplies_the_downgrade`]).
     #[test]
     fn cache_hit_never_downgrades_fresh_passive_evidence() {
-        // Fresh run proves truecolor via COLORTERM; stale hit says C256.
         let mut caps = passive(&hints("xterm-256color", "", "truecolor", "en_US.UTF-8"));
         assert_eq!(caps.color, ColorTier::True);
         apply_cache_hit(
@@ -1099,8 +964,6 @@ mod tests {
         assert_eq!(caps.color, ColorTier::True, "cache hit must not downgrade");
         assert!(caps.sync_2026, "sync_2026 is cache-only knowledge");
 
-        // Passive says C256; the cached volley result proved truecolor →
-        // the upgrade path (the whole point of the cache) still works.
         let mut caps = passive(&hints("xterm-256color", "", "", "en_US.UTF-8"));
         assert_eq!(caps.color, ColorTier::C256);
         apply_cache_hit(
@@ -1110,7 +973,6 @@ mod tests {
         assert_eq!(caps.color, ColorTier::True);
         assert!(!caps.sync_2026);
 
-        // Equal tiers: unchanged.
         let mut caps = passive(&hints("linux", "", "", "C"));
         apply_cache_hit(
             &mut caps,
@@ -1119,16 +981,8 @@ mod tests {
         assert_eq!(caps.color, ColorTier::C16);
     }
 
-    /// Regression (M5 review high 1): an entry whose store-time volley had a
-    /// quirk clamp the tier below the passive evidence re-applies that
-    /// downgrade on a hit — the xterm-behind-a-COLORTERM-lie correction must
-    /// survive warm-cache runs, not just the first cold one. The end-to-end
-    /// pty version is `terminal_identity.rs::
-    /// xterm_colorterm_lie_quirk_survives_the_cache`.
     #[test]
     fn quirk_clamped_hit_reapplies_the_downgrade() {
-        // Same passive evidence as at store time (the key pins COLORTERM):
-        // .bashrc lie says True, the queried xterm said no-direct-color.
         let mut caps = passive(&hints("xterm-256color", "", "truecolor", "en_US.UTF-8"));
         assert_eq!(caps.color, ColorTier::True);
         apply_cache_hit(
@@ -1137,8 +991,6 @@ mod tests {
         );
         assert_eq!(caps.color, ColorTier::C256, "quirk clamp must survive a cache hit");
 
-        // A clamped entry at or above the passive tier changes nothing
-        // downward-specific (upgrade rule handles above, equal is a no-op).
         let mut caps = passive(&hints("xterm-256color", "", "", "en_US.UTF-8"));
         assert_eq!(caps.color, ColorTier::C256);
         apply_cache_hit(
@@ -1148,9 +1000,6 @@ mod tests {
         assert_eq!(caps.color, ColorTier::C256);
     }
 
-    /// M4 (item D): only a *settable* mode 2026 counts as supported —
-    /// permanently-set/reset answers (3/4) are not. See
-    /// [`ProbeReplies::sync_supported`] for the spec + VTE sources.
     #[test]
     fn sync_supported_only_for_settable_modes() {
         for (ps, want) in [(None, false)]
@@ -1172,11 +1021,6 @@ mod tests {
         assert_eq!(hex_decode(b"zz"), None, "non-hex");
     }
 
-    /// Scope-amendment audit, as a test (M4 item E): the multiplexer flag is
-    /// a CACHE-KEY input only — it partitions cache slots (an inner session
-    /// must not inherit the outer terminal's proven caps) and must never
-    /// change a single detected capability. There is no tmux/SSH/ConPTY code
-    /// path anywhere; this pins that the one env read we do keep stays inert.
     #[test]
     fn multiplexer_flag_only_partitions_the_cache() {
         let outer = hints("screen-256color", "", "truecolor", "en_US.UTF-8");

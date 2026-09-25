@@ -1,5 +1,4 @@
-//! `auto-ascii-factory sweep` — the parameter-sweep half of the agent socket
-//! (PLAN §5 CLI: `sweep --params params.toml --grid sweeps/edge_thresholds.toml`).
+//! `auto-ascii-factory sweep` — the parameter-sweep half of the agent socket.
 //!
 //! A sweep file declares **axes** — named lists of param-override sets — and
 //! optional composite-score weights. Combos are the cartesian product across
@@ -8,7 +7,7 @@
 //! per file, winner folded into the next file's base. Every combo runs the
 //! real eval pipeline ([`eval::eval_clip`]) over the corpus in sweep mode
 //! (truecolor pass only, no contact PNGs, source-Canny truth memoized across
-//! combos) and shares the M2 asset cache — combos differing only in renderer
+//! combos) and shares the eval asset cache — combos differing only in renderer
 //! (`[compose]`) or eval knobs never rebuild assets.
 //!
 //! ```toml
@@ -26,9 +25,9 @@
 //! ]
 //! ```
 //!
-//! **Composite score** (documented default, PLAN §5 Tune):
+//! **Composite score** (default weights):
 //! `0.4·mean(ssim) + 0.4·mean(edge_f1) − 0.2·mean(flicker / flicker_norm)`
-//! with means over clips; `flicker_norm` = 2.0 = the §6 flicker gate, so a
+//! with means over clips; `flicker_norm` = 2.0 = the flicker gate, so a
 //! clip sitting exactly at the gate costs its full flicker weight. Combos
 //! whose merged params fail validation are recorded as skipped (an axis
 //! cross may legally produce e.g. `t_lo > t_hi`), never silently dropped.
@@ -67,7 +66,7 @@ pub struct ScoreWeights {
     pub edge_f1: f64,
     /// Weight on normalized flicker; SUBTRACTED from the score.
     pub flicker: f64,
-    /// Flicker normalizer (glyph switches/cell/s); default = the §6 gate.
+    /// Flicker normalizer (glyph switches/cell/s); default = the flicker gate.
     pub flicker_norm: f64,
 }
 
@@ -77,8 +76,6 @@ impl Default for ScoreWeights {
     }
 }
 
-/// One axis: a named list of override sets (dotted param path → TOML value).
-/// Values within an axis travel together; axes cross.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Axis {
@@ -94,15 +91,12 @@ struct SweepSpec {
     axes: Vec<Axis>,
 }
 
-/// One combo's flattened overrides, in axis order.
 #[derive(Clone, Debug)]
 struct Combo {
-    /// `(dotted path, value)` pairs, e.g. `("edges.t_hi", 28)`.
     overrides: Vec<(String, toml::Value)>,
 }
 
 impl Combo {
-    /// Canonical human/JSON label: `edges.t_hi=28 compose.edge_t_on=32`.
     fn label(&self) -> String {
         if self.overrides.is_empty() {
             return "(base params)".into();
@@ -155,9 +149,6 @@ pub struct SweepReport {
 
 pub const SWEEP_SCHEMA_VERSION: u32 = 1;
 
-/// Set `value` at a dotted path inside a TOML table tree. Every intermediate
-/// table must already exist (the tree is the full serialized [`Params`], so
-/// a missing table is a typo'd table name).
 fn set_dotted(
     root: &mut toml::Value,
     path: &str,
@@ -178,9 +169,6 @@ fn set_dotted(
     let table = cur
         .as_table_mut()
         .ok_or_else(|| format!("sweep: {path:?} does not name a table entry"))?;
-    // The leaf must already exist too — Params is #[serde(default)], so the
-    // serialized base names every legal key; a new key is a typo (and
-    // deny_unknown_fields would reject it later with a worse message).
     if !table.contains_key(leaf) {
         return Err(format!("sweep: unknown param {path:?} (typo?)").into());
     }
@@ -188,9 +176,6 @@ fn set_dotted(
     Ok(())
 }
 
-/// Base params + one combo's overrides → validated `Params`.
-/// `Err` = malformed path/typo (hard error); `Ok(Err(reason))` = the merged
-/// params failed validation (a legal skip under crossed axes).
 fn apply_combo(base: &Params, combo: &Combo) -> Result<Result<Params, String>, BoxErr> {
     let mut root = toml::Value::try_from(base).map_err(|e| format!("serialize params: {e}"))?;
     for (path, value) in &combo.overrides {
@@ -205,9 +190,6 @@ fn apply_combo(base: &Params, combo: &Combo) -> Result<Result<Params, String>, B
     })
 }
 
-/// Cartesian product across axes, enumeration order = file order (later axes
-/// vary fastest). A param named by two axes in the same combo is a hard
-/// error — silent last-writer-wins would corrupt coordinate descent.
 fn enumerate_combos(spec: &SweepSpec) -> Result<Vec<Combo>, BoxErr> {
     let mut combos: Vec<Combo> = vec![Combo { overrides: Vec::new() }];
     for axis in &spec.axes {
@@ -236,7 +218,6 @@ fn enumerate_combos(spec: &SweepSpec) -> Result<Vec<Combo>, BoxErr> {
     Ok(combos)
 }
 
-/// Mean of the present values; `None` when none are present.
 fn mean(vals: impl Iterator<Item = Option<f64>>) -> Option<f64> {
     let (mut sum, mut n) = (0.0f64, 0u32);
     for v in vals.flatten() {
@@ -246,8 +227,6 @@ fn mean(vals: impl Iterator<Item = Option<f64>>) -> Option<f64> {
     (n > 0).then(|| sum / f64::from(n))
 }
 
-/// The composite score (module docs): missing metrics contribute zero to
-/// their term rather than poisoning the whole combo.
 fn score_of(w: &ScoreWeights, ssim: Option<f64>, f1: Option<f64>, flicker: Option<f64>) -> f64 {
     let norm = if w.flicker_norm > 0.0 { w.flicker_norm } else { 1.0 };
     w.ssim * ssim.unwrap_or(0.0) + w.edge_f1 * f1.unwrap_or(0.0)
@@ -296,9 +275,6 @@ pub fn run(args: &SweepArgs) -> Result<(), BoxErr> {
                 continue;
             }
         };
-        // Sweep mode: metrics only — no contact PNGs (ffmpeg subprocesses),
-        // no reel, truecolor pass only. Deliberately NOT persisted into the
-        // combo's params: these are eval-output knobs, not tunables.
         params.eval.contact_frames = 0;
         eprintln!("sweep: combo {id} [{label}]");
 
@@ -313,8 +289,6 @@ pub fn run(args: &SweepArgs) -> Result<(), BoxErr> {
             reel: None,
             cache_dir: args.cache_dir.clone(),
             truecolor_only: true,
-            // Sweeps score with the same conservative table as the baseline;
-            // per-font scoring (--font-table) is an eval-only mode.
             font_table: None,
         };
 
@@ -390,8 +364,6 @@ fn fmt(v: Option<f64>) -> String {
     v.map_or("n/a".into(), |v| format!("{v:.4}"))
 }
 
-/// Rank: scored combos best-first (ties by id for determinism), skipped
-/// combos at the tail by id.
 fn rank(results: &mut [SweepResult]) {
     results.sort_by(|a, b| match (a.score, b.score) {
         (Some(x), Some(y)) => y.total_cmp(&x).then(a.id.cmp(&b.id)),
@@ -401,9 +373,6 @@ fn rank(results: &mut [SweepResult]) {
     });
 }
 
-/// Compact leaderboard (PLAN §6 "the human loop" applied to sweeps) —
-/// self-contained, no external requests, same dark styling as the contact
-/// sheet.
 fn render_leaderboard(report: &SweepReport) -> String {
     let mut h = String::with_capacity(1 << 14);
     h.push_str(
@@ -486,10 +455,8 @@ mod tests {
     fn score_weights_default_and_formula() {
         let w = ScoreWeights::default();
         assert_eq!((w.ssim, w.edge_f1, w.flicker, w.flicker_norm), (0.4, 0.4, 0.2, 2.0));
-        // 0.4·0.5 + 0.4·0.75 − 0.2·(3.0/2.0) = 0.2 + 0.3 − 0.3 = 0.2.
         let s = score_of(&w, Some(0.5), Some(0.75), Some(3.0));
         assert!((s - 0.2).abs() < 1e-12, "{s}");
-        // Missing metrics contribute zero to their term.
         assert_eq!(score_of(&w, None, None, None), 0.0);
     }
 
@@ -506,7 +473,6 @@ mod tests {
         );
         let combos = enumerate_combos(&s).unwrap();
         assert_eq!(combos.len(), 6, "2 x 3 cross");
-        // Later axes vary fastest; pairs travel together.
         assert_eq!(
             combos[0].label(),
             "edges.t_hi=20 edges.t_lo=8 compose.edge_t_on=24"
@@ -546,7 +512,6 @@ mod tests {
         assert_eq!(p.edges.t_lo, 18);
         assert_eq!(p.compose.edge_t_on, 24);
         assert_eq!(p.temporal.ema_alpha_y_milli, 500);
-        // Untouched keys keep base values.
         assert_eq!(p.edges.scharr_shift, base.edges.scharr_shift);
         assert_eq!(p.build, base.build);
     }
@@ -568,7 +533,6 @@ mod tests {
     #[test]
     fn invalid_merged_params_become_a_skip_not_an_error() {
         let base = Params::default();
-        // t_lo > t_hi — a legal outcome of crossing axes.
         let combo = Combo {
             overrides: vec![
                 ("edges.t_hi".into(), toml::Value::Integer(10)),
@@ -638,7 +602,6 @@ mod tests {
             !html.contains("http://") && !html.contains("https://"),
             "leaderboard must be self-contained"
         );
-        // JSON roundtrip (agent half of the socket).
         let json = serde_json::to_string(&report).unwrap();
         let back: SweepReport = serde_json::from_str(&json).unwrap();
         assert_eq!(back.results.len(), 3);

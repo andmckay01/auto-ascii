@@ -9,14 +9,11 @@ keywords = ["ascii", "terminal", "video", "format", "container"]
 categories = ["multimedia::video", "encoding"]
 readme = "../../README.md"
 
-# PLAN §8: zstd + crc32fast + ciborium (META only — frame payloads are
-# hand-rolled fixed layout, not serde). serde only for the META struct.
+[lints]
+workspace = true
+
 [features]
 default = []
-# Compress a frame's plane subblocks concurrently. Byte-identical output either
-# way (see `PlaneCodec` in write.rs) — this changes only how long it takes.
-# Enabled by auto-ascii-factory; deliberately NOT default, so the player's
-# dependency tree stays free of rayon.
 parallel = ["dep:rayon"]
 
 [dependencies]

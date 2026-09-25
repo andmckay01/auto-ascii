@@ -1,8 +1,3 @@
-//! The one coherent error type of the facade (M4 item A): thiserror-style
-//! layering over [`AsciiError`] and `std::io::Error`, hand-rolled to keep the
-//! embedder dependency tree at zero beyond the engine itself (matching the
-//! auto-ascii-format convention).
-
 use std::fmt;
 use std::path::PathBuf;
 
@@ -15,8 +10,8 @@ use auto_ascii_format::AsciiError;
 /// printing); OS failures carry the `std::io::Error`.
 ///
 /// `Display` states only this layer's failure; the cause is exposed through
-/// `source()` alone (M5 fix 1) — chain printers (`anyhow`, `{:#}`) render
-/// each layer exactly once instead of repeating the cause.
+/// `source()` alone, so chain printers (`anyhow`, `{:#}`) render each layer
+/// exactly once instead of repeating the cause.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
@@ -42,7 +37,7 @@ pub enum Error {
     Decode {
         /// The asset frame index being decoded.
         frame: u32,
-        /// The ASCI plane id (PLAN §4 registry) being decoded.
+        /// The ASCI plane id being decoded.
         plane: u8,
         /// The container-level failure.
         source: AsciiError,
@@ -56,10 +51,6 @@ pub enum Error {
 }
 
 impl fmt::Display for Error {
-    // Display never embeds `source` — variants whose cause is returned by
-    // `source()` describe only their own layer, so `anyhow`-style chain
-    // printers ("error: X\ncaused by: Y") show the cause once, not twice
-    // (M5 fix 1; regression-tested below).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Io { path, .. } => write!(f, "cannot open {}", path.display()),
@@ -107,9 +98,6 @@ mod tests {
         assert_eq!(e.to_string(), "unplayable asset: asset has zero frames");
     }
 
-    /// M5 fix 1 regression: `Display` must not embed what `source()` already
-    /// returns — a chain printer (`anyhow`: "error: X\ncaused by: Y") would
-    /// otherwise show the cause twice on every layered variant.
     #[test]
     fn display_never_repeats_the_source() {
         let errors = [

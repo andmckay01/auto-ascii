@@ -1,5 +1,4 @@
-//! `auto-ascii-factory build` — the two-pass pipeline (PLAN §5 stages 1–6,
-//! full M3 plane set):
+//! `auto-ascii-factory build` — the two-pass pipeline, decode to encode:
 //!
 //! - **pass 1:** stream rgb24 frames from ffmpeg, extract L\* luma, detect
 //!   shot boundaries on the RAW histograms (histogram SAD + min shot
@@ -10,17 +9,18 @@
 //!   identical frames, so the schedules match deterministically).
 //! - **pass 2:** identical ffmpeg invocation; write NORM (per-shot levels +
 //!   cut flags — applied at RUNTIME by the player), then per frame run
-//!   [`crate::features::FeatureExtractor`] (stages 3–4: L\* + Scharr →
+//!   [`crate::features::FeatureExtractor`] (L\* + Scharr →
 //!   doubled-angle orientation smoothing → hysteresis-thresholded unthinned
 //!   E → Ex/Ey; top-hat + shadow → H; per-plane temporal EMA reset at
 //!   cuts; RGB565 chroma) and stream all six planes (Y, E, Ex, Ey, H, C —
-//!   PLAN §4 registry) through [`AsciiWriter`] under the v1 default profile
-//!   (temporal delta + keyframes every 60, zstd-19, CRCs on).
+//!   registry order) through [`AsciiWriter`] under the `[build]` encode
+//!   profile (temporal delta, keyframes every `keyframe_ivl`, zstd at
+//!   `zstd_level`, CRCs on).
 //!
 //! The asset is written to `<out>.part` and renamed into place only after a
 //! successful `finish()` — a killed build never leaves a plausible-looking
-//! truncated `.ascii` behind (PLAN §4: missing TRLR ⇒ factory rerun anyway;
-//! this just makes the common case obvious). Byte-deterministic: no
+//! truncated `.ascii` behind (an asset missing its TRLR needs a factory
+//! rerun anyway; this just makes the common case obvious). Byte-deterministic: no
 //! timestamps, fixed zstd level, LUT/integer-only pixel math end to end
 //! (see features.rs for the fixed-point EMA and rational orientation math).
 //! Memory: all per-frame state is O(plane) and allocated once — planes
@@ -50,11 +50,11 @@ pub struct BuildArgs {
     pub ss: Option<f64>,
     pub t: Option<f64>,
     /// Effective tunables (params.toml + CLI overrides, validated) —
-    /// fps/res/encode profile/shot detection/levels all live here (PLAN §5).
+    /// fps/res/encode profile/shot detection/levels all live here.
     pub params: Params,
 }
 
-/// What a finished build produced (PLAN-M6-M8 §2): the numbers
+/// What a finished build produced: the numbers
 /// `auto-ascii import` records in its sidecar and prints as JSON, read off
 /// the same values the human "wrote …" line reports. Nothing here needs the
 /// asset reopened.
@@ -74,10 +74,6 @@ pub struct BuildReport {
     pub bytes: u64,
 }
 
-/// Run one full decode pass, feeding every frame to `on_frame`. Returns the
-/// frame count. Error precedence: ffmpeg's own nonzero exit (with its stderr)
-/// beats a pipe-side short read; an `on_frame` failure aborts ffmpeg and is
-/// reported as ours.
 fn stream_frames(
     params: &DecodeParams<'_>,
     mut on_frame: impl FnMut(&[u8]) -> Result<(), BoxErr>,
@@ -98,7 +94,6 @@ fn stream_frames(
             Err(e) => break Some(e),
         }
     };
-    // ffmpeg's own failure is the root cause when both went wrong.
     stream.finish()?;
     match pipe_err {
         Some(e) => Err(e),
@@ -112,7 +107,6 @@ fn spinner(msg: &'static str) -> ProgressBar {
     pb
 }
 
-/// Reduce `w:h` to the smallest integer aspect ratio for the header.
 fn reduced_aspect(w: u16, h: u16) -> (u16, u16) {
     fn gcd(a: u16, b: u16) -> u16 {
         if b == 0 { a } else { gcd(b, a % b) }
@@ -121,9 +115,6 @@ fn reduced_aspect(w: u16, h: u16) -> (u16, u16) {
     (w / g, h / g)
 }
 
-/// Shots → NORM records. Levels are indexed by plane POSITION in the header
-/// registry: position 0 = Y gets the shot's L\* p2/p98; position 1 = C stays
-/// (0, 0) — levels are luma-only, chroma is never stretched (PLAN §5).
 fn shot_records(shots: &[Shot]) -> Vec<ShotRecord> {
     shots
         .iter()
@@ -140,10 +131,9 @@ fn shot_records(shots: &[Shot]) -> Vec<ShotRecord> {
 }
 
 /// Run the two-pass build. Every human progress/info line goes to `info`
-/// (the bin hands it `stderr`, so its bytes are unchanged; a `--json`
-/// caller hands it stderr too and keeps stdout for the JSON object —
-/// PLAN-M6-M8 §2). The indicatif bars stay on stderr, where they have
-/// always been, and are cleared before any line is written.
+/// (the bin hands it `stderr`; a `--json` caller hands it stderr too and
+/// keeps stdout for the JSON object). The indicatif bars always draw on
+/// stderr and are cleared before any line is written.
 pub fn run(args: &BuildArgs, info: &mut dyn Write) -> Result<BuildReport, BoxErr> {
     if !args.input.is_file() {
         return Err(format!("input not found: {}", args.input.display()).into());
@@ -152,7 +142,6 @@ pub fn run(args: &BuildArgs, info: &mut dyn Write) -> Result<BuildReport, BoxErr
     let (w, h) = (args.params.build.base_w, args.params.build.base_h);
     let fps = args.params.build.fps;
 
-    // Stage 1 (PLAN §5): validate via ffprobe before spending a decode pass.
     let probed = probe(&args.input)?;
     writeln!(
         info,
@@ -169,10 +158,6 @@ pub fn run(args: &BuildArgs, info: &mut dyn Write) -> Result<BuildReport, BoxErr
     let params = DecodeParams { input: &args.input, ss: args.ss, t: args.t, fps, w, h };
     let extractor = Extractor::new(w, h);
 
-    // ---- pass 1: shot boundaries + per-shot levels --------------------------
-    // Boundaries come from the RAW luma histograms; levels pool the EMA'd
-    // luma (the stored plane), with the EMA reset at every honored boundary
-    // — the exact schedule pass 2 will replay (module docs).
     let pb = spinner("pass 1/2: shot detection + per-shot levels");
     let npx = w as usize * h as usize;
     let mut luma = vec![0u8; npx];
@@ -209,8 +194,6 @@ pub fn run(args: &BuildArgs, info: &mut dyn Write) -> Result<BuildReport, BoxErr
         if cuts == 1 { "" } else { "s" },
     )?;
 
-    // ---- pass 2: extract + encode -------------------------------------------
-    // Write to `<out>.part`, rename on success.
     let part = {
         let mut os = args.output.as_os_str().to_os_string();
         os.push(".part");
@@ -258,8 +241,6 @@ fn encode_pass(
         base_h: h,
         aspect_num,
         aspect_den,
-        // The full M3 plane set in PLAN §4 registry order. Y keeps NORM
-        // levels position 0; every other plane's levels stay (0,0).
         plane_ids: vec![
             plane_id::Y,
             plane_id::E,
@@ -268,19 +249,13 @@ fn encode_pass(
             plane_id::H,
             plane_id::C,
         ],
-        // v1 profile, data-driven (params.toml [build]): temporal delta
-        // with the configured keyframe cadence and zstd level (keyframe
-        // 60, zstd-19, CRCs on — PLAN §4).
         zstd_level: args.params.build.zstd_level,
-        // Validated to 1..=255 (params.rs); the header field is u8 (PLAN §4).
         keyframe_ivl: u8::try_from(args.params.build.keyframe_ivl)
             .expect("keyframe_ivl validated to 1..=255"),
         ..WriterOptions::default()
     };
     let meta = Meta {
         factory_version: env!("CARGO_PKG_VERSION").to_string(),
-        // File NAME only — absolute paths would break byte-determinism
-        // across checkouts (Meta determinism rules).
         source: args
             .input
             .file_name()
@@ -302,8 +277,6 @@ fn encode_pass(
         .progress_chars("=> "),
     );
 
-    // Stages 3–4 (features.rs): EMAs reset exactly at the cut-flagged shot
-    // starts pass 1 found — the same schedule its levels pooling used.
     let cut_frames: Vec<u32> =
         shots.iter().filter(|s| s.cut).map(|s| s.first_frame).collect();
     let mut features = FeatureExtractor::new(w, h, &args.params);
@@ -329,9 +302,6 @@ fn encode_pass(
     })?;
     pb.finish_and_clear();
 
-    // Both passes run the identical ffmpeg command on the same file; a
-    // mismatch means the input changed under us (or ffmpeg is nondeterministic
-    // here) — either way the shot table no longer matches the frames.
     if encoded != expected_frames {
         return Err(format!(
             "frame count changed between passes (pass 1: {expected_frames}, pass 2: {encoded})"

@@ -1,16 +1,3 @@
-//! M1 acceptance 4: the caps probe never hangs and never leaks bytes.
-//! Runs the `auto-ascii-term-harness` probe modes under an openpty pair (same
-//! harness pattern as `tests/pty_restore.rs`):
-//!
-//! - `probe-silent`: the test side never answers the volley → the probe must
-//!   time out to conservative defaults in < 300 ms with zero stray bytes
-//!   left on stdin.
-//! - `probe-reply`: the test side scripts kitty-style replies → detected
-//!   caps upgrade (truecolor, sync 2026, cell px) and still zero strays.
-//!
-//! The pty plumbing lives in `common/mod.rs` (shared with the M4
-//! per-terminal identity fixtures, `tests/terminal_identity.rs`).
-
 #![cfg(unix)]
 
 mod common;
@@ -22,9 +9,6 @@ use common::{
     wait_until_contains, write_master,
 };
 
-/// Silent terminal: probe must time out to the conservative default in
-/// < 300 ms, with the volley written in order (DA1 last) and no stray bytes
-/// left unconsumed on stdin.
 #[test]
 fn probe_with_no_replies_times_out_to_defaults() {
     let (pty, mut child) = spawn_harness("probe-silent");
@@ -32,7 +16,6 @@ fn probe_with_no_replies_times_out_to_defaults() {
     wait_until_contains(pty.master, &mut out, b"PROBE-DONE");
     wait_child_success(&mut child);
 
-    // The volley reached the terminal, one write, DA1 sentinel last.
     let volley_start = find(&out, b"\x1b[>0q").expect("XTVERSION query missing");
     let da1_at = find(&out, b"\x1b[c").expect("DA1 sentinel missing");
     assert!(volley_start < da1_at);
@@ -49,9 +32,6 @@ fn probe_with_no_replies_times_out_to_defaults() {
     assert_eq!(field(&line, "stray"), "0", "no unconsumed bytes after probe: {line}");
 }
 
-/// `--no-query` (M1 acceptance 4): passive hints only — NOT ONE volley byte
-/// may reach the terminal, `can_query` is false, and it returns immediately
-/// (no deadline wait).
 #[test]
 fn no_query_sends_no_volley_bytes() {
     let (pty, mut child) = spawn_harness("probe-noquery");
@@ -67,26 +47,17 @@ fn no_query_sends_no_volley_bytes() {
     assert_eq!(field(&line, "stray"), "0");
 }
 
-/// Regression (M1 review low 2, grace drain): the terminal answers slowly,
-/// dribbling reply bytes across the deadline. The probe's quiet-gap grace
-/// drain must consume every straggling byte (stray=0 — nothing left for the
-/// app's input stream) and still use the late DA1 to upgrade caps.
 #[test]
 fn probe_grace_drain_consumes_replies_dribbling_past_deadline() {
     let (pty, mut child) = spawn_harness("probe-latereply");
     let mut out = Vec::new();
-    // Wait for the full volley (DA1 query is its tail), then answer slowly.
     wait_until_contains(pty.master, &mut out, b"\x1b[c");
 
-    // XTVERSION promptly (inside the 200 ms window: got_bytes = true)...
     write_master(pty.master, b"\x1bP>|kitty(0.32.2)\x1b\\");
-    // ...then the DECRPM reply one byte every 40 ms — the deadline passes
-    // mid-reply, but every 40 ms gap is far below the 150 ms quiet gap.
     for b in b"\x1b[?2026;2$y" {
         std::thread::sleep(Duration::from_millis(40));
         write_master(pty.master, &[*b]);
     }
-    // Finally XTGETTCAP + cell px + the DA1 sentinel, well past the deadline.
     std::thread::sleep(Duration::from_millis(40));
     write_master(pty.master, b"\x1bP1+r524742=38\x1b\\\x1b[6;20;10t\x1b[?62;c");
 
@@ -102,41 +73,28 @@ fn probe_grace_drain_consumes_replies_dribbling_past_deadline() {
     assert_eq!(field(&line, "stray"), "0", "no straggler byte may leak to the app: {line}");
 }
 
-/// Regression (M1 review low 2, event filter): the reply burst arrives only
-/// AFTER the probe gave up entirely — the classic straggler. Once the
-/// session is up, the burst reaches crossterm's decoder, which would
-/// surface the DCS payload as plain key events (digits = seek bindings,
-/// 't'/'y' letters, Alt combos). The backend's straggler filter must
-/// discard every one of them, and real playback keys typed after a quiet
-/// gap must still arrive.
 #[test]
 fn late_probe_replies_never_surface_as_key_events() {
     let (pty, mut child) = spawn_harness("probe-straggler");
     let mut out = Vec::new();
 
-    // Silence until the probe times out (150 ms harness deadline)...
     wait_until_contains(pty.master, &mut out, b"PROBE-DONE");
-    // ...and the AnsiBackend session is up (raw mode: no echo loops).
     wait_until_contains(pty.master, &mut out, b"SESSION-READY");
 
-    // NOW the terminal finally answers: the full kitty-style burst.
     write_master(
         pty.master,
         b"\x1bP>|kitty(0.32.2)\x1b\\\x1b[?2026;2$y\x1bP1+r524742=38\x1b\\\x1b[6;20;10t\x1b[?62;c",
     );
 
-    // Quiet gap, then a real playback key — it must still work.
     std::thread::sleep(Duration::from_millis(450));
     write_master(pty.master, b"x");
     wait_until_contains(pty.master, &mut out, b"EV=char:x");
 
-    // Quit still works too.
     write_master(pty.master, b"q");
     wait_until_contains(pty.master, &mut out, b"EV=quit");
     wait_until_contains(pty.master, &mut out, b"SESSION-DONE");
     wait_child_success(&mut child);
 
-    // The ONLY events the app may ever have seen: the 'x' key and the quit.
     let text = String::from_utf8_lossy(&out);
     let events: Vec<&str> = text
         .lines()
@@ -149,11 +107,6 @@ fn late_probe_replies_never_surface_as_key_events() {
     );
 }
 
-/// Regression (M2 low fix a, part 1): the straggler burst arrives SPLIT
-/// across reads — the lone `ESC` first (crossterm tokenizes it as the Esc
-/// KEY, which maps to Quit and used to kill the session), the `P…` payload
-/// in later writes, the ST split as `ESC` + `\` too. Nothing may surface:
-/// no quit, no payload keys; real keys after the quiet gap still work.
 #[test]
 fn split_esc_p_straggler_burst_never_quits_or_leaks_keys() {
     let (pty, mut child) = spawn_harness("probe-straggler");
@@ -161,7 +114,6 @@ fn split_esc_p_straggler_burst_never_quits_or_leaks_keys() {
     wait_until_contains(pty.master, &mut out, b"PROBE-DONE");
     wait_until_contains(pty.master, &mut out, b"SESSION-READY");
 
-    // The reply dribbles in: ESC | payload | ESC | '\' as separate writes.
     write_master(pty.master, b"\x1b");
     std::thread::sleep(Duration::from_millis(50));
     write_master(pty.master, b"P>|kitty(0.32.2)");
@@ -170,7 +122,6 @@ fn split_esc_p_straggler_burst_never_quits_or_leaks_keys() {
     std::thread::sleep(Duration::from_millis(50));
     write_master(pty.master, b"\\");
 
-    // Quiet gap, then a real playback key, then quit.
     std::thread::sleep(Duration::from_millis(450));
     write_master(pty.master, b"x");
     wait_until_contains(pty.master, &mut out, b"EV=char:x");
@@ -186,10 +137,6 @@ fn split_esc_p_straggler_burst_never_quits_or_leaks_keys() {
     );
 }
 
-/// Regression (M2 low fix a, part 2): the reply burst lands LONG after
-/// session start — past the old 2 s disarm window, which used to let the
-/// whole payload (digits = seek bindings) through as key events. The filter
-/// is session-long in armed sessions: still nothing may surface.
 #[test]
 fn straggler_burst_after_two_seconds_still_filtered() {
     let (pty, mut child) = spawn_harness("probe-straggler");
@@ -197,7 +144,6 @@ fn straggler_burst_after_two_seconds_still_filtered() {
     wait_until_contains(pty.master, &mut out, b"PROBE-DONE");
     wait_until_contains(pty.master, &mut out, b"SESSION-READY");
 
-    // Well past the removed 2 s window.
     std::thread::sleep(Duration::from_millis(2500));
     write_master(
         pty.master,
@@ -219,8 +165,6 @@ fn straggler_burst_after_two_seconds_still_filtered() {
     );
 }
 
-/// The cost of the split-intro hold is bounded: a REAL lone Esc keypress in
-/// an armed session still quits (delayed ≤ the hold window, never eaten).
 #[test]
 fn lone_esc_still_quits_in_armed_session() {
     let (pty, mut child) = spawn_harness("probe-straggler");
@@ -235,14 +179,10 @@ fn lone_esc_still_quits_in_armed_session() {
     assert_eq!(session_events(&out), vec!["quit"], "lone Esc must map to exactly one quit");
 }
 
-/// Scripted kitty-style replies: caps upgrade to truecolor + sync 2026 +
-/// cell px, the probe returns as soon as DA1 lands, and the replies are
-/// fully consumed (no strays for the app's event loop to choke on).
 #[test]
 fn probe_with_scripted_replies_detects_caps() {
     let (pty, mut child) = spawn_harness("probe-reply");
     let mut out = Vec::new();
-    // Wait for the full volley (DA1 sentinel is its tail), then answer.
     wait_until_contains(pty.master, &mut out, b"\x1b[c");
     let replies: &[u8] = b"\x1bP>|kitty(0.32.2)\x1b\\\
 \x1b[?2026;2$y\

@@ -1,14 +1,16 @@
-//! `auto-ascii-core` — the pure engine (PLAN §2): viewport/letterbox math (§3.2),
-//! separable resampler (§3.3), the 8 ramp palettes (§3.4), the three-layer
-//! compositor with hysteresis (§3.5), and the `Cell`/`Grid` primitives (§3.1).
+//! `auto-ascii-core` — the pure engine: viewport/letterbox math, the separable
+//! resampler, the 8 ramp palettes, the three-layer compositor with hysteresis,
+//! the glyph codecs that map a cell's features to a glyph ([`codec`]), and the
+//! `Cell`/`Grid` primitives.
 //!
 //! No dependencies beyond `std`; no terminal, no clock, no I/O — everything in
-//! this crate is deterministic and golden-testable (PLAN §8).
+//! this crate is deterministic and golden-testable.
 //!
-//! Hot-path discipline (PLAN §6): `Grid::resize` (called from `Backend::resize`)
-//! and `HysteresisState::resize` are the ONLY allocation points in the hot path.
+//! Hot-path discipline: `Grid::resize` (called from `Backend::resize`) and
+//! `HysteresisState::resize` are the ONLY allocation points in the hot path.
 
 pub mod cell;
+pub mod codec;
 pub mod compose;
 pub mod font_table;
 pub mod grid;
@@ -20,6 +22,7 @@ pub mod resample;
 pub mod viewport;
 
 pub use cell::{Cell, Rgb};
+pub use codec::{Codec, GlyphCodec, compose_frame_codec};
 pub use font_table::{BUILTIN_FONT_TABLES, FontTable};
 pub use compose::{
     CellInputs, ComposeParams, FramePlanes, compose_cell, compose_cell_layer, compose_frame,

@@ -1,15 +1,13 @@
-//! Minimal SHA-256 (FIPS 180-4) — the eval cache key hash (M2 item B:
-//! assets cached by `(input sha, params sha)`), the determinism-guard
-//! fingerprint and the provenance hash `auto-ascii import` records.
+//! Minimal SHA-256 (FIPS 180-4) — the eval cache key hash (assets cached by
+//! `(input sha, params sha)`), the determinism-guard fingerprint and the
+//! provenance hash `auto-ascii import` records.
 //! Hand-rolled rather than a new dependency: the factory needs exactly
 //! "hash these bytes", nothing keyed.
 //!
-//! INCREMENTAL (M8 review): the state is the eight working words plus a
-//! tail of at most 63 bytes, full blocks are compressed straight out of
-//! the caller's slice, and [`sha256_file`] streams 64 KiB at a time. A
-//! 4 GB source used to cost 8 GB of resident memory here — the file read
-//! whole, then copied again for the padding — for a digest that never
-//! needed more than one block in hand.
+//! INCREMENTAL: the state is the eight working words plus a tail of at most
+//! 63 bytes, full blocks are compressed straight out of the caller's slice,
+//! and [`sha256_file`] streams 64 KiB at a time, so memory stays constant
+//! whatever the input size.
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -22,13 +20,11 @@ const K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-/// The initial state (FIPS 180-4 §5.3.3).
 const H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
     0x5be0cd19,
 ];
 
-/// How much of a file [`sha256_file`] holds at once.
 const CHUNK: usize = 64 * 1024;
 
 /// An in-progress SHA-256: the eight working words, the bytes that have
@@ -37,10 +33,8 @@ const CHUNK: usize = 64 * 1024;
 #[derive(Clone, Debug)]
 pub struct Sha256 {
     h: [u32; 8],
-    /// Bytes waiting for a full block — only `tail_len` of these matter.
     tail: [u8; 64],
     tail_len: usize,
-    /// Message length in BYTES (the padding needs it in bits).
     total: u64,
 }
 
@@ -65,8 +59,6 @@ impl Sha256 {
 
     /// Pad and produce the digest.
     pub fn finish(mut self) -> [u8; 32] {
-        // Padding (§5.1.1): 0x80, zeros up to 56 mod 64, then the length
-        // in bits as a big-endian u64.
         let bits = self.total.wrapping_mul(8);
         let mut pad = [0u8; 64];
         pad[0] = 0x80;
@@ -82,11 +74,7 @@ impl Sha256 {
         out
     }
 
-    /// Compress everything `data` completes, keeping the remainder. Does
-    /// NOT count the bytes — [`finish`](Sha256::finish) absorbs padding
-    /// this way, and padding is not message.
     fn absorb(&mut self, mut data: &[u8]) {
-        // Top up a partial tail first; a full one is a block.
         if self.tail_len > 0 {
             let take = (64 - self.tail_len).min(data.len());
             self.tail[self.tail_len..self.tail_len + take].copy_from_slice(&data[..take]);
@@ -98,15 +86,10 @@ impl Sha256 {
                 self.tail_len = 0;
             }
         }
-        // Then every whole block straight from the caller's slice: this is
-        // the path a big file takes, and it copies nothing.
         let mut blocks = data.chunks_exact(64);
         for block in &mut blocks {
             compress(&mut self.h, block.try_into().expect("chunks_exact(64)"));
         }
-        // Guarded: reaching here with a PARTIAL tail means `data` was
-        // swallowed by the top-up above, and a bare assignment would zero
-        // the length that top-up just set.
         let rest = blocks.remainder();
         if !rest.is_empty() {
             self.tail[self.tail_len..self.tail_len + rest.len()].copy_from_slice(rest);
@@ -115,7 +98,6 @@ impl Sha256 {
     }
 }
 
-/// One 64-byte block into the state (FIPS 180-4 §6.2.2).
 fn compress(h: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
     for (i, word) in block.chunks_exact(4).enumerate() {
@@ -183,7 +165,6 @@ pub fn sha256_file(path: &std::path::Path) -> std::io::Result<String> {
     }
 }
 
-/// A digest as lowercase hex.
 fn hex(digest: [u8; 32]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -192,7 +173,6 @@ fn hex(digest: [u8; 32]) -> String {
 mod tests {
     use super::*;
 
-    /// FIPS 180-4 / NIST CAVP reference vectors.
     #[test]
     fn nist_vectors() {
         assert_eq!(
@@ -207,7 +187,6 @@ mod tests {
             sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
         );
-        // Padding boundary cases: 55/56/64 bytes exercise both pad branches.
         assert_eq!(
             sha256_hex(&[0x61u8; 55]),
             "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"
@@ -222,8 +201,6 @@ mod tests {
         );
     }
 
-    /// Deterministic filler with no repeating block pattern, so a hasher
-    /// that dropped or reordered a chunk could not still agree.
     fn filler(len: usize) -> Vec<u8> {
         let mut out = Vec::with_capacity(len);
         let mut x: u32 = 0x1234_5678;
@@ -235,9 +212,6 @@ mod tests {
         out
     }
 
-    /// The digest depends on the bytes, not on how they arrived: feeding
-    /// them in awkward pieces (never a multiple of the 64-byte block, and
-    /// crossing it repeatedly) must match the one-shot hash.
     #[test]
     fn incremental_matches_one_shot() {
         let data = filler(1000);
@@ -248,12 +222,9 @@ mod tests {
             }
             assert_eq!(hex(hasher.finish()), sha256_hex(&data), "in pieces of {piece}");
         }
-        // The empty message through the incremental path too.
         assert_eq!(hex(Sha256::new().finish()), sha256_hex(b""));
     }
 
-    /// `sha256_file` streams in 64 KiB chunks, so the interesting case is
-    /// a file of several chunks plus a tail that is not block-aligned.
     #[test]
     fn a_streamed_file_hashes_like_its_bytes() {
         let data = filler(2 * CHUNK + 37);

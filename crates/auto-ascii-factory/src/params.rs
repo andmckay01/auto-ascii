@@ -1,5 +1,5 @@
-//! `params.toml` — every factory tunable as data (PLAN §5: "**Every tunable
-//! lives in `params.toml`** — this is the agent socket").
+//! `params.toml` — every factory tunable as data; **every tunable lives in
+//! `params.toml`**, which makes it the agent socket.
 //!
 //! The committed repo-root `params.toml` is embedded via `include_str!` and
 //! is the default configuration; `--params FILE` overrides any subset
@@ -9,7 +9,7 @@
 //! each other by a unit test — drift is a build break, not a surprise.
 //!
 //! Cache identity: [`Params::build_fingerprint`] serializes exactly the
-//! tables that affect asset bytes (`[build]`, `[shots]`, `[levels]`) so
+//! tables that affect asset bytes (all but `[compose]` and `[eval]`) so
 //! `auto-ascii-factory eval` can key its asset cache on (input sha, params sha)
 //! without eval-only knobs invalidating built assets.
 
@@ -20,7 +20,7 @@ use auto_ascii_eval::Tolerances;
 
 use crate::ffmpeg::BoxErr;
 
-/// The committed repo-root defaults, compiled in (M2 item B contract).
+/// The committed repo-root defaults, compiled in.
 pub const EMBEDDED_PARAMS: &str = include_str!("../../../params.toml");
 
 /// Effective factory configuration. Every field has a serde default equal to
@@ -39,7 +39,7 @@ pub struct Params {
     pub eval: EvalParams,
 }
 
-/// `[build]` — encode profile (PLAN §4/§5 stage 6).
+/// `[build]` — encode profile.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildParams {
@@ -47,36 +47,26 @@ pub struct BuildParams {
     pub base_w: u16,
     pub base_h: u16,
     pub zstd_level: i32,
-    /// Keyframe cadence. Wider than the wire type on purpose (M2 review
-    /// fix): the ASCI header stores u8, but an agent sweep writing
-    /// `keyframe_ivl = 600` must get the validate() range error below, not
-    /// a serde type error.
+    /// Keyframe cadence. Wider than the wire type on purpose: the ASCI
+    /// header stores u8, but an agent sweep writing `keyframe_ivl = 600`
+    /// must get the validate() range error, not a serde type error.
     pub keyframe_ivl: u32,
 }
 
 impl Default for BuildParams {
     fn default() -> BuildParams {
-        // Single source of truth: the ASCI v1 writer profile + base res
-        // (PLAN §4) — params defaults can never drift from the format crate.
         let w = auto_ascii_format::WriterOptions::default();
         BuildParams {
             fps: 30,
             base_w: auto_ascii_format::BASE_W,
             base_h: auto_ascii_format::BASE_H,
-            // DELIBERATE divergence from `w.zstd_level` (which stays 19).
-            // Compression level is encoder POLICY, not a property of the
-            // container — the format reads any level, and a decoder cannot
-            // tell which was used. Audited 2026-08-31 on 600 real frames:
-            // 15 costs +0.91% asset bytes and builds 2.84x faster; zstd is
-            // lossless so no quality metric moves. Kept in sync with
-            // params.toml `[build].zstd_level` by the pinning test.
             zstd_level: 15,
             keyframe_ivl: u32::from(w.keyframe_ivl),
         }
     }
 }
 
-/// `[shots]` — shot detection (PLAN §5 stage 2).
+/// `[shots]` — shot detection.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ShotParams {
@@ -93,7 +83,7 @@ impl Default for ShotParams {
     }
 }
 
-/// `[levels]` — per-shot NORM percentiles (PLAN §5 stage 5).
+/// `[levels]` — per-shot NORM percentiles.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LevelParams {
@@ -108,10 +98,10 @@ impl Default for LevelParams {
 }
 
 /// `[edges]` — Scharr → doubled-angle field → orientation-aware bilateral
-/// smoothing → hysteresis-thresholded unthinned E (PLAN §5 stage 3, M3).
+/// smoothing → hysteresis-thresholded unthinned E.
 /// All fields are wider than strictly needed (u32) on purpose: an agent
 /// sweep writing an out-of-range value must get the validate() range error,
-/// not a serde type error (the keyframe_ivl precedent).
+/// not a serde type error (same rule as `keyframe_ivl`).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EdgesParams {
@@ -120,7 +110,7 @@ pub struct EdgesParams {
     /// tap sum is 16), so edge thresholds read as L\* contrast.
     pub scharr_shift: u32,
     /// Orientation-aware bilateral smoothing passes on the doubled-angle
-    /// field (PLAN §5: two; 0 disables smoothing).
+    /// field (default two; 0 disables smoothing).
     pub bilateral_passes: u32,
     /// Bilateral window radius in pixels (window = 2r+1 square).
     pub bilateral_radius: u32,
@@ -145,7 +135,7 @@ impl Default for EdgesParams {
 }
 
 /// `[highlights]` — top-hat highlight + percentile deep-shadow flags for the
-/// H plane (PLAN §5 stage 3, M3). bit0 = highlight, bit1 = deep shadow.
+/// H plane. bit0 = highlight, bit1 = deep shadow.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HighlightsParams {
@@ -171,7 +161,7 @@ impl Default for HighlightsParams {
     }
 }
 
-/// `[temporal]` — per-plane EMA strength (PLAN §5 stage 4), reset at shot
+/// `[temporal]` — per-plane EMA strength, reset at shot
 /// cuts. Alpha = weight of the NEW frame in thousandths: 1000 = no
 /// smoothing, smaller = heavier smoothing. H is not EMA'd (it is bitflags);
 /// it inherits stability by being computed from the EMA'd Y plane.
@@ -193,7 +183,7 @@ impl Default for TemporalParams {
     }
 }
 
-/// `[compose]` — the player's §3.5 compositor tunables (M3). These are
+/// `[compose]` — the player's compositor tunables. These are
 /// RENDERER knobs: the eval driver maps them onto
 /// `auto_ascii_core::ComposeParams` and hands them to the `Player`, so an agent
 /// sweep can tune the edge gate / coherence bands WITHOUT rebuilding assets
@@ -217,7 +207,7 @@ pub struct ComposeTable {
     pub hi_cut_q8: u32,
     /// Edge suppression on near-white base cells (Q8 of the ramp top).
     pub edge_white_cut_q8: u32,
-    /// `|top − bottom|` at/above this is "large" (§3.5 sub-cell structure).
+    /// `|top − bottom|` at/above this is "large" sub-cell structure.
     pub halfblock_min_delta: u32,
     /// Edge magnitude at/above this upgrades an ASCII junction `+` to `#`.
     pub edge_strong: u32,
@@ -225,8 +215,8 @@ pub struct ComposeTable {
     pub quad_e_on: u32,
     /// Quadrant-refinement noise floor, hold threshold (strict `e >`).
     pub quad_e_off: u32,
-    /// Ramp-index hysteresis width in Q8 fractions of one step (§3.5
-    /// "± 0.35·step" = 90). Promoted from a auto-ascii-core constant at M3 Tune.
+    /// Ramp-index hysteresis width in Q8 fractions of one step (e.g.
+    /// "± 0.35·step" = 90).
     pub idx_hyst_q8: u32,
     /// Shadow lift (`auto_ascii_core::ComposeParams::shadow_lift`): 0 = off, 255 =
     /// a full sqrt curve. A RENDERER knob like the rest of this table, so it
@@ -236,7 +226,6 @@ pub struct ComposeTable {
 
 impl Default for ComposeTable {
     fn default() -> ComposeTable {
-        // Pinned to auto_ascii_core::ComposeParams::default() by unit test.
         ComposeTable {
             edge_t_on: 32,
             edge_t_off: 16,
@@ -274,7 +263,7 @@ impl ComposeTable {
     }
 }
 
-/// `[eval]` — the eval driver's knobs (M2 item B; PLAN §6).
+/// `[eval]` — the eval driver's knobs.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EvalParams {
@@ -287,7 +276,7 @@ pub struct EvalParams {
     /// Contact-sheet snapshots per clip.
     pub contact_frames: u32,
     /// Baseline-compare tolerances (auto-ascii-eval; serde defaults let a params
-    /// file override any subset — INTERFACES compare.rs contract).
+    /// file override any subset).
     pub tolerances: Tolerances,
 }
 
@@ -355,9 +344,9 @@ impl Params {
         .expect("fingerprint serializes")
     }
 
-    /// Range checks. The base-dim rule (even, >= 2) is the §4 C-plane
-    /// geometry term — also enforced by the ASCI writer and reader (M1
-    /// review fix 1); rejecting here gives the friendliest error first.
+    /// Range checks. The base-dim rule (even, >= 2) follows from the C plane
+    /// being stored at half res — also enforced by the ASCI writer and
+    /// reader; rejecting here gives the friendliest error first.
     pub fn validate(&self) -> Result<(), BoxErr> {
         let b = &self.build;
         if b.fps == 0 || b.fps > 1000 {
@@ -475,8 +464,6 @@ impl Params {
 mod tests {
     use super::*;
 
-    /// The committed repo-root params.toml IS the in-code defaults — the two
-    /// sources of truth may never drift (M2 item B contract).
     #[test]
     fn embedded_file_equals_in_code_defaults() {
         assert_eq!(Params::embedded(), Params::default());
@@ -489,12 +476,10 @@ mod tests {
         let back: Params = toml::from_str(&p.dump()).unwrap();
         assert_eq!(back, p);
 
-        // A file naming one key overrides just that key.
         let partial: Params = toml::from_str("[build]\nkeyframe_ivl = 12\n").unwrap();
         assert_eq!(partial.build.keyframe_ivl, 12);
         assert_eq!(partial.build.fps, 30);
         assert_eq!(partial.shots, ShotParams::default());
-        // Nested tolerance subsets merge the same way (compare.rs contract).
         let tol: Params =
             toml::from_str("[eval.tolerances]\nssim_max_drop = 0.001\n").unwrap();
         assert_eq!(tol.eval.tolerances.ssim_max_drop, 0.001);
@@ -506,7 +491,6 @@ mod tests {
 
     #[test]
     fn unknown_keys_are_rejected() {
-        // Typos must not silently no-op an agent's sweep.
         assert!(toml::from_str::<Params>("[build]\nfsp = 30\n").is_err());
         assert!(toml::from_str::<Params>("[bulid]\nfps = 30\n").is_err());
     }
@@ -514,9 +498,9 @@ mod tests {
     #[test]
     fn validation_rejects_degenerate_geometry_and_ranges() {
         let mut p = Params::default();
-        p.build.base_w = 1; // the M1-review fix-1 case
+        p.build.base_w = 1;
         assert!(p.validate().unwrap_err().to_string().contains("even and >= 2"));
-        p.build.base_w = 479; // odd
+        p.build.base_w = 479;
         assert!(p.validate().is_err());
         p.build.base_w = 0;
         assert!(p.validate().is_err());
@@ -527,8 +511,6 @@ mod tests {
         let mut p = Params::default();
         p.build.zstd_level = 23;
         assert!(p.validate().is_err());
-        // M2 review fix: keyframe_ivl 600 (the acceptance-4 drill value) must
-        // be a clean range error naming the u8 wire limit, not a serde error.
         let mut p = Params::default();
         p.build.keyframe_ivl = 600;
         assert!(p.validate().unwrap_err().to_string().contains("1..=255"));
@@ -548,7 +530,6 @@ mod tests {
 
     #[test]
     fn validation_rejects_bad_m3_feature_ranges() {
-        // [edges]: t_lo > t_hi, zero t_lo, oversized shift/radius.
         let mut p = Params::default();
         p.edges.t_lo = p.edges.t_hi + 1;
         assert!(p.validate().unwrap_err().to_string().contains("t_lo <= t_hi"));
@@ -556,7 +537,7 @@ mod tests {
         p.edges.t_lo = 0;
         assert!(p.validate().is_err());
         let mut p = Params::default();
-        p.edges.t_hi = 300; // wide type, clean range error (sweep-agent contract)
+        p.edges.t_hi = 300;
         assert!(p.validate().unwrap_err().to_string().contains("1..=255"));
         let mut p = Params::default();
         p.edges.scharr_shift = 9;
@@ -565,7 +546,6 @@ mod tests {
         p.edges.bilateral_radius = 5;
         assert!(p.validate().is_err());
 
-        // [highlights].
         let mut p = Params::default();
         p.highlights.tophat_radius = 0;
         assert!(p.validate().is_err());
@@ -576,8 +556,6 @@ mod tests {
         p.highlights.shadow_max_l = 256;
         assert!(p.validate().is_err());
 
-        // [temporal]: 0 would freeze the first frame forever; > 1000 is
-        // out of the milli domain.
         let mut p = Params::default();
         p.temporal.ema_alpha_e_milli = 0;
         assert!(p.validate().unwrap_err().to_string().contains("1..=1000"));
@@ -595,7 +573,6 @@ mod tests {
         assert_eq!(a.build_fingerprint(), fp, "eval knobs must not invalidate the cache");
         a.build.zstd_level = 3;
         assert_ne!(a.build_fingerprint(), fp, "encode knobs must invalidate the cache");
-        // M3 feature tables all change asset bytes → all must invalidate.
         let mut b = Params::default();
         b.edges.t_hi = 99;
         assert_ne!(b.build_fingerprint(), fp, "edge knobs must invalidate the cache");
@@ -605,17 +582,11 @@ mod tests {
         let mut b = Params::default();
         b.temporal.ema_alpha_y_milli = 999;
         assert_ne!(b.build_fingerprint(), fp, "temporal knobs must invalidate the cache");
-        // [compose] is a RENDERER knob (M3): tuning it must NOT rebuild
-        // assets — that is the whole point of the player-side socket.
         let mut b = Params::default();
         b.compose.edge_t_on = 40;
         assert_eq!(b.build_fingerprint(), fp, "compose knobs must not invalidate the cache");
     }
 
-    /// Single source of truth (M3): the `[compose]` defaults ARE
-    /// `auto_ascii_core::ComposeParams::default()` — interactive playback (which
-    /// never reads params.toml) and the eval driver must start from the
-    /// same untuned baseline.
     #[test]
     fn compose_table_pins_core_defaults() {
         let t = ComposeTable::default().to_core();

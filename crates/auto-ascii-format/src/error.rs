@@ -1,25 +1,25 @@
-//! Error type for ASCI reading/writing (PLAN §4 validation rules).
+//! Error type for ASCI reading/writing.
 
 use std::fmt;
 
 pub type Result<T> = std::result::Result<T, AsciiError>;
 
-/// ASCI container error (PLAN §4). Reader policy: unknown non-required chunks
-/// are skipped by size; unknown *required* chunks and a major-version mismatch
-/// are hard errors; a missing TRLR means truncation → factory rerun.
+/// ASCI container error. Reader policy: unknown non-required chunks are
+/// skipped by size; unknown *required* chunks and an unsupported major
+/// version are hard errors; a missing TRLR means truncation.
 #[derive(Debug)]
 pub enum AsciiError {
     Io(std::io::Error),
     /// First 4 bytes are not `"ASCI"`.
     BadMagic,
-    /// `version_major` above what this reader supports (PLAN §4 header).
+    /// `version_major` above what this reader supports.
     UnsupportedVersion { found: u16, supported: u16 },
-    /// File ends before a complete header/chunk/payload; also the missing-TRLR
-    /// case (PLAN §4: absence ⇒ truncated ⇒ factory rerun).
+    /// File ends before a complete header/chunk/payload, or the TRLR chunk is
+    /// missing.
     Truncated,
-    /// A required chunk (flags bit0) with an unknown tag (PLAN §4 compat).
+    /// A required chunk (flags bit0) with an unknown tag.
     UnknownRequiredChunk([u8; 4]),
-    /// Per-chunk CRC32 mismatch (PLAN §4 determinism).
+    /// Per-chunk CRC32 mismatch.
     CrcMismatch { tag: [u8; 4] },
     /// Frame index out of range.
     BadFrameIndex(u32),
@@ -27,8 +27,8 @@ pub enum AsciiError {
     BadPlaneId(u8),
     /// Structural corruption with a static description.
     Corrupt(&'static str),
-    /// META CBOR decode failure (unknown keys are ignored, PLAN §4 — this is
-    /// malformed CBOR, not a schema mismatch).
+    /// META CBOR decode failure: malformed CBOR, not a schema mismatch
+    /// (unknown keys are ignored).
     BadMeta,
 }
 

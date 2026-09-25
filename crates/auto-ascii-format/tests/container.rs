@@ -1,9 +1,3 @@
-//! Container acceptance tests (PLAN §4/§6/§7): byte-golden determinism
-//! with a committed hash, roundtrip, corrupt-CRC detection, truncated-file
-//! detection, forward-compat chunk semantics. The default profile under
-//! test is the M1 one (temporal delta, keyframe 60); M1-specific behavior
-//! (seek, NORM, chroma, hostile inputs) lives in `tests/m1_format.rs`.
-
 use std::io::Cursor;
 use std::sync::OnceLock;
 
@@ -12,12 +6,6 @@ use auto_ascii_format::{
     TAG_FIDX, TAG_FRAM, TAG_META, TAG_TRLR, WriterOptions, chunk_flags, codec, filter,
     header_flags, plane_id,
 };
-
-// ---------------------------------------------------------------------------
-// Minimal SHA-256 (FIPS 180-4) — test-only, so the crate keeps its PLAN §8
-// dependency set (zstd/crc32fast/ciborium/serde only). Verified against
-// known vectors below.
-// ---------------------------------------------------------------------------
 
 #[rustfmt::skip]
 const K: [u32; 64] = [
@@ -97,12 +85,6 @@ fn sha256_known_vectors() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Synthetic generator (PLAN §6: the deterministic synthetic plane generator
-// is the regression baseline): gradient + moving checkerboard, 480×270,
-// pure integer math.
-// ---------------------------------------------------------------------------
-
 const W: usize = 480;
 const H: usize = 270;
 const FRAMES: u32 = 6;
@@ -145,15 +127,11 @@ fn encode_default() -> Vec<u8> {
     writer.finish().unwrap().into_inner()
 }
 
-/// Encoded once, shared by the read-side tests (zstd-19 × 6 frames is the
-/// expensive part).
 fn golden_bytes() -> &'static [u8] {
     static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
     BYTES.get_or_init(encode_default)
 }
 
-/// Walk chunks with the public codec types (integration tests can't see the
-/// reader's internals). Assumes CRCs present (the default profile).
 fn find_chunk(bytes: &[u8], tag: [u8; 4]) -> (usize, ChunkHeader) {
     let mut pos = 64usize;
     while pos < bytes.len() {
@@ -167,30 +145,6 @@ fn find_chunk(bytes: &[u8], tag: [u8; 4]) -> (usize, ChunkHeader) {
     panic!("chunk {:?} not found", String::from_utf8_lossy(&tag));
 }
 
-// ---------------------------------------------------------------------------
-// (4) M0 acceptance: byte-golden determinism + committed hash.
-// ---------------------------------------------------------------------------
-
-/// Committed golden (M0 acceptance (4), re-baselined at M1 — deliberate
-/// format change: version_minor 0→1 and the default profile is now temporal
-/// delta with keyframe interval 60). Depends on the synthetic input, the
-/// frozen wire layout, and pinned zstd (0.13.3 / libzstd 1.5.7) at level 19.
-/// If it moves without a deliberate format change, the writer leaked
-/// nondeterminism — do not just re-commit the hash.
-///
-/// RE-PINNED 2026-09-19 (slpy/sleepy -> auto-ascii rename), previous value
-/// bdccde10…. Three deliberate causes, and the old and new goldens were
-/// diffed chunk-by-chunk to prove there is no fourth:
-///   - magic `SLPY` -> `ASCI` (4 B) and TRLR payload `SLPY_END` -> `ASCI_END`;
-///   - this test's own META `factory_version` label, `slpy-format-test-0.1.0`
-///     -> `auto-ascii-format-test-0.1.0`: +6 chars, and +1 more because CBOR
-///     needs a 2-byte length header past 23 chars, so META grows 95 -> 102 B;
-///   - every FIDX frame offset and the header's index_offset therefore shift
-///     by exactly +7. Verified: all six shift by +7, none by anything else.
-///
-/// All six FRAM payloads — the compressed plane bytes — are BYTE-IDENTICAL,
-/// same sizes, same contents. The writer and zstd are untouched; only the
-/// container's identity and this fixture's own label moved.
 const GOLDEN_SHA256: &str = "367528656d60fe4b2e2dbcc8238b4b2dd8703fd54462b4e5df5150e192dea2e5";
 
 #[test]
@@ -206,10 +160,6 @@ fn golden_encode_twice_is_byte_identical_and_hash_committed() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Roundtrip: header fields, META, every frame decodes to the source plane.
-// ---------------------------------------------------------------------------
-
 #[test]
 fn roundtrip_header_meta_planes() {
     let bytes = golden_bytes();
@@ -224,7 +174,7 @@ fn roundtrip_header_meta_planes() {
     assert_eq!(h.frame_count, FRAMES);
     assert_eq!(h.plane_count, 1);
     assert_eq!(h.codec, codec::ZSTD);
-    assert_eq!(h.filter, filter::TEMPORAL_DELTA); // M1 default profile
+    assert_eq!(h.filter, filter::TEMPORAL_DELTA);
     assert_eq!(h.keyframe_ivl, 60);
     assert_eq!(h.plane_ids, [plane_id::Y, 0, 0, 0, 0, 0, 0, 0]);
     assert_eq!(reader.frame_count(), FRAMES);
@@ -256,23 +206,17 @@ fn no_crc_profile_roundtrips() {
     let mut dst = vec![0u8; W * H];
     reader.decode_plane_into(0, plane_id::Y, &mut dst).unwrap();
     assert_eq!(dst, plane);
-    reader.verify().unwrap(); // structural walk still runs without CRCs
+    reader.verify().unwrap();
 }
-
-// ---------------------------------------------------------------------------
-// Corruption: CRC mismatch is detected by verify().
-// ---------------------------------------------------------------------------
 
 #[test]
 fn corrupt_fram_payload_fails_crc_verify() {
     let mut bytes = golden_bytes().to_vec();
     let (off, ch) = find_chunk(&bytes, TAG_FRAM);
     assert!(ch.is_required());
-    // Flip a byte in the middle of the FRAM payload (compressed data).
     let target = off + CHUNK_HEADER_SIZE + ch.size as usize / 2;
     bytes[target] ^= 0xFF;
 
-    // open() is the cheap structural pass — it does not hash payloads.
     let reader = AsciiReader::open(&bytes).unwrap();
     match reader.verify() {
         Err(AsciiError::CrcMismatch { tag }) => assert_eq!(tag, TAG_FRAM),
@@ -292,15 +236,10 @@ fn corrupt_meta_payload_fails_crc_verify() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Truncation: missing TRLR ⇒ Truncated ⇒ factory rerun (PLAN §4).
-// ---------------------------------------------------------------------------
-
 #[test]
 fn missing_trlr_is_truncated() {
     let bytes = golden_bytes();
     let (trlr_off, _) = find_chunk(bytes, TAG_TRLR);
-    // Cut the whole TRLR chunk (header + "ASCI_END" + crc).
     let cut = &bytes[..trlr_off];
     assert!(matches!(AsciiReader::open(cut), Err(AsciiError::Truncated)));
 }
@@ -312,18 +251,12 @@ fn mid_chunk_truncation_is_truncated() {
         AsciiReader::open(&bytes[..bytes.len() - 3]),
         Err(AsciiError::Truncated)
     ));
-    // Also: cut inside the FRAM stream (before FIDX).
     let (fidx_off, _) = find_chunk(bytes, TAG_FIDX);
     assert!(matches!(
         AsciiReader::open(&bytes[..fidx_off + 5]),
         Err(AsciiError::Truncated)
     ));
 }
-
-// ---------------------------------------------------------------------------
-// Forward compat (PLAN §4): unknown required = hard error; unknown
-// non-required = skipped by size. Major version bump = rejected.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn unknown_required_chunk_is_rejected() {
@@ -344,12 +277,10 @@ fn unknown_optional_chunk_is_skipped() {
     let (off, _) = find_chunk(&bytes, TAG_META);
     bytes[off..off + 4].copy_from_slice(b"XOPT");
     bytes[off + 4] = 0;
-    // Open succeeds (chunk skipped by size); frames still decode.
     let mut reader = AsciiReader::open(&bytes).unwrap();
     let mut dst = vec![0u8; W * H];
     reader.decode_plane_into(0, plane_id::Y, &mut dst).unwrap();
     assert_eq!(dst, synth_frame(0));
-    // meta_offset now points at a non-META chunk — surfaced on demand.
     assert!(matches!(reader.meta(), Err(AsciiError::Corrupt(_))));
 }
 
@@ -362,10 +293,6 @@ fn future_major_version_is_rejected() {
         Err(AsciiError::UnsupportedVersion { found: 2, supported: 1 })
     ));
 }
-
-// ---------------------------------------------------------------------------
-// API misuse errors.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn bad_frame_index_and_bad_plane_id() {
@@ -386,13 +313,9 @@ fn writer_rejects_mismatched_planes() {
     let mut writer =
         AsciiWriter::new(Cursor::new(Vec::new()), WriterOptions::default(), &test_meta()).unwrap();
     let plane = synth_frame(0);
-    // Wrong id.
     assert!(writer.write_frame(&[PlaneRef { id: plane_id::E, data: &plane }]).is_err());
-    // Wrong length.
     assert!(writer.write_frame(&[PlaneRef { id: plane_id::Y, data: &plane[..100] }]).is_err());
-    // Wrong count.
     assert!(writer.write_frame(&[]).is_err());
-    // Still usable after rejected inputs.
     writer.write_frame(&[PlaneRef { id: plane_id::Y, data: &plane }]).unwrap();
     let bytes = writer.finish().unwrap().into_inner();
     assert_eq!(AsciiReader::open(&bytes).unwrap().frame_count(), 1);
@@ -404,22 +327,16 @@ fn writer_rejects_bad_options() {
         WriterOptions { plane_ids: vec![], ..WriterOptions::default() },
         WriterOptions { plane_ids: vec![plane_id::Y, plane_id::Y], ..WriterOptions::default() },
         WriterOptions { plane_ids: vec![0], ..WriterOptions::default() },
-        // Unknown plane id: the writer has no geometry for it (M1).
         WriterOptions { plane_ids: vec![200], ..WriterOptions::default() },
         WriterOptions { codec: codec::LZ4, ..WriterOptions::default() },
         WriterOptions { filter: 2, ..WriterOptions::default() },
         WriterOptions { keyframe_ivl: 0, ..WriterOptions::default() },
         WriterOptions { base_w: 0, ..WriterOptions::default() },
         WriterOptions { base_h: 0, ..WriterOptions::default() },
-        // M2 review fix 1: base dims must be even and >= 2 — odd/degenerate
-        // dims give the C plane a zero dimension (base_w == 1 → C width 0)
-        // and panicked the player's resampler.
         WriterOptions { base_w: 1, ..WriterOptions::default() },
         WriterOptions { base_h: 1, ..WriterOptions::default() },
         WriterOptions { base_w: 479, ..WriterOptions::default() },
         WriterOptions { base_h: 269, ..WriterOptions::default() },
-        // M0 adversarial-review regression: zero fps must be rejected at the
-        // source (player Duration::from_secs_f64(1/0.0) panic).
         WriterOptions { fps_num: 0, ..WriterOptions::default() },
         WriterOptions { fps_den: 0, ..WriterOptions::default() },
     ];
@@ -431,19 +348,13 @@ fn writer_rejects_bad_options() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Wire-freeze spot checks: subblock 64-B alignment and FIDX placement.
-// ---------------------------------------------------------------------------
-
 #[test]
 fn fram_payload_is_subblock_aligned_and_indexed() {
     let bytes = golden_bytes();
     let (off, ch) = find_chunk(bytes, TAG_FRAM);
     let payload = &bytes[off + CHUNK_HEADER_SIZE..off + CHUNK_HEADER_SIZE + ch.size as usize];
-    // frame_idx 0, keyframe flag set.
     assert_eq!(&payload[..4], &[0, 0, 0, 0]);
     assert_eq!(payload[4], 1);
-    // Single Y subblock, padded to a 64-B multiple.
     let comp_size = u32::from_le_bytes(payload[6..10].try_into().unwrap()) as usize;
     let raw_size = u32::from_le_bytes(payload[10..14].try_into().unwrap()) as usize;
     assert_eq!(payload[5], plane_id::Y);
@@ -453,12 +364,10 @@ fn fram_payload_is_subblock_aligned_and_indexed() {
     assert_eq!(payload.len(), 5 + padded, "subblock not padded to 64-B alignment");
     assert!(payload[5 + sub..].iter().all(|&b| b == 0), "pad bytes must be zero");
 
-    // header.index_offset points at the FIDX chunk header.
     let (fidx_off, fidx_ch) = find_chunk(bytes, TAG_FIDX);
     let index_offset = u64::from_le_bytes(bytes[44..52].try_into().unwrap());
     assert_eq!(index_offset, fidx_off as u64);
     assert_eq!(fidx_ch.size, u64::from(FRAMES) * 16);
-    // First FIDX row points back at the first FRAM chunk.
     let row = &bytes[fidx_off + CHUNK_HEADER_SIZE..fidx_off + CHUNK_HEADER_SIZE + 16];
     assert_eq!(u64::from_le_bytes(row[..8].try_into().unwrap()), off as u64);
 }

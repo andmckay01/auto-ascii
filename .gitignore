@@ -1,13 +1,8 @@
 /target
-# scripts/release.sh output (stripped release binaries)
 /dist
-# Reference videos for `auto-ascii-factory eval` stay local (corpus/README.md),
-# as do eval outputs, baselines and the asset cache under runs/.
 /corpus/*
 !/corpus/README.md
 /runs/
-# Built assets are regenerable from their source videos.
 *.ascii
-# The pre-rename asset extension, kept so stale local builds are never staged.
 *.slpy
 __pycache__/

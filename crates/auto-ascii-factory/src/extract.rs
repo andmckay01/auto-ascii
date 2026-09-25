@@ -1,14 +1,13 @@
-//! rgb24 → base planes (PLAN §5 stage 3): full-res L\* luma (plane Y) and
-//! half-res per-channel chroma from ONE decoded stream. M3 orchestration
-//! (edges/highlights/EMA/packing) lives in `features.rs`.
+//! rgb24 → base planes: full-res L\* luma (plane Y) and half-res per-channel
+//! chroma from ONE decoded stream. Orchestration (edges/highlights/EMA/packing)
+//! lives in `features.rs`.
 //!
-//! **C plane wire format (factory⇄player contract, PLAN §4):** one
+//! **C plane wire format (factory⇄player contract):** one
 //! little-endian u16 per pixel at (base_w/2) × (base_h/2), packed
 //! `bits 15..11 = R5 | 10..5 = G6 | 4..0 = B5` ([`pack_rgb565`]), produced
 //! by a 2×2 area-average downsample (per-channel sum + 2 >> 2,
-//! round-half-up) of the rgb24 frame — since M3 the channels are EMA'd
-//! between averaging and packing. Half res is invisible at cell granularity
-//! (PLAN §4).
+//! round-half-up) of the rgb24 frame, with the channels EMA'd between
+//! averaging and packing. Half res is invisible at cell granularity.
 
 use crate::lut::LumaLut;
 
@@ -25,7 +24,7 @@ impl Extractor {
     }
 
     /// Fill the Y plane (`w × h` bytes): per-pixel sRGB→linear→L\*
-    /// ([`LumaLut`]). No level stretch — levels live in NORM at M1.
+    /// ([`LumaLut`]). No level stretch — levels live in NORM.
     pub fn luma(&self, rgb: &[u8], out: &mut [u8]) {
         debug_assert_eq!(rgb.len(), self.w * self.h * 3);
         debug_assert_eq!(out.len(), self.w * self.h);
@@ -37,9 +36,9 @@ impl Extractor {
     /// Fill three half-res channel planes (`(w/2) × (h/2)` bytes each): 2×2
     /// area average per channel (round-half-up). `build` rejects odd
     /// `--res`, so every source pixel lands in exactly one 2×2 block.
-    /// Split from the RGB565 packing at M3: the chroma EMA (PLAN §5 stage
-    /// 4) must blend full-precision channels — smoothing packed 5/6/5 bits
-    /// would quantize twice.
+    /// Kept separate from the RGB565 packing: the chroma EMA must blend
+    /// full-precision channels — smoothing packed 5/6/5 bits would quantize
+    /// twice.
     pub fn chroma_channels(&self, rgb: &[u8], r: &mut [u8], g: &mut [u8], b: &mut [u8]) {
         let (cw, ch) = (self.w / 2, self.h / 2);
         debug_assert_eq!(rgb.len(), self.w * self.h * 3);
@@ -111,9 +110,8 @@ mod tests {
         assert!(r.iter().all(|&v| v == 255) && g.iter().all(|&v| v == 128));
         let mut out = vec![0u8; 2 * 2 * 2];
         pack_rgb565(&r, &g, &b, &mut out);
-        // r=255→31<<11, g=128→32<<5, b=8→1: 0xF841 little-endian = [0x41, 0xF8].
         let expected = ((255u16 & 0xF8) << 8) | ((128u16 & 0xFC) << 3) | (8u16 >> 3);
-        assert_eq!(expected, 0xFC01); // r5=31 g6=32 b5=1
+        assert_eq!(expected, 0xFC01);
         for px in out.chunks_exact(2) {
             assert_eq!(u16::from_le_bytes([px[0], px[1]]), expected);
         }
@@ -121,7 +119,6 @@ mod tests {
 
     #[test]
     fn chroma_area_average_rounds_half_up() {
-        // One 2×2 block: reds 0,1,2,3 → sum 6 → (6+2)>>2 = 2; g/b constant.
         let ex = Extractor::new(2, 2);
         let mut frame = vec![0u8; 12];
         for (i, px) in frame.chunks_exact_mut(3).enumerate() {
@@ -135,8 +132,8 @@ mod tests {
         let mut out = vec![0u8; 2];
         pack_rgb565(&r, &g, &b, &mut out);
         let packed = u16::from_le_bytes([out[0], out[1]]);
-        assert_eq!(packed >> 11, u16::from(2u8 >> 3)); // r5 from avg red 2
-        assert_eq!((packed >> 5) & 0x3F, u16::from(100u8 >> 2)); // g6
-        assert_eq!(packed & 0x1F, u16::from(200u8 >> 3)); // b5
+        assert_eq!(packed >> 11, u16::from(2u8 >> 3));
+        assert_eq!((packed >> 5) & 0x3F, u16::from(100u8 >> 2));
+        assert_eq!(packed & 0x1F, u16::from(200u8 >> 3));
     }
 }

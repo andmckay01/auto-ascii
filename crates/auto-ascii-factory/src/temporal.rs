@@ -1,8 +1,8 @@
-//! Temporal EMA on feature planes (PLAN §5 stage 4): sensor-noise
+//! Temporal EMA on feature planes: sensor-noise
 //! suppression, the first line of anti-flicker defense. Reset at shot cuts —
 //! blending across a hard cut ghosts the old scene into the new one.
 //!
-//! Pure integer fixed point (byte-determinism, PLAN §4): the accumulator
+//! Pure integer fixed point (byte-determinism): the accumulator
 //! holds `value · 256` (Q8) per pixel, alpha is Q8 derived from the
 //! params.toml milli value. `alpha_milli = 1000` (Q8 256) is an exact
 //! passthrough, so "EMA off" costs nothing in precision. Update rule:
@@ -20,11 +20,8 @@
 
 /// One plane's EMA state.
 pub struct EmaPlane {
-    /// Q8 accumulator per pixel (i32: covers u8 and ±255 i16 domains).
     acc: Vec<i32>,
-    /// New-frame weight in Q8 (1..=256); 256 = passthrough.
     alpha_q8: i32,
-    /// False until the first frame after (re)start/cut primes the state.
     primed: bool,
 }
 
@@ -36,7 +33,7 @@ impl EmaPlane {
     }
 
     /// Forget all state; the next apply primes from its input verbatim
-    /// (shot-cut reset — PLAN §5 stage 4 / §3.5 scene-cut semantics).
+    /// (shot-cut reset).
     pub fn reset(&mut self) {
         self.primed = false;
     }
@@ -76,8 +73,6 @@ impl EmaPlane {
         for ((a, &s), o) in self.acc.iter_mut().zip(src).zip(out.iter_mut()) {
             let delta = (i32::from(s) << 8) - *a;
             *a += (self.alpha_q8 * delta + 128) >> 8;
-            // Arithmetic shift floors, so +128 rounds half-up for negatives
-            // too; the domain (±255) can never clip i16.
             *o = ((*a + 128) >> 8) as i16;
         }
     }
@@ -107,7 +102,6 @@ mod tests {
         assert_eq!(out, [150]);
         ema.apply_u8(&[200], &mut out);
         assert_eq!(out, [175]);
-        // A held input must settle on the exact byte (flicker premise).
         for _ in 0..40 {
             ema.apply_u8(&[200], &mut out);
         }

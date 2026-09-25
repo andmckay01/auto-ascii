@@ -1,9 +1,6 @@
-//! `Cell` and `Rgb` — the render-grid POD types (PLAN §3.1).
+//! `Cell` and `Rgb` — the render-grid POD types.
 
 /// 24-bit truecolor value. 3-byte `#[repr(C)]` POD so `Cell` packs to 12 bytes.
-///
-/// M0 uses grayscale fg only (`Rgb::gray`, PLAN §7); chroma sampling arrives
-/// with the C plane at M1+.
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
 pub struct Rgb {
@@ -21,23 +18,22 @@ impl Rgb {
         Rgb { r, g, b }
     }
 
-    /// Grayscale helper — the M0 foreground path (PLAN §7: "truecolor gray fg").
+    /// Grayscale helper: `v` in all three channels.
     #[inline]
     pub const fn gray(v: u8) -> Rgb {
         Rgb { r: v, g: v, b: v }
     }
 }
 
-/// Cell attribute bits (`Cell::attrs`). M0 always writes [`attrs::NONE`];
-/// the field is part of the frozen 12-byte layout (PLAN §3.1).
+/// Cell attribute bits (`Cell::attrs`). Only [`attrs::NONE`] is defined; the
+/// field is part of the frozen 12-byte layout.
 pub mod attrs {
     pub const NONE: u8 = 0;
 }
 
-/// One terminal cell (PLAN §3.1): 12-byte `#[repr(C)]` POD, memcmp-able.
+/// One terminal cell: 12-byte `#[repr(C)]` POD, memcmp-able.
 ///
-/// `bg` is load-bearing: half-block cells are (fg, bg) vertical pixel pairs
-/// (PLAN §3.3/§3.5, lands M3) — do not remove it "because M0 only uses fg".
+/// `bg` is load-bearing: half-block cells are (fg, bg) vertical pixel pairs.
 ///
 /// `ch` is the glyph as a `char` widened to `u32` (so the struct stays POD and
 /// diffable with a plain byte compare once padding is zeroed by constructors).

@@ -1,33 +1,26 @@
-//! Separable box resampler with precomputed Q8 tap tables (PLAN §3.3).
+//! Separable box resampler with precomputed Q8 tap tables.
 //!
-//! Planes live at 480×270 u8 (chroma 240×135 at M1+). Per output cell we box-
-//! average a fractional source rect, done as two 1-D passes: H-pass into a
-//! shared `u16` buffer, V-pass with `u32` accumulator, `>> 16` out. No floats
-//! in the hot loop; fixed trip counts autovectorize under `-O3` — no hand SIMD
-//! (80/20) unless profiling shows > 2 ms.
+//! Planes live at 480×270 u8 (chroma 240×135). Per output cell we box-average
+//! a fractional source rect, done as two 1-D passes: H-pass into a shared
+//! `u16` buffer, V-pass with `u32` accumulator, `>> 16` out. No floats in the
+//! hot loop; fixed trip counts autovectorize under `-O3`.
 //!
 //! Tables are rebuilt on resize only (~50 µs, < 4 KB). Upscale degrades
 //! naturally to 1–2 linear taps (bilinear); same code, no branch.
 //!
 //! Table construction is pure integer rational arithmetic (no floats anywhere
 //! in this module), so tap tables and output are byte-deterministic across
-//! platforms — a golden-test requirement (PLAN §4/§6).
+//! platforms — a golden-test requirement.
 //!
-//! M3 note (PLAN §3.3): luma is resampled at `Vc × 2·Vr` through this exact
-//! code path (half-block fills / subposition glyphs); M0 uses `Vc × Vr`.
+//! Luma is resampled at `Vc × 2·Vr` (half-block fills / subposition glyphs)
+//! through this same code path.
 
-/// Tap table entry for one output coordinate along one axis (PLAN §3.3).
+/// Tap table entry for one output coordinate along one axis.
 ///
-/// Q8 fixed point: the `ntaps` weights sum to 256. Deviation from the PLAN
-/// sketch (`w: [u16]` inline / digest's `w[MAXTAP]`): weights live in a shared
-/// pool inside [`Resampler`] and `w_off` indexes it — a fixed `MAXTAP` cannot
-/// cover extreme downscales (480 source columns → a 1-col viewport is a legal
-/// fuzz case, PLAN §6), while a pool keeps `Tap1D` a fixed-size POD. Recorded
-/// in docs/INTERFACES.md.
-///
-/// `ntaps` is `u16` (widened from the scaffold's `u8`, recorded in
-/// docs/INTERFACES.md): the same 480→1 fuzz case needs 480 taps in one run, which
-/// overflows `u8`.
+/// Q8 fixed point: the `ntaps` weights sum to 256. Weights live in a shared
+/// pool inside [`Resampler`] and `w_off` indexes it, so `Tap1D` stays a
+/// fixed-size POD while still covering extreme downscales: 480 source columns
+/// onto a 1-col viewport needs 480 taps in one run, hence `ntaps: u16`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tap1D {
     /// First source index covered by this output sample.
@@ -38,16 +31,13 @@ pub struct Tap1D {
     pub w_off: u32,
 }
 
-/// Precomputed separable resampler for one (src, dst) dimension pair
-/// (PLAN §3.3). Build once per resize per plane geometry; `apply` per frame.
+/// Precomputed separable resampler for one (src, dst) dimension pair.
+/// Build once per resize per plane geometry; `apply` per frame.
 #[derive(Clone, Debug)]
 pub struct Resampler {
     taps_x: Vec<Tap1D>,
     taps_y: Vec<Tap1D>,
-    /// Shared Q8 weight pool referenced by `Tap1D::w_off`; each run sums to 256.
     weights: Vec<u16>,
-    /// Shared H-pass intermediate buffer (`dst_w × src_h` u16), reused across
-    /// frames — no per-frame allocation (PLAN §6).
     hbuf: Vec<u16>,
     src_w: u16,
     src_h: u16,
@@ -55,28 +45,20 @@ pub struct Resampler {
     dst_h: u16,
 }
 
-/// Append the box tap run for every output index along one axis.
-///
-/// Output interval `i` covers source span `[i·src/dst, (i+1)·src/dst)`. All
-/// arithmetic is exact integer rational, scaled by `dst`: source pixel `s`
-/// spans `[s·dst, (s+1)·dst)` and the output interval spans
-/// `[i·src, (i+1)·src)` (length `src`). Weights are assigned by the cumulative
-/// method — `w_j = floor(cum_{j+1}·256/src) − floor(cum_j·256/src)` — which
-/// guarantees every run sums to exactly 256 with no float in sight.
 fn build_axis(src: u16, dst: u16, taps: &mut Vec<Tap1D>, weights: &mut Vec<u16>) {
     let src = src.max(1) as u64;
     let dst = dst.max(1) as u64;
     taps.reserve(dst as usize);
     for i in 0..dst {
-        let left = i * src; // scaled by dst
+        let left = i * src;
         let right = (i + 1) * src;
-        let s0 = left / dst; // floor(left / dst)
-        let s1 = right.div_ceil(dst); // exclusive end, ceil(right / dst)
+        let s0 = left / dst;
+        let s1 = right.div_ceil(dst);
         debug_assert!(s1 > s0 && s1 <= src);
         let w_off = weights.len() as u32;
-        let mut cum: u64 = 0; // cumulative overlap, scaled by dst
-        let mut prev_q: u64 = 0; // floor(cum * 256 / span)
-        let span = right - left; // == src
+        let mut cum: u64 = 0;
+        let mut prev_q: u64 = 0;
+        let span = right - left;
         for s in s0..s1 {
             let lo = left.max(s * dst);
             let hi = right.min((s + 1) * dst);
@@ -97,9 +79,9 @@ fn build_axis(src: u16, dst: u16, taps: &mut Vec<Tap1D>, weights: &mut Vec<u16>)
 impl Resampler {
     /// Build tap tables mapping a `src_w × src_h` u8 plane onto `dst_w × dst_h`.
     ///
-    /// Called on resize only (PLAN §3.6 step 1); ~50 µs, < 4 KB. All dims are
-    /// clamped ≥ 1. Box weights are exact Q8 (each axis run sums to 256), so
-    /// output is deterministic across platforms — a golden-test requirement.
+    /// Called on resize only; ~50 µs, < 4 KB. All dims are clamped ≥ 1. Box
+    /// weights are exact Q8 (each axis run sums to 256), so output is
+    /// deterministic across platforms — a golden-test requirement.
     pub fn build(src_w: u16, src_h: u16, dst_w: u16, dst_h: u16) -> Resampler {
         let (src_w, src_h) = (src_w.max(1), src_h.max(1));
         let (dst_w, dst_h) = (dst_w.max(1), dst_h.max(1));
@@ -137,13 +119,11 @@ impl Resampler {
         assert_eq!(src.len(), sw * sh, "src plane size mismatch");
         assert!(dst.len() >= dw * dh, "dst buffer too small");
 
-        // Disjoint field borrows: taps/weights read-only, hbuf written.
         let taps_x = &self.taps_x;
         let taps_y = &self.taps_y;
         let weights = &self.weights;
         let hbuf = &mut self.hbuf;
 
-        // H-pass: each source row → dst_w u16 samples.
         for y in 0..sh {
             let srow = &src[y * sw..y * sw + sw];
             let hrow = &mut hbuf[y * dw..y * dw + dw];
@@ -154,11 +134,10 @@ impl Resampler {
                 for (&w, &p) in run.iter().zip(px) {
                     acc += w as u32 * p as u32;
                 }
-                *h = acc as u16; // ≤ 65 280
+                *h = acc as u16;
             }
         }
 
-        // V-pass: dst_h × dst_w, u32 accumulator, round + shift out.
         for (y, t) in taps_y.iter().enumerate().take(dh) {
             let run = &weights[t.w_off as usize..t.w_off as usize + t.ntaps as usize];
             let drow = &mut dst[y * dw..y * dw + dw];
@@ -188,7 +167,6 @@ impl Resampler {
 mod tests {
     use super::*;
 
-    /// Deterministic xorshift64* — property-style tests without a rand dep.
     struct Rng(u64);
     impl Rng {
         fn next(&mut self) -> u64 {
@@ -212,7 +190,6 @@ mod tests {
         for (taps, src_len) in [(&r.taps_x, sw), (&r.taps_y, sh)] {
             for t in taps.iter() {
                 assert!(t.ntaps >= 1);
-                // OOB safety: run stays inside the source axis.
                 assert!(t.src_start as usize + t.ntaps as usize <= src_len as usize);
                 let run =
                     &r.weights[t.w_off as usize..t.w_off as usize + t.ntaps as usize];
@@ -221,7 +198,6 @@ mod tests {
         }
     }
 
-    /// PLAN §3.3: Q8 weights sum to 256 for every output index — random sizes.
     #[test]
     fn weight_sums_are_256_for_random_sizes() {
         let mut rng = Rng(0x5EED_1234_ABCD_EF01);
@@ -233,15 +209,12 @@ mod tests {
             let r = Resampler::build(sw, sh, dw, dh);
             check_tap_invariants(&r);
         }
-        // The extreme-downscale cases that motivated the pool + u16 ntaps.
         for (sw, sh, dw, dh) in [(480, 270, 1, 1), (480, 270, 3, 2), (1, 1, 480, 270)] {
             let r = Resampler::build(sw, sh, dw, dh);
             check_tap_invariants(&r);
         }
     }
 
-    /// Uniform input must stay exactly uniform at any geometry (weights are
-    /// exact Q8, so v·65536 + 0x8000 >> 16 == v).
     #[test]
     fn uniform_input_invariance() {
         let mut rng = Rng(0xDEAD_BEEF_0BAD_F00D);
@@ -263,7 +236,6 @@ mod tests {
         }
     }
 
-    /// Integer 2:1 downscale is an exact 2×2 box average.
     #[test]
     fn two_to_one_exact_box_average() {
         let sw = 6u16;
@@ -278,12 +250,9 @@ mod tests {
         let mut r = Resampler::build(sw, sh, 3, 2);
         let mut dst = vec![0u8; 6];
         r.apply(&src, &mut dst);
-        // 2×2 block means: (10+20+30+40)/4=25, (0+255+255+0)/4=127.5→128 (round
-        // half up), (8·4)/4=8, (100·4)/4=100, (50+50+50+54)/4=51, (1+3+5+7)/4=4.
         assert_eq!(dst, vec![25, 128, 8, 100, 51, 4]);
     }
 
-    /// 480×270 → 240×135 (the real chroma geometry) stays an exact 2×2 mean.
     #[test]
     fn base_plane_halving_matches_reference() {
         let (sw, sh, dw, dh) = (480u16, 270u16, 240u16, 135u16);
@@ -299,27 +268,24 @@ mod tests {
                     src[(2 * y + dy) * sw as usize + 2 * x + dx] as u32
                 };
                 let sum = s(0, 0) + s(1, 0) + s(0, 1) + s(1, 1);
-                let expect = ((sum * 16384 + 0x8000) >> 16) as u8; // round(sum/4)
+                let expect = ((sum * 16384 + 0x8000) >> 16) as u8;
                 assert_eq!(dst[y * dw as usize + x], expect, "at ({x},{y})");
             }
         }
     }
 
-    /// Edge safety + range sanity on hostile geometries: no panic, no OOB,
-    /// every output within [min, max] of the source (box averages can't
-    /// overshoot, and rounding can't escape an integer-bounded interval).
     #[test]
     fn out_of_bounds_safety_and_range_at_edges() {
         let mut rng = Rng(0x0123_4567_89AB_CDEF);
         let geoms: &[(u16, u16, u16, u16)] = &[
-            (480, 270, 1, 1),     // full collapse
-            (480, 270, 1, 270),   // width collapse
-            (480, 270, 480, 1),   // height collapse
-            (1, 1, 320, 90),      // extreme upscale
-            (2, 2, 321, 91),      // odd upscale
-            (480, 270, 479, 269), // near-identity
-            (480, 270, 481, 271), // just past identity
-            (3, 3, 3, 3),         // identity
+            (480, 270, 1, 1),
+            (480, 270, 1, 270),
+            (480, 270, 480, 1),
+            (1, 1, 320, 90),
+            (2, 2, 321, 91),
+            (480, 270, 479, 269),
+            (480, 270, 481, 271),
+            (3, 3, 3, 3),
         ];
         for &(sw, sh, dw, dh) in geoms {
             let mut src = vec![0u8; sw as usize * sh as usize];
@@ -341,7 +307,6 @@ mod tests {
         }
     }
 
-    /// Identity geometry is a byte-for-byte copy.
     #[test]
     fn identity_is_exact() {
         let (w, h) = (33u16, 17u16);
@@ -354,8 +319,6 @@ mod tests {
         assert_eq!(src, dst);
     }
 
-    /// apply() is deterministic and reusable (double-apply, same output) and
-    /// dims are clamped ≥ 1.
     #[test]
     fn deterministic_and_clamped() {
         let r = Resampler::build(0, 0, 0, 0);

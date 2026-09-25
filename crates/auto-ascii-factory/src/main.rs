@@ -1,27 +1,3 @@
-//! `auto-ascii-factory` — offline asset factory (PLAN §5).
-//!
-//! M1 pipeline (PLAN §5/§7): ffmpeg subprocess (`-vf
-//! scale=W:H:flags=area,fps=N,format=rgb24 -f rawvideo -` piped, never libav
-//! bindings) → pass 1: sRGB→linear→L* luma, shot detection (histogram SAD +
-//! min shot length) and per-shot p2/p98 levels → pass 2: NORM chunk (levels
-//! applied at RUNTIME by the player — nothing baked into the planes) + Y
-//! (L*, full res) + C (RGB565, half res, 2×2 area average) planes through
-//! the ASCI v1 writer (temporal delta + keyframes, zstd-19, CRCs).
-//! `ffprobe -print_format json` supplies metadata (`serde_json`).
-//!
-//! CLI shape per PLAN §5. M2 (item B) adds the agent socket: every tunable
-//! lives in params.toml (embedded defaults at the repo root, `--params`
-//! overrides, `params --dump` prints the effective config) and
-//! `auto-ascii-factory eval` builds corpus assets (cached by input+params sha),
-//! runs the real player pipeline headlessly and emits metrics JSON + an
-//! HTML contact sheet with optional baseline compare (`sweep` remains
-//! future work). Progress/diagnostics go to stderr; stdout stays clean
-//! (inspect's report and `params --dump` are the stdout products).
-
-//! M7 (PLAN-M6-M8 §2): the stages moved into `src/lib.rs` so a second
-//! binary can ingest video; this file is the clap surface, the `inspect`
-//! report and nothing else.
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -33,7 +9,7 @@ use auto_ascii_format::{
 };
 
 #[derive(Parser)]
-#[command(name = "auto-ascii-factory", version, about = "Distill video into ASCI feature assets (PLAN §5)")]
+#[command(name = "auto-ascii-factory", version, about = "Distill video into ASCI feature assets")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -43,8 +19,9 @@ struct Cli {
 enum Cmd {
     /// Build an asset: `auto-ascii-factory build <in.mp4> -o out.ascii
     /// [--ss T] [--t T] [--fps 30] [--res 480x270]`.
-    /// M1 emits ASCI v1: Y + C planes, temporal delta + keyframes, NORM
-    /// per-shot levels + cut flags (applied at runtime by the player).
+    /// Emits ASCI v1: Y, E, Ex, Ey, H and C planes, temporal delta +
+    /// keyframes, NORM per-shot levels + cut flags (applied at runtime by
+    /// the player).
     Build {
         /// Input video (any ffmpeg-readable container).
         input: PathBuf,
@@ -62,22 +39,21 @@ enum Cmd {
         fps: Option<u16>,
         /// Stored plane resolution override as WxH (default: params.toml
         /// `build.base_w/base_h`). Dimensions must be even and >= 2: the
-        /// chroma plane C is stored at half res (§4 geometry term).
+        /// chroma plane C is stored at half res.
         #[arg(long, value_parser = parse_res)]
         res: Option<(u16, u16)>,
-        /// Tunables file (PLAN §5: every tunable lives in params.toml — the
-        /// agent socket). Missing keys keep the embedded defaults.
+        /// Tunables file (every tunable lives in params.toml — the agent
+        /// socket). Missing keys keep the embedded defaults.
         #[arg(long)]
         params: Option<PathBuf>,
     },
-    /// Print header, chunks, sizes, per-plane value stats; verify CRCs
-    /// (PLAN §5 CLI shape).
+    /// Print header, chunks, sizes, per-plane value stats; verify CRCs.
     Inspect {
         /// Asset to inspect.
         asset: PathBuf,
         /// Dump decoded planes of sampled frames into this directory as
         /// PGM/PPM images (Y/E as gray, Ex/Ey as bias-128 gray, H as a
-        /// flag map, C as color) — the M3 eyeball loop.
+        /// flag map, C as color) for eyeball review.
         #[arg(long)]
         dump_planes: Option<PathBuf>,
         /// Frame indices for --dump-planes and the stats sampler
@@ -95,7 +71,7 @@ enum Cmd {
         #[arg(long)]
         dump: bool,
     },
-    /// The agent socket (PLAN §5/§6, M2): build every video in --corpus
+    /// The agent socket: build every video in --corpus
     /// (cached by input+params sha), run the player pipeline headlessly,
     /// emit metrics JSON (+ HTML contact sheet), optionally compare against
     /// a baseline (nonzero exit on tolerance breach).
@@ -115,7 +91,7 @@ enum Cmd {
         /// Optional self-contained HTML contact sheet path (runs/X.html).
         #[arg(long)]
         html: Option<PathBuf>,
-        /// Optional review-reel HTML path (M3 human sign-off artifact):
+        /// Optional review-reel HTML path (human sign-off artifact):
         /// per clip, >=4 source|render timestamp rows with per-frame
         /// metrics plus an animated GIF of the rasterized render.
         #[arg(long)]
@@ -123,7 +99,7 @@ enum Cmd {
         /// Asset cache directory, keyed by (input sha, params sha).
         #[arg(long, default_value = "runs/cache")]
         cache_dir: PathBuf,
-        /// Ink-coverage table for the SSIM rasterizer (M5 §3.4): a built-in
+        /// Ink-coverage table for the SSIM rasterizer: a built-in
         /// name (conservative, dejavu-sans-mono, liberation-mono,
         /// ubuntu-mono, noto-sans-mono) or a path to a `auto-ascii-factory
         /// font-table` TOML. Default: conservative (the committed baseline's
@@ -132,7 +108,7 @@ enum Cmd {
         font_table: Option<String>,
     },
     /// Rasterize every glyph the 8 shipped palettes can emit through a
-    /// monospace font at 64x128 px (PLAN §3.4) and write a deterministic
+    /// monospace font at 64x128 px and write a deterministic
     /// ink-coverage table (TOML). The committed tables under fonts/ are
     /// generated this way (see fonts/README.md); `--font-table NAME|PATH`
     /// consumes them in the player and in `eval`.
@@ -150,7 +126,7 @@ enum Cmd {
         #[arg(long)]
         conservative: bool,
     },
-    /// Parameter sweep (PLAN §5 CLI, M3 Tune): run eval per combo of the
+    /// Parameter sweep: run eval per combo of the
     /// axes declared in --grid (values within an axis travel together; axes
     /// cross), score each combo (default 0.4*ssim + 0.4*edgeF1 -
     /// 0.2*flicker/2.0) and emit ranked results JSON + a leaderboard HTML.
@@ -260,14 +236,9 @@ fn plane_name(id: u8) -> &'static str {
     }
 }
 
-/// Per-plane and keyframe totals from a manual FRAM walk (wire layout frozen
-/// in PLAN §4 / auto-ascii-format write.rs: `frame_idx u32 | flags u8 | [id u8 |
-/// comp u32 | raw u32 | data | pad-to-64] × planes`). The walk reads only
-/// chunk and subblock headers — payload bytes are skipped by size.
 struct FramStats {
     frames: u64,
     keyframes: u64,
-    /// `(plane_id, compressed bytes, raw bytes)` in first-seen order.
     per_plane: Vec<(u8, u64, u64)>,
 }
 
@@ -311,7 +282,6 @@ fn walk_frames(bytes: &[u8], h: &AsciiHeader) -> Result<FramStats, Box<dyn std::
                     }
                     None => stats.per_plane.push((id, comp, raw)),
                 }
-                // Subblocks are padded to 64-B alignment (PLAN §4).
                 off += usize::try_from((9 + comp).div_ceil(64) * 64)
                     .map_err(|_| "subblock size overflow")?;
             }
@@ -325,7 +295,6 @@ fn mib(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
 }
 
-/// Evenly spread sample frames (up to 4, deduped) for stats/dumps.
 fn sample_frames(frame_count: u32) -> Vec<u32> {
     let n = frame_count;
     let want = 4u32.min(n);
@@ -339,8 +308,6 @@ fn sample_frames(frame_count: u32) -> Vec<u32> {
     out
 }
 
-/// Per-plane value stats over the sampled frames (M3: `inspect` must show
-/// whether E/Ex/Ey/H carry sane signal without a picture).
 fn plane_stats(
     reader: &mut AsciiReader<'_>,
     frames: &[u32],
@@ -399,8 +366,6 @@ fn plane_stats(
     Ok(())
 }
 
-/// Dump decoded planes as PGM/PPM for eyeballing (M3 review loop; PNG
-/// conversion is one `ffmpeg -i x.pgm x.png` away).
 fn dump_planes(
     reader: &mut AsciiReader<'_>,
     dir: &std::path::Path,
@@ -416,7 +381,6 @@ fn dump_planes(
             reader.seek_plane_into(f, id, &mut buf)?;
             let name = plane_name(id).to_ascii_lowercase();
             if id == plane_id::C {
-                // RGB565 LE → PPM (bit-replicating 8-bit expand).
                 let mut rgb = Vec::with_capacity(pw as usize * ph as usize * 3);
                 for px in buf.chunks_exact(2) {
                     let v = u16::from_le_bytes([px[0], px[1]]);
@@ -429,7 +393,6 @@ fn dump_planes(
                 std::fs::write(&path, [format!("P6\n{pw} {ph}\n255\n").as_bytes(), &rgb].concat())?;
             } else {
                 if id == plane_id::H {
-                    // Flag map: highlight → white, shadow → dark gray.
                     for v in &mut buf {
                         *v = match *v & 3 {
                             1 | 3 => 255,
@@ -447,9 +410,6 @@ fn dump_planes(
     Ok(())
 }
 
-/// Header + structural walk + per-plane stats + full CRC check via
-/// `AsciiReader::open`/`verify` (PLAN §5). No mmap here — `fs::read` is fine
-/// for an offline tool.
 fn cmd_inspect(
     asset: &std::path::Path,
     dump_dir: Option<&std::path::Path>,
@@ -497,7 +457,6 @@ fn cmd_inspect(
         meta.factory_version, meta.source, meta.palette_hints
     );
 
-    // M1 additions: shots/cuts, keyframe count, per-plane sizes, ratio vs raw.
     let shots = reader.shots();
     if shots.is_empty() {
         println!("  shots:        none (no NORM chunk — pre-M1 asset)");
@@ -542,7 +501,6 @@ fn cmd_inspect(
         raw_total as f64 / bytes.len().max(1) as f64
     );
 
-    // M3: per-plane value stats (+ optional plane dumps) on sampled frames.
     if h.frame_count > 0 {
         let sampled = if frames.is_empty() {
             sample_frames(h.frame_count)

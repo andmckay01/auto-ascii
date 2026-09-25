@@ -1,24 +1,12 @@
-//! [`RenderSession`] — the terminal-free embedding entry (M4 item A).
-//!
-//! For callers who own their event loop and their output layer: a game
-//! engine, a GUI widget, a test harness, a web canvas. No terminal, no
-//! clock, no signals — you ask for a frame at a grid size, you get back a
-//! composed [`Grid`]`<`[`Cell`]`>` of glyphs + RGB colors to draw however
-//! you like.
-
 use std::path::Path;
 
-use auto_ascii_core::{Cell, ColorDepth, FontTable, Grid};
+use auto_ascii_core::{Cell, Codec, ColorDepth, FontTable, Grid};
 
 use crate::composition::Composition;
 use crate::deck::{ClipDeck, DeckConfig};
 use crate::error::Error;
 use crate::PaletteChoice;
 
-/// Resolve a `--font-table NAME|PATH` spec (PLAN §3.4, M5): a committed
-/// built-in table by name, else a path to a `auto-ascii-factory font-table`
-/// TOML. Shared by [`RenderSession::set_font_table`] and
-/// `PlayerBuilder::font_table`.
 pub(crate) fn load_font_table(spec: &str) -> Result<FontTable, Error> {
     if let Some(t) = FontTable::builtin(spec) {
         return Ok(t.clone());
@@ -61,8 +49,8 @@ pub(crate) fn load_font_table(spec: &str) -> Result<FontTable, Error> {
 /// # Temporal-state semantics
 ///
 /// The engine keeps per-cell temporal state (ramp-index hysteresis, edge
-/// on/off memory, orientation bins — the flicker killers, PLAN §3.5) keyed
-/// to the frame sequence you feed it:
+/// on/off memory, orientation bins — the flicker killers) keyed to the
+/// frame sequence you feed it:
 ///
 /// * **Monotonic advance** (`frame_idx` ≥ the previous call's, skips
 ///   allowed) — full quality. This is normal playback, including
@@ -83,24 +71,16 @@ pub(crate) fn load_font_table(spec: &str) -> Result<FontTable, Error> {
 ///
 /// [`open_composition`](RenderSession::open_composition) (and
 /// [`from_composition`](RenderSession::from_composition)) opens a stitch of
-/// clips instead of one asset (PLAN-M6-M8 §3). Everything above is
-/// unchanged: `frame_idx` counts frames on the COMPOSITION's timeline at
-/// its own [`fps`](RenderSession::fps), each clip decodes from its own
-/// mapping, a clip switch resets temporal state exactly like a backward
-/// jump, and a gap between clips renders an all-blank grid.
+/// clips instead of one asset. Everything above still applies: `frame_idx`
+/// counts frames on the COMPOSITION's timeline at its own
+/// [`fps`](RenderSession::fps), each clip decodes from its own mapping, a
+/// clip switch resets temporal state exactly like a backward jump, and a
+/// gap between clips renders an all-blank grid.
 pub struct RenderSession {
-    /// The clip decks' render state. Declared first so its borrows die
-    /// before anything it depends on.
     deck: ClipDeck,
-    /// The timeline. A plain asset is a one-clip composition whose frame
-    /// mapping is the identity (integer, exact) — one path, one source of
-    /// truth for fps, aspect and frame count.
     comp: Composition,
-    /// Frame index of the last successful render (backward-jump detection).
     last_frame: Option<u32>,
-    /// The chosen repertoire, kept so the font-table veto can re-resolve it.
     palette: PaletteChoice,
-    /// Optional §3.4 font coverage table: its repertoire vetoes `palette`.
     font_table: Option<FontTable>,
 }
 
@@ -134,7 +114,7 @@ impl RenderSession {
         RenderSession::from_composition(Composition::single(path.as_ref()))
     }
 
-    /// Open a composition TOML for terminal-free rendering (PLAN-M6-M8 §3).
+    /// Open a composition TOML for terminal-free rendering.
     ///
     /// `library_dir` is where a bare library NAME in the file resolves
     /// (`<library>/<name>.ascii`); pass
@@ -175,17 +155,11 @@ impl RenderSession {
         })
     }
 
-    /// Re-resolve the glyph tier from `palette` through the font-table veto
-    /// and reset the temporal state (a repertoire change makes every
-    /// remembered ramp index stale, same as [`set_palette`](Self::set_palette)).
     fn apply_glyph_tier(&mut self) {
         let mut tier = self.palette.resolve_headless();
         if let Some(t) = &self.font_table {
             tier = t.veto_tier(tier);
         }
-        // Every clip, present and future: the deck resets their temporal
-        // state and drops their reflow (palettes are density-keyed and are
-        // rebuilt there).
         self.deck.set_glyph_tier(tier);
     }
 
@@ -208,19 +182,13 @@ impl RenderSession {
                 self.comp.frame_count()
             )));
         }
-        // The timeline says which clip is on top and which of ITS frames
-        // that is — for one asset, frame f, exactly.
         let located = self.comp.locate_frame(frame_idx);
         let backward = self.last_frame.is_some_and(|last| frame_idx < last);
         self.deck.set_size(cols, rows);
         if backward {
-            self.deck.reset_active(); // backward jump: no ghosting
+            self.deck.reset_active();
         }
-        // render_at reflows on a size change, switches clips (which resets
-        // the one it fronts) and paints a gap black.
         self.deck.render_at(located)?;
-        // Only now: a failed render must not move the cursor a later
-        // backward-jump test reads.
         self.last_frame = Some(frame_idx);
         Ok(self.deck.showing())
     }
@@ -240,9 +208,8 @@ impl RenderSession {
     /// The asset's intended picture aspect ratio, width / height, from the
     /// ASCI header's `aspect_num/den` (16:9 assets return ≈1.778; degenerate
     /// zero fields fall back to 16:9). This is the exact ratio the letterbox
-    /// inside [`render`](Self::render) targets (M5 fix 2: the viewport
-    /// tracks the asset's aspect, not a hard-coded 16:9); it is exposed for
-    /// embedders sizing their own viewport.
+    /// inside [`render`](Self::render) targets; it is exposed for embedders
+    /// sizing their own viewport.
     pub fn aspect(&self) -> f64 {
         self.comp.aspect()
     }
@@ -257,10 +224,9 @@ impl RenderSession {
     }
 
     /// Assert which font the output medium renders with, by ink-coverage
-    /// table (PLAN §3.4 `--font-table`): a built-in name — `conservative`,
-    /// `dejavu-sans-mono`, `liberation-mono`, `ubuntu-mono`,
-    /// `noto-sans-mono` — or a path to a `auto-ascii-factory font-table` TOML.
-    /// `None` clears it.
+    /// table: a built-in name — `conservative`, `dejavu-sans-mono`,
+    /// `liberation-mono`, `ubuntu-mono`, `noto-sans-mono` — or a path to a
+    /// `auto-ascii-factory font-table` TOML. `None` clears it.
     ///
     /// The table's recorded repertoire then *vetoes* the palette choice:
     /// a tier whose glyphs the font is missing degrades (braille →
@@ -279,9 +245,22 @@ impl RenderSession {
         Ok(())
     }
 
-    /// Set the cell aspect ratio `cell_h / cell_w` used by the letterbox
-    /// math (PLAN §3.2). Terminal fonts are ≈2.0 (the default); pass 1.0
-    /// if your cells are square (e.g. a texture atlas of square tiles).
+    /// Choose the glyph codec for subsequent renders — how each cell's
+    /// features become a glyph (see [`Codec`]). The default,
+    /// [`Codec::Pixels`], is the classic picture-like mapping; switching
+    /// resets temporal state, like [`set_palette`](Self::set_palette).
+    pub fn set_codec(&mut self, codec: Codec) {
+        self.deck.set_codec(codec);
+    }
+
+    /// The glyph codec in force.
+    pub fn codec(&self) -> Codec {
+        self.deck.codec()
+    }
+
+    /// Set the cell aspect ratio `cell_h / cell_w` used by the letterbox math.
+    /// Terminal fonts are ≈2.0 (the default); pass 1.0 if your cells are
+    /// square (e.g. a texture atlas of square tiles).
     ///
     /// # Errors
     /// [`Error::Config`] unless `0 < cell_aspect` and it is finite.
@@ -291,18 +270,11 @@ impl RenderSession {
                 "cell aspect must be finite and > 0 (got {cell_aspect})"
             )));
         }
-        // Every clip, present and future; viewport math is recomputed at
-        // the reflow the deck schedules for each of them.
         self.deck.set_cell_aspect(cell_aspect);
         Ok(())
     }
 }
 
-/// How [`RenderSession`] builds every clip pipeline: truecolor + Unicode
-/// defaults (it always composes full RGB cells — the embedder owns any
-/// quantization — and `Auto` has no `Caps` to consult, so it resolves to
-/// the Unicode-blocks tier), cell aspect 2.0, no repaint mode (a terminal
-/// concern, unused here).
 fn headless_deck_config() -> DeckConfig {
     DeckConfig {
         cell_aspect: auto_ascii_core::DEFAULT_CELL_ASPECT,

@@ -1,6 +1,6 @@
-//! Flicker score — mean glyph switches per cell per second (PLAN §6).
+//! Flicker score — mean glyph switches per cell per second.
 //!
-//! The M3 gate is ≤ 2 switches/cell/s on static shots. Segment selection
+//! The flicker gate is ≤ 2 switches/cell/s on static shots. Segment selection
 //! (which frames count as "static") is the eval driver's job — it has the
 //! NORM shot table; this accumulator just counts over the frames it is fed.
 
@@ -10,10 +10,10 @@ use auto_ascii_core::{Cell, Grid};
 /// [`FlickerAccum::push`]; read the rate with [`FlickerAccum::score`].
 ///
 /// Only the glyph (`Cell::ch`) is compared — color-only changes are not
-/// flicker in the §6 sense (they don't strobe glyph shapes).
+/// flicker (they don't strobe glyph shapes).
 ///
 /// A grid-dimension change resets the comparison state (a resize invalidates
-/// the whole frame and legitimately reglyphs every cell — PLAN §3.5 resets
+/// the whole frame and legitimately reglyphs every cell — the player resets
 /// hysteresis the same way); the first frame after a reset contributes no
 /// pairs.
 #[derive(Clone, Debug, Default)]
@@ -71,7 +71,7 @@ impl FlickerAccum {
         (self.cell_pairs > 0).then(|| self.switches as f64 / self.cell_pairs as f64)
     }
 
-    /// The §6 flicker score: mean glyph switches per cell per **second** at
+    /// The flicker score: mean glyph switches per cell per **second** at
     /// the given playback rate.
     pub fn score(&self, fps: f64) -> Option<f64> {
         self.switches_per_cell_frame().map(|s| s * fps)
@@ -116,11 +116,10 @@ mod tests {
         acc.push(&b);
         acc.push(&a);
         acc.push(&b);
-        // 3 frame pairs × 100 cells, every cell switches every pair.
         assert_eq!(acc.switches(), 300);
         assert_eq!(acc.cell_pairs(), 300);
         assert_eq!(acc.switches_per_cell_frame(), Some(1.0));
-        assert_eq!(acc.score(30.0), Some(30.0)); // catastrophic vs the ≤2 gate
+        assert_eq!(acc.score(30.0), Some(30.0));
     }
 
     #[test]
@@ -146,10 +145,10 @@ mod tests {
         let b = checker(8, 8, true);
         let mut acc = FlickerAccum::new();
         acc.push(&a);
-        acc.push(&b); // dims changed: no pair counted
+        acc.push(&b);
         assert_eq!(acc.cell_pairs(), 0);
         assert_eq!(acc.switches_per_cell_frame(), None);
-        acc.push(&b); // comparable again
+        acc.push(&b);
         assert_eq!(acc.cell_pairs(), 64);
         assert_eq!(acc.switches(), 0);
     }

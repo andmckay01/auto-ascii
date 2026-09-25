@@ -1,7 +1,3 @@
-//! M3 compositor property tests (task spec §3.4/§3.5): uniform input composes
-//! to the pure base ramp with zero edge/highlight leakage on every palette
-//! configuration, and repeated composition is a hysteresis fixed point.
-
 use proptest::prelude::*;
 use auto_ascii_core::compose::{ComposeParams, FramePlanes, compose_frame};
 use auto_ascii_core::hysteresis::HysteresisState;
@@ -30,9 +26,6 @@ fn color(i: u8) -> ColorDepth {
 }
 
 proptest! {
-    /// Uniform luma + zero-feature planes → every viewport cell is exactly the
-    /// base ramp cell (no edge, highlight, half-block, subpos or braille
-    /// leaks), pads stay BLANK, and a second pass is byte-identical.
     #[test]
     fn uniform_input_is_pure_base_ramp(
         n in 0u8..=255,
@@ -80,14 +73,11 @@ proptest! {
             }
         }
 
-        // Hysteresis fixed point: same input again → identical frame.
         let snapshot = grid.clone();
         compose_frame(&planes, &vp, &lut, &set, &params, &mut state, &mut grid);
         prop_assert_eq!(&grid, &snapshot);
     }
 
-    /// Hysteresis damping: a ±1 luma wobble around a step boundary never
-    /// changes the glyph after the first frame (the §3.5 flicker killer).
     #[test]
     fn index_hysteresis_absorbs_lsb_wobble(
         base in 1u8..=254,
@@ -112,7 +102,6 @@ proptest! {
             compose_frame(&planes, &vp, &lut, &set, &params, &mut state, &mut grid);
             glyphs.push(grid.get(vp.pad_left, vp.pad_top).glyph());
         }
-        // After the seed frame, the glyph must never switch again.
         for g in &glyphs[1..] {
             prop_assert_eq!(*g, glyphs[1]);
         }

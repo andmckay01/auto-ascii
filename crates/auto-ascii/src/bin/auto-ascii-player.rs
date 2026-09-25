@@ -1,18 +1,3 @@
-//! `auto-ascii-player` — realtime terminal player (PLAN §3), M4: a thin CLI
-//! over the `auto-ascii` facade. Interactive playback is
-//! [`auto_ascii::Player`] verbatim — argv maps 1:1 onto
-//! [`PlayerBuilder`](auto_ascii::PlayerBuilder) options and NOTHING else
-//! (no logic fork between bin and lib paths, M4 item B); this file owns
-//! only argument parsing and the headless `--sim` harness.
-//!
-//! Never run interactively without a TTY; headless verification uses
-//! `--sim COLSxROWS:NFRAMES` (SimBackend), which renders N frames as fast as
-//! possible and prints one JSON line of stats. `--sim-tier` selects the
-//! simulated color tier and `--sim-dump PATH` captures the raw escape stream
-//! for byte-level tier checks; `--sim-resize [COLSxROWS]` injects a resize
-//! event at frame N/2 to prove reflow. The `--sim` path drives the same
-//! [`auto_ascii::pipeline`] the facade Player runs.
-
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -21,14 +6,14 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use auto_ascii::deck::{ClipDeck, DeckConfig};
 use auto_ascii::pipeline::color_depth;
-use auto_ascii::{Composition, PaletteChoice, RepaintMode};
+use auto_ascii::{Codec, Composition, PaletteChoice, RepaintMode};
 use auto_ascii_term::{Backend, Caps, ColorTier, Event, SimBackend};
 
-/// CLI face of [`auto_ascii::RepaintMode`] (PLAN §3.1: one render path —
-/// "full" is diff with `invalidate()` every frame, the M0 default per §7).
+/// CLI face of [`auto_ascii::RepaintMode`] (one render path — "full" is diff
+/// with `invalidate()` every frame, the default).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum RepaintArg {
-    /// Invalidate every frame → full escape stream each present (M0 default).
+    /// Invalidate every frame → full escape stream each present (default).
     Full,
     /// Pure diff: only damaged cells are rewritten; invalidate on resize only.
     Diff,
@@ -43,7 +28,7 @@ impl From<RepaintArg> for RepaintMode {
     }
 }
 
-/// Charset-tier override for palette selection (PLAN §3.4). `auto` derives
+/// Charset-tier override for palette selection. `auto` derives
 /// the tier from the probed `Caps.glyph_support`/`Caps.glyphs`; the explicit
 /// values force it (e.g. `--palette braille` on a terminal whose font is
 /// known-good — braille is never enabled from passive hints alone).
@@ -67,15 +52,15 @@ impl From<PaletteArg> for PaletteChoice {
 }
 
 #[derive(Parser)]
-#[command(name = "auto-ascii-player", version, about = "Play ASCI assets in the terminal (PLAN §3)")]
+#[command(name = "auto-ascii-player", version, about = "Play ASCI assets in the terminal")]
 struct Cli {
-    /// ASCI asset (mmap'd read-only via memmap2, PLAN §8), or a composition
-    /// `.toml` (M8, PLAN-M6-M8 §3) — a stitch of clips played virtually, on
-    /// one timeline. Bare library names inside a composition resolve under
+    /// ASCI asset (mmap'd read-only via memmap2), or a composition `.toml` —
+    /// a stitch of clips played virtually, on one timeline. Bare library
+    /// names inside a composition resolve under
     /// `$AUTO_ASCII_HOME/library` (default `~/auto-ascii/library`).
     asset: PathBuf,
 
-    /// Repaint mode (PLAN §7: M0 default is invalidate-every-frame).
+    /// Repaint mode (default: invalidate every frame).
     #[arg(long, value_enum, default_value_t = RepaintArg::Full)]
     repaint: RepaintArg,
 
@@ -89,7 +74,7 @@ struct Cli {
     #[arg(long, value_name = "FPS")]
     fps_cap: Option<f64>,
 
-    /// Cell aspect override `cell_h_px / cell_w_px` (PLAN §3.2). Default:
+    /// Cell aspect override `cell_h_px / cell_w_px`. Default:
     /// derived from the terminal's reported cell pixel size, else 2.0.
     #[arg(long, value_name = "RATIO")]
     cell_aspect: Option<f64>,
@@ -100,19 +85,19 @@ struct Cli {
 
     /// Start at TIMESTAMP — plain seconds ("42.5") or colon form ("1:30",
     /// "0:01:30.5"). Uses the FIDX seek path (keyframe binary search +
-    /// ≤ keyframe_ivl−1 delta rolls, PLAN §4). Interactively, keys 0–9 also
+    /// ≤ keyframe_ivl−1 delta rolls). Interactively, keys 0–9 also
     /// jump to 0–90% of the asset.
     #[arg(long, value_name = "TIMESTAMP")]
     seek: Option<String>,
 
     /// Force the color tier (truecolor|256|16|mono) — skips the probe volley
-    /// entirely (PLAN §3.1 escape hatch; passive env hints still fill the
-    /// glyph repertoire).
+    /// entirely (an escape hatch; passive env hints still fill the glyph
+    /// repertoire).
     #[arg(long, value_name = "TIER")]
     tier: Option<ColorTier>,
 
-    /// Never write the probe volley; passive env hints only (PLAN §3.1
-    /// escape hatch for hostile PTYs).
+    /// Never write the probe volley; passive env hints only (an escape
+    /// hatch for hostile PTYs).
     #[arg(long)]
     no_query: bool,
 
@@ -120,20 +105,20 @@ struct Cli {
     #[arg(long)]
     no_cache: bool,
 
-    /// Skip the identity-keyed quirk table (M5, PLAN §3.1): take the probe
+    /// Skip the identity-keyed quirk table: take the probe
     /// replies at face value instead of applying the known per-terminal
     /// corrections (keyed on the XTVERSION reply, never on TERM). Implies
     /// the probe cache is not written.
     #[arg(long)]
     no_quirks: bool,
 
-    /// Charset-tier override for palette selection (PLAN §3.4): auto (from
+    /// Charset-tier override for palette selection: auto (from
     /// the probed glyph repertoire), ascii, unicode (blocks/box-drawing) or
     /// braille (verified fonts only). Applies to interactive and --sim runs.
     #[arg(long, value_enum, default_value_t = PaletteArg::Auto)]
     palette: PaletteArg,
 
-    /// Assert the terminal's font by ink-coverage table (PLAN §3.4, M5): a
+    /// Assert the terminal's font by ink-coverage table: a
     /// built-in name (conservative, dejavu-sans-mono, liberation-mono,
     /// ubuntu-mono, noto-sans-mono) or a path to a `auto-ascii-factory
     /// font-table` TOML. The table's recorded repertoire vetoes the palette
@@ -142,6 +127,9 @@ struct Cli {
     /// interactive and --sim runs.
     #[arg(long, value_name = "NAME|PATH")]
     font_table: Option<String>,
+
+    #[arg(long, value_name = "NAME", value_parser = parse_codec, help = codec_help())]
+    codec: Option<Codec>,
 
     /// Headless mode: render NFRAMES frames to SimBackend at COLSxROWS as
     /// fast as possible (no pacing), never touch the tty, print one JSON
@@ -166,8 +154,8 @@ struct Cli {
           num_args = 0..=1, default_missing_value = "100x40")]
     sim_resize: Option<String>,
 
-    /// Headless scrub-latency benchmark (M5 acceptance: seek < 50 ms on the
-    /// full asset): perform N random seeks — each one a hysteresis reset +
+    /// Headless scrub-latency benchmark: perform N random seeks — each one a
+    /// hysteresis reset +
     /// FIDX keyframe seek + delta rolls + resample + compose + present to a
     /// 300x80 SimBackend, exactly the interactive scrub path — and print one
     /// JSON line with p50/p95/max latency in ms. Deterministic seek
@@ -176,7 +164,21 @@ struct Cli {
     bench_seek: Option<u32>,
 }
 
-/// Parse "COLSxROWS" (e.g. "213x58").
+fn parse_codec(name: &str) -> std::result::Result<Codec, String> {
+    Codec::from_name(name)
+        .ok_or_else(|| format!("unknown codec {name:?} (known: {})", Codec::names(", ")))
+}
+
+fn codec_help() -> String {
+    format!(
+        "Glyph codec — how cell features become glyphs: {} (default {}). \
+         Interactively it overrides the codec saved for a video until `/` \
+         picks another; with --sim it is the codec the run renders in",
+        Codec::names(", "),
+        Codec::default().name()
+    )
+}
+
 fn parse_size(s: &str) -> Result<(u16, u16)> {
     let (c, r) = s.split_once(['x', 'X']).context("expected COLSxROWS")?;
     let cols: u16 = c.trim().parse().context("bad COLS")?;
@@ -187,7 +189,6 @@ fn parse_size(s: &str) -> Result<(u16, u16)> {
     Ok((cols, rows))
 }
 
-/// Parse "COLSxROWS:NFRAMES" (e.g. "213x58:900").
 fn parse_sim_spec(s: &str) -> Result<((u16, u16), u64)> {
     let (size, n) = s
         .split_once(':')
@@ -200,8 +201,6 @@ fn parse_sim_spec(s: &str) -> Result<((u16, u16), u64)> {
     Ok((size, nframes))
 }
 
-/// Resolve the positional argument into a resolved timeline: a plain asset
-/// is a one-clip composition, so every path below has one frame mapping.
 fn open_timeline(path: &Path) -> Result<Composition> {
     let mut comp = if Composition::is_toml_path(path) {
         Composition::from_toml_file(path, Composition::default_library_dir().as_deref())
@@ -213,7 +212,6 @@ fn open_timeline(path: &Path) -> Result<Composition> {
     Ok(comp)
 }
 
-/// Canonical tier tag for the `--sim` JSON line.
 fn tier_tag(t: ColorTier) -> &'static str {
     match t {
         ColorTier::True => "truecolor",
@@ -223,8 +221,6 @@ fn tier_tag(t: ColorTier) -> &'static str {
     }
 }
 
-/// Headless acceptance path: N frames as fast as possible against SimBackend,
-/// one JSON stats line on stdout (never touches the tty, never probes).
 fn run_sim(
     comp: &Composition,
     mut deck: ClipDeck,
@@ -240,7 +236,7 @@ fn run_sim(
     let mut caps = backend.caps().clone();
     caps.color = tier;
     backend.set_caps(caps);
-    backend.resize(cols, rows); // implies invalidate; clips reflow as they front
+    backend.resize(cols, rows);
     deck.set_size(cols, rows);
 
     let mut dump = cli
@@ -251,9 +247,6 @@ fn run_sim(
         })
         .transpose()?;
 
-    // Winning-layer counts (M3): the §3.4 priority decision, summed over
-    // every rendered cell — headless visibility into which layers actually
-    // fire ("layers" in the JSON line).
     deck.enable_layer_mask();
     let mut layer_counts = [0u64; 5];
 
@@ -265,15 +258,12 @@ fn run_sim(
         if let Some((rc, rr)) = resize_to
             && i == resize_at
         {
-            // Through the event path — same code the interactive loop runs.
             backend.push_event(Event::Resize(rc, rr));
         }
         if deck.drain_events(&mut backend).quit {
             break;
         }
         let frame_idx = ((u64::from(start_frame) + i) % u64::from(comp.frame_count())) as u32;
-        // Composition frame → clip + local frame (the identity for a plain
-        // asset); a gap presents black and contributes no layer counts.
         let stats = deck.present_at(&mut backend, comp.locate_frame(frame_idx))?;
         bytes_total += u64::from(stats.bytes);
         if let Some(mask) = deck.layer_mask() {
@@ -283,7 +273,6 @@ fn run_sim(
                 }
             }
         }
-        // Bytes are counted; don't hold 900 frames in RAM.
         let out = backend.take_output();
         if let Some(f) = dump.as_mut() {
             f.write_all(&out)?;
@@ -317,36 +306,28 @@ fn run_sim(
     Ok(())
 }
 
-/// M5 scrub-latency benchmark: N deterministic random seeks through the
-/// EXACT interactive scrub machinery — hysteresis reset (the drain_events
-/// discontinuity rule) + FIDX keyframe bsearch + ≤ keyframe_ivl−1 delta
-/// rolls + resample + compose + present — timed end to end per seek.
-/// Acceptance (PLAN §7 M5): p50/p95 < 50 ms on the full 856 MB asset.
 fn run_bench_seek(comp: &Composition, mut deck: ClipDeck, seeks: u32) -> Result<()> {
     const COLS: u16 = 300;
-    const ROWS: u16 = 80; // the PLAN §3.6 reference grid
+    const ROWS: u16 = 80;
     if seeks == 0 {
         bail!("--bench-seek needs N >= 1");
     }
     let mut backend = SimBackend::new(COLS, ROWS);
     backend.resize(COLS, ROWS);
     deck.set_size(COLS, ROWS);
-    // One warmup render: builds tap tables' caches and pages in the header/
-    // FIDX region; every timed seek below still decodes cold frame data.
     deck.present_at(&mut backend, comp.locate_frame(0))?;
     backend.take_output();
 
     let frames = u64::from(comp.frame_count());
     let mut lat_ms: Vec<f64> = Vec::with_capacity(seeks as usize);
-    let mut rng: u64 = 0x5EED_F00D_D15C_0B01; // fixed seed: reproducible run
+    let mut rng: u64 = 0x5EED_F00D_D15C_0B01;
     for _ in 0..seeks {
-        // xorshift64* — deterministic frame sequence, no dependency.
         rng ^= rng >> 12;
         rng ^= rng << 25;
         rng ^= rng >> 27;
         let frame = ((rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) % frames) as u32;
         let t = Instant::now();
-        deck.reset_active(); // scrub = temporal discontinuity
+        deck.reset_active();
         deck.present_at(&mut backend, comp.locate_frame(frame))?;
         lat_ms.push(t.elapsed().as_secs_f64() * 1e3);
         backend.take_output();
@@ -366,8 +347,6 @@ fn run_bench_seek(comp: &Composition, mut deck: ClipDeck, seeks: u32) -> Result<
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // M7: the timestamp grammar lives in the facade (auto_ascii::timecode),
-    // shared with `auto-ascii import --ss/--t` — PLAN-M6-M8 §2.
     let seek_secs = cli
         .seek
         .as_deref()
@@ -375,13 +354,8 @@ fn main() -> Result<()> {
         .transpose()?;
 
     if cli.sim.is_some() || cli.bench_seek.is_some() {
-        // Headless harness paths: drive the clip deck directly (the facade
-        // Player is a terminal session by definition). A plain asset opens
-        // as a one-clip composition, so `--sim` on a `.toml` is the same
-        // loop with more clips in it (PLAN-M6-M8 §3).
         let comp = open_timeline(&cli.asset)
             .with_context(|| format!("opening {}", cli.asset.display()))?;
-        // Same bound check the interactive path uses — the timeline owns it.
         let start_frame: u32 = match seek_secs {
             Some(secs) => comp.frame_at_secs(secs)?,
             None => 0,
@@ -389,14 +363,11 @@ fn main() -> Result<()> {
 
         let aspect = cli.cell_aspect.unwrap_or(auto_ascii_core::DEFAULT_CELL_ASPECT);
         let tier = cli.sim_tier.or(cli.tier).unwrap_or(ColorTier::True);
-        // --sim never probes: palette auto derives from the SimBackend's
-        // default Caps (ascii repertoire); --palette overrides; the
-        // --font-table repertoire veto applies exactly as interactively.
         let mut glyphs = PaletteChoice::from(cli.palette).resolve_for_caps(&Caps::default());
         if let Some(spec) = &cli.font_table {
             glyphs = auto_ascii::load_font_table(spec)?.veto_tier(glyphs);
         }
-        let deck = ClipDeck::new(
+        let mut deck = ClipDeck::new(
             comp.clips().iter().map(|c| c.path.clone()).collect(),
             DeckConfig {
                 cell_aspect: aspect,
@@ -405,14 +376,13 @@ fn main() -> Result<()> {
                 glyph_tier: glyphs,
             },
         );
+        deck.set_codec(cli.codec.unwrap_or_default());
         if let Some(n) = cli.bench_seek {
             return run_bench_seek(&comp, deck, n);
         }
         return run_sim(&comp, deck, &cli, tier, start_frame);
     }
 
-    // Interactive path: argv → PlayerBuilder, then the facade owns the
-    // probe, the session, the pacing loop and the restore (no logic here).
     let source = auto_ascii::Player::builder();
     let source = if Composition::is_toml_path(&cli.asset) {
         source.composition(&cli.asset)
@@ -442,6 +412,9 @@ fn main() -> Result<()> {
     if let Some(spec) = &cli.font_table {
         builder = builder.font_table(spec.as_str());
     }
+    if let Some(codec) = cli.codec {
+        builder = builder.codec(codec);
+    }
     builder.build()?.run()?;
     Ok(())
 }
@@ -449,6 +422,14 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codec_flag_parsing() {
+        assert_eq!(parse_codec("pixels"), Ok(Codec::Pixels));
+        assert_eq!(parse_codec("letters"), Ok(Codec::Letters));
+        let e = parse_codec("ascii").unwrap_err();
+        assert!(e.contains("pixels, letters"), "the error lists the registry: {e}");
+    }
 
     #[test]
     fn size_and_spec_parsing() {
@@ -461,8 +442,6 @@ mod tests {
         assert!(parse_sim_spec("213x58:0").is_err());
     }
 
-    /// `--seek` moved onto `auto_ascii::timecode` at M7; this pins that the
-    /// SET of strings the flag accepts did not change with it.
     #[test]
     fn timestamp_parsing() {
         use auto_ascii::timecode::parse;

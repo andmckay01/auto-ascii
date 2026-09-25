@@ -1,22 +1,21 @@
-//! `auto-ascii-factory` as a **library** (PLAN-M6-M8 §2).
+//! `auto-ascii-factory` as a **library**.
 //!
-//! The factory was bin-only through M6. M7 needs the ingest path from a
-//! second binary — `auto-ascii import` (crates/auto-ascii-cli) — and the
-//! facade cannot host it, because the factory already depends on the
-//! facade. So the modules moved here and `src/main.rs` kept nothing but the
-//! clap surface and the `inspect` report.
+//! The ingest path serves a second binary — `auto-ascii import`
+//! (crates/auto-ascii-cli) — and the facade cannot host it, because the
+//! factory depends on the facade. So the modules live here and `src/main.rs`
+//! holds nothing but the clap surface and the `inspect` report.
 //!
-//! Every module stays `pub`: this crate is unpublished workspace plumbing,
-//! not an API with a semver promise, and the split must not turn a
+//! Every module is `pub`: this crate is unpublished workspace plumbing,
+//! not an API with a semver promise, and the lib/bin split must not turn a
 //! cross-module helper into dead code. The *supported* entry points are the
-//! three items below — [`build`] (ingest one video), [`effective_params`]
+//! three items below — [`build()`] (ingest one video), [`effective_params`]
 //! (the params.toml merge the CLI flags override) and [`sha256_hex`] /
 //! [`sha256_file`] (the provenance hash `import` records).
 //!
 //! Human progress and info lines are written to a caller-supplied
 //! [`std::io::Write`], never to `println!`/`eprintln!`: the bin passes
-//! `stderr` (so its bytes are byte-for-byte what M6 shipped) and a `--json`
-//! caller passes stderr too, keeping stdout clean for one JSON object.
+//! `stderr` and a `--json` caller passes stderr too, keeping stdout clean
+//! for one JSON object.
 
 pub mod build;
 pub mod edges;
@@ -42,10 +41,10 @@ pub use ffmpeg::BoxErr;
 pub use sha256::{sha256, sha256_file, sha256_hex};
 
 /// One ingest job: the arguments `auto-ascii-factory build` and
-/// `auto-ascii import` both reduce to (PLAN §5 CLI shape). `params` is a
+/// `auto-ascii import` both reduce to. `params` is a
 /// path to a tunables file, not a parsed [`params::Params`] — the merge
 /// order (embedded defaults, file, then `fps`/`res`) is part of the
-/// contract and [`build`] owns it.
+/// contract and [`build()`] owns it.
 pub struct BuildRequest<'a> {
     /// Input video (any ffmpeg-readable container).
     pub input: &'a Path,
@@ -102,8 +101,8 @@ pub fn effective_params(
 }
 
 /// Parse a `--res WxH` spec. Shared with `auto-ascii import --res` so both
-/// binaries reject the same shapes with the same words (§4 geometry: the
-/// chroma plane C is stored at half res, hence "even").
+/// binaries reject the same shapes with the same words (the chroma plane C
+/// is stored at half res, hence "even").
 pub fn parse_res(s: &str) -> Result<(u16, u16), String> {
     let (w, h) = s
         .split_once(['x', 'X'])

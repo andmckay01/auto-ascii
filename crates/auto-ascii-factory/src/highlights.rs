@@ -1,9 +1,9 @@
-//! H plane (PLAN §5 stage 3, M3): top-hat highlight + percentile deep-shadow
+//! H plane: top-hat highlight + percentile deep-shadow
 //! flags, detected offline (far stabler than runtime thresholding) from the
 //! stored (EMA'd) Y plane — the flags inherit the EMA's temporal stability
 //! without ever EMA-ing bits.
 //!
-//! Wire contract (PLAN §4): `bit0` = highlight, `bit1` = deep shadow.
+//! Wire contract: `bit0` = highlight, `bit1` = deep shadow.
 //!
 //! - **Highlight:** white top-hat `y − opening(y)` with a box structuring
 //!   element of radius `tophat_radius`, flagged at `≥ tophat_thresh`. The
@@ -19,7 +19,7 @@ use crate::edges::{dilate_box, erode_box};
 use crate::lut::percentile_levels_pct;
 use crate::shots::luma_histogram;
 
-/// H plane flag bits (PLAN §4).
+/// H plane flag bits (wire contract).
 pub mod h_flags {
     /// bit0: small bright accent (top-hat).
     pub const HIGHLIGHT: u8 = 1;
@@ -66,13 +66,10 @@ impl HighlightExtractor {
         assert_eq!(luma.len(), self.w * self.h);
         assert_eq!(out.len(), luma.len());
 
-        // Opening = dilate(erode(luma)); both separable box filters.
         erode_box(luma, self.w, self.h, cfg.tophat_radius, &mut self.a, &mut self.b);
         let (eroded, opened) = (&self.b, &mut self.a);
         dilate_box(eroded, self.w, self.h, cfg.tophat_radius, out, opened);
 
-        // Per-frame shadow threshold from the luma histogram (integer
-        // nearest-rank percentile; the input is EMA'd, so this is stable).
         let hist = luma_histogram(luma);
         let p = percentile_levels_pct(&hist, cfg.shadow_pct, 100)
             .expect("non-empty plane has a histogram")
@@ -115,7 +112,7 @@ mod tests {
         let mut luma = vec![100u8; W * H];
         for y in 15..18 {
             for x in 15..18 {
-                luma[y * W + x] = 250; // 3×3 glint, well inside the SE
+                luma[y * W + x] = 250;
             }
         }
         let out = run(&luma, &cfg());
@@ -131,8 +128,6 @@ mod tests {
 
     #[test]
     fn wide_bright_area_is_not_a_highlight() {
-        // A 12×12 bright block is wider than the 7×7 SE: the opening keeps
-        // its interior, so only nothing (not the block) may flag bit0.
         let mut luma = vec![100u8; W * H];
         for y in 10..22 {
             for x in 10..22 {
@@ -146,7 +141,6 @@ mod tests {
 
     #[test]
     fn dark_region_fires_bit1_capped_by_ceiling() {
-        // Top quarter dark (L* 5), rest mid-gray: p8 lands in the dark band.
         let mut luma = vec![120u8; W * H];
         for v in luma.iter_mut().take(W * H / 4) {
             *v = 5;
@@ -157,8 +151,6 @@ mod tests {
             assert_eq!(f & h_flags::DEEP_SHADOW != 0, want, "shadow bit wrong at {i}");
         }
 
-        // A bright scene must flag nothing: p8 of an all-160 frame is 160,
-        // far above the 40 L* ceiling.
         let out = run(&vec![160u8; W * H], &cfg());
         assert!(out.iter().all(|&f| f & h_flags::DEEP_SHADOW == 0), "midtones flagged as shadow");
     }

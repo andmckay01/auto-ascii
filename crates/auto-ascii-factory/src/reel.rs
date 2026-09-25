@@ -1,4 +1,4 @@
-//! Review reel — the M3 human sign-off artifact (PLAN §7 M3, §9 risk 1).
+//! Review reel — the human sign-off artifact.
 //!
 //! `auto-ascii-factory eval --reel out.html` emits one self-contained HTML page:
 //! per corpus clip, an animated GIF of the rasterized render
@@ -18,7 +18,7 @@ use auto_ascii_eval::{EdgeScore, GrayImage};
 use crate::eval::{base64, html_escape};
 use crate::ffmpeg::BoxErr;
 
-/// Timestamp rows per clip (PLAN M3 reel: ">= 4 timestamps x 3 clips").
+/// Timestamp rows per clip (sign-off needs at least 4).
 pub const REEL_ROWS: u32 = 6;
 /// Animated-GIF sampling: ~10 s of clip time at 10 fps.
 pub const GIF_SECS: u32 = 10;
@@ -68,7 +68,7 @@ pub fn encode_gray_gif(frames: &[GrayImage], fps: u32) -> Result<Vec<u8>, BoxErr
     for i in 0..=255u8 {
         palette.extend([i, i, i]);
     }
-    let delay = (100 / fps.max(1)).max(1) as u16; // GIF ticks are 10 ms
+    let delay = (100 / fps.max(1)).max(1) as u16;
     let mut out = Vec::new();
     {
         let mut enc = gif::Encoder::new(&mut out, w, h, &palette)
@@ -138,8 +138,6 @@ pub fn render_reel_html(clips: &[ReelClip], generator: &str) -> String {
             fmt_opt(clip.flicker, 3),
         ));
         if !clip.gif.is_empty() {
-            // No width/height attrs: the CSS width + auto height keep the
-            // (already aspect-correct) raster undistorted at display scale.
             h.push_str(&format!(
                 "<div class=\"gif\"><img alt=\"animated render of {} ({}x{} px)\" \
                  src=\"data:image/gif;base64,{}\"></div>\n",
@@ -199,13 +197,10 @@ mod tests {
         assert_eq!(&gif[..6], b"GIF89a");
         assert_eq!(u16::from_le_bytes([gif[6], gif[7]]), 8);
         assert_eq!(u16::from_le_bytes([gif[8], gif[9]]), 4);
-        // NETSCAPE looping extension present (infinite repeat).
         assert!(
             gif.windows(11).any(|w| w == b"NETSCAPE2.0"),
             "missing loop extension"
         );
-        // 5 image descriptors (0x2C separators at block starts is fiddly to
-        // parse; the graphic-control count is a reliable proxy).
         let gce_count = gif.windows(2).filter(|w| w == b"\x21\xF9").count();
         assert_eq!(gce_count, 5, "one graphic control extension per frame");
     }
@@ -216,8 +211,6 @@ mod tests {
         let _ = encode_gray_gif(&[tiny_gray(8, 4, 0), tiny_gray(4, 8, 0)], GIF_FPS);
     }
 
-    /// The reel page is fully self-contained: every embedded resource is a
-    /// `data:` URI; no external URLs, stylesheets, imports or scripts.
     #[test]
     fn reel_html_is_self_contained() {
         let clip = ReelClip {
@@ -263,17 +256,14 @@ mod tests {
 
         assert!(html.starts_with("<!doctype html>"));
         assert!(html.contains("clip &lt;&amp;&gt; one"), "clip names are escaped");
-        // Self-containment: no external fetches of any kind.
         for banned in ["http://", "https://", "<link", "<script", "@import", "url("] {
             assert!(!html.contains(banned), "external ref: {banned}");
         }
-        // Every src is a data: URI.
         for (i, chunk) in html.split("src=\"").enumerate().skip(1) {
             assert!(chunk.starts_with("data:"), "non-data src #{i}");
         }
         assert!(html.contains("data:image/gif;base64,"));
         assert_eq!(html.matches("data:image/png;base64,").count(), 4);
-        // Metric strip renders both real values and n/a.
         assert!(html.contains("edge F1 <b>0.3333</b>"));
         assert!(html.contains("edge F1 <b>n/a</b>"));
     }

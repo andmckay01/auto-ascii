@@ -1,11 +1,3 @@
-//! M1 player integration tests via the real binary (headless `--sim` path):
-//! tier byte checks through `--sim-dump`, seek-vs-sequential byte identity,
-//! runtime NORM application, chroma fg, and probe-related no-hang behavior.
-
-// These drive the real `auto-ascii-player` binary via CARGO_BIN_EXE_*, which
-// only exists when the `bin` feature is on (its required-features).
-// Without this gate the harness silently reuses a stale binary left on
-// disk by an earlier default-feature build (M4 review).
 #![cfg(feature = "bin")]
 
 use std::fs;
@@ -15,7 +7,6 @@ use std::process::Command;
 use auto_ascii_format::header::plane_id;
 use auto_ascii_format::{Meta, PlaneLevels, PlaneRef, ShotRecord, AsciiWriter, WriterOptions, norm_flags};
 
-/// Self-cleaning temp file (no tempfile dep — pinned workspace dep set).
 struct TmpFile(PathBuf);
 
 impl TmpFile {
@@ -40,7 +31,6 @@ fn meta() -> Meta {
     }
 }
 
-/// Delta asset (keyframe interval 5) with a moving gradient — Y only.
 fn write_delta_asset(path: &PathBuf, frames: u32) {
     let opts = WriterOptions { zstd_level: 3, keyframe_ivl: 5, ..WriterOptions::default() };
     let (w, h) = (opts.base_w as usize, opts.base_h as usize);
@@ -57,8 +47,6 @@ fn write_delta_asset(path: &PathBuf, frames: u32) {
     writer.finish().unwrap().into_inner().unwrap();
 }
 
-/// Y+C asset: constant luma 128, solid red chroma (RGB565 0xF800) — the fg
-/// must come from C, not from the gray luma.
 fn write_chroma_asset(path: &PathBuf, frames: u32) {
     let opts = WriterOptions {
         zstd_level: 3,
@@ -86,9 +74,6 @@ fn write_chroma_asset(path: &PathBuf, frames: u32) {
     writer.finish().unwrap().into_inner().unwrap();
 }
 
-/// Two-shot NORM asset: constant luma 100 everywhere; shot 0 (frames 0–1)
-/// levels (0,200) → n=128, shot 1 (frames 2–3, CUT) levels (0,100) → n=255.
-/// Identity (no NORM) would give n=100 — a distinct glyph on the coarse ramp.
 fn write_norm_asset(path: &PathBuf) {
     let opts = WriterOptions { zstd_level: 3, ..WriterOptions::default() };
     let (w, h) = (opts.base_w as usize, opts.base_h as usize);
@@ -121,7 +106,6 @@ fn run_player(args: &[&str]) -> (bool, String, String) {
     )
 }
 
-/// Collect the parameter strings of every SGR (`ESC [ … m`) in a stream.
 fn sgr_params(stream: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -142,9 +126,6 @@ fn sgr_params(stream: &[u8]) -> Vec<String> {
     out
 }
 
-/// Split a full-repaint dump into per-frame chunks: every frame's escape
-/// stream starts at row 0 with `CUP 1;1` and CUP is only emitted at span
-/// starts, so the delimiter appears exactly once per frame.
 fn split_frames(stream: &[u8]) -> Vec<Vec<u8>> {
     let delim = b"\x1b[1;1H";
     let mut frames: Vec<Vec<u8>> = Vec::new();
@@ -189,8 +170,6 @@ fn tier_256_emits_only_indexed_sgr() {
     let sgrs = sgr_params(&bytes);
     assert!(!sgrs.is_empty(), "expected colored output");
     for p in &sgrs {
-        // Every SGR is built solely from 38;5;N / 48;5;N runs (M1 acceptance
-        // 5: 256-color output contains only SGR 38;5;N sequences).
         let toks: Vec<&str> = p.split(';').collect();
         let mut k = 0;
         while k < toks.len() {
@@ -229,8 +208,6 @@ fn tier_mono_emits_no_sgr_and_truecolor_uses_chroma_fg() {
         "mono must contain no color SGR at all (M1 acceptance 5)"
     );
 
-    // Truecolor on the same asset: fg comes from the C plane (solid red
-    // 0xF800 → 255,0,0), not from the M0 gray-from-luma path.
     let dump_t = TmpFile::new("ttrue.bin");
     let (ok, _, stderr) = run_player(&[
         asset.0.to_str().unwrap(),
@@ -249,13 +226,6 @@ fn tier_mono_emits_no_sgr_and_truecolor_uses_chroma_fg() {
     );
 }
 
-/// M1 acceptance 2, restated for M3: the FIDX seek path must land on the
-/// exact same DECODED planes as a sequential delta roll. Until M3 this was
-/// asserted on rendered escape bytes; the §3.5 compositor is now
-/// deliberately history-dependent (ramp-index hysteresis carries per-cell
-/// memory across frames), so rendered output legitimately differs between a
-/// warmed sequential run and a cold seek — the decode contract is what this
-/// test pins, at the plane level through the real `Player`.
 #[test]
 fn seek_lands_on_identical_decoded_planes() {
     use auto_ascii::pipeline::Player;
@@ -264,7 +234,7 @@ fn seek_lands_on_identical_decoded_planes() {
     use auto_ascii_term::SimBackend;
 
     let asset = TmpFile::new("seek.ascii");
-    write_delta_asset(&asset.0, 23); // keyframes at 0,5,10,15,20
+    write_delta_asset(&asset.0, 23);
     let bytes = fs::read(&asset.0).unwrap();
 
     let new_player = || {
@@ -278,8 +248,6 @@ fn seek_lands_on_identical_decoded_planes() {
         .unwrap()
     };
 
-    // Sequential ground truth: roll frames 0..=17 (17 = keyframe 15 + 2
-    // deltas) through render_present, exactly like paced playback.
     let mut backend = SimBackend::new(80, 24);
     let mut seq = new_player();
     seq.reflow(&mut backend, 80, 24);
@@ -288,7 +256,6 @@ fn seek_lands_on_identical_decoded_planes() {
         backend.take_output();
     }
 
-    // Cold seek straight to frame 17 (FIDX keyframe bsearch + delta rolls).
     let mut seek = new_player();
     seek.reflow(&mut backend, 80, 24);
     seek.render_present(&mut backend, 17).unwrap();
@@ -300,7 +267,6 @@ fn seek_lands_on_identical_decoded_planes() {
         "seek must land on planes byte-identical to sequential decode (M1 acceptance 2)"
     );
 
-    // Sanity: a neighbor frame decodes differently.
     let mut other = new_player();
     other.reflow(&mut backend, 80, 24);
     other.render_present(&mut backend, 16).unwrap();
@@ -325,8 +291,6 @@ fn norm_levels_apply_per_shot_at_runtime() {
     let frames = split_frames(&fs::read(&dump.0).unwrap());
     assert_eq!(frames.len(), 4);
 
-    // Coarse ramp " .:-=+*#%@": luma 100 → identity glyph '-', shot-0
-    // stretch (0,200) → n=128 → '+', shot-1 stretch (0,100) → n=255 → '@'.
     let glyphs = |f: &[u8]| -> Vec<char> {
         String::from_utf8_lossy(f)
             .chars()
@@ -341,7 +305,6 @@ fn norm_levels_apply_per_shot_at_runtime() {
         let g = glyphs(f);
         assert!(!g.is_empty() && g.iter().all(|&c| c == '@'), "shot 1 → '@': {g:?}");
     }
-    // No per-frame pumping: frames inside one shot are byte-identical.
     assert_eq!(frames[0], frames[1], "stable levels within a shot");
     assert_eq!(frames[2], frames[3], "stable levels within a shot");
 }
@@ -359,7 +322,6 @@ fn seek_flag_validates_input() {
     let (ok, _, _) = run_player(&[asset.0.to_str().unwrap(), "--seek", "nope", "--sim", "80x24:1"]);
     assert!(!ok);
 
-    // Valid colon form works.
     let (ok, _, stderr) =
         run_player(&[asset.0.to_str().unwrap(), "--seek", "0:00", "--sim", "80x24:1"]);
     assert!(ok, "colon timestamp failed: {stderr}");
@@ -370,21 +332,16 @@ fn probe_flags_never_hang_headless() {
     let asset = TmpFile::new("probe.ascii");
     write_delta_asset(&asset.0, 3);
 
-    // --help with piped stdio (M1 acceptance 4: never hangs piped output).
     let (ok, stdout, _) = run_player(&["--help"]);
     assert!(ok);
     for flag in ["--tier", "--no-query", "--no-cache", "--seek", "--sim-tier", "--sim-dump"] {
         assert!(stdout.contains(flag), "--help missing {flag}");
     }
 
-    // Interactive mode on a pipe: probe returns conservative caps instantly
-    // (no tty → no volley) and AnsiBackend then fails fast and cleanly.
     let (ok, _, stderr) = run_player(&[asset.0.to_str().unwrap(), "--duration-secs", "0.1"]);
     assert!(!ok);
     assert!(stderr.contains("cannot enter terminal session"), "unexpected stderr: {stderr}");
 
-    // Escape hatches accepted headlessly; --tier doubles as the sim tier
-    // fallback when --sim-tier is absent.
     let (ok, stdout, stderr) = run_player(&[
         asset.0.to_str().unwrap(),
         "--tier",
@@ -398,22 +355,14 @@ fn probe_flags_never_hang_headless() {
     assert!(stdout.contains("\"tier\":\"16\""), "sim JSON tier: {stdout}");
 }
 
-/// M2 review fix 1 (player main.rs:202 low): an asset whose header claims a
-/// degenerate base width (base_w == 1 → C plane width 0) used to reach the
-/// resampler and PANIC at `Resampler::build`. The rule is now "base dims
-/// even and >= 2", enforced by the ASCI reader (and writer), so the player
-/// must fail with a clean "not a valid ASCI asset" error — never a panic.
 #[test]
 fn degenerate_base_dims_are_a_clean_player_error() {
     let asset = TmpFile::new("degenerate.ascii");
     write_chroma_asset(&asset.0, 3);
 
-    // Valid asset plays fine before tampering.
     let (ok, _, stderr) = run_player(&[asset.0.to_str().unwrap(), "--sim", "80x24:1"]);
     assert!(ok, "pristine asset must play: {stderr}");
 
-    // Patch header base_w (offset 20, LE u16) — the reported base_w == 1
-    // case, plus odd and zero variants of both dims.
     let pristine = fs::read(&asset.0).unwrap();
     for (off, val, what) in [
         (20usize, 1u16, "base_w = 1 (zero-width C plane)"),

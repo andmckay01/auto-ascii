@@ -1,4 +1,4 @@
-//! `Grid<Cell>` → grayscale rasterizer (PLAN §6 downscale-SSIM, step 1).
+//! `Grid<Cell>` → grayscale rasterizer (downscale-SSIM, step 1).
 //!
 //! Each cell becomes a constant `cell_w_px × cell_h_px` block of the cell's
 //! *average luminance* under the ink-coverage model:
@@ -98,9 +98,9 @@ pub struct RasterOptions {
     /// Horizontal pixels per cell (default 1).
     pub cell_w_px: u16,
     /// Vertical pixels per cell (default 2 — with `cell_w_px = 1` this
-    /// matches the default 1:2 cell aspect, PLAN §3.2, at the minimal
-    /// resolution: one sample per half-cell, the render's true information
-    /// content. Contact sheets use larger blocks for visibly chunky PNGs.).
+    /// matches the default 1:2 cell aspect at the minimal resolution: one
+    /// sample per half-cell, the render's true information content. Contact
+    /// sheets use larger blocks for visibly chunky PNGs.).
     pub cell_h_px: u16,
     /// Scale coverage so the table's densest glyph reaches full ink
     /// (`gain = 1 / max_coverage`, default true). Real fonts top out near
@@ -139,7 +139,6 @@ pub fn rasterize(grid: &Grid<Cell>, table: &CoverageTable, opts: &RasterOptions)
     let mut img = GrayImage::new(w, h);
     for row in 0..grid.rows() {
         let cells = grid.row(row);
-        // Compute one row of cell values, then replicate over the block rows.
         let base_y = row as usize * opts.cell_h_px as usize;
         for (col, cell) in cells.iter().enumerate() {
             let g = (table.coverage_or_fallback(cell.glyph()) as f64 * gain).min(1.0);
@@ -158,12 +157,6 @@ pub fn rasterize(grid: &Grid<Cell>, table: &CoverageTable, opts: &RasterOptions)
 mod tests {
     use super::*;
 
-    /// Golden: a 2×2 grid with known cells at 2×4 px per cell, against
-    /// values hand-computed from the committed coverage constants:
-    ///   '@' white-on-black:  (0.2627/0.2630)·255 = 254.71 → 255
-    ///   ':' gray200-on-black:(0.0510/0.2630)·200 =  38.78 →  39
-    ///   ' ' white-on-black:  0
-    ///   '+' black-on-white:  (1 − 0.1090/0.2630)·255 = 149.32 → 149
     #[test]
     fn rasterizer_golden_tiny_grid() {
         let t = CoverageTable::conservative();
@@ -193,7 +186,6 @@ mod tests {
         grid.set(0, 0, Cell::new('@', Rgb::WHITE, Rgb::BLACK));
         let opts = RasterOptions { normalize_ink: false, ..RasterOptions::default() };
         let img = rasterize(&grid, t, &opts);
-        // 0.2627 · 255 = 66.99 → 67
         assert_eq!(img.as_slice(), &[67, 67]);
     }
 
@@ -201,17 +193,17 @@ mod tests {
     fn default_px_per_cell_matches_1_to_2_aspect() {
         let opts = RasterOptions::default();
         assert_eq!((opts.cell_w_px, opts.cell_h_px), (1, 2));
-        let grid: Grid<Cell> = Grid::new(3, 2); // all BLANK
+        let grid: Grid<Cell> = Grid::new(3, 2);
         let img = rasterize(&grid, CoverageTable::conservative(), &opts);
         assert_eq!((img.w(), img.h()), (3, 4));
-        assert!(img.as_slice().iter().all(|&v| v == 0)); // BLANK = space on black
+        assert!(img.as_slice().iter().all(|&v| v == 0));
     }
 
     #[test]
     fn crop_extracts_viewport_region() {
         let img = GrayImage::from_raw(4, 3, vec![
-            0, 1, 2, 3, //
-            4, 5, 6, 7, //
+            0, 1, 2, 3,
+            4, 5, 6, 7,
             8, 9, 10, 11,
         ]);
         let c = img.crop(1, 1, 2, 2);
@@ -223,7 +215,6 @@ mod tests {
         assert_eq!(luma8(Rgb::BLACK), 0);
         assert_eq!(luma8(Rgb::WHITE), 255);
         assert_eq!(luma8(Rgb::gray(128)), 128);
-        // Green dominates, blue barely counts.
         assert!(luma8(Rgb::new(0, 255, 0)) > luma8(Rgb::new(255, 0, 0)));
         assert!(luma8(Rgb::new(255, 0, 0)) > luma8(Rgb::new(0, 0, 255)));
     }

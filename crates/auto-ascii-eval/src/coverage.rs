@@ -1,5 +1,4 @@
-//! Glyph ink-coverage table — the bridge from `Grid<Cell>` back to grayscale
-//! (PLAN §6 "rasterize through the stored glyph-coverage tables").
+//! Glyph ink-coverage table — the bridge from `Grid<Cell>` back to grayscale.
 //!
 //! A coverage value is the fraction of the terminal cell's area covered by
 //! the glyph's ink, in `0.0..=1.0`. The eval rasterizer models a rendered
@@ -8,22 +7,21 @@
 //!
 //! # Derivation of the built-in conservative table
 //!
-//! `CONSERVATIVE_COVERAGE` was derived on 2026-07-25 by
-//! `tools/derive_coverage.py` (committed next to this crate):
+//! `CONSERVATIVE_COVERAGE` was derived by `tools/derive_coverage.py`
+//! (committed next to this crate):
 //!
-//! - Every printable ASCII glyph (U+0020..=U+007E — a superset of all
-//!   currently shipped palettes: `ascii/base/coarse` `" .:-=+*#%@"`,
-//!   `ascii/base/fine` `" .,:;i1tfLCG08@"`, and the PLAN §3.4 palette-8
-//!   mono ramp `" .:coO8@"`) is rendered white-on-black into a 64×128 px
-//!   cell (PLAN §3.4's rasterization size) with ffmpeg's libfreetype
+//! - Every printable ASCII glyph (U+0020..=U+007E — a superset of the ASCII
+//!   palettes: `ascii/base/coarse` `" .:-=+*#%@"`, `ascii/base/fine`
+//!   `" .,:;i1tfLCG08@"`, and the palette-8 mono ramp `" .:coO8@"`) is
+//!   rendered white-on-black into a 64×128 px cell with ffmpeg's libfreetype
 //!   `drawtext`.
 //! - Font: **DejaVu Sans Mono Book** — the de-facto default Linux monospace
-//!   and a mid-pack "conservative" choice for ink coverage (fonts vary ±15%,
-//!   PLAN §9.5; per-font tables land at M5).
+//!   and a mid-pack "conservative" choice for ink coverage (fonts vary ±15%;
+//!   `--font-table` swaps in a per-font table).
 //! - Font size 106 px: DejaVu Sans Mono's advance is 1233/2048 em ≈ 0.602 em
 //!   → ~64 px advance (= cell width), and its line box is
 //!   (1901+483)/2048 em ≈ 1.164 em → ~123 px ≈ cell height, i.e. the 1:2
-//!   cell aspect the engine assumes by default (PLAN §3.2).
+//!   cell aspect the engine assumes by default.
 //! - `coverage = Σ gray / (255 · 64 · 128)` — the mean pixel value
 //!   integrates fractional (antialiased) ink exactly instead of
 //!   thresholding. Glyph position inside the cell does not affect the
@@ -40,7 +38,6 @@
 /// glyph reaches full scale (see `RasterOptions::normalize_ink`).
 #[derive(Clone, Debug)]
 pub struct CoverageTable {
-    /// Sorted by `char` for binary search.
     entries: Vec<(char, f32)>,
     max: f32,
 }
@@ -53,7 +50,7 @@ impl CoverageTable {
         &TABLE
     }
 
-    /// Build a table from `(glyph, coverage)` pairs (per-font tables at M5,
+    /// Build a table from `(glyph, coverage)` pairs (e.g. a per-font
     /// `--font-table` override). Sorts by char.
     ///
     /// # Panics
@@ -76,7 +73,7 @@ impl CoverageTable {
         CoverageTable { entries, max }
     }
 
-    /// Build from a parsed per-font table (M5 `--font-table`, PLAN §3.4):
+    /// Build from a parsed per-font table (`--font-table`):
     /// entries carry the generator's measured coverage; glyphs the font
     /// lacks are listed at coverage 0 — the missing-glyph policy — so they
     /// rasterize as blank ink instead of the unknown-glyph mid-gray guess.
@@ -100,9 +97,9 @@ impl CoverageTable {
 
     /// Coverage with a conservative fallback for unknown glyphs: half the
     /// table maximum (a mid-gray guess — better than 0, which would score
-    /// unknown ink as blank). All currently shipped palette glyphs are in the
-    /// built-in table, so the fallback only fires on future palettes whose
-    /// table entry is missing.
+    /// unknown ink as blank). Every ASCII palette glyph is in the built-in
+    /// table; the fallback fires only for glyphs a table lacks (e.g.
+    /// Unicode blocks under the conservative table).
     #[inline]
     pub fn coverage_or_fallback(&self, ch: char) -> f32 {
         self.coverage(ch).unwrap_or(self.max * 0.5)
@@ -229,9 +226,6 @@ pub const CONSERVATIVE_COVERAGE: &[(char, f32)] = &[
 mod tests {
     use super::*;
 
-    /// Every glyph of every currently shipped/planned-at-M2 palette must be
-    /// in the built-in table: coarse + fine (auto-ascii-core ramp.rs) and the
-    /// PLAN §3.4 palette-8 mono ramp `" .:coO8@"`.
     #[test]
     fn covers_all_current_palette_glyphs() {
         let t = CoverageTable::conservative();
@@ -243,7 +237,6 @@ mod tests {
         {
             assert!(t.coverage(ch).is_some(), "glyph {ch:?} missing from table");
         }
-        // Full printable ASCII, actually.
         for cp in 0x20u32..0x7F {
             let ch = char::from_u32(cp).unwrap();
             assert!(t.coverage(ch).is_some(), "printable ASCII {ch:?} missing");
@@ -261,7 +254,6 @@ mod tests {
         assert!(c(':') < c('+'));
         assert!(c('+') < c('#'));
         assert!(c('#') < c('@'));
-        // Physical, not normalized: text glyphs never fill a cell.
         assert!(t.max_coverage() > 0.2 && t.max_coverage() < 0.5);
     }
 
@@ -273,9 +265,6 @@ mod tests {
         assert!((fb - t.max_coverage() * 0.5).abs() < 1e-6);
     }
 
-    /// M5: per-font tables flow into the rasterizer — measured coverage for
-    /// present glyphs, 0 (blank ink) for the font's missing ones, and the
-    /// normalization anchor tracks the table.
     #[test]
     fn from_font_table_carries_coverage_and_missing_policy() {
         let toml = "name = \"t\"\nmissing = [\"╱\"]\n\
@@ -290,7 +279,6 @@ mod tests {
         assert_eq!(t.coverage('█'), Some(0.95), "unicode ink is now measured, not fallback");
         assert_eq!(t.coverage('╱'), Some(0.0), "missing glyph rasterizes as blank");
         assert!((t.max_coverage() - 0.95).abs() < 1e-6, "anchor moves with the table");
-        // The committed builtins load the same way.
         let dj = CoverageTable::from_font_table(
             auto_ascii_core::FontTable::builtin("dejavu-sans-mono").unwrap(),
         );
