@@ -133,9 +133,10 @@ pub struct Drained {
     /// [`Dial`](crate::Dial).
     pub dial_cycle: u32,
     /// Net `[`/`]` steps this drain: each `]` is +1, each `[` −1. The caller
-    /// scales this by the selected dial's step size. Purely a renderer
-    /// change — no asset is touched and no temporal state is reset, so the
-    /// picture re-tunes without a visible discontinuity.
+    /// scales this by the selected dial's step size and hands the result to
+    /// [`Player::set_compose_params`], which is where a turn that actually
+    /// moves resets the per-cell hysteresis memory. A renderer change — no
+    /// asset is touched.
     pub dial_delta: i32,
     /// `v` pressed this drain (M6 key hints, PLAN-M6-M8 §1) — the
     /// caller flips the sticky key-hints row. Coalesced to a flag like the
@@ -321,9 +322,12 @@ pub struct Player<'a> {
     /// Shares the row with the progress overlay and takes precedence while up.
     dial_overlay: Option<(&'static str, u8, u8)>,
     levels_lut: [u8; 256],
-    /// `first_frame` of the shot `levels_lut` was built for (`None` = the
-    /// identity LUT for assets without NORM).
-    lut_shot: Option<u32>,
+    /// What `levels_lut` was built for: the shot's `first_frame` (`None` on
+    /// assets without NORM, where the window is the identity) and the
+    /// `shadow_lift` folded into it. `None` = not built yet. Keyed on both
+    /// so a lift turned on a NORM-less asset rebuilds too — keyed on the
+    /// shot alone, `None == None` there and the dial did nothing.
+    lut_key: Option<(Option<u32>, u8)>,
     /// Frame currently decoded in the source buffers — drives the
     /// sequential-roll vs FIDX-seek decode policy on delta assets.
     loaded: Option<u32>,
@@ -450,7 +454,7 @@ impl<'a> Player<'a> {
             cb_dst: Vec::new(),
             dial_overlay: None,
             levels_lut,
-            lut_shot: None,
+            lut_key: None,
             loaded: None,
             grid: Grid::new(0, 0),
             layer_mask: None,
@@ -464,23 +468,34 @@ impl<'a> Player<'a> {
         })
     }
 
-    /// Override the §3.5 compositor tunables (the eval driver wires
-    /// params.toml `[compose]` here; interactive playback keeps the
-    /// defaults, which are pinned to the committed params.toml by test).
     /// The compositor tunables currently in force — the starting position for
     /// the interactive dials.
     pub fn compose_params(&self) -> ComposeParams {
         self.compose_params
     }
 
+    /// Override the §3.5 compositor tunables (the eval driver wires
+    /// params.toml `[compose]` here; interactive playback starts from the
+    /// defaults, which are pinned to the committed params.toml by test, and
+    /// turns them with the live dials). A change resets ALL per-cell
+    /// hysteresis state, so the next frame is a cold start at the new
+    /// position; an equal value is a no-op.
     pub fn set_compose_params(&mut self, params: ComposeParams) {
-        // The levels LUT is cached per shot, but `shadow_lift` is baked into
-        // it — a dial move must invalidate that cache or the new value would
-        // not appear until the next scene cut.
-        if params.shadow_lift != self.compose_params.shadow_lift {
-            self.lut_shot = None;
+        if params == self.compose_params {
+            return; // a press on a dial's stop moves nothing, so resets nothing
         }
         self.compose_params = params;
+        // A change of rules is a discontinuity for every remembered ramp
+        // index, `was_edge` bit and orientation bin: each was decided under
+        // the OLD thresholds and is stale by construction — the same
+        // reasoning as the reset on a LUT rebuild in `update_levels`.
+        // Without this the picture moved only when a turn cleared the
+        // hysteresis band, which is direction-dependent: lowering T_on armed
+        // edges that T_off then held whatever the dial did next, and a
+        // lifted ramp index stayed held after the lift came off — the dial
+        // worked one way and not the other. The lift itself reaches the
+        // picture through the LUT key in `update_levels` on the next render.
+        self.state.reset();
     }
 
     /// Start collecting the per-cell winning-layer mask (render metadata for
@@ -631,9 +646,9 @@ impl<'a> Player<'a> {
         if drained.jump_digit.is_some() || drained.seek_steps != 0 {
             self.state.reset(); // seek discontinuity: no pre-seek ghosting
         }
-        // NOTE: a dial move deliberately does NOT reset hysteresis. It is a
-        // renderer retune, not a temporal discontinuity — the picture should
-        // slide to the new look, not flash through a full repaint.
+        // A dial move resets hysteresis too, but not here: the drain only
+        // counts presses, and a press on a dial's stop moves nothing. The
+        // reset rides the actual change, in `set_compose_params`.
         drained
     }
 
@@ -683,7 +698,8 @@ impl<'a> Player<'a> {
 
     /// Rebuild the levels LUT iff `frame_idx` entered a different shot
     /// (PLAN §3.5 per-shot auto-levels from NORM — per-frame rebuilds would
-    /// pump; per-shot is the contract). Assets without NORM keep identity.
+    /// pump; per-shot is the contract) or the shadow lift folded into it
+    /// moved. Assets without NORM keep the identity window, lifted or not.
     ///
     /// M3: a shot change also resets ALL hysteresis state. This is a
     /// deliberate superset of the §3.5 "cut flags reset hysteresis" rule:
@@ -692,13 +708,14 @@ impl<'a> Player<'a> {
     /// boundary is a shot change, so the spec case is covered exactly.
     fn update_levels(&mut self, frame_idx: u32) {
         let shot = self.reader.shot_for_frame(frame_idx).map(|s| s.first_frame);
-        if shot != self.lut_shot {
+        let key = (shot, self.compose_params.shadow_lift);
+        if self.lut_key != Some(key) {
             build_levels_lut_lifted(
                 &mut self.levels_lut,
                 self.reader.norm_levels(frame_idx, plane_id::Y),
-                self.compose_params.shadow_lift,
+                key.1,
             );
-            self.lut_shot = shot;
+            self.lut_key = Some(key);
             self.state.reset(); // scene-cut / shot-change reset (§3.5)
         }
     }

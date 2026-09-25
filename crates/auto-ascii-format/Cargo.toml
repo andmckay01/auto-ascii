@@ -9,6 +9,9 @@ keywords = ["ascii", "terminal", "video", "format", "container"]
 categories = ["multimedia::video", "encoding"]
 readme = "../../README.md"
 
+[lints]
+workspace = true
+
 # PLAN §8: zstd + crc32fast + ciborium (META only — frame payloads are
 # hand-rolled fixed layout, not serde). serde only for the META struct.
 [features]

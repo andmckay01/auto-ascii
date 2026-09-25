@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 # PLAN §8 lists image/imageproc/ndarray/rayon for the factory; M0 is luma-only
 # (grayscale from ffmpeg rawvideo, no gradients, single-threaded encode), so
 # per the M0 dependency guidance they are deferred until a stage needs them.

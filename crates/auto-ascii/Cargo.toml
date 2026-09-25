@@ -16,6 +16,9 @@ keywords = ["ascii", "terminal", "video", "tui", "ansi"]
 categories = ["multimedia::video", "command-line-utilities", "rendering"]
 readme = "README.md"
 
+[lints]
+workspace = true
+
 # THE public library (M4 item A): the workspace ascii-* crates are
 # implementation details behind this facade. Three tiers of build:
 #

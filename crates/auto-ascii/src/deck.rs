@@ -322,7 +322,8 @@ impl ClipDeck {
     }
 
     /// Retune the compositor on every clip, present and future (the live
-    /// dials — a renderer change, never a temporal discontinuity).
+    /// dials — a renderer change; each player resets its hysteresis memory
+    /// when its params actually move, see `pipeline::Player::set_compose_params`).
     pub fn set_compose_params(&mut self, params: ComposeParams) {
         self.compose_params = Some(params);
         for player in self.players.iter_mut().flatten() {

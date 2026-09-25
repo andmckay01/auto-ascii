@@ -1064,7 +1064,9 @@ impl<'a> Player<'a> {
       // regression-tested in tests/m3_layers.rs).
   pub fn set_compose_params(&mut self, ComposeParams);  // eval wires
       // params.toml [compose]; interactive keeps the core defaults (pinned
-      // equal to the committed [compose] by factory unit test)
+      // equal to the committed [compose] by factory unit test). A CHANGE
+      // resets all per-cell hysteresis state (the live dials — note 27g);
+      // an equal value is a no-op. ComposeParams: PartialEq + Eq for this.
   pub fn reflow<B: Backend>(&mut self, backend: &mut B, cols, rows);
       // M3 additions: palette reselection, luma tap tables at Vc×2Vr (ONE
       // build, §3.3), feature tap tables at Vc×Vr (only when planes exist),
@@ -2209,6 +2211,26 @@ facade surface + this hidden module.)
     playback does, now documented on the builder. The hints row gained
     `space pause` in second place, dropped third (after `[ ] adjust` and
     `d dial`) for its eleven columns; `v controls` is still last to go.
+    (g) **Dials work both ways** (bug fix, after M8: "I can change in one
+    direction but moving the dial back does not get to the other"). A turn
+    is a reset: `pipeline::Player::set_compose_params` resets ALL per-cell
+    hysteresis state when the params actually change (a press on a stop
+    changes nothing and resets nothing) — every held ramp index and
+    `was_edge` bit was decided under the old thresholds, the same staleness
+    argument as the LUT-rebuild reset in `update_levels`. Without it the
+    picture moved only when a turn cleared the hysteresis band: lowering
+    T_on armed edges that T_off then held whatever the dial did next, so
+    "up" worked and "back" did not. `ComposeParams` derives `PartialEq`/`Eq`
+    for the comparison. Two smaller faults fell out of the same trace: the
+    levels-LUT cache is now keyed on `(shot, shadow_lift)` rather than the
+    shot alone, so a lift on a NORM-less asset (shot key `None` before and
+    after) rebuilds too; and `Dial::turn` leaves the clamped top from the
+    detent just above `max()` (255 is not on the 16 grid), so up N / down N
+    lands exactly on the start instead of one short. Tests:
+    `auto-ascii/tests/dials.rs` — the value walk per dial, `[`/`]` through
+    the real event queue, and for every dial the picture restored byte for
+    byte after up N / down N and moved the other way past the origin, plus
+    the rule behind it, "a turned dial is a cold start at its position".
 28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
     should take a video from anywhere on the desktop, process it, and land
     it in the folder where the user's processed videos live"). The shape of

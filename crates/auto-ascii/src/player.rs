@@ -114,9 +114,16 @@ impl Dial {
     }
 
     /// Apply a signed number of steps, saturating at the dial's ends.
+    ///
+    /// The top is a stop, not a detent: 255 is no multiple of a 16 step, so
+    /// counting down from it by `step()` would leave the grid the dial
+    /// climbed on, and up N / down N would miss the start by one (255 → 239,
+    /// not 240). A press away from the top counts from the detent just above
+    /// `max()` instead, so every walk retraces its own steps.
     pub fn turn(self, p: &mut ComposeParams, steps: i32) {
-        let cur = i32::from(self.get(p));
-        let next = (cur + steps * self.step()).clamp(0, i32::from(self.max())) as u8;
+        let (cur, step, max) = (i32::from(self.get(p)), self.step(), i32::from(self.max()));
+        let from = if cur == max { (max + step - 1) / step * step } else { cur };
+        let next = (from + steps * step).clamp(0, max) as u8;
         match self {
             Dial::ShadowLift => p.shadow_lift = next,
             Dial::EdgeStrength => p.edge_t_on = self.max() - next,
@@ -724,7 +731,8 @@ impl Player {
                 if drained.dial_delta != 0 {
                     dial.turn(&mut compose, drained.dial_delta);
                     // Renderer-only: re-tunes the asset already in memory, no
-                    // rebuild, no temporal reset.
+                    // rebuild. The pipeline resets its hysteresis memory on
+                    // the change, so the next frame IS the new position.
                     deck.set_compose_params(compose);
                 }
                 deck.set_dial_overlay(Some((dial.label(), dial.get(&compose), dial.max())));

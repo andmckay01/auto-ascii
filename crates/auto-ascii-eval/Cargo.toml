@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 # PLAN §8: metrics library. auto-ascii-core for Grid/Cell/Resampler, auto-ascii-term for
 # FrameStats (the SimBackend damage/bytes source), serde/serde_json for the
 # versioned report schema. auto-ascii-format arrived with M2 item C: the

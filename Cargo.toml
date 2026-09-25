@@ -18,6 +18,17 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/andmckay01/auto-ascii"
 
+# Every crate opts in with `[lints] workspace = true`, so a toolchain-driven
+# lint decision is made once, here. `scripts/eval.sh` runs clippy with
+# `-D warnings`, which turns a lint a NEW clippy adds into a red gate on a
+# tree nobody touched.
+[workspace.lints.clippy]
+# rustc 1.98: suggests `as_chunks::<N>()` for every constant-size
+# `chunks_exact(N)` — about twenty sites across the sha256, format-reader
+# and pixel-unpack loops. Equivalent code, so it is not worth churning the
+# hot loops (and the perf gate) over; revisit if a rewrite is wanted anyway.
+chunks_exact_to_as_chunks = "allow"
+
 [workspace.dependencies]
 # libs (path deps). Version reqs alongside the paths (M5 item F, publish
 # hygiene): `cargo package` replaces path deps with their version req, so a

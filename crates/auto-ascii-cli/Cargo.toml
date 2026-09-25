@@ -9,6 +9,9 @@ repository.workspace = true
 # on the factory, whose ffmpeg-subprocess ingest is not a crates.io artifact.
 publish = false
 
+[lints]
+workspace = true
+
 # PLAN-M6-M8 §2. The facade cannot host this binary (the factory already
 # depends on the facade), so the CLI is its own crate depending on both.
 # NO new external dependencies: every dep below is already in the workspace

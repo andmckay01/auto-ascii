@@ -9,6 +9,9 @@ keywords = ["terminal", "ansi", "tui", "ascii", "capabilities"]
 categories = ["command-line-interface", "rendering"]
 readme = "../../README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 auto-ascii-core = { workspace = true }
 # PLAN §8: crossterm for raw mode / alt screen / events ONLY — never per-cell commands.

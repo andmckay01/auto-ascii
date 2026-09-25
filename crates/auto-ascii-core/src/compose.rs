@@ -109,7 +109,7 @@ pub struct CellInputs {
 
 /// Compositor tunables (§3.5). Every field is a `params.toml` candidate — the
 /// defaults here are the untuned baseline the M3 eval loop starts from.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ComposeParams {
     /// Edge gate on-threshold (strict `e > T_on`).
     pub edge_t_on: u8,
