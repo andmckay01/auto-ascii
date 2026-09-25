@@ -120,7 +120,8 @@ on a dim tint of its cell's colour, so faces and midtones hold their shape;
 `ascii` is letters with only printable ASCII: no blocks, no tint and no
 background color at all (the terminal's own shows through), every glyph in
 its cell's color brightened to make up for the ink a character leaves
-unfilled, and the same output on every terminal tier.
+unfilled. Glyph selection is the same on every terminal tier; colours
+follow the terminal's capabilities.
 
 **Dials** retune the renderer while the video plays. Shadow lift opens dark
 scenes. Edge strength sets how many contours get strokes. Hysteresis trades
@@ -138,7 +139,9 @@ zoom-out shortcut (often Cmd - on macOS; bindings vary by terminal). The
 player can't change the font itself
 ([docs/research/zoom.md](docs/research/zoom.md)), so below 160 columns the
 overlay says so. At 240 or more columns and 36 or more rows, on a non-ASCII
-tier, the overlay text is drawn in big block letters so it stays readable.
+tier, the overlay text is drawn in big block letters so it stays readable,
+except under the `ascii` codec, where overlays stay plain one-character-per-cell
+ASCII on the terminal's default background.
 
 Useful flags:
 - `--loop`, `--seek 1:30`, `--fps-cap 30`
