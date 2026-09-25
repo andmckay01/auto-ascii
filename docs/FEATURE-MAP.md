@@ -132,20 +132,27 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - Tap tables are pure integer arithmetic and byte-deterministic across platforms.
   - `reflow_grid` and `HysteresisState::resize` are the only hot-path allocation points, overlay text aside.
 
-### 5. Glyph codecs: features → glyphs (`pixels`, `letters`)
+### 5. Glyph codecs: features → glyphs (`pixels`, `letters`, `ascii`)
 - **Does:** turns each cell's features into one glyph plus fg/bg colors. `pixels` (default)
   paints a low-res picture from shade ramps, half-blocks and quadrants. `letters` draws with
   type: characters ordered by ink, ASCII strokes on edges, `█`/`▀▄` only where the picture is
   lit. On truecolor and 256-color it sets each cell on a dim tint of its own colour
   (`PaletteSet::bg_tint`), so midtones and faces keep their shape at pixels' brightness, and
   holds glyphs longer (a wider tone deadband and a floor hold) since the tint carries the tone.
-  On 16-color and mono it keeps a black background and the narrower deadband.
-- **User:** `/` cycles codecs while playing, `--codec pixels|letters` picks one at startup, and
-  `s` saves it for this video (flow 9).
+  On 16-color and mono it keeps a black background and the narrower deadband. `ascii` is
+  letters without blocks, tint or any background: printable ASCII on every tier and palette, each
+  cell flagged `attrs::DEFAULT_BG` so the painter emits SGR 49 (the terminal's own background)
+  instead of a color. Tone is glyph ink plus a brightened foreground (dark colors lifted up to 4×,
+  hue kept), on an 18-step ramp ordered by JetBrains Mono coverage.
+- **User:** `/` cycles codecs while playing (`pixels` → `letters` → `ascii`), `--codec
+  pixels|letters|ascii` picks one at startup, and `s` saves it for this video (flow 9).
 - **Code:** `crates/auto-ascii-core/src/codec/mod.rs` `GlyphCodec` (trait: `NAME`, `cell`),
   `Codec` (`ALL`, `next`, `from_name`, `names`), `compose_frame_codec`, and the `registry!` list.
   `crates/auto-ascii-core/src/codec/pixels.rs` `Pixels` and
-  `crates/auto-ascii-core/src/codec/letters.rs` `Letters`. The frame loop is
+  `crates/auto-ascii-core/src/codec/letters.rs` `Letters`,
+  `crates/auto-ascii-core/src/codec/ascii.rs` `Ascii`. `GlyphCodec::PAD` / `Codec::pad` is the
+  letterbox and gap cell. `crates/auto-ascii-term/src/render.rs` `emit_cell` turns
+  `attrs::DEFAULT_BG` into SGR 49. The frame loop is
   `crates/auto-ascii-core/src/compose.rs` `compose_frame` / `compose_frame_masked` over
   `FramePlanes`. The pixels layer contract is `compose_cell`: base ramp, then the edge layer
   (orientation bins in `crates/auto-ascii-core/src/orient.rs`), deep-shadow clamp, highlight and
@@ -159,9 +166,15 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - Every ASCII-tier glyph is printable ASCII `0x20..=0x7E` (CP437-safe).
     `crates/auto-ascii-core/tests/codec_props.rs` holds `letters` to its repertoire on every
     tier.
+  - `ascii` never emits a non-ASCII byte or a background SGR, on any tier or palette. The pads
+    and a composition's gap frames use `Codec::pad`. `crates/auto-ascii/tests/codecs.rs` parses
+    the real escape stream to check this. Overlays (hints, progress, dials) are chrome and keep
+    their own colors.
+  - Cells without `attrs::DEFAULT_BG` paint byte for byte as before, so `pixels` and `letters`
+    streams are unchanged.
   - Adding a codec means one module plus one `registry!` line. The line generates the `Codec`
     variant, its place in the `/` cycle, its name and its dispatch arm.
-  - Codec design constants (the `letters` ramps, thresholds and color curve) are codec data,
+  - Codec design constants (the `letters` and `ascii` ramps, thresholds and color curves) are codec data,
     pinned by its tests and goldens. They are not `params.toml` tunables.
 
 ### 6. Temporal stability: hysteresis and resets
@@ -478,7 +491,7 @@ values = [
 | Engine units + properties | `crates/auto-ascii-core/tests/codec_props.rs`, `crates/auto-ascii-core/tests/compose_props.rs`, `crates/auto-ascii-core/tests/viewport_props.rs`, unit tests in each `crates/auto-ascii-core/src/` module |
 | Container | `crates/auto-ascii-format/tests/container.rs` (byte golden), `crates/auto-ascii-format/tests/m1_format.rs` (delta, seek, NORM, hostile input) |
 | Terminal | `crates/auto-ascii-term/tests/m1_tiers.rs`, `crates/auto-ascii-term/tests/tier_goldens.rs`, `crates/auto-ascii-term/tests/sim_diff.rs`, `crates/auto-ascii-term/tests/probe_parser.rs`, `crates/auto-ascii-term/tests/pty_probe.rs`, `crates/auto-ascii-term/tests/pty_restore.rs`, `crates/auto-ascii-term/tests/terminal_identity.rs` |
-| Cell-grid goldens | `crates/auto-ascii-eval/tests/golden_grids.rs` (36 insta snapshots), `crates/auto-ascii/tests/linux_console_golden.rs`, `crates/auto-ascii/tests/pipeline_parity.rs`, `crates/auto-ascii/tests/codecs.rs` (`letters` goldens) |
+| Cell-grid goldens | `crates/auto-ascii-eval/tests/golden_grids.rs` (36 insta snapshots), `crates/auto-ascii/tests/linux_console_golden.rs`, `crates/auto-ascii/tests/pipeline_parity.rs`, `crates/auto-ascii/tests/codecs.rs` (`letters` and `ascii` goldens, the `ascii` escape-stream check) |
 | Player | `crates/auto-ascii/tests/m1_sim.rs`, `crates/auto-ascii/tests/m3_layers.rs`, `crates/auto-ascii/tests/sim_e2e.rs`, `crates/auto-ascii/tests/scrub_overlay.rs`, `crates/auto-ascii/tests/zoom_overlay.rs`, `crates/auto-ascii/tests/dials.rs`, `crates/auto-ascii/tests/render_session.rs` |
 | Compositions | `crates/auto-ascii/tests/composition.rs`, unit tests in `crates/auto-ascii/src/deck.rs` and `crates/auto-ascii/src/composition.rs` |
 | Fuzz / perf | `crates/auto-ascii/tests/resize_fuzz.rs`, `crates/auto-ascii/tests/perf_fps.rs`, `crates/auto-ascii/benches/pipeline.rs` |

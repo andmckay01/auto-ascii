@@ -1,0 +1,26 @@
+ascii codec, Ascii tier, Mono, 80x24, frame 5
+|                     .......................:::::::::::;;;;;;;;;;;++++++++++++rr|
+|        X_____________________________________________________________X+++++rrrr|
+|        |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@X|++rrrrrr|
+|         ---------------------------------------------;;;;;;++++++++++++rrrrrrrr|
+|              ......................:::::::::::;;;;;;;;;;;++++++++++++rrrrrrrrrr|
+|            ......................:::::::::::;;;;;;;;;;;++++++++++++rrrrrrrrrrrr|
+|          ...............;.:....::::-/-______-\;;;;;;;++++++++++++rrrrrrrrrrrrcc|
+|        .............:..;.:.:;:::////a##D#a##D-\\\;;++++++++++++rrrrrrrrrrrrcccc|
+|      .............:....:...:;:://DDDSD#oDSD#eDSD#\\++++++++++rrrrrrrrrrrrcccccc|
+|    ..............;....;.:::+://BB88DDDBDSDDBDSDDeDS\+++++++rrrrrrrrrrrrcccccccc|
+|  ...............;....;.:::+::|@BBBB88DD@D#DDSD#DDSD#|++++rrrrrrrrrrrrcccccccccc|
+|...................+..::+::::|@@@@BBB8DD#DD@D#DDSD#DD||+rrrrrrrrrrrrcccccccccccc|
+|....................:::::::::|#@@@@BB88D@B@@DDBD#DDoD#|rrrrrrrrrrrccccccccccccxx|
+|..................:::::::::::|#@@@BBB88D@BD@D#BD#D#oD#|rrrrrrrrrccccccccccccxxxx|
+|................:::;::::+::;;|@@@@BBB8DD#DD@D#DDSD#DD|rrrrrrrrccccccccccccxxxxxx|
+|..............:::;::::;::;;+;;\BBBB88DD#BD#D#BD#D#eD#/rrrrrrccccccccccccxxxxxxxx|
+|............::::::;::::;;;;;+;;\B888DD#DDSD#8DSD#oD//rrrrrccccccccccccxxxxxxxxxx|
+|..........:::::::::::;+;;;;+;;;;\\DD#eDSD#eDSD#aDS/rrrrrccccccccccccxxxxxxxxxxxx|
+|........::::::::::::;;+;;;;+;+;+r+\\\\Se#aoSe--//rrrrrccccccccccccxxxxxxxxxxxxxx|
+|......::::::::::::;;;;;;;;+++rrr++++++---rrr-rrrrrrrccccccccccccxxxxxxxx        |
+|....::::::::::::;;;;;;;;;;;+++++++++++rrrrrrrrrrrrccccccccccccxxxxxxxxx         |
+|..::::::::::::;;;;;;;;;;;++++++++++++rrrrrrrrrrrccccccccccccxxxxxxxxxxx         |
+|::::::::::::;;;;;;;;;;;++++++++++++rrrrrrrrrrrccccccccccccxxxxxxxxxxxxx         |
+|                                                                                |
+colors fnv1a64 5ba0e9b89e09d200

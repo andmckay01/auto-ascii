@@ -489,7 +489,7 @@ impl ClipDeck {
         if tiny {
             draw_enlarge_card(&mut self.blank);
         } else {
-            self.blank.fill(Cell::BLANK);
+            self.blank.fill(self.codec.pad());
         }
         let scale = OverlayScale::for_grid(cols, rows, self.cfg.glyph_tier);
         if self.progress_visible

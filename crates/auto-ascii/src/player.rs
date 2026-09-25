@@ -1124,13 +1124,13 @@ mod tests {
         assert_eq!((live.codec, live.compose.shadow_lift), (Codec::Letters, 64));
         live.cycle(1);
         live.front(1, &b);
-        assert_eq!((live.codec, live.compose.shadow_lift), (Codec::Pixels, 0), "the / pick holds");
+        assert_eq!((live.codec, live.compose.shadow_lift), (Codec::Ascii, 0), "the / pick holds");
 
         live.save(&b);
         assert_eq!(live.status(), "saved");
         live.front(0, &a);
         live.front(1, &b);
-        assert_eq!(live.saved, Some(VideoSettings { compose: ComposeParams::default(), codec: Codec::Pixels }));
+        assert_eq!(live.saved, Some(VideoSettings { compose: ComposeParams::default(), codec: Codec::Ascii }));
         assert!(live.problems.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

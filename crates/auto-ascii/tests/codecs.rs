@@ -2,14 +2,16 @@ use std::io::Cursor;
 use std::path::PathBuf;
 
 use auto_ascii::deck::{ClipDeck, DeckConfig};
-use auto_ascii::pipeline::Player;
+use auto_ascii::pipeline::{Player, color_depth};
 use auto_ascii::{Codec, Located, RenderSession};
+use auto_ascii_core::cell::attrs;
+use auto_ascii_core::codec::ascii::ascii_glyphs;
 use auto_ascii_core::codec::letters::letters_glyphs;
 use auto_ascii_core::{Cell, ColorDepth, GlyphTier, Grid, Rgb};
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
 use auto_ascii_format::header::plane_id;
 use auto_ascii_format::{AsciiReader, AsciiWriter, Meta, PlaneRef, WriterOptions};
-use auto_ascii_term::{Event, Key, SimBackend};
+use auto_ascii_term::{Caps, ColorTier, Event, Key, SimBackend};
 
 const W: usize = 192;
 const H: usize = 108;
@@ -342,7 +344,7 @@ fn check_golden(name: &str, text: &str) {
     let want = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!("missing golden {} ({e}); bless with ASCII_UPDATE_GOLDENS=1", path.display())
     });
-    assert_eq!(text, want, "letters render diverged from {}", path.display());
+    assert_eq!(text, want, "codec render diverged from {}", path.display());
 }
 
 #[test]
@@ -383,6 +385,109 @@ fn letters_goldens_untinted_tiers() {
         let grid = render(&mut p, &mut backend, FRAMES - 1);
         assert!(grid.as_slice().iter().all(|c| c.bg == Rgb::BLACK), "{name}: no background tint");
         let title = format!("letters codec, {tier:?} tier, {color:?}, 80x24, frame {}", FRAMES - 1);
+        check_golden(name, &golden_text(&grid, &title));
+    }
+}
+
+fn stream(codec: Codec, tier: GlyphTier, color: ColorTier, cols: u16, rows: u16) -> Vec<u8> {
+    let asset = full_asset();
+    let mut backend = SimBackend::new(cols, rows);
+    backend.set_caps(Caps { color, ..Caps::default() });
+    let mut p = Player::new(AsciiReader::open(&asset).unwrap(), 2.0, true, color_depth(color), tier).unwrap();
+    p.set_codec(codec);
+    p.reflow(&mut backend, cols, rows);
+    let mut out = Vec::new();
+    for f in 0..FRAMES {
+        p.render_present(&mut backend, f).unwrap();
+        out.extend(backend.take_output());
+    }
+    out
+}
+
+fn background_sgrs(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b != 0x1b {
+            if !(0x20..=0x7e).contains(&b) {
+                return Err(format!("byte {b:#04x} at {i} outside an escape sequence"));
+            }
+            i += 1;
+            continue;
+        }
+        if bytes.get(i + 1) != Some(&b'[') {
+            return Err(format!("non-CSI escape at {i}"));
+        }
+        let start = i + 2;
+        let end = (start..bytes.len())
+            .find(|&j| (0x40..=0x7e).contains(&bytes[j]))
+            .ok_or_else(|| format!("unterminated CSI at {i}"))?;
+        let params = std::str::from_utf8(&bytes[start..end]).map_err(|e| e.to_string())?;
+        if bytes[end] == b'm' {
+            let ps: Vec<&str> = params.split(';').collect();
+            let mut k = 0;
+            while k < ps.len() {
+                let v: u32 = ps[k].parse().unwrap_or(0);
+                if v == 38 || v == 48 {
+                    let n = if ps.get(k + 1) == Some(&"2") { 5 } else { 3 };
+                    if v == 48 {
+                        found.push(ps[k..(k + n).min(ps.len())].join(";"));
+                    }
+                    k += n;
+                    continue;
+                }
+                if (40..=47).contains(&v) || (100..=107).contains(&v) {
+                    found.push(v.to_string());
+                }
+                k += 1;
+            }
+        }
+        i = end + 1;
+    }
+    Ok(found)
+}
+
+#[test]
+fn ascii_streams_are_printable_ascii_with_no_background_on_every_tier() {
+    for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
+        for color in [ColorTier::True, ColorTier::C256, ColorTier::C16, ColorTier::Mono] {
+            for (cols, rows) in [(80, 24), (100, 60)] {
+                let out = stream(Codec::Ascii, tier, color, cols, rows);
+                let bg = background_sgrs(&out).unwrap_or_else(|e| panic!("{tier:?} {color:?}: {e}"));
+                assert!(bg.is_empty(), "{tier:?} {color:?} {cols}x{rows}: background SGR {bg:?}");
+                let text = String::from_utf8_lossy(&out);
+                assert!(text.contains('@') && text.contains('/'), "{tier:?} {color:?}: a real picture");
+                if color != ColorTier::Mono {
+                    assert!(text.contains("49m"), "{tier:?} {color:?}: the default background is set");
+                }
+            }
+        }
+    }
+    let pixels = stream(Codec::Pixels, GlyphTier::Ascii, ColorTier::True, 80, 24);
+    assert!(background_sgrs(&pixels).unwrap().contains(&"48;2;0;0;0".to_string()), "the parser sees backgrounds");
+    let blocks = stream(Codec::Letters, GlyphTier::UnicodeBlocks, ColorTier::C16, 80, 24);
+    assert!(background_sgrs(&blocks).is_err(), "the parser sees non-ASCII glyphs");
+}
+
+#[test]
+fn ascii_goldens() {
+    let asset = full_asset();
+    for (tier, color, name) in [
+        (GlyphTier::UnicodeBlocks, ColorDepth::True, "ascii_80x24_unicode.txt"),
+        (GlyphTier::Ascii, ColorDepth::Mono, "ascii_80x24_ascii_mono.txt"),
+    ] {
+        let mut backend = SimBackend::new(80, 24);
+        let mut p = Player::new(AsciiReader::open(&asset).unwrap(), 2.0, true, color, tier).unwrap();
+        p.set_codec(Codec::Ascii);
+        p.reflow(&mut backend, 80, 24);
+        let grid = render(&mut p, &mut backend, FRAMES - 1);
+        let allowed = ascii_glyphs();
+        assert!(grid.as_slice().iter().all(|c| allowed.contains(&c.glyph()) && c.attrs == attrs::DEFAULT_BG));
+        let text: String = grid.as_slice().iter().map(|c| c.glyph()).collect();
+        assert!(text.contains(['|', '/', '\\']), "{name}: edge strokes");
+        assert!(text.contains('@'), "{name}: the disc core is the densest glyph");
+        let title = format!("ascii codec, {tier:?} tier, {color:?}, 80x24, frame {}", FRAMES - 1);
         check_golden(name, &golden_text(&grid, &title));
     }
 }

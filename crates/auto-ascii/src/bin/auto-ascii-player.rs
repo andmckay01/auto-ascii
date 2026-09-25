@@ -427,8 +427,9 @@ mod tests {
     fn codec_flag_parsing() {
         assert_eq!(parse_codec("pixels"), Ok(Codec::Pixels));
         assert_eq!(parse_codec("letters"), Ok(Codec::Letters));
-        let e = parse_codec("ascii").unwrap_err();
-        assert!(e.contains("pixels, letters"), "the error lists the registry: {e}");
+        assert_eq!(parse_codec("ascii"), Ok(Codec::Ascii));
+        let e = parse_codec("ASCII").unwrap_err();
+        assert!(e.contains("pixels, letters, ascii"), "the error lists the registry: {e}");
     }
 
     #[test]

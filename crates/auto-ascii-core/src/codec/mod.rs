@@ -8,6 +8,7 @@
 //! |---|---|---|
 //! | `pixels` | [`pixels`] | the three-layer compositor: tier ramps, half-blocks and quadrants on Unicode tiers — a low-res picture |
 //! | `letters` | [`letters`] | printable characters ordered by ink on a dim tint of the cell's color (truecolor/256), directional ASCII strokes on edges, `█` for near-white cells and `▀`/`▄` for lit halves on block tiers |
+//! | `ascii` | [`ascii`] | printable ASCII only on every tier, in bright per-glyph color on the terminal's own background — no blocks, no tint |
 //!
 //! Every codec reads the same [`CellInputs`] through the same NORM LUT and
 //! the same [`PaletteSet`] (the palette selection still tells a codec which
@@ -44,6 +45,9 @@ pub trait GlyphCodec {
     /// the per-video settings file stores. Lowercase ASCII, stable forever
     /// (saved files carry it).
     const NAME: &'static str;
+
+    /// What the letterbox pads and a composition's gap frames hold.
+    const PAD: Cell = Cell::BLANK;
 
     /// Compose one viewport cell. `lut` is the per-shot NORM LUT (shadow
     /// lift folded in), `set` the palette selection for this tier and
@@ -83,6 +87,14 @@ macro_rules! registry {
                 match self {
                     Codec::$first => <$fmod::$fty as GlyphCodec>::NAME,
                     $(Codec::$variant => <$module::$ty as GlyphCodec>::NAME,)*
+                }
+            }
+
+            /// Pad cell (see [`GlyphCodec::PAD`]).
+            pub fn pad(self) -> Cell {
+                match self {
+                    Codec::$first => <$fmod::$fty as GlyphCodec>::PAD,
+                    $(Codec::$variant => <$module::$ty as GlyphCodec>::PAD,)*
                 }
             }
         }
@@ -126,6 +138,7 @@ macro_rules! registry {
 registry! {
     Pixels => pixels::Pixels,
     Letters => letters::Letters,
+    Ascii => ascii::Ascii,
 }
 
 impl Codec {
@@ -167,8 +180,16 @@ mod tests {
         }
         assert_eq!(Codec::from_name("Pixels"), None, "names are exact");
         assert_eq!(Codec::from_name(""), None);
-        assert_eq!(Codec::names(", "), "pixels, letters");
-        assert_eq!(Codec::names("|"), "pixels|letters");
+        assert_eq!(Codec::names(", "), "pixels, letters, ascii");
+        assert_eq!(Codec::names("|"), "pixels|letters|ascii");
+    }
+
+    #[test]
+    fn only_ascii_pads_on_the_terminal_background() {
+        assert_eq!(Codec::Pixels.pad(), Cell::BLANK);
+        assert_eq!(Codec::Letters.pad(), Cell::BLANK);
+        let pad = Codec::Ascii.pad();
+        assert_eq!((pad.glyph(), pad.bg, pad.attrs), (' ', crate::Rgb::BLACK, crate::cell::attrs::DEFAULT_BG));
     }
 
     #[test]
@@ -181,5 +202,9 @@ mod tests {
         }
         assert_eq!(seen, Codec::ALL.to_vec(), "one press per codec, in registry order");
         assert_eq!(c, Codec::default(), "and back to the start");
+        assert_eq!(Codec::ALL, [Codec::Pixels, Codec::Letters, Codec::Ascii]);
+        assert_eq!(Codec::Pixels.next(), Codec::Letters);
+        assert_eq!(Codec::Letters.next(), Codec::Ascii);
+        assert_eq!(Codec::Ascii.next(), Codec::Pixels);
     }
 }
