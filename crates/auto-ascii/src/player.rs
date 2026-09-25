@@ -762,7 +762,10 @@ impl Player {
     /// seek flashes a bottom-row progress overlay that auto-hides after ~1 s.
     /// A key-hints row sits above it whenever an overlay is up, for the first
     /// few seconds of playback, and for as long as `v` pins it open (M6,
-    /// PLAN-M6-M8 §1).
+    /// PLAN-M6-M8 §1). Above it the info row names the clip, the codec and
+    /// the grid size, with a zoom-out hint on narrow terminals; a resize
+    /// raises both for a moment, so zooming the terminal reads out the new
+    /// size.
     ///
     /// # Errors
     /// [`Error::Terminal`] when stdout is not a TTY (headless callers want
@@ -843,8 +846,8 @@ impl Player {
         // each clip fronts) — see LiveSettings for the precedence rules.
         let mut live = LiveSettings::new(self.cfg.codec);
         deck.set_codec(live.codec);
-        // `/` and `s` raise the controls overlay for as long as a dial turn
-        // does — the info row in it is where their answer shows.
+        // `/`, `s` and a resize raise the controls overlay for as long as a
+        // dial turn does — the info row in it is where their answer shows.
         let mut note_until: Option<Instant> = None;
         let mut info = String::new();
         // M6 key hints: the legend row above the overlay row (PLAN-M6-M8 §1).
@@ -931,7 +934,11 @@ impl Player {
             {
                 live.save(&self.comp.clips()[idx].path);
             }
-            if drained.codec_cycle > 0 || drained.save {
+            // A resize raises it too: zooming the terminal is how a viewer
+            // buys detail (docs/research/zoom.md), and the info row's
+            // `WxH cells` is the readout for it — shown while they zoom.
+            let resized = deck.size() != was_size;
+            if drained.codec_cycle > 0 || drained.save || resized {
                 note_until = Some(Instant::now() + DIAL_OVERLAY_HIDE_AFTER);
             } else if note_until.is_some_and(|t| Instant::now() >= t) {
                 note_until = None;

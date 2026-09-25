@@ -26,8 +26,8 @@ use memmap2::Mmap;
 use crate::composition::Located;
 use crate::error::Error;
 use crate::pipeline::{
-    self, Drained, ProgressContext, StageNs, draw_dial_overlay, draw_enlarge_card,
-    draw_hint_overlay, draw_info_overlay, draw_progress_overlay_clips,
+    self, Drained, OverlayScale, ProgressContext, StageNs, draw_dial_overlay,
+    draw_enlarge_card, draw_hint_overlay, draw_info_overlay, draw_progress_overlay_clips,
 };
 
 /// Add two per-stage accumulators.
@@ -557,6 +557,7 @@ impl ClipDeck {
         } else {
             self.blank.fill(Cell::BLANK);
         }
+        let scale = OverlayScale::for_grid(cols, rows, self.cfg.glyph_tier);
         if self.progress_visible
             && let Some(ctx) = self.progress_ctx
         {
@@ -567,18 +568,19 @@ impl ClipDeck {
                 ctx.fps(),
                 ctx.clip,
                 self.paused,
+                scale,
             );
         }
         if let Some((label, value, max)) = self.dial {
-            draw_dial_overlay(&mut self.blank, label, value, max);
+            draw_dial_overlay(&mut self.blank, label, value, max, scale);
         }
         // The hints row is the one thing the card outranks: `rows-2` is
         // where its second line sits on a 4-row screen (the same gate
         // `render_grid` applies through `vp.is_some()`).
         if self.hint_visible && !tiny {
-            draw_hint_overlay(&mut self.blank);
+            draw_hint_overlay(&mut self.blank, scale);
             if let Some(info) = &self.info {
-                draw_info_overlay(&mut self.blank, info);
+                draw_info_overlay(&mut self.blank, info, scale);
             }
         }
     }
@@ -725,5 +727,33 @@ mod tests {
         let bottom = row(7);
         assert!(bottom.contains("0:01 / 0:05"), "the progress row survives: {bottom:?}");
         assert!(row(6).trim().is_empty(), "the hints row stays off the card: {:?}", row(6));
+    }
+
+    /// A gap draws the overlays at the clip's scale — the same
+    /// `OverlayScale::for_grid` a playing clip uses — so the controls do not
+    /// shrink back to one-cell text between clips on a zoomed-out terminal.
+    #[test]
+    fn a_gap_scales_the_overlay_text_like_a_clip() {
+        let clips = Clips::new("biggap", 1);
+        for (cols, rows, big) in [(320u16, 90u16, true), (213, 58, false)] {
+            let mut deck = ClipDeck::new(clips.1.clone(), headless());
+            deck.set_size(cols, rows);
+            deck.set_hint_overlay(true);
+            deck.set_info_overlay(Some(" gap   codec: pixels "));
+            deck.render_at(None).unwrap();
+            let grid = deck.showing();
+            let row = |r: u16| -> String { (0..cols).map(|c| grid.get(c, r).glyph()).collect() };
+            if big {
+                // Hints band rows-6..rows-3, info band above it, in blocks.
+                for r in rows - 9..rows - 3 {
+                    assert!(row(r).chars().all(|c| " ▀▄█".contains(c)), "row {r}: {:?}", row(r));
+                }
+                assert!(row(rows - 5).contains('█'), "big hint text drawn");
+                assert!(row(rows - 10).trim().is_empty(), "nothing above the info band");
+            } else {
+                assert!(row(rows - 2).contains("v controls"));
+                assert!(row(rows - 3).ends_with(" 213x58 cells "), "{:?}", row(rows - 3));
+            }
+        }
     }
 }

@@ -1167,10 +1167,24 @@ pub fn Player::set_progress_context(&mut self, Option<ProgressContext>);
     // the row reports the COMPOSITION's position instead of this clip's own
     // frame counter; None (every single-asset path) is the M6 row verbatim
 pub fn draw_progress_overlay_clips(grid, frame, frame_count, fps,
-                                   clip: Option<(usize, usize)>);
+                                   clip: Option<(usize, usize)>,
+                                   paused: bool, scale: OverlayScale);
     // draw_progress_overlay + " c/N " right after the time block, dropped
     // below PROGRESS_HINT_MIN_COLS (64) and for single-clip compositions —
     // so `draw_progress_overlay` is literally this with clip = None
+    // (and paused = false, scale = Normal)
+// Zoom discoverability (note 27 (i)) — every overlay row takes a scale:
+pub enum OverlayScale { Normal, Big }
+    // Big = 3x5 half-block font, 4 cols x 3 rows per char, upper case;
+    // for_grid(cols, rows, GlyphTier) is Big iff tier != Ascii and
+    // cols >= BIG_OVERLAY_MIN_COLS (240) and rows >= BIG_OVERLAY_MIN_ROWS
+    // (36); line_chars(cols) (cols or cols/4), line_rows() (1 or 3)
+pub fn draw_dial_overlay(grid, label, value, max, scale: OverlayScale);
+pub fn draw_hint_overlay(grid, scale: OverlayScale);
+pub fn draw_info_overlay(grid, text: &str, scale: OverlayScale);
+    // + right-aligned " WxH cells " when it fits after the text, and below
+    // ZOOM_HINT_MAX_COLS (160) a zoom hint on the line above it
+pub const ZOOM_HINT_MAX_COLS: u16;          // 160
 pub fn drain_backend_events<B: Backend>(&mut B) -> (Drained, Option<(u16,u16)>);
     // the key mapping, coalesced, with NO player state touched (Quit still
     // wins and stops the drain). Player::drain_events is this plus the
@@ -2344,6 +2358,45 @@ facade surface + this hidden module.)
     switch and exact return to pixels, deck stickiness, hints/info rows,
     the two committed goldens `letters_80x24_{ascii,unicode}.txt` over a
     synthetic every-plane asset), `settings::tests` (round trip, old files).
+    (i) **Zoom discoverability** (after codecs; findings in
+    `docs/research/zoom.md`). The player cannot zoom the terminal itself: no
+    escape sequence changes the font size across terminals, and every
+    mechanism that exists (kitty remote control, xterm OSC 50, Ghostty's
+    macOS AppleScript, WezTerm Lua) is terminal-specific or needs the user
+    to set something up. So Up/Down stay unbound and the controls overlay
+    tells the viewer instead. The info row ends in a right-aligned ` WxH
+    cells ` (the grid, from the grid itself, so it cannot go stale; the
+    text wins when both do not fit). Below `ZOOM_HINT_MAX_COLS` (160) the
+    row above it reads ` Cmd - to zoom out: more cells, a sharper picture `
+    (` Cmd - for a sharper picture ` where that does not fit, nothing
+    narrower; `Ctrl` off macOS via `cfg!(target_os = "macos")`). Both are
+    drawn by `draw_info_overlay`, so they ride with the info row. The run
+    loop raises the controls overlay on a resize for the dial timeout,
+    so zooming reads out the new size as it goes. **Big overlay text:** every overlay
+    row now takes an `OverlayScale`. On block tiers from 240x36 the rows
+    draw in a 3x5 half-block font (`▀ ▄ █`, 4 cells x 3 rows per character,
+    upper case, non-ASCII as `?`) laid out for `cols/4` characters, the
+    rows becoming 3-row bands stacked the same way (progress/dial, hints,
+    info). So the overlay stays about as large on screen as at 80 columns,
+    and the hint and progress rows drop items for `cols/4` exactly as
+    they do on a narrow terminal. This is a deliberate exception to
+    PLAN-M6-M8 decision 6 (printable ASCII overlays), made only where the
+    tier already draws half-blocks in the picture; the ASCII tier keeps
+    one-cell ASCII rows at every size, and the strict parser in
+    `scrub_overlay.rs` still runs on the ASCII tier. The pipeline and the
+    deck's gap frames both pick the scale with `OverlayScale::for_grid`.
+    Nothing changes with the overlays hidden, so goldens, parity and the
+    console golden pass unblessed. Tests: `pipeline::tests` (the scale
+    tiers, the size block and hint threshold at 159/160 columns, the text
+    outranking the size block, big text read back from its half-blocks at
+    320x90, a distinct shape for every font glyph, degenerate grids down to
+    0x0), `deck::tests` (gap frames scale too),
+    `auto-ascii/tests/zoom_overlay.rs` (through the real `Player`: the size
+    and hint from 80x24 to 213x58 with the picture above them untouched,
+    the big bands at 320x90 and a hide that repaints back to the plain
+    picture, every overlay on at 1x1..1000x1000 on both tiers), and
+    `resize_fuzz.rs` gained `Op::Overlays`, with the directed corners
+    walked with every overlay up.
 28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
     should take a video from anywhere on the desktop, process it, and land
     it in the folder where the user's processed videos live"). The shape of

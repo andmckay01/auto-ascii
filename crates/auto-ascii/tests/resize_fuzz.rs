@@ -21,7 +21,10 @@
 //!
 //! Resize events go through `SimBackend::push_event` and are drained by
 //! `Player::drain_events` (coalesce to the latest, one reflow) — the same
-//! event path and the same reflow the interactive loop uses.
+//! event path and the same reflow the interactive loop uses. `Op::Overlays`
+//! toggles every overlay row mid-storm; they size themselves to the grid
+//! (one-cell text, big text from 240x36, nothing where a band cannot fit),
+//! so invariant 1 covers them at every size the storm reaches.
 //!
 //! Case count: 256 by default (fast `cargo test`), env-scaled in scripts:
 //! `PROPTEST_CASES=10000 cargo test -p auto-ascii --test resize_fuzz`
@@ -50,6 +53,10 @@ enum Op {
     Render { frames: u8, advance: u8 },
     /// Jump playback to an arbitrary frame (seek path), then render once.
     Jump(u32),
+    /// Show or hide every overlay row at once (progress, dial, hints, info
+    /// and its zoom hint) — they size themselves to the grid, down to one
+    /// cell and up to big text, so they ride the storm too.
+    Overlays(bool),
 }
 
 /// Dimension strategy: full legal 1..=1000 range, biased toward the small
@@ -68,6 +75,7 @@ fn op() -> impl Strategy<Value = Op> {
         4 => (dim(), dim()).prop_map(|(c, r)| Op::Push(c, r)),
         4 => (1u8..=2, 1u8..=3).prop_map(|(frames, advance)| Op::Render { frames, advance }),
         1 => (0u32..72).prop_map(Op::Jump),
+        1 => any::<bool>().prop_map(Op::Overlays),
     ]
 }
 
@@ -284,6 +292,12 @@ fn run_storm(ops: &[Op]) -> Result<(), TestCaseError> {
                 render_present(&mut backend, &mut player, frame, pending_full)?;
                 pending_full = false;
             }
+            Op::Overlays(on) => {
+                player.set_progress_overlay(on);
+                player.set_dial_overlay(on.then_some(("edge on", 32, 255)));
+                player.set_hint_overlay(on);
+                player.set_info_overlay(on.then_some(" clip   codec: pixels   settings: default "));
+            }
         }
     }
     // Storm tail: whatever is still queued must recover within one frame.
@@ -334,7 +348,9 @@ fn resize_storm_fuzz() {
 /// 32×8) as one deterministic storm — always runs, even at PROPTEST_CASES=1.
 #[test]
 fn resize_storm_directed_corners() {
-    let ops: Vec<Op> = [
+    // Overlays on for the whole walk: the corners include big-text grids
+    // (320x90, 1000x1000) and ones too small for any band.
+    let corners = [
         (80u16, 24u16),
         (1, 1),
         (320, 90),
@@ -348,11 +364,11 @@ fn resize_storm_directed_corners() {
         (206, 58),
         (33, 10),
         (80, 23),
-    ]
-    .iter()
-    .flat_map(|&(c, r)| {
-        [Op::Push(c, r), Op::Render { frames: 1, advance: 1 }]
-    })
-    .collect();
+    ];
+    let ops: Vec<Op> = std::iter::once(Op::Overlays(true))
+        .chain(corners.iter().flat_map(|&(c, r)| {
+            [Op::Push(c, r), Op::Render { frames: 1, advance: 1 }]
+        }))
+        .collect();
     run_storm(&ops).unwrap_or_else(|e| panic!("directed corners failed: {e}"));
 }

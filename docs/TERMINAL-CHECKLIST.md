@@ -27,7 +27,11 @@ PLAY="./target/release/auto-ascii-player $ASSET"
 Keys during playback: `q`/`Esc` quit · `space` pause · `0`–`9` jump ·
 `←`/`→` 5 s · `d` dial · `[` `]` adjust · `v` controls. The bottom-row progress
 bar flashes for ~1 s after a seek, with the key-hints row just above it;
-while paused it stays up and reads `PAUSED`. Resize the window at any time.
+while paused it stays up and reads `PAUSED`. Resize the window at any time;
+a resize (font zoom included) briefly raises the controls overlay, whose info
+row ends in the grid size (`213x58 cells`). Below 160 columns the row above it
+says Cmd - (Ctrl -) zooms out for a sharper picture, and from 240x36 on a
+block tier the overlay text is drawn in big half-block letters.
 
 **Read the probe's mind** on the terminal you are sitting in (prints one line
 with the caps the shipping probe concluded — color tier, sync 2026, cell px,

@@ -80,6 +80,181 @@ const HINT_SEP: &str = "   ";
 /// what it was before codecs existed.
 const HINT_DROP_ORDER: [usize; 8] = [7, 6, 5, 4, 1, 3, 2, 0];
 
+/// Narrowest grid whose info row carries NO zoom hint (docs/research/zoom.md).
+/// Below it the picture is being drawn with few cells, and the terminal's
+/// own zoom-out is the cheapest detail there is: the asset is
+/// resolution-independent, so every extra column is a sharper picture. The
+/// player cannot press that key itself — no terminal lets a program change
+/// its font without the user's setup — so the controls overlay says it.
+pub const ZOOM_HINT_MAX_COLS: u16 = 160;
+
+/// The terminal's zoom-out chord as the zoom hint prints it: Cmd on macOS
+/// (Ghostty, Terminal.app, iTerm2), Ctrl everywhere else.
+const ZOOM_KEY: &str = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
+
+/// Smallest grid that draws overlay text [`OverlayScale::Big`]. At 240
+/// columns a cell is a third of its 80-column width, so one-cell text has
+/// shrunk to a third too; big text is 4 cells wide and 3 tall per character,
+/// which puts it back near its 80-column size and still leaves a 60-character
+/// line. The row floor keeps the three 3-row bands under a quarter of the
+/// screen.
+pub const BIG_OVERLAY_MIN_COLS: u16 = 240;
+/// See [`BIG_OVERLAY_MIN_COLS`].
+pub const BIG_OVERLAY_MIN_ROWS: u16 = 36;
+
+/// How large the overlay rows draw their text, picked from the grid so the
+/// overlay stays about the same size on screen however far the terminal is
+/// zoomed out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverlayScale {
+    /// One character per cell, one row per line — every overlay since M5.
+    Normal,
+    /// A 3x5 pixel font in half-blocks: 4 cells wide and 3 rows tall per
+    /// character (upper case only). Uses `▀ ▄ █`, so only block tiers get
+    /// it. The ASCII tier keeps the printable-ASCII overlay (PLAN-M6-M8
+    /// decision 6) at every size.
+    Big,
+}
+
+impl OverlayScale {
+    /// The scale for a `cols x rows` grid on this glyph tier.
+    pub fn for_grid(cols: u16, rows: u16, glyph_tier: GlyphTier) -> OverlayScale {
+        if glyph_tier != GlyphTier::Ascii
+            && cols >= BIG_OVERLAY_MIN_COLS
+            && rows >= BIG_OVERLAY_MIN_ROWS
+        {
+            OverlayScale::Big
+        } else {
+            OverlayScale::Normal
+        }
+    }
+
+    /// Characters per overlay line on a `cols`-wide grid — the width every
+    /// row lays its text out for.
+    pub fn line_chars(self, cols: u16) -> u16 {
+        match self {
+            OverlayScale::Normal => cols,
+            OverlayScale::Big => cols / BIG_CHAR_COLS,
+        }
+    }
+
+    /// Grid rows one overlay line occupies.
+    pub fn line_rows(self) -> u16 {
+        match self {
+            OverlayScale::Normal => 1,
+            OverlayScale::Big => BIG_LINE_ROWS,
+        }
+    }
+}
+
+/// Big-text geometry: 3 pixel columns + 1 of spacing per character; one
+/// pixel row of margin + 5 of glyph, two pixel rows per half-block cell.
+const BIG_CHAR_COLS: u16 = 4;
+const BIG_LINE_ROWS: u16 = 3;
+
+/// The 3x5 pixel font for [`OverlayScale::Big`], `' '..='_'` (0x20..=0x5F).
+/// Lower case draws as upper case. Five 3-bit rows, top row in bits 14..12,
+/// and the left pixel is the high bit of its row.
+#[rustfmt::skip]
+const BIG_FONT: [u16; 64] = [
+    0b000_000_000_000_000, 0b010_010_010_000_010, 0b101_101_000_000_000, 0b101_111_101_111_101, // ' ' ! " #
+    0b011_110_010_011_110, 0b101_001_010_100_101, 0b010_101_010_101_011, 0b010_010_000_000_000, // $ % & '
+    0b001_010_010_010_001, 0b100_010_010_010_100, 0b000_101_010_101_000, 0b000_010_111_010_000, // ( ) * +
+    0b000_000_000_010_100, 0b000_000_111_000_000, 0b000_000_000_000_010, 0b001_001_010_100_100, // , - . /
+    0b111_101_101_101_111, 0b010_110_010_010_111, 0b111_001_111_100_111, 0b111_001_111_001_111, // 0 1 2 3
+    0b101_101_111_001_001, 0b111_100_111_001_111, 0b111_100_111_101_111, 0b111_001_001_010_010, // 4 5 6 7
+    0b111_101_111_101_111, 0b111_101_111_001_111, 0b000_010_000_010_000, 0b000_010_000_010_100, // 8 9 : ;
+    0b001_010_100_010_001, 0b000_111_000_111_000, 0b100_010_001_010_100, 0b111_001_011_000_010, // < = > ?
+    0b111_101_111_100_011, 0b010_101_111_101_101, 0b110_101_110_101_110, 0b011_100_100_100_011, // @ A B C
+    0b110_101_101_101_110, 0b111_100_110_100_111, 0b111_100_110_100_100, 0b011_100_101_101_011, // D E F G
+    0b101_101_111_101_101, 0b111_010_010_010_111, 0b001_001_001_101_010, 0b101_101_110_101_101, // H I J K
+    0b100_100_100_100_111, 0b101_111_111_101_101, 0b110_101_101_101_101, 0b010_101_101_101_010, // L M N O
+    0b110_101_110_100_100, 0b010_101_101_111_011, 0b110_101_110_101_101, 0b011_100_010_001_110, // P Q R S
+    0b111_010_010_010_010, 0b101_101_101_101_111, 0b101_101_101_101_010, 0b101_101_111_111_101, // T U V W
+    0b101_101_010_101_101, 0b101_101_010_010_010, 0b111_001_010_100_111, 0b110_100_100_100_110, // X Y Z [
+    0b100_100_010_001_001, 0b011_001_001_001_011, 0b010_101_000_000_000, 0b000_000_000_000_111, // \ ] ^ _
+];
+
+/// `|` has no slot below 0x60 but draws the paused progress bar's head.
+const BIG_BAR: u16 = 0b010_010_010_010_010;
+
+/// The [`BIG_FONT`] bitmap for `c`. Lower case folds to upper case, the few
+/// printable characters past `_` borrow a near neighbour, and anything else
+/// — non-ASCII included — draws as `?`, the same rule the info row applies.
+fn big_glyph(c: char) -> u16 {
+    let c = match c {
+        'a'..='z' => c.to_ascii_uppercase(),
+        '|' => return BIG_BAR,
+        '{' => '(',
+        '}' => ')',
+        '`' => '\'',
+        '~' => '-',
+        c => c,
+    };
+    match c {
+        ' '..='_' => BIG_FONT[c as usize - 0x20],
+        _ => BIG_FONT['?' as usize - 0x20],
+    }
+}
+
+/// Paint one overlay line into `slot`: 0 is the bottom line, 1 the one
+/// above it, and so on, each [`OverlayScale::line_rows`] tall. The line is
+/// laid out for [`OverlayScale::line_chars`] characters; shorter lines are
+/// padded with the panel color and longer ones cut, so the band is always
+/// filled edge to edge. Does nothing when the grid has no room for the slot.
+/// A pure function of `(slot, line, colors, scale, grid size)`, so an
+/// unchanged line costs zero damage in diff mode.
+fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, scale: OverlayScale) {
+    let (cols, rows) = (grid.cols(), grid.rows());
+    let h = scale.line_rows();
+    let Some(top) = rows.checked_sub(h * (slot + 1)) else {
+        return;
+    };
+    if cols == 0 {
+        return;
+    }
+    match scale {
+        OverlayScale::Normal => {
+            let mut chars = line.chars();
+            for col in 0..cols {
+                let ch = chars.next().unwrap_or(' ');
+                grid.set(col, top, Cell::new(ch, fg, bg));
+            }
+        }
+        OverlayScale::Big => {
+            let mut chars = line.chars();
+            let mut glyph = 0u16;
+            for col in 0..cols {
+                let px = col % BIG_CHAR_COLS;
+                if px == 0 {
+                    // A trailing partial character (cols % 4) stays blank.
+                    glyph = match chars.next() {
+                        Some(c) if col + BIG_CHAR_COLS <= cols => big_glyph(c),
+                        _ => 0,
+                    };
+                }
+                // Pixel row y (0..6) of this column: row 0 is the margin.
+                let lit = |y: u16| -> bool {
+                    if px >= 3 || y == 0 {
+                        return false;
+                    }
+                    let bit = 14 - ((y - 1) * 3 + px);
+                    glyph >> bit & 1 == 1
+                };
+                for r in 0..h {
+                    let ch = match (lit(2 * r), lit(2 * r + 1)) {
+                        (true, true) => '█',
+                        (true, false) => '▀',
+                        (false, true) => '▄',
+                        (false, false) => ' ',
+                    };
+                    grid.set(col, top + r, Cell::new(ch, fg, bg));
+                }
+            }
+        }
+    }
+}
+
 /// Map the probed terminal capabilities to the palette-selection charset
 /// tier (PLAN §3.4: `Caps.glyph_support` records the trusted repertoire).
 /// Braille requires *verified* support (never set from passive hints).
@@ -936,6 +1111,7 @@ impl<'a> Player<'a> {
                 mask.fill(auto_ascii_core::layer::BASE);
             }
         }
+        let scale = OverlayScale::for_grid(self.grid.cols(), self.grid.rows(), self.glyph_tier);
         if self.overlay_visible {
             // Drawn last, over pads/viewport alike (bottom row only); the
             // layer mask is deliberately NOT updated — the overlay is
@@ -948,18 +1124,21 @@ impl<'a> Player<'a> {
                     ctx.fps(),
                     ctx.clip,
                     self.paused,
+                    scale,
                 ),
-                None => draw_progress_overlay_paused(
+                None => draw_progress_overlay_clips(
                     &mut self.grid,
                     frame_idx,
                     self.frame_count,
                     self.fps,
+                    None,
                     self.paused,
+                    scale,
                 ),
             }
         }
         if let Some((label, value, max)) = self.dial_overlay {
-            draw_dial_overlay(&mut self.grid, label, value, max);
+            draw_dial_overlay(&mut self.grid, label, value, max, scale);
         }
         // One row above the progress/dial row, same presentation-only rules:
         // no layer mask, no temporal state (M6, PLAN-M6-M8 §1). Gated on the
@@ -968,9 +1147,9 @@ impl<'a> Player<'a> {
         // matters, and `rows-2` is exactly where the card's second line sits
         // on a 4-row screen.
         if self.hint_visible && self.vp.is_some() {
-            draw_hint_overlay(&mut self.grid);
+            draw_hint_overlay(&mut self.grid, scale);
             if let Some(info) = &self.info {
-                draw_info_overlay(&mut self.grid, info);
+                draw_info_overlay(&mut self.grid, info, scale);
             }
         }
         Ok(())
@@ -1110,7 +1289,7 @@ pub fn draw_enlarge_card(grid: &mut Grid<Cell>) {
 /// Pure function of `(frame, frame_count, fps, cols)` — byte-deterministic,
 /// so diff-mode presents of an unchanged overlay row cost zero damage.
 pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32, frame_count: u32, fps: f64) {
-    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, false);
+    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, false, OverlayScale::Normal);
 }
 
 /// [`draw_progress_overlay`] with the M6 pause reading: `paused` swaps the
@@ -1123,14 +1302,15 @@ pub fn draw_progress_overlay_paused(
     fps: f64,
     paused: bool,
 ) {
-    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, paused);
+    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, paused, OverlayScale::Normal);
 }
 
 /// [`draw_progress_overlay`] with the M8 clip block: `clip = Some((c, n))`
 /// adds ` c/N ` right after the timecode while a composition plays
 /// (PLAN-M6-M8 §3). The block is dropped below [`PROGRESS_HINT_MIN_COLS`]
 /// and for single-clip compositions, so `None` — every single-asset path —
-/// prints the M6 row byte for byte.
+/// prints the M6 row byte for byte. `scale` sizes the text
+/// ([`OverlayScale::Big`] lays the row out for a quarter of the columns).
 pub fn draw_progress_overlay_clips(
     grid: &mut Grid<Cell>,
     frame: u32,
@@ -1138,12 +1318,12 @@ pub fn draw_progress_overlay_clips(
     fps: f64,
     clip: Option<(usize, usize)>,
     paused: bool,
+    scale: OverlayScale,
 ) {
-    let (cols, rows) = (grid.cols(), grid.rows());
-    if cols == 0 || rows == 0 {
+    if grid.cols() == 0 || grid.rows() == 0 {
         return;
     }
-    let row = rows - 1;
+    let cols = scale.line_chars(grid.cols());
     let fg = Rgb::gray(235);
     let bg = Rgb::new(24, 24, 40);
 
@@ -1209,25 +1389,25 @@ pub fn draw_progress_overlay_clips(
         line.push(']');
     }
     line.push_str(&right);
-
-    let mut chars = line.chars();
-    for col in 0..cols {
-        let ch = chars.next().unwrap_or(' ');
-        grid.set(col, row, Cell::new(ch, fg, bg));
-    }
+    paint_line(grid, 0, &line, fg, bg, scale);
 }
 
 /// The transient 1-line live-dial readout: bottom terminal row,
 /// `_<label>_[####----]_NNN/MMM_` in pure ASCII, so it reads on every palette
 /// and color tier exactly like the progress overlay. Pure function of
 /// `(label, value, max, cols)` — byte-deterministic, so an unchanged row costs
-/// zero damage in diff mode.
-pub fn draw_dial_overlay(grid: &mut Grid<Cell>, label: &str, value: u8, max: u8) {
-    let (cols, rows) = (grid.cols(), grid.rows());
-    if cols == 0 || rows == 0 {
+/// zero damage in diff mode. `scale` sizes the text like the progress row.
+pub fn draw_dial_overlay(
+    grid: &mut Grid<Cell>,
+    label: &str,
+    value: u8,
+    max: u8,
+    scale: OverlayScale,
+) {
+    if grid.cols() == 0 || grid.rows() == 0 {
         return;
     }
-    let row = rows - 1;
+    let cols = scale.line_chars(grid.cols());
     // Warmer than the progress overlay's blue so the two are never confused
     // at a glance while both are being driven from the keyboard.
     let fg = Rgb::gray(245);
@@ -1253,12 +1433,7 @@ pub fn draw_dial_overlay(grid: &mut Grid<Cell>, label: &str, value: u8, max: u8)
         line.push(']');
     }
     line.push_str(&right);
-
-    let mut chars = line.chars();
-    for col in 0..cols {
-        let ch = chars.next().unwrap_or(' ');
-        grid.set(col, row, Cell::new(ch, fg, bg));
-    }
+    paint_line(grid, 0, &line, fg, bg, scale);
 }
 
 /// [`SCRUB_STEP_SECS`] as the overlays print it: whole seconds carry no
@@ -1311,49 +1486,67 @@ fn hint_line(cols: u16) -> String {
     format!(" {} ", kept.join(HINT_SEP))
 }
 
-/// The key-hints row (M6, PLAN-M6-M8 §1): one line on `rows-2` in the
-/// progress overlay's colors, listing every bound key. Shown while a
-/// transient overlay is up, for a short window at start-up and whenever `v`
-/// pins it (all run-loop policy — see `Player::set_hint_overlay`). Pure
-/// function of `cols`, so an unchanged row costs zero damage in diff mode.
-pub fn draw_hint_overlay(grid: &mut Grid<Cell>) {
-    let (cols, rows) = (grid.cols(), grid.rows());
-    if cols == 0 || rows < 2 {
-        return; // nowhere to put it without evicting the progress row
-    }
-    let row = rows - 2;
+/// The key-hints row (M6, PLAN-M6-M8 §1): one line on `rows-2`, or the
+/// line above the bottom one at [`OverlayScale::Big`], in the progress
+/// overlay's colors, listing every bound key. Shown while a transient overlay
+/// is up, for a short window at start-up and whenever `v` pins it (all
+/// run-loop policy — see `Player::set_hint_overlay`). Pure function of
+/// `(cols, rows, scale)`, so an unchanged row costs zero damage in diff mode.
+pub fn draw_hint_overlay(grid: &mut Grid<Cell>, scale: OverlayScale) {
     // Deliberately the progress overlay's palette: one chrome, two rows.
     let fg = Rgb::gray(235);
     let bg = Rgb::new(24, 24, 40);
-
-    let line = hint_line(cols);
-    let mut chars = line.chars();
-    for col in 0..cols {
-        let ch = chars.next().unwrap_or(' ');
-        grid.set(col, row, Cell::new(ch, fg, bg));
-    }
+    let line = hint_line(scale.line_chars(grid.cols()));
+    // Slot 1 needs two lines of room: nowhere to put it without evicting
+    // the progress row.
+    paint_line(grid, 1, &line, fg, bg, scale);
 }
 
-/// The info row of the controls overlay: one line on `rows-3`, directly
-/// above the key hints and in the same colors, carrying whatever the run
-/// loop reports — the clip's name, the active glyph codec, whether this
-/// video's settings are saved. Printable ASCII only, like every overlay
-/// (PLAN-M6-M8 §0.6): anything else in `text` (a clip named in another
-/// script) prints as `?` rather than as a glyph of unknown width. Truncated
-/// to the row and painted to its full width. Pure function of
-/// `(text, cols)`, so an unchanged row costs zero damage in diff mode.
-pub fn draw_info_overlay(grid: &mut Grid<Cell>, text: &str) {
+/// The zoom hint for a `cols`-wide line (docs/research/zoom.md): the long
+/// wording where it fits, a short one where that does not, and "" when not
+/// even that fits.
+fn zoom_line(cols: u16) -> String {
+    let long = format!(" {ZOOM_KEY} - to zoom out: more cells, a sharper picture ");
+    let short = format!(" {ZOOM_KEY} - for a sharper picture ");
+    [long, short].into_iter().find(|l| l.len() <= cols as usize).unwrap_or_default()
+}
+
+/// The info row of the controls overlay: one line on `rows-3` (the third
+/// line up at [`OverlayScale::Big`]), directly above the key hints and in
+/// the same colors. It carries whatever the run loop reports — the clip's
+/// name, the active glyph codec, whether this video's settings are saved —
+/// and, right-aligned, the grid size (` 213x58 cells `), which is
+/// how much detail the picture is getting; the text wins when both do not
+/// fit. Printable ASCII only, like every overlay (PLAN-M6-M8 §0.6):
+/// anything else in `text` (a clip named in another script) prints as `?`
+/// rather than as a glyph of unknown width. Truncated to the row and
+/// painted to its full width.
+///
+/// Below [`ZOOM_HINT_MAX_COLS`] a zoom hint goes on the line above
+/// (` Cmd - to zoom out: more cells, a sharper picture `, `Ctrl` off
+/// macOS); it is dropped when no wording fits. Pure function of
+/// `(text, cols, rows, scale)`, so an unchanged row costs zero damage in
+/// diff mode.
+pub fn draw_info_overlay(grid: &mut Grid<Cell>, text: &str, scale: OverlayScale) {
     let (cols, rows) = (grid.cols(), grid.rows());
-    if cols == 0 || rows < 3 {
-        return; // the hints and progress rows own the bottom two
-    }
-    let row = rows - 3;
     let fg = Rgb::gray(235);
     let bg = Rgb::new(24, 24, 40);
-    let mut chars = text.chars().map(|c| if c == ' ' || c.is_ascii_graphic() { c } else { '?' });
-    for col in 0..cols {
-        let ch = chars.next().unwrap_or(' ');
-        grid.set(col, row, Cell::new(ch, fg, bg));
+    let width = scale.line_chars(cols) as usize;
+    let mut line: String =
+        text.chars().map(|c| if c == ' ' || c.is_ascii_graphic() { c } else { '?' }).collect();
+    let size = format!(" {cols}x{rows} cells ");
+    let used = line.chars().count();
+    if used + size.len() <= width {
+        line.extend(std::iter::repeat_n(' ', width - used - size.len()));
+        line.push_str(&size);
+    }
+    // Slot 2: the hints and progress rows own the bottom two.
+    paint_line(grid, 2, &line, fg, bg, scale);
+    if cols < ZOOM_HINT_MAX_COLS {
+        let zoom = zoom_line(width as u16);
+        if !zoom.is_empty() {
+            paint_line(grid, 3, &zoom, fg, bg, scale);
+        }
     }
 }
 
@@ -1501,7 +1694,7 @@ mod tests {
     fn progress_overlay_clip_block_is_earned() {
         let row_at = |cols: u16, clip: Option<(usize, usize)>| -> String {
             let mut g: Grid<Cell> = Grid::new(cols, 4);
-            draw_progress_overlay_clips(&mut g, 900, 5400, 30.0, clip, false);
+            draw_progress_overlay_clips(&mut g, 900, 5400, 30.0, clip, false, OverlayScale::Normal);
             (0..cols).map(|c| g.get(c, 3).glyph()).collect()
         };
         let m6 = |cols: u16| -> String {
@@ -1534,5 +1727,209 @@ mod tests {
         draw_enlarge_card(&mut g);
         let mid: String = (0..40).map(|col| g.get(col, 3).glyph()).collect();
         assert!(mid.contains("AUTO-ASCII"), "card text missing: {mid:?}");
+    }
+
+    fn row_text(g: &Grid<Cell>, row: u16) -> String {
+        (0..g.cols()).map(|c| g.get(c, row).glyph()).collect()
+    }
+
+    /// Read a [`OverlayScale::Big`] band back into text: rebuild each
+    /// character's 3x5 bitmap from the half-blocks and look it up in the
+    /// font. `None` for a bitmap the font does not have.
+    fn read_big_line(g: &Grid<Cell>, slot: u16) -> Option<String> {
+        let top = g.rows() - BIG_LINE_ROWS * (slot + 1);
+        let lit = |col: u16, y: u16| -> bool {
+            let ch = g.get(col, top + y / 2).glyph();
+            match ch {
+                '█' => true,
+                '▀' => y.is_multiple_of(2),
+                '▄' => !y.is_multiple_of(2),
+                ' ' => false,
+                other => panic!("big text drew {other:?}"),
+            }
+        };
+        (0..g.cols() / BIG_CHAR_COLS)
+            .map(|i| {
+                let mut bits = 0u16;
+                for y in 1..6 {
+                    for px in 0..3 {
+                        bits = bits << 1 | u16::from(lit(i * BIG_CHAR_COLS + px, y));
+                    }
+                }
+                // The spacing column and the margin row stay dark.
+                assert!(!lit(i * BIG_CHAR_COLS + 3, 1), "spacing column lit");
+                assert!((0..3).all(|px| !lit(i * BIG_CHAR_COLS + px, 0)), "margin row lit");
+                if bits == BIG_BAR {
+                    return Some('|');
+                }
+                (' '..='_').find(|&c| BIG_FONT[c as usize - 0x20] == bits)
+            })
+            .collect()
+    }
+
+    /// The tiers: one-cell text below 240x36 and on the ASCII tier at any
+    /// size (its overlays stay printable ASCII), big text from there up.
+    #[test]
+    fn overlay_scale_tiers() {
+        use GlyphTier::*;
+        let s = OverlayScale::for_grid;
+        for tier in [UnicodeBlocks, BrailleVerified] {
+            assert_eq!(s(80, 24, tier), OverlayScale::Normal);
+            assert_eq!(s(213, 58, tier), OverlayScale::Normal);
+            assert_eq!(s(239, 90, tier), OverlayScale::Normal, "one column short");
+            assert_eq!(s(320, 35, tier), OverlayScale::Normal, "one row short");
+            assert_eq!(s(240, 36, tier), OverlayScale::Big, "the threshold itself");
+            assert_eq!(s(320, 90, tier), OverlayScale::Big);
+            assert_eq!(s(1000, 1000, tier), OverlayScale::Big);
+            assert_eq!(s(1, 1, tier), OverlayScale::Normal);
+        }
+        assert_eq!(s(320, 90, Ascii), OverlayScale::Normal, "ASCII never draws blocks");
+        assert_eq!(s(1000, 1000, Ascii), OverlayScale::Normal);
+        assert_eq!(OverlayScale::Big.line_chars(320), 80, "320 columns set an 80-character line");
+        assert_eq!(OverlayScale::Big.line_chars(243), 60);
+        assert_eq!(OverlayScale::Normal.line_chars(213), 213);
+    }
+
+    /// The info row ends in the grid size, and below 160 columns the line
+    /// above it says how to get more: the terminal's own zoom-out.
+    #[test]
+    fn info_row_reads_the_grid_size_and_the_zoom_hint_on_narrow_grids() {
+        let text = " clip   codec: pixels   settings: default ";
+        let draw = |cols: u16, rows: u16| -> Grid<Cell> {
+            let mut g = Grid::new(cols, rows);
+            draw_info_overlay(&mut g, text, OverlayScale::Normal);
+            g
+        };
+        let zoom = format!(" {ZOOM_KEY} - to zoom out: more cells, a sharper picture ");
+
+        let g = draw(80, 24);
+        let info = row_text(&g, 21);
+        assert!(info.starts_with(text), "{info:?}");
+        assert!(info.ends_with(" 80x24 cells "), "size right-aligned: {info:?}");
+        assert_eq!(info.len(), 80);
+        assert_eq!(row_text(&g, 20).trim_end(), zoom.trim_end(), "zoom hint above the info row");
+        assert!((0..80).all(|c| g.get(c, 19) == Cell::BLANK), "nothing above the zoom hint");
+        assert!((0..80).all(|c| g.get(c, 22) == Cell::BLANK), "the hints row is not drawn here");
+
+        // The threshold: 159 columns still hints, 160 does not.
+        assert!(row_text(&draw(159, 40), 36).contains("to zoom out"));
+        let g = draw(160, 40);
+        assert!(row_text(&g, 37).ends_with(" 160x40 cells "));
+        assert!((0..160).all(|c| g.get(c, 36) == Cell::BLANK), "no hint at 160 columns");
+        let g = draw(213, 58);
+        assert!(row_text(&g, 55).ends_with(" 213x58 cells "));
+        assert!((0..213).all(|c| g.get(c, 54) == Cell::BLANK));
+
+        // Narrow rows fall back to the short wording, then to none; the
+        // mac/other key name comes from the build target.
+        let short = format!(" {ZOOM_KEY} - for a sharper picture ");
+        assert_eq!(zoom_line(zoom.len() as u16), zoom);
+        assert_eq!(zoom_line(zoom.len() as u16 - 1), short);
+        assert_eq!(zoom_line(short.len() as u16), short);
+        assert_eq!(zoom_line(short.len() as u16 - 1), "");
+        let g = draw(32, 9);
+        assert_eq!(row_text(&g, 5).trim_end(), short.trim_end(), "32x9 keeps the short hint");
+        assert_eq!(ZOOM_KEY, if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" });
+    }
+
+    /// The clip name and codec are what `/` and `s` answer through, so when
+    /// both do not fit the size block is what goes.
+    #[test]
+    fn info_text_outranks_the_size_block() {
+        let text = " a-very-long-clip-name-from-a-stitch   codec: letters   settings: s to save ";
+        let mut g = Grid::new(80, 24);
+        draw_info_overlay(&mut g, text, OverlayScale::Normal);
+        let info = row_text(&g, 21);
+        assert!(info.starts_with(text) && !info.contains("cells"), "{info:?}");
+        // One column wider than text + block: the block comes back.
+        let cols = (text.len() + " 80x24 cells ".len()) as u16;
+        let mut g = Grid::new(cols, 24);
+        draw_info_overlay(&mut g, text, OverlayScale::Normal);
+        assert!(row_text(&g, 21).ends_with(&format!(" {cols}x24 cells ")));
+    }
+
+    /// Big text at 320x90: every row lands in its 3-row band, reads back as
+    /// the upper-cased line, and leaves the rows above untouched.
+    #[test]
+    fn big_overlay_text_reads_back_in_its_bands() {
+        let (cols, rows) = (320u16, 90u16);
+        let scale = OverlayScale::for_grid(cols, rows, GlyphTier::UnicodeBlocks);
+        assert_eq!(scale, OverlayScale::Big);
+        let mut g = Grid::new(cols, rows);
+        draw_progress_overlay_clips(&mut g, 900, 5400, 30.0, None, true, scale);
+        draw_hint_overlay(&mut g, scale);
+        draw_info_overlay(&mut g, " The Architect   codec: letters ", scale);
+
+        let chars = scale.line_chars(cols) as usize;
+        let progress = read_big_line(&g, 0).expect("progress row in the font");
+        assert_eq!(progress.len(), chars);
+        assert!(progress.starts_with(" <- 5S ->  0:30 / 3:00 [==="), "{progress:?}");
+        assert!(progress.contains('|') && progress.ends_with(" PAUSED "), "{progress:?}");
+        let hints = read_big_line(&g, 1).unwrap();
+        assert_eq!(hints.trim_end(), hint_line(80).to_uppercase().trim_end());
+        let info = read_big_line(&g, 2).unwrap();
+        assert!(info.starts_with(" THE ARCHITECT   CODEC: LETTERS "), "{info:?}");
+        assert!(info.ends_with(" 320X90 CELLS "), "{info:?}");
+        // No zoom hint at 320 columns, so nothing above the three bands.
+        let top = rows - 3 * BIG_LINE_ROWS;
+        for row in 0..top {
+            assert!((0..cols).all(|c| g.get(c, row) == Cell::BLANK), "row {row} touched");
+        }
+        // The dial row takes the progress row's band.
+        draw_dial_overlay(&mut g, "shadow lift", 64, 255, scale);
+        let dial = read_big_line(&g, 0).unwrap();
+        assert!(dial.starts_with(" SHADOW LIFT [####") && dial.ends_with("  64/255 "), "{dial:?}");
+
+        // A width that is not a multiple of 4 leaves its tail blank but painted.
+        let mut g = Grid::new(243, 40);
+        draw_hint_overlay(&mut g, OverlayScale::Big);
+        assert!(read_big_line(&g, 1).is_some());
+        for r in 34..37 {
+            assert_eq!(g.get(242, r).glyph(), ' ');
+            assert_eq!(g.get(242, r).bg, Rgb::new(24, 24, 40), "tail painted as panel");
+        }
+    }
+
+    /// Typos in a hand-drawn font show up as two characters with one shape.
+    #[test]
+    fn big_font_shapes_are_distinct() {
+        for (i, a) in BIG_FONT.iter().enumerate() {
+            assert!(*a < 1 << 15, "glyph {i} has a sixth row");
+            for b in &BIG_FONT[i + 1..] {
+                assert_ne!(a, b, "glyph {:?} duplicated", char::from(i as u8 + 0x20));
+            }
+            assert_ne!(*a, BIG_BAR);
+        }
+        assert_eq!(big_glyph('a'), big_glyph('A'), "lower case folds to upper");
+        assert_eq!(big_glyph('é'), big_glyph('?'), "non-ASCII draws as ?");
+        assert_eq!(big_glyph('|'), BIG_BAR);
+    }
+
+    /// Every overlay at every scale on degenerate grids: no panic, no
+    /// out-of-bounds write, and a band too tall for the grid is skipped.
+    #[test]
+    fn overlays_survive_tiny_grids() {
+        let sizes = [
+            (0u16, 0u16), (1, 1), (1, 3), (3, 1), (4, 3), (10, 3), (10, 4), (31, 8), (32, 9),
+            (7, 12), (239, 36), (240, 35), (240, 8), (241, 2),
+        ];
+        for (cols, rows) in sizes {
+            for scale in [OverlayScale::Normal, OverlayScale::Big] {
+                let mut g = Grid::new(cols, rows);
+                draw_progress_overlay_clips(&mut g, 3, 10, 30.0, Some((1, 2)), false, scale);
+                draw_dial_overlay(&mut g, "edge", 7, 255, scale);
+                draw_hint_overlay(&mut g, scale);
+                draw_info_overlay(&mut g, " clip   codec: pixels ", scale);
+                assert_eq!((g.cols(), g.rows()), (cols, rows));
+            }
+        }
+        // 10x3: the info row is the top row; no room for a zoom hint.
+        let mut g = Grid::new(10, 3);
+        draw_info_overlay(&mut g, " clip ", OverlayScale::Normal);
+        assert_eq!(row_text(&g, 0), " clip     ");
+        // A Big band that does not fit is not drawn at all.
+        let mut g = Grid::new(240, 8);
+        draw_info_overlay(&mut g, " clip ", OverlayScale::Big);
+        assert!(g.as_slice().iter().all(|c| *c == Cell::BLANK), "slot 2 needs 9 rows");
     }
 }

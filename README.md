@@ -52,9 +52,16 @@ CRC status.
 (the default — shade ramps and half-blocks, a low-res picture) or `letters`
 (printable characters ordered by ink, ASCII strokes on edges, blocks only
 where the picture is lit: `█` for near-white, `▀▄` for a bright half). `/` cycles them while playing; `v` shows the clip
-name and active codec above the key hints. The dials (`d`, `[ ]`) and the
+name, active codec and grid size above the key hints. The dials (`d`, `[ ]`) and the
 codec are per video: `s` saves them beside the asset as
 `<name>.player.toml`, and they load the next time that video plays.
+
+**Zoom out for detail.** The asset is resolution-independent, so a smaller
+terminal font means more cells and a sharper picture: Cmd - (Ctrl - off
+macOS) is the cheapest detail there is. The player cannot change the font
+itself (docs/research/zoom.md), so below 160 columns the `v` overlay says
+so. It shows the grid size (`213x58 cells`), updating as you zoom. From
+240 columns its text is drawn in big block letters so it stays readable.
 
 `auto-ascii-player comp.toml` plays a **composition** — an unbounded stitch of
 clips on one timeline, each placed with `at` and trimmed with `in`/`out`, gaps
