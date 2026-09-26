@@ -1,6 +1,4 @@
-//! `AnsiBackend` — the one real terminal backend, parameterized by `Caps`.
-//! Writes to stdout; crossterm is used for raw mode / alt screen / event
-//! polling ONLY, never per-cell commands.
+//! ANSI terminal sessions, input events and stdout rendering.
 
 use std::io;
 #[cfg(unix)]
@@ -101,13 +99,6 @@ impl StragglerFilter {
     }
 }
 
-/// ANSI escape-stream backend over stdout.
-///
-/// Present path: quantize to the caps color tier (truecolor passthrough /
-/// xterm-256 / standard-16 / mono glyph-only), per-row diff against the
-/// previous *quantized* grid, changed spans with the skip-vs-move heuristic,
-/// SGR run-length elision, `?2026h…l` wrap when `Caps::sync_2026`, single
-/// `write(2)` from a reused ≥64 KB buffer.
 pub struct AnsiBackend {
     caps: Caps,
     events: EventQueue,
@@ -117,18 +108,6 @@ pub struct AnsiBackend {
 }
 
 impl AnsiBackend {
-    /// Enter the session: arm the process-global restore state (fd + pre-raw
-    /// termios), then raw mode, alt screen `?1049h`, hide cursor `?25l`,
-    /// autowrap off `?7l` in one write. Installs the restore hooks itself
-    /// (idempotent), so panic, SIGINT, SIGTERM and atexit always restore
-    /// (pty-tested).
-    ///
-    /// The passed `caps.cells` is overridden by the real terminal size;
-    /// `caps.cell_px` is filled from `TIOCGWINSZ` when the kernel reports
-    /// pixel sizes.
-    ///
-    /// Errors if stdout is not a TTY. All four color tiers are supported; the
-    /// tier lives in `caps.color`, normally from [`crate::probe_caps`].
     #[cfg(unix)]
     pub fn new(caps: Caps) -> io::Result<AnsiBackend> {
         let fd = libc::STDOUT_FILENO;
@@ -167,17 +146,6 @@ impl AnsiBackend {
         })
     }
 
-    /// Windows session entry (compiled for the windows-gnu cross build, not
-    /// tested on Windows). Same hygiene, different plumbing: crossterm owns
-    /// raw mode and executes the enter-session commands through its
-    /// ANSI-or-WinAPI layer (which also enables VT output processing on
-    /// conhost), the restore path is the panic hook + orderly shutdown/Drop
-    /// ([`crate::restore`], windows half), and frame bytes go to stdout via
-    /// `std::io::Write`.
-    ///
-    /// Never probed: the caller's `caps` arrive passive-only
-    /// ([`crate::probe_caps`] writes no volley on Windows), so `cell_px`
-    /// stays `None` (aspect falls back to 2.0).
     #[cfg(windows)]
     pub fn new(caps: Caps) -> io::Result<AnsiBackend> {
         use crossterm::tty::IsTty as _;
@@ -344,10 +312,6 @@ impl Backend for AnsiBackend {
         &self.caps
     }
 
-    /// Pumps all pending crossterm events (zero-timeout poll) into the queue,
-    /// then hands it to the caller. Late probe-reply fragments are dropped by
-    /// the straggler filter before mapping — probe bytes must never become
-    /// key events, no matter how late or how split across reads they arrive.
     fn events(&mut self) -> &mut EventQueue {
         while let Ok(true) = crossterm::event::poll(Duration::ZERO) {
             match crossterm::event::read() {
@@ -372,9 +336,6 @@ impl Backend for AnsiBackend {
         &mut self.events
     }
 
-    /// Diff → spans → SGR elide → ONE write. On a failed/partial write the
-    /// painter is invalidated so the next frame is a full repaint — a dropped
-    /// frame must not poison the diff baseline.
     #[cfg(unix)]
     fn present(&mut self, grid: &Grid<Cell>) -> FrameStats {
         present_to_fd(
@@ -386,8 +347,6 @@ impl Backend for AnsiBackend {
         )
     }
 
-    /// Windows present: same painter, frame bytes through `std::io::Write`
-    /// on stdout (VT processing was enabled by crossterm at session entry).
     #[cfg(windows)]
     fn present(&mut self, grid: &Grid<Cell>) -> FrameStats {
         present_to_stdout(&mut self.painter, grid, self.caps.color, self.caps.sync_2026)
@@ -397,15 +356,11 @@ impl Backend for AnsiBackend {
         self.painter.invalidate();
     }
 
-    /// The ONLY allocation point in the hot path.
     fn resize(&mut self, cols: u16, rows: u16) {
         self.caps.cells = (cols, rows);
         self.painter.resize(cols, rows);
     }
 
-    /// Restore terminal (also invoked from `Drop` and the signal path).
-    /// `restore_now` atomically consumes the armed session, so the restore
-    /// bytes are emitted exactly once no matter how many paths fire.
     fn shutdown(&mut self) {
         if !self.active {
             return;

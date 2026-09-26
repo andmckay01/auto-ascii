@@ -1,14 +1,4 @@
-//! Process-wide terminal restoration.
-//!
-//! The alt-screen-leave, cursor-show and SGR-reset bytes are emitted on
-//! Ctrl-C, SIGTERM and panic (asserted by a pty test).
-//!
-//! Design: `AnsiBackend::new` *arms* a process-global (tty fd + pre-raw
-//! termios) before touching the terminal; `restore_now` disarms and
-//! restores exactly once, from whichever path fires first — orderly
-//! `shutdown`/`Drop`, the panic hook, SIGINT/SIGTERM, or atexit. Everything
-//! on the signal path is async-signal-safe: atomics, raw `write(2)`,
-//! `tcsetattr` — no locks, no allocation.
+//! Process-wide terminal restoration and shutdown hooks.
 
 #[cfg(unix)]
 use std::cell::UnsafeCell;
@@ -21,9 +11,6 @@ use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
-/// The restore byte sequence, in emit order: SGR reset, cursor show, autowrap
-/// on, leave alt screen. Cooked-mode (termios) restoration happens alongside
-/// but is not byte-visible.
 pub const RESTORE_SEQ: &[u8] = b"\x1b[0m\x1b[?25h\x1b[?7h\x1b[?1049l";
 
 #[cfg(windows)]
@@ -69,16 +56,6 @@ static SAVED_TERMIOS: TermiosStore = TermiosStore(UnsafeCell::new(MaybeUninit::u
 
 static HOOKS: Once = Once::new();
 
-/// Install restoration hooks: a panic hook, SIGINT/SIGTERM handlers, and
-/// atexit — each runs `restore_now` (async-signal-safe raw `write(2)` of
-/// [`RESTORE_SEQ`] + `tcsetattr`, no locks/allocation); the signal handlers
-/// then re-raise with the default disposition so the exit status still
-/// reports the signal.
-///
-/// Idempotent and safe to call before any backend exists; a no-op restore
-/// when no session was ever entered. `AnsiBackend::shutdown`/`Drop` perform
-/// the same restore on the orderly path (also exactly once — the armed fd is
-/// consumed atomically).
 #[cfg(unix)]
 pub fn install_restore_hooks() {
     HOOKS.call_once(|| {

@@ -1,23 +1,4 @@
-//! `auto-ascii-term` — terminal backend layer.
-//!
-//! Terminals differ by capability *data*, not code shape: one [`AnsiBackend`]
-//! parameterized by [`Caps`], plus [`SimBackend`] (in-memory, throttleable)
-//! for tests/benches. The [`Backend`] trait exists for exactly those two —
-//! nothing more.
-//!
-//! Features: capability probe ([`probe_caps`] — passive env hints, then the
-//! DA1-sentinel volley, cached; `--tier`/`--no-query` escape hatches), color
-//! tiers truecolor/256/16/mono with quantize-BEFORE-diff, DEC 2026
-//! synchronized-output wrap when DECRQM confirmed it, and the diff renderer
-//! (one render path — full repaint is just `invalidate()` each frame).
-//! Capability tiers are color depth + glyph repertoire only — no
-//! throughput/connectivity classification.
-//!
-//! Everything that touches a real terminal — [`AnsiBackend`], the probe
-//! volley, the restore hooks — is gated behind the default-on `session`
-//! feature (crossterm + libc). Without it the crate is pure data + code: the
-//! [`Backend`] trait, [`Caps`] types, [`SimBackend`], quantizer and diff
-//! renderer — exactly what a terminal-free embedder build needs.
+//! Terminal capabilities, probing and rendering backends.
 
 #[cfg(feature = "session")]
 pub mod ansi;

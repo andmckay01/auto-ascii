@@ -1,46 +1,4 @@
-//! Terminal capability probe.
-//!
-//! Passive signals (`COLORTERM`, `TERM`, `TERM_PROGRAM`) are hints, not
-//! truth. The active volley goes out in ONE write on the tty:
-//! XTVERSION (`CSI > 0 q`), DECRQM 2026 (`CSI ? 2026 $ p` — never a
-//! hardcoded support table), XTGETTCAP `RGB`, `CSI 16 t` (cell px → cell
-//! aspect), then **DA1 (`CSI c`) last as sentinel** — when its reply
-//! arrives, everything that was going to answer has answered. Replies are
-//! parsed until the DA1 answer or a deadline (default 200 ms); `!isatty`
-//! or silence → conservative default (256-color, ASCII glyphs). Never hangs.
-//!
-//! Results are cached at `$XDG_CACHE_HOME/auto-ascii/caps` keyed on
-//! `(TERM, TERM_PROGRAM, COLORTERM, tmux?)`. COLORTERM is part of the key so
-//! a COLORTERM-stripped run (e.g. under a pipe wrapper) cannot poison later
-//! runs where COLORTERM proves truecolor. A cache hit can only *upgrade* the
-//! passive evidence of the current run, never downgrade it — with one
-//! exception: an entry whose store-time volley had an identity-keyed quirk
-//! clamp the tier *below* the passive evidence carries a `quirk_clamped`
-//! marker, and a hit on such an entry re-applies the clamp.
-//!
-//! Escape hatches: a forced tier (`--tier`) overrides the detected color
-//! tier, `--no-query` skips the volley entirely, `--no-quirks` skips the
-//! identity-keyed quirk table ([`crate::quirks`], applied post-volley,
-//! before the forced tier) *and* bypasses the cache in both directions
-//! (cached entries embed quirk adjustments), and `no_cache` bypasses the
-//! cache (tests).
-//!
-//! Straggler hygiene: replies still in flight at the deadline are consumed
-//! by a bounded quiet-gap grace drain (only when the terminal was already
-//! mid-answer — silent terminals return at the deadline unchanged), and a
-//! crate-private straggler flag tells the backend's event decoder to filter
-//! any reply fragments that arrive later still, so probe bytes never surface
-//! as key events.
-//!
-//! Capability tiers are color depth + glyph repertoire only — no
-//! throughput/latency classification.
-//!
-//! Reply interpretation is deliberately strict (pinned by the per-terminal
-//! pty identity fixtures in `tests/terminal_identity.rs`):
-//! DECRPM 2026 counts only when the mode is *settable*
-//! ([`ProbeReplies::sync_supported`]), and the XTGETTCAP `RGB` answer is read
-//! by value, because xterm replies `1+r524742=` "-1" — a *valid* reply
-//! meaning "no direct color".
+//! Terminal capability probing, reply parsing and caching.
 
 #[cfg(unix)]
 use std::fs;
@@ -58,7 +16,6 @@ use std::time::Instant;
 use crate::ansi::write_all_fd;
 use crate::caps::{Caps, ColorTier, GlyphFlags, GlyphSupportTier};
 
-/// Default volley reply deadline.
 pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 
 #[cfg(unix)]
@@ -72,33 +29,15 @@ pub(crate) fn volley_stragglers_possible() -> bool {
     VOLLEY_STRAGGLERS.load(Ordering::Relaxed)
 }
 
-/// The active volley, sent as ONE write. Order matters: DA1 last as
-/// sentinel.
 pub const VOLLEY: &[u8] = b"\x1b[>0q\x1b[?2026$p\x1bP+q524742\x1b\\\x1b[16t\x1b[c";
 
-/// Options for [`probe_caps`] — the `--tier` / `--no-query` / `--no-cache`
-/// escape hatches plus test knobs.
 #[derive(Clone, Debug)]
 pub struct ProbeOptions {
-    /// `--tier`: force the color tier (applied last, overrides detection).
     pub forced_tier: Option<ColorTier>,
-    /// `--no-query`: never write the volley; passive env hints only.
     pub no_query: bool,
-    /// `--no-quirks`: skip the identity-keyed quirk table (see
-    /// [`crate::quirks`]) that normally adjusts caps after the volley, and
-    /// bypass the cache in BOTH directions. Never stored: cached entries
-    /// must be the fully adjusted truth, because cache hits skip the volley.
-    /// Never *read* either: a cached entry may embed a quirk adjustment, so
-    /// honoring it would silently serve the quirked result the flag promises
-    /// to disable — `--no-quirks` always runs the volley and takes the
-    /// replies at face value.
     pub no_quirks: bool,
-    /// Bypass the cache entirely (no read, no write).
     pub no_cache: bool,
-    /// Reply deadline for the volley.
     pub timeout: Duration,
-    /// Cache directory override; `None` → `$XDG_CACHE_HOME/auto-ascii`
-    /// (fallback `~/.cache/auto-ascii`).
     pub cache_dir: Option<PathBuf>,
 }
 
@@ -115,44 +54,16 @@ impl Default for ProbeOptions {
     }
 }
 
-/// What the volley got back (parsed by [`ProbeParser`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProbeReplies {
-    /// XTVERSION text (e.g. `kitty(0.32.2)`) — the identity the quirk table
-    /// keys on.
     pub xtversion: Option<String>,
-    /// DECRPM `Ps` for mode 2026: 0 = not recognized, 1 = set, 2 = reset,
-    /// 3 = permanently set, 4 = permanently reset. Only 1/2 mean the mode is
-    /// usable — see [`ProbeReplies::sync_supported`].
     pub decrqm_2026: Option<u8>,
-    /// XTGETTCAP `RGB`: `Some(true)` when the terminal advertises a usable
-    /// direct-color width, `Some(false)` on an invalid (`0+r`) reply *or* on
-    /// a valid reply carrying the "no direct color" value `-1` (xterm's
-    /// answer when it is not in direct-color mode — see [`ProbeParser`]).
     pub xtgettcap_rgb: Option<bool>,
-    /// Cell size in px `(w, h)` from the `CSI 16 t` reply.
     pub cell_px: Option<(u16, u16)>,
-    /// The DA1 sentinel answered — the volley is complete.
     pub da1: bool,
 }
 
 impl ProbeReplies {
-    /// DEC mode 2026 (synchronized output) is actually usable.
-    ///
-    /// DECRPM answers 0 = not recognized, 1 = set, 2 = reset, 3 = permanently
-    /// set, 4 = permanently reset — and only **1 or 2** mean the mode can be
-    /// driven: 4 is "recognized but will never be honored" and 3 is
-    /// explicitly undefined behavior (synchronized-output spec, "How to
-    /// detect" table:
-    /// <https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036>).
-    ///
-    /// This is not hypothetical: VTE (gnome-terminal) *knows* mode 2026 but
-    /// keeps it in the fixed-mode table as ALWAYS_RESET, so its DECRQM
-    /// handler answers `CSI ? 2026 ; 4 $ y` — sources
-    /// `vte/src/modes.py` (`mode_WHAT('CONTOUR_BATCHED_RENDERING', 2026,
-    /// default=False)`, non-writable ⇒ `MODE_FIXED(..., ALWAYS_RESET)`) and
-    /// `vte/src/vteseq.cc` (`Terminal::DECRQM_DEC`: `eALWAYS_RESET` ⇒ 4).
-    /// Wrapping frames in `?2026h…l` there would burn bytes for nothing.
     pub fn sync_supported(&self) -> bool {
         matches!(self.decrqm_2026, Some(1 | 2))
     }
@@ -171,9 +82,6 @@ fn hex_decode(bytes: &[u8]) -> Option<Vec<u8>> {
     bytes.chunks_exact(2).map(|p| Some((nib(p[0])? << 4) | nib(p[1])?)).collect()
 }
 
-/// Incremental parser for volley replies — a tiny VT-reply state machine
-/// (CSI + DCS + OSC-skip), tolerant of interleaved garbage. Pure: feed it
-/// scripted byte streams in tests.
 #[derive(Debug)]
 pub struct ProbeParser {
     state: State,
@@ -211,17 +119,14 @@ impl ProbeParser {
         }
     }
 
-    /// Parsed replies so far.
     pub fn replies(&self) -> &ProbeReplies {
         &self.replies
     }
 
-    /// True once the DA1 sentinel reply has been seen.
     pub fn done(&self) -> bool {
         self.replies.da1
     }
 
-    /// Feed reply bytes; returns [`Self::done`] (DA1 seen).
     pub fn feed(&mut self, bytes: &[u8]) -> bool {
         for &b in bytes {
             self.step(b);
@@ -373,7 +278,6 @@ pub(crate) struct EnvHints {
     pub term: String,
     pub term_program: String,
     pub colorterm: String,
-    /// Effective locale charset source (LC_ALL > LC_CTYPE > LANG).
     pub locale: String,
     #[cfg_attr(
         windows,
@@ -521,13 +425,6 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
     caps
 }
 
-/// Windows probe (compiled for the windows-gnu cross build, not tested on
-/// Windows): passive-only, exactly the `--no-query` flow. No volley is ever
-/// written (the reply plumbing is POSIX termios/poll; conhost historically
-/// swallows or mangles DCS queries), so `can_query` is false, the quirk
-/// table never fires (no queried identity) and nothing is cached. `--tier`
-/// remains the escape hatch for e.g. Windows Terminal, which is truecolor
-/// but exports no COLORTERM.
 #[cfg(windows)]
 pub fn probe_caps(opts: &ProbeOptions) -> Caps {
     use crossterm::tty::IsTty as _;
