@@ -441,11 +441,6 @@ fn apply_passive(caps: &mut Caps, h: &EnvHints) {
     }
 }
 
-/// Probe terminal capabilities. Never hangs: waits at most `opts.timeout`
-/// for replies, plus a bounded grace drain if the terminal is still
-/// mid-answer. `!isatty` on stdin/stdout or a silent terminal (no DA1) →
-/// conservative default (256-color, ASCII glyphs). See module docs for the
-/// full flow.
 #[cfg(unix)]
 pub fn probe_caps(opts: &ProbeOptions) -> Caps {
     let in_fd = libc::STDIN_FILENO;
@@ -683,19 +678,31 @@ fn run_volley(in_fd: libc::c_int, out_fd: libc::c_int, timeout: Duration) -> io:
         }
     }
 
-    loop {
+    drain_ready_input(&mut parser, &mut buf, Instant::now() + STRAGGLER_QUIET, |buf| {
         let mut pfd = libc::pollfd { fd: in_fd, events: libc::POLLIN, revents: 0 };
         if unsafe { libc::poll(&mut pfd, 1, 0) } <= 0 {
-            break;
+            return 0;
         }
-        let n = unsafe { libc::read(in_fd, buf.as_mut_ptr().cast(), buf.len()) };
+        unsafe { libc::read(in_fd, buf.as_mut_ptr().cast(), buf.len()) }
+    });
+
+    Ok(parser.replies().clone())
+}
+
+#[cfg(unix)]
+fn drain_ready_input(
+    parser: &mut ProbeParser,
+    buf: &mut [u8],
+    until: Instant,
+    mut read_ready: impl FnMut(&mut [u8]) -> isize,
+) {
+    while Instant::now() < until {
+        let n = read_ready(buf);
         if n <= 0 {
             break;
         }
         parser.feed(&buf[..n as usize]);
     }
-
-    Ok(parser.replies().clone())
 }
 
 #[cfg(unix)]
@@ -823,6 +830,34 @@ fn cache_store(opts: &ProbeOptions, key: &str, entry: &CacheEntry) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_final_drain_stops_at_its_deadline_under_continuous_input() {
+        let mut parser = ProbeParser::new();
+        let mut buf = [0u8; 512];
+        let until = Instant::now() + Duration::from_millis(30);
+        let mut reads = 0u64;
+        drain_ready_input(&mut parser, &mut buf, until, |buf| {
+            reads += 1;
+            buf.fill(b'x');
+            buf.len() as isize
+        });
+        assert!(Instant::now() >= until);
+        assert!(reads > 0);
+        assert!(!parser.done());
+    }
+
+    #[test]
+    fn the_final_drain_stops_when_no_input_is_ready() {
+        let mut parser = ProbeParser::new();
+        let mut buf = [0u8; 512];
+        let mut reads = 0u64;
+        drain_ready_input(&mut parser, &mut buf, Instant::now() + Duration::from_secs(60), |_| {
+            reads += 1;
+            0
+        });
+        assert_eq!(reads, 1);
+    }
 
     fn hints(term: &str, program: &str, colorterm: &str, locale: &str) -> EnvHints {
         EnvHints {
