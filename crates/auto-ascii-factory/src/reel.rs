@@ -5,7 +5,9 @@ use auto_ascii_eval::{EdgeScore, GrayImage};
 use crate::eval::{base64, html_escape};
 use crate::ffmpeg::BoxErr;
 
+const MIN_SIGN_OFF_ROWS: u32 = 4;
 pub const REEL_ROWS: u32 = 6;
+const _: () = assert!(REEL_ROWS >= MIN_SIGN_OFF_ROWS);
 pub const GIF_SECS: u32 = 10;
 pub const GIF_FPS: u32 = 10;
 

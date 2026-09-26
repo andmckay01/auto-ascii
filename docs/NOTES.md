@@ -36,7 +36,16 @@ The RGB24 luma path linearizes sRGB, applies Rec.709 weights in Q16, then
 looks up CIE L* in a 64 KiB table. [INTERFACES.md](INTERFACES.md) owns the
 numeric LUT contract. Luma smoothing is kept light because stronger temporal
 averaging ghosts motion; edge vectors use more averaging to reduce shimmer,
-with the player's dual-threshold gate following their decay.
+with the player's dual-threshold gate following their decay. Chroma EMA
+blends the full-precision channels after area averaging and before RGB565
+packing; smoothing packed 5/6/5-bit channels would quantize twice.
+
+### Letters highlight threshold
+
+The letters codec uses plain picture tone for `LETTERS_FILL_MIN`, rather
+than the ramp's contrast curve. Its value of 236 reserves solid fill for
+true highlights (a lit window or a white core) and keeps it off ordinary lit
+skin, where isolated blocks read as speckle rather than light.
 
 ## Technology
 
@@ -48,15 +57,25 @@ DejaVu's advance is 1233/2048 em (about 64 px there), and its ascent plus
 descent is (1901+483)/2048 em (about 123 px); the measured glyphs do not clip.
 Coverage is `sum(gray)/(255·64·128)`. The table is a committed artifact;
 `derive_coverage.py` reproduces it and needs ffmpeg plus the font, not a video
-corpus. The Menlo letters ramp has a measured dense endpoint of 0.196; the
-JetBrains Mono ASCII ramp normalizes Q8 ink to `@` at 0.283 cell coverage.
+corpus.
+
+The letters ramps were measured on Menlo and SF Mono as antialiased ink
+over the advance-scaled cell, following the font-table measurement method;
+each ramp is monotonic in both. Base glyphs were chosen for even top/bottom
+mass so the ramp reads as tone rather than shape. The Menlo letters ramp
+has a measured dense endpoint of 0.196.
+
+The ASCII ramp's CoreText measurement uses the advance × (ascent + descent)
+cell. It is strictly increasing on JetBrains Mono 2.304 Regular; Menlo
+inverts the near-ties `+`/`r` and `#`/`D`, each within 0.003 coverage.
+Its Q8 ink values normalize to `@` at 0.283 cell coverage.
 See [fonts/README.md](../crates/auto-ascii-core/fonts/README.md) for font-table
 generation and [INTERFACES.md](INTERFACES.md) for its design history.
 
 ### Unicode braille coordinates
 
-For U+2800, dot-mask bits 01/02/04 map to left rows 1/2/3,
-08/10/20 to right rows 1/2/3, and 40/80 to bottom left/right.
+For U+2800, dot-mask bits 0x01/0x02/0x04 map to left rows 1/2/3,
+0x08/0x10/0x20 to right rows 1/2/3, and 0x40/0x80 to bottom left/right.
 The compositor uses these masks for edges and texture, not solid fills;
 its repertoire and density constraints remain pinned in tests.
 
@@ -75,11 +94,18 @@ The terminal quirk table keys on queried identity, rather than `TERM`;
 xterm-256 palette, slots 0–15 vary with the user's theme; the 6³ cube
 (16–231) and grayscale ramp (232–255, values 8–238) are stable.
 
-### Signal-safe restoration
+The historical Windows rationale for passive-only probing was that the
+reply plumbing used POSIX termios/poll and conhost swallowed or mangled DCS
+queries. Windows Terminal supported truecolor without exporting
+`COLORTERM`, so `--tier truecolor` supplied the explicit override when
+passive hints could not establish it. The passive-only contract remains in
+[INTERFACES.md](INTERFACES.md).
 
-The process-wide restore path writes the alt-screen-leave, cursor-show and
-SGR-reset bytes and restores termios from SIGINT/SIGTERM, panic, atexit or
-normal shutdown. The signal path uses atomics, raw `write(2)` and
+### Unix signal-safe restoration
+
+On Unix, the process-wide restore path writes the alt-screen-leave,
+cursor-show and SGR-reset bytes and restores termios from SIGINT/SIGTERM,
+panic, atexit or normal shutdown. The signal path uses atomics, raw `write(2)` and
 `tcsetattr`, with no allocation or locks.
 
 ### Subprocess pipes and media geometry
@@ -97,8 +123,7 @@ therefore have to be applied before computing displayed canvas dimensions.
 The factory's small incremental SHA-256 follows FIPS 180-4; it hashes the
 eval cache key, determinism fingerprint and import provenance. The player's
 integer shadow lift uses `isqrt(n·255)` for a portable monotonic tone curve
-with fixed black and white endpoints. GIF delays count centiseconds, so the
-review reel cannot represent intervals below 10 ms.
+with fixed black and white endpoints.
 
 ### Overlay size rationale
 

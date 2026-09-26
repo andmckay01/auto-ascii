@@ -216,7 +216,8 @@ lists the feature tiers. There are three runnable examples:
 call), [`embedded-loop`](crates/auto-ascii/examples/embedded-loop.rs)
 (`RenderSession` in a hand-rolled loop with a mid-run resize) and
 [`headless-dump`](crates/auto-ascii/examples/headless-dump.rs) (frames to
-stdout as text). API docs: `cargo doc -p auto-ascii --open`.
+stdout as text). API contracts:
+[the public facade registry](docs/INTERFACES.md#auto-ascii--the-public-facade-m4-item-a-source-of-truth-for-the-api).
 
 ## Palettes
 
