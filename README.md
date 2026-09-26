@@ -120,13 +120,13 @@ on a dim tint of its cell's colour, so faces and midtones hold their shape;
 `ascii` is letters with only printable ASCII and no blocks in the picture
 (the controls overlay is the same as in the other codecs). Behind each
 character it paints a dim shade of the character's own colour, the way
-letters does, but only ever a shade: no channel above 96/255 (38%), at most
-0.375× the character's luminance, and a blank cell at most 24/255, so no cell
-ever reads as a pixel and no shade drowns its character. A shade too dark
-to see (below 8/255) is left out. On 256-colour terminals the shade is the
-nearest palette entry that keeps both rules and stays in the character's
-hue family: a grey, or for bright, saturated shades one of the six dark
-cube colours within 30° of the character's hue. 16-colour and mono
+letters does, with its exact current-tone tint curve and colour preserved.
+“Not a full pixel” means printable ASCII ink, unshaded spaces, background
+channels at most 154/255, and background linear luminance at most 0.375 times
+the foreground as sent. The character stays clearly brighter than its shade.
+Truecolor retains every nonblack shade, including dark colours below 8/255.
+On 256-colour terminals, safe gray and 0/95/135 cube entries must pass the
+same contrast cap and stay within the glyph's hue family. 16-colour and mono
 terminals get no shade (the terminal's own background shows through). Glyph selection is the
 same on every terminal tier; colours follow the terminal's capabilities.
 ASCII colour and shade follow current brightness independently of glyph

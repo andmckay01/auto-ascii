@@ -142,12 +142,13 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   On 16-color and mono it keeps a black background and the narrower deadband. `ascii` is
   letters without blocks: printable ASCII on every tier and palette, over a capped background
   shade on truecolor and 256-color. The shade is letters' tint of the current tone, held to
-  `backing_within_cap`: no channel above `SHADE_CEIL` (96), at most `SHADE_CONTRAST_Q8`/256
-  (0.375) of the glyph's relative luminance, a space no brighter than `SHADE_BLANK_CEIL` (24);
-  scaled down (hue kept) to fit, dropped if its brightest channel ends below `SHADE_FLOOR` (8).
-  Over current tone 128-192 a pale color's shade runs toward neutral at its own top channel.
+  `backing_within_cap`: no channel above `SHADE_CEIL` (154), at most `SHADE_CONTRAST_Q8`/256
+  (0.375) of the glyph's relative luminance, spaces unshaded (`SHADE_BLANK_CEIL` 0);
+  scaled down (hue kept) to fit, dropped if its brightest channel ends below `SHADE_FLOOR` (1).
+  The exact letters curve starts at tone 32 with gain 154/256; no neutralization.
+  Foreground uses letters' gain with uniform gamut limiting, preserving colour.
   Truecolor sends that shade; 256-color sends the nearest (OKLab, chroma plane weighted 2x) of
-  `SHADES_256` (grays 8-95 and the six level-95 cube colors) that passes the cap against the
+  `SHADES_256` (grays 8-148 and cube levels 0/95/135) that passes the cap against the
   quantized glyph color and is `in_hue_family` with it (gray, or within 30° of its hue).
   16-color and mono paint no shade. Unshaded cells are flagged `attrs::DEFAULT_BG`, so the painter emits SGR 49 (the
   terminal's own background); pads, gaps and everything else the player draws while `ascii` is

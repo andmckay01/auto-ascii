@@ -3008,3 +3008,17 @@ facade surface + this hidden module.)
     no cached fps/aspect/frame_count, one 16:9 degenerate-aspect fallback
     (in `resolve`); single-asset output is unchanged (goldens, parity and
     the render-session suite unblessed).
+
+
+ASCII warmth update (supersedes the historical shade constants above):
+`SHADE_CEIL=154`, `SHADE_BLANK_CEIL=0`, `SHADE_FLOOR=1`,
+`SHADE_CONTRAST_Q8=96`. “Not a full pixel” means printable ASCII 0x20–0x7E,
+no shaded spaces, bg channels <=154 and linear Rec.709 Y(bg)<=0.375*Y(fg)
+as sent. Truecolor scales the cell colour without neutralization, using
+letters' exact tone-32 curve and 154/256 gain. Foreground uses its 192..512
+Q8 gain with common-channel gamut limiting. Colours follow current tone;
+the bounded glyph settling fix remains. The 41 safe xterm candidates are
+15 ramp grays through 148 and 26 nonblack cube entries at levels 0/95/135;
+all must pass the existing quantized hue-family and luminance checks.
+16/mono remain unshaded. Floor 1 preserves dark colour continuity and omits
+exact black, which would add a redundant explicit-background SGR.
