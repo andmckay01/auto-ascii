@@ -1,43 +1,4 @@
-//! `ascii` — printable ASCII only, on the terminal's own background.
-//!
-//! The same drawing as [`letters`](super::letters) — a ramp ordered by
-//! measured ink, a top-/bottom-heavy variant where a cell's two halves
-//! disagree, directional strokes on edges — with every solid shape and every
-//! background taken away. On every tier and palette selection each glyph is
-//! printable ASCII `0x20..=0x7E` and each cell carries
-//! [`attrs::DEFAULT_BG`], so the painter never sets a background color and the
-//! terminal's own shows through (letterbox pads and composition gaps too, via
-//! [`GlyphCodec::PAD`]).
-//!
-//! Tone therefore lives in two places only: how much of the cell the glyph
-//! inks, and how bright its color is. The glyph comes from the held tone
-//! through an 18-step ramp that tops out in the densest glyphs (`#`, `D`,
-//! `8`, `B`, `@`, `@` kept for near-white). The color is the cell's chroma
-//! sample (gray fallback), hue kept, in three bands of the same held tone:
-//! below `LIT_FROM` its brightness `y` is lifted to `y·(1 + (1 − y)²)` (at
-//! most 4×) so a dim-but-lit area still reads without the shadows turning
-//! grey; from `LIT_FROM` to `LIT_FULL` it rises to full brightness, since a
-//! glyph inks at most about a quarter of its cell; from `HI_FROM` up it runs
-//! toward white (three quarters of the way at 255), so a highlight outshines
-//! the lit surface around it. Stability follows letters on untinted tiers:
-//! the displayed tone is held within a deadband of `9/32 × idx_hyst_q8` tone
-//! units, a lit cell is held down to half the black floor, and the
-//! top-/bottom-heavy choice reuses letters' dual threshold. The output is the
-//! same on every tier; the backend quantizes the color.
-//!
-//! **Ramp order.** Coverage was measured on JetBrains Mono 2.304 Regular
-//! (Ghostty's bundled default) as antialiased ink over the advance ×
-//! (ascent + descent) cell, rasterized with CoreText; [`ASCII_INK`] is that
-//! coverage relative to `@`. The ramp is strictly increasing there; Menlo
-//! swaps two near-ties (`+`/`r` and `#`/`D`, each within 0.003). The stroke
-//! glyphs `| / \ - _ = X` stay out of every ramp table, as in letters.
-//!
-//! **Design constants.** The glyph tables, [`ASCII_INK`] and the thresholds
-//! below (`BLACK_FLOOR`, `FLOOR_HOLD`, `TONE_TOP`, `GAIN_MAX_Q8`, `LIT_FROM`,
-//! `LIT_FULL`, `HI_FROM`, `HI_WHITE_Q8`, the curves
-//! in `value_table` and `step_table` and the deadband factor in `held_tone`)
-//! are this codec's DATA, pinned by its tests and goldens; what a viewer
-//! tunes stays in `ComposeParams`, exactly as for letters.
+//! Printable ASCII glyph codec on the terminal background.
 
 use crate::cell::{Cell, Rgb, attrs};
 use crate::codec::GlyphCodec;
@@ -47,23 +8,16 @@ use crate::hysteresis::{CellState, IDX_UNSET, cell_flags, edge_gate};
 use crate::orient::{bin_with_guard, coherence_at_least, debias};
 use crate::palette::{ASCII_HIGHLIGHT, GlyphClass, PaletteSet, subpos};
 
-/// Base ramp, darkest first — 18 steps of printable ASCII, strictly
-/// increasing in measured ink.
 pub const ASCII_RAMP: &[char] = &[
     ' ', '.', ':', ';', '+', 'r', 'c', 'x', 'n', 'o', 'e', 'a', 'S', '#', 'D', '8', 'B', '@',
 ];
 
-/// Ink coverage of each [`ASCII_RAMP`] step in Q8 of the densest glyph's
-/// (JetBrains Mono: `@` inks 0.283 of its cell).
 pub const ASCII_INK: &[u8] = &[0, 27, 50, 65, 90, 107, 133, 137, 142, 150, 158, 167, 177, 190, 196, 212, 218, 255];
 
-/// Ink-in-the-top-half variant of each [`ASCII_RAMP`] step, used when the
-/// top tap is decisively brighter.
 pub const ASCII_TOP: &[char] = &[
     ' ', '\'', '\'', '\'', '"', '"', '"', '"', 'T', 'T', 'Y', 'Y', 'F', '7', '7', 'P', 'P', 'M',
 ];
 
-/// Ink-in-the-bottom-half variant of each [`ASCII_RAMP`] step.
 pub const ASCII_BOTTOM: &[char] = &[
     ' ', '.', '.', ',', ',', ',', 'v', 'v', 'u', 'u', 'u', 'a', 'a', 'a', 'w', 'w', 'g', 'g',
 ];
@@ -155,7 +109,6 @@ fn held_tone(n: u8, prev: u8, hyst_q8: u8) -> u8 {
     h.min(IDX_UNSET - 1)
 }
 
-/// The `ascii` codec. See the module docs.
 pub struct Ascii;
 
 impl GlyphCodec for Ascii {
@@ -163,8 +116,6 @@ impl GlyphCodec for Ascii {
 
     const PAD: Cell = put(' ', Rgb::WHITE);
 
-    /// Layer priority mirrors letters: edge → deep shadow → highlight → half
-    /// variant (STRUCTURE) → base ramp.
     #[inline]
     fn cell(
         inp: &CellInputs,
@@ -238,7 +189,6 @@ impl GlyphCodec for Ascii {
     }
 }
 
-/// Every glyph `ascii` can emit, on any tier — the repertoire the tests pin.
 pub fn ascii_glyphs() -> Vec<char> {
     let mut out: Vec<char> = ASCII_RAMP
         .iter()

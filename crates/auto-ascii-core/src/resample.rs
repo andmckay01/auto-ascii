@@ -1,38 +1,12 @@
-//! Separable box resampler with precomputed Q8 tap tables.
-//!
-//! Planes live at 480×270 u8 (chroma 240×135). Per output cell we box-average
-//! a fractional source rect, done as two 1-D passes: H-pass into a shared
-//! `u16` buffer, V-pass with `u32` accumulator, `>> 16` out. No floats in the
-//! hot loop; fixed trip counts autovectorize under `-O3`.
-//!
-//! Tables are rebuilt on resize only (~50 µs, < 4 KB). Upscale degrades
-//! naturally to 1–2 linear taps (bilinear); same code, no branch.
-//!
-//! Table construction is pure integer rational arithmetic (no floats anywhere
-//! in this module), so tap tables and output are byte-deterministic across
-//! platforms — a golden-test requirement.
-//!
-//! Luma is resampled at `Vc × 2·Vr` (half-block fills / subposition glyphs)
-//! through this same code path.
+//! Separable box resampling with precomputed Q8 tap tables.
 
-/// Tap table entry for one output coordinate along one axis.
-///
-/// Q8 fixed point: the `ntaps` weights sum to 256. Weights live in a shared
-/// pool inside [`Resampler`] and `w_off` indexes it, so `Tap1D` stays a
-/// fixed-size POD while still covering extreme downscales: 480 source columns
-/// onto a 1-col viewport needs 480 taps in one run, hence `ntaps: u16`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tap1D {
-    /// First source index covered by this output sample.
     pub src_start: u16,
-    /// Number of consecutive source samples (≥ 1).
     pub ntaps: u16,
-    /// Offset of this entry's `ntaps` Q8 weights in the resampler's weight pool.
     pub w_off: u32,
 }
 
-/// Precomputed separable resampler for one (src, dst) dimension pair.
-/// Build once per resize per plane geometry; `apply` per frame.
 #[derive(Clone, Debug)]
 pub struct Resampler {
     taps_x: Vec<Tap1D>,
@@ -87,11 +61,6 @@ fn build_axis(src: u16, dst: u16, taps: &mut Vec<Tap1D>, weights: &mut Vec<u16>)
 }
 
 impl Resampler {
-    /// Build tap tables mapping a `src_w × src_h` u8 plane onto `dst_w × dst_h`.
-    ///
-    /// Called on resize only; ~50 µs, < 4 KB. All dims are clamped ≥ 1. Box
-    /// weights are exact Q8 (each axis run sums to 256), so output is
-    /// deterministic across platforms — a golden-test requirement.
     pub fn build(src_w: u16, src_h: u16, dst_w: u16, dst_h: u16) -> Resampler {
         let (src_w, src_h) = (src_w.max(1), src_h.max(1));
         let (dst_w, dst_h) = (dst_w.max(1), dst_h.max(1));

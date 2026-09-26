@@ -1,32 +1,12 @@
-//! Orientation math: direction bins from the doubled-angle field and the
-//! coherence test — sign/comparison only, **no atan2, no floats**.
-//!
-//! The asset stores `Ex = mag·cos 2θg`, `Ey = mag·sin 2θg` as bias-128 u8 at
-//! half scale (`ex = 128 + round(mag·cos 2θg / 2)` so ±mag fits the byte;
-//! contract shared with `auto-ascii-factory`'s `features.rs`/`edges.rs`), where
-//! θg is the **gradient** direction in image coordinates (x right, **y down**).
-//! The functions here operate on the edge-**tangent** doubled vector — the
-//! gradient one negated (doubling turns the 90° tangent rotation into a sign
-//! flip); each glyph codec performs that negation when debiasing.
-//! π-periodicity is exactly why the doubled-angle form resamples linearly.
-//!
-//! Bins: 2θ quantized to 8 octants by sign/|x|-vs-|y| comparisons → 8 edge
-//! orientation bins of 22.5° over θ ∈ [0°, 180°). Bin switching carries an
-//! 8° (in θ) hysteresis guard implemented with two precomputed Q14 boundary
-//! vectors per bin and integer cross products.
+//! Doubled-angle orientation bins, hysteresis guards and coherence math.
 
-/// Sentinel for "no previous bin" (fresh cell / after scene-cut reset).
 pub const BIN_UNSET: u8 = 0xFF;
 
-/// Debias a stored Ex/Ey byte to a signed component.
 #[inline]
 pub fn debias(v: u8) -> i32 {
     v as i32 - 128
 }
 
-/// Octant of the doubled angle: bin k ⇔ 2θ ∈ [45k°, 45(k+1)°), i.e. edge
-/// orientation θ ∈ [22.5k°, 22.5(k+1)°). Pure sign/comparison tests.
-/// `(0, 0)` maps to bin 0 (callers gate on coherence first).
 #[inline]
 pub fn octant_bin(dx: i32, dy: i32) -> u8 {
     let (ax, ay) = (dx.abs(), dy.abs());

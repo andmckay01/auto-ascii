@@ -1,13 +1,4 @@
-//! Layer compositor.
-//!
-//! [`compose_luma`] is the base-ramp-only path (L0 from a luma plane).
-//! [`compose_frame`]/[`compose_cell`] are the three-layer compositor: base
-//! luminance, edge/contour, highlight — **priority/override composition, one
-//! glyph per cell, never blended**. No dithering. The per-cell mapping itself
-//! is the [`pixels`](crate::codec::pixels) glyph codec; this module owns the
-//! frame loop every codec runs ([`crate::codec`]). Nothing here allocates; all
-//! temporal state lives in [`HysteresisState`], (re)allocated only via its
-//! `new`/`resize`.
+//! Luma and glyph-codec frame composition with per-cell layer metadata.
 
 use crate::cell::{Cell, Rgb};
 use crate::codec::GlyphCodec;
@@ -18,23 +9,6 @@ use crate::palette::PaletteSet;
 use crate::ramp::ramp_glyph;
 use crate::viewport::Viewport;
 
-/// Fill `out` from a resampled luma plane, letterboxed per `vp`.
-///
-/// * `luma` — normalized luma (p2/p98 levels already applied), row-major
-///   `vp.cols × vp.rows`; extra trailing bytes are ignored so a shared
-///   oversized scratch buffer is fine.
-/// * `ramp` — a base ramp (see [`crate::ramp::base_ramp_for_cols`]).
-/// * `out` — must already be sized to the full terminal grid
-///   (`vp.cols + pad_left + pad_right` × `vp.rows + pad_top + pad_bottom`);
-///   sizing happens in `Backend::resize`, the only hot-path allocation point
-///   — this function never allocates.
-///
-/// Pads are filled with [`Cell::BLANK`] (space on black) every call, so a grid
-/// reused across resizes needs no separate clear.
-///
-/// # Panics
-/// If `out` does not match the viewport's terminal dimensions, if `luma` is
-/// shorter than `vp.cols × vp.rows`, or if `ramp` is empty.
 pub fn compose_luma(luma: &[u8], vp: &Viewport, ramp: &[char], out: &mut Grid<Cell>) {
     let vc = vp.cols as usize;
     let vr = vp.rows as usize;
@@ -63,102 +37,43 @@ pub fn compose_luma(luma: &[u8], vp: &Viewport, ramp: &[char], out: &mut Grid<Ce
     }
 }
 
-/// H-plane flag bits (bit0 highlight, bit1 deep shadow).
 pub mod h_flags {
     pub const HIGHLIGHT: u8 = 1;
     pub const DEEP_SHADOW: u8 = 1 << 1;
 }
 
 pub mod layer {
-    /// L0 base ramp won (also letterbox pads and Y-only back-compat cells).
     pub const BASE: u8 = 0;
-    /// L1 edge/contour won (directional, junction or braille edge glyph).
     pub const EDGE: u8 = 1;
-    /// L2 highlight won (H bit0 gate).
     pub const HIGHLIGHT: u8 = 2;
-    /// Deep-shadow clamp won (H bit1 → darkest step).
     pub const SHADOW: u8 = 3;
-    /// Sub-cell vertical structure won (half-block / quadrant / `" _`
-    /// subposition — read from the Vc×2Vr luma pair, not an edge-layer
-    /// decision).
     pub const STRUCTURE: u8 = 4;
 }
 
-/// Per-cell compositor inputs: the two vertical luma taps from the Vc×2Vr
-/// plane, edge magnitude + doubled-angle orientation, H flags, and the cell's
-/// chroma sample (`None` = gray path: mono tier or Y-only asset).
 #[derive(Clone, Copy, Debug)]
 pub struct CellInputs {
     pub luma_top: u8,
     pub luma_bottom: u8,
-    /// Resampled edge magnitude (E plane, unthinned).
     pub e: u8,
-    /// Doubled-angle components, bias-128 half scale (see `orient.rs`).
     pub ex: u8,
     pub ey: u8,
-    /// H flags (see [`h_flags`]).
     pub h: u8,
     pub chroma: Option<Rgb>,
 }
 
-/// Compositor tunables, mirrored field for field by the `[compose]` table of
-/// `params.toml`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ComposeParams {
-    /// Edge gate on-threshold (strict `e > T_on`).
     pub edge_t_on: u8,
-    /// Edge gate hold-threshold (strict `e > T_off` while `was_edge`).
     pub edge_t_off: u8,
-    /// Coherence below this (Q8) suppresses the edge layer entirely.
     pub coh_min_q8: u8,
-    /// Coherence at/above this (Q8) draws directional glyphs; the band
-    /// between `coh_min_q8` and this draws the junction glyph (bins conflict
-    /// — cancelled doubled-angle vectors).
     pub coh_dir_q8: u8,
-    /// Highlight gate: overrides only while `idx < len·hi_cut_q8/256` —
-    /// highlights extend range on dark-mid cells only.
     pub hi_cut_q8: u8,
-    /// Edge suppression on near-white base (the edge wins only if gated on
-    /// and the base isn't near-white): suppressed when `(idx+1)·256/len`
-    /// exceeds this. 240 = exactly the top ramp step at every shipped length.
     pub edge_white_cut_q8: u8,
-    /// `|top − bottom|` at/above this is "large": half-block / subposition /
-    /// quadrant paths and the edge top/bottom subposition.
     pub halfblock_min_delta: u8,
-    /// Edge magnitude at/above this upgrades an ASCII junction `+` to `#`.
     pub edge_strong: u8,
-    /// Quadrant-refinement **noise floor**, arm threshold (strict
-    /// `e > quad_e_on`). Coherence divides by `max(e, 1)`, so at a resampled
-    /// E of 0–1 a 1-LSB resample-noise `(Ex, Ey)` vector reads as "perfectly
-    /// coherent" and would steer the cell to a noise-driven corner quadrant.
-    /// This is deliberately a *noise* floor and not the edge gate's hold
-    /// threshold: resampled E is heavily diluted by the box average, so a
-    /// genuine fine diagonal — source E ≈ 100 across one or two pixels of a
-    /// 3×6 source box — lands near cell E 6–11, exactly the band quadrants
-    /// exist to serve.
     pub quad_e_on: u8,
-    /// Quadrant-refinement noise floor, hold threshold (strict
-    /// `e > quad_e_off` while the gate was on last frame). The pair is a
-    /// Canny-style dual threshold for the same reason the edge gate is one:
-    /// a single hard threshold on this noisy plane lets a cell dithering
-    /// across it alternate quadrant/half-block every frame.
     pub quad_e_off: u8,
-    /// Ramp-index hysteresis width in Q8 fractions of one step. The nominal
-    /// width is "boundary ± 0.35·step" = 90 ([`crate::IDX_HYST_Q8`]); wider =
-    /// stickier cells (less flicker), narrower = more responsive.
     pub idx_hyst_q8: u8,
-    /// Shadow lift: how far to bend the tone curve toward the shadows when the
-    /// NORM levels LUT is built. `0` = off (the plain linear per-shot window);
-    /// `255` = a full square-root curve. See
-    /// `auto_ascii::pipeline::build_levels_lut_lifted` for the curve.
-    ///
-    /// The per-shot NORM window (p2→0, p98→255) is *linear*, so it cannot move
-    /// a dark subject relative to a bright one, and on an 8–16 step glyph ramp
-    /// a subject below the first step renders as *the same glyph as black*.
-    /// Lifting buys it a step. Applied to the 256-entry LUT, so it costs
-    /// nothing per pixel and rides on top of the per-shot normalization.
-    /// Endpoints stay pinned (0→0, 255→255): this redistributes the middle, it
-    /// does not wash the picture out.
     pub shadow_lift: u8,
 }
 
@@ -196,15 +111,6 @@ pub(crate) fn shade(c: Rgb, l: u8, m: u8) -> Rgb {
     Rgb::new(s(c.r), s(c.g), s(c.b))
 }
 
-/// Per-cell selection — the [`pixels`](crate::codec::pixels) codec.
-/// `(col, row)` index into `state` (viewport cells).
-///
-/// Layer priority (override, never blend): edge (gated + coherent, base not
-/// near-white) → deep-shadow clamp (H bit1 → darkest step) → highlight
-/// (H bit0, `idx < len·hi_cut_q8/256`) → half-block/quadrant (unicode) or
-/// `" - _` subposition (ascii) when `|top−bottom|` is large → base ramp.
-/// Foreground is always the chroma sample (gray fallback); the backend
-/// quantizes.
 pub fn compose_cell(
     inp: &CellInputs,
     lut: &[u8; 256],
@@ -217,9 +123,6 @@ pub fn compose_cell(
     compose_cell_layer(inp, lut, set, params, state, col, row).0
 }
 
-/// [`compose_cell`] plus the winning [`layer`] id (render metadata — the
-/// eval harness's edge-F1 prediction side). Same selection, same state
-/// mutations; `compose_cell` is this function with the tag dropped.
 pub fn compose_cell_layer(
     inp: &CellInputs,
     lut: &[u8; 256],
@@ -232,31 +135,16 @@ pub fn compose_cell_layer(
     Pixels::cell(inp, lut, set, params, state.cell_mut(col, row))
 }
 
-/// Resampled feature planes for one frame, all at viewport resolution
-/// (`luma2` at Vc×2Vr, everything else Vc×Vr; oversized buffers are fine).
-///
-/// `None` planes auto-disable their layer — a Y(+C)-only asset composes
-/// through the exact base path with no edge/highlight leakage (detecting
-/// which planes an asset carries is the caller's job).
 #[derive(Clone, Copy, Debug)]
 pub struct FramePlanes<'a> {
-    /// Luma at Vc × 2Vr (two vertical taps per cell).
     pub luma2: &'a [u8],
     pub e: Option<&'a [u8]>,
     pub ex: Option<&'a [u8]>,
     pub ey: Option<&'a [u8]>,
     pub h: Option<&'a [u8]>,
-    /// Chroma resampled to cell resolution, split channels (r, g, b).
     pub chroma: Option<(&'a [u8], &'a [u8], &'a [u8])>,
 }
 
-/// Full-frame composition: [`compose_cell`] per viewport cell, [`Cell::BLANK`]
-/// pads. The edge layer runs only when E, Ex AND Ey are all present. Never
-/// allocates.
-///
-/// # Panics
-/// If `out` doesn't match the viewport's terminal dimensions, if `state`
-/// isn't sized `vp.cols × vp.rows`, or if any provided plane is short.
 pub fn compose_frame(
     planes: &FramePlanes<'_>,
     vp: &Viewport,
@@ -269,15 +157,6 @@ pub fn compose_frame(
     frame_impl::<Pixels>(planes, vp, lut, set, params, state, out, None);
 }
 
-/// [`compose_frame`] that also records the winning [`layer`] id per cell
-/// into `mask` — the **LayerMask** render metadata. `mask` must match
-/// `out`'s full terminal dimensions; pads are [`layer::BASE`]. Identical
-/// cell output and state mutations to [`compose_frame`]; the eval driver
-/// crops the viewport and selects [`layer::EDGE`] for the edge-F1
-/// prediction side.
-///
-/// # Panics
-/// As [`compose_frame`], plus a `mask`/`out` dimension mismatch.
 #[allow(clippy::too_many_arguments)]
 pub fn compose_frame_masked(
     planes: &FramePlanes<'_>,

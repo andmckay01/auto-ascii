@@ -1,10 +1,4 @@
-//! `pixels` — the three-layer compositor as a codec (the default).
-//!
-//! Base ramp from the tier's palette, the directional edge layer, deep-shadow
-//! clamp, highlights, and — on Unicode tiers — half-block `▀▄` (fg, bg) pairs
-//! and quadrant refinement, which is what makes it read as a low-resolution
-//! picture. See [`crate::compose::compose_cell`] for the layer-priority
-//! contract.
+//! Pixels glyph codec and per-cell layer selection.
 
 use crate::cell::{Cell, Rgb};
 use crate::codec::GlyphCodec;
@@ -16,18 +10,11 @@ use crate::palette::{
     subpos,
 };
 
-/// The `pixels` codec. See the module docs.
 pub struct Pixels;
 
 impl GlyphCodec for Pixels {
     const NAME: &'static str = "pixels";
 
-    /// Per-cell selection. Layer priority (override, never blend): edge
-    /// (gated + coherent, base not near-white) → deep-shadow clamp (H bit1 →
-    /// darkest step) → highlight (H bit0, `idx < len·hi_cut_q8/256`) →
-    /// half-block/quadrant (unicode) or `" - _` subposition (ascii) when
-    /// `|top−bottom|` is large → base ramp. Foreground is always the chroma
-    /// sample (gray fallback); the backend quantizes.
     #[inline]
     fn cell(
         inp: &CellInputs,

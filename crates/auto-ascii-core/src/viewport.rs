@@ -1,36 +1,13 @@
-//! Viewport / letterbox math.
-//!
-//! Inputs: terminal `cols × rows` and cell aspect `a = cell_h_px / cell_w_px`
-//! (from `CSI 16 t` or `TIOCGWINSZ` px fields; fallback 2.0; re-queried on every
-//! resize since font zoom changes it). Target is the ASSET's picture aspect
-//! `P = aspect_num / aspect_den` from the ASCI header (16:9 for all production
-//! assets), so the column/row ratio is `R = P · a` (P = 16/9, a = 2 →
-//! R ≈ 3.5556). [`compute_viewport`] is the 16:9 convenience wrapper;
-//! [`compute_viewport_for`] takes the header aspect.
-//!
-//! Worked examples at 16:9 (frozen as unit tests): 80×24 → 80×23;
-//! 213×58 → 206×58 (pads L3/R4/T0/B0); 320×90 → exact fit.
+//! Asset-aspect viewport fitting and centered letterbox padding.
 
-/// Fallback cell aspect when the terminal reports no pixel size.
 pub const DEFAULT_CELL_ASPECT: f64 = 2.0;
 
-/// Below this terminal size the player renders a centered "enlarge terminal"
-/// card instead of video: `compute_viewport` returns `None`.
 pub const MIN_COLS: u16 = 32;
-/// See [`MIN_COLS`].
 pub const MIN_ROWS: u16 = 9;
 
-/// A letterboxed viewport inside the terminal grid, targeting the asset's
-/// picture aspect (16:9 for production assets).
-///
-/// Invariants: `cols + pad_left + pad_right == term cols`,
-/// `rows + pad_top + pad_bottom == term rows`, pads symmetric ±1 with the
-/// remainder on the right/bottom, `cols ≥ 1`, `rows ≥ 1`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Viewport {
-    /// Video area width in cells (`Vc`).
     pub cols: u16,
-    /// Video area height in cells (`Vr`).
     pub rows: u16,
     pub pad_left: u16,
     pub pad_right: u16,
@@ -38,9 +15,6 @@ pub struct Viewport {
     pub pad_bottom: u16,
 }
 
-/// Compute the letterboxed **16:9** viewport for a `term_cols × term_rows`
-/// terminal with cell aspect `cell_aspect` — the convenience wrapper over
-/// [`compute_viewport_for`] for the production 16:9 aspect.
 pub fn compute_viewport(term_cols: u16, term_rows: u16, cell_aspect: f64) -> Option<Viewport> {
     compute_viewport_for(term_cols, term_rows, cell_aspect, 16, 9)
 }
