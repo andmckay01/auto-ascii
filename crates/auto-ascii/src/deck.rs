@@ -250,7 +250,7 @@ impl ClipDeck {
             }
             backend.invalidate();
         }
-        if drained.jump_digit.is_some() || drained.seek_steps != 0 {
+        if drained.requests_temporal_reset() {
             self.reset_active();
         }
         drained
@@ -335,7 +335,7 @@ impl ClipDeck {
         self.cfg.glyph_tier = glyph_tier;
         for (idx, player) in self.players.iter_mut().enumerate() {
             if let Some(p) = player {
-                p.set_glyph_tier(glyph_tier);
+                p.set_glyph_tier_for_next_reflow(glyph_tier);
                 p.reset_temporal_state();
                 self.dims[idx] = None;
             }
@@ -347,7 +347,7 @@ impl ClipDeck {
         self.cfg.cell_aspect = cell_aspect;
         for (idx, player) in self.players.iter_mut().enumerate() {
             if let Some(p) = player {
-                p.set_cell_aspect(cell_aspect);
+                p.set_cell_aspect_for_next_reflow(cell_aspect);
                 self.dims[idx] = None;
             }
         }

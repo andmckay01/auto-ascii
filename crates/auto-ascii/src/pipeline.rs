@@ -272,16 +272,7 @@ pub struct StageNs {
 /// Result of one event-queue drain.
 pub struct Drained {
     pub quit: bool,
-    /// Digit key 0–9 → jump to that ×10% of the asset (interactive seek).
-    /// When set, `drain_events` has ALREADY reset all per-cell hysteresis
-    /// state: a seek is a temporal discontinuity, so the caller just
-    /// repoints its clock and renders the landing frame.
     pub jump_digit: Option<u8>,
-    /// Net arrow-key scrub steps this drain: each `Right` is +1, each
-    /// `Left` −1; the caller converts steps to ±5 s
-    /// (`auto_ascii::SCRUB_STEP_SECS`) of asset time and repoints its clock.
-    /// When nonzero, hysteresis state has ALREADY been reset (same temporal-
-    /// discontinuity rule as `jump_digit`).
     pub seek_steps: i32,
     /// `d` presses this drain — each advances the live-dial selection by one
     /// (wrapping). Dials retune the renderer during playback; see
@@ -308,6 +299,12 @@ pub struct Drained {
     /// `s` pressed this drain — the caller saves the current dials and codec
     /// as this video's settings. Collapsed to a flag: a held key is one save.
     pub save: bool,
+}
+
+impl Drained {
+    pub fn requests_temporal_reset(&self) -> bool {
+        self.jump_digit.is_some() || self.seek_steps != 0
+    }
 }
 
 /// What the progress overlay prints instead of this clip's own numbers
@@ -397,9 +394,6 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
     (drained, resize)
 }
 
-/// The frame pipeline: decode → resample → NORM levels → compose into a
-/// term-sized grid. All buffers are (re)allocated only in `new`/`reflow` —
-/// the hot loop is allocation-free.
 pub struct Player<'a> {
     reader: AsciiReader<'a>,
     frame_count: u32,
@@ -728,7 +722,7 @@ impl<'a> Player<'a> {
         if let Some((c, r)) = resize {
             self.reflow(backend, c, r);
         }
-        if drained.jump_digit.is_some() || drained.seek_steps != 0 {
+        if drained.requests_temporal_reset() {
             self.state.reset();
         }
         drained
@@ -991,16 +985,11 @@ impl<'a> Player<'a> {
         self.state.reset();
     }
 
-    /// Re-key palette selection (the charset-tier axis). Takes effect
-    /// at the next [`reflow_grid`](Player::reflow_grid)/[`reflow`](Player::reflow)
-    /// — palette objects are (re)built there, keyed on the viewport density.
-    pub fn set_glyph_tier(&mut self, glyph_tier: GlyphTier) {
+    pub fn set_glyph_tier_for_next_reflow(&mut self, glyph_tier: GlyphTier) {
         self.glyph_tier = glyph_tier;
     }
 
-    /// Override the cell aspect (`cell_h_px / cell_w_px`). Takes effect
-    /// at the next reflow (viewport math is recomputed there).
-    pub fn set_cell_aspect(&mut self, cell_aspect: f64) {
+    pub fn set_cell_aspect_for_next_reflow(&mut self, cell_aspect: f64) {
         self.cell_aspect = cell_aspect;
     }
 }

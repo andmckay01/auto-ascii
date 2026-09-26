@@ -1090,8 +1090,11 @@ resize/invalidate) and `render_grid(frame_idx)` (everything but present);
 calls (call order and bytes IDENTICAL to M3 — verified by the pre/post
 sim-dump sha256 pin at M4). Also new: `reset_temporal_state()` (the §3.5
 discontinuity reset, used by RenderSession backward jumps),
-`set_glyph_tier(GlyphTier)` + `set_cell_aspect(f64)` (take effect at next
-reflow; RenderSession setters).
+`set_glyph_tier_for_next_reflow(GlyphTier)` +
+`set_cell_aspect_for_next_reflow(f64)` (take effect at next reflow;
+RenderSession setters; renamed from `set_glyph_tier`/`set_cell_aspect` by
+the comment cleanup). A warmed sequential `render_grid` with overlays off
+is allocation-free for every codec (`tests/render_alloc.rs`).
 
 ```rust
 // pipeline.rs — M3: the full §3.5 three-layer path (integrator; note 20).
@@ -1215,7 +1218,8 @@ pub fn drain_backend_events<B: Backend>(&mut B) -> (Drained, Option<(u16,u16)>);
 ```
 
 (M4 additions to this registry — `reflow_grid`/`render_grid`/
-`reset_temporal_state`/`set_glyph_tier`/`set_cell_aspect` — are described in
+`reset_temporal_state`/`set_glyph_tier_for_next_reflow`/
+`set_cell_aspect_for_next_reflow` — are described in
 the facade section above. Nothing else in the crate is `pub` outside the
 facade surface + this hidden module.)
 

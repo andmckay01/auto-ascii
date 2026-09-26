@@ -57,9 +57,6 @@ fn without_comment(line: &str) -> &str {
     line
 }
 
-/// What one video's settings file holds. `compose` carries the dial fields
-/// (see [`Dial::param_key`]); its other fields are always the defaults — they
-/// are not viewer-adjustable, so they are neither written nor read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VideoSettings {
     pub compose: ComposeParams,
@@ -72,8 +69,14 @@ impl VideoSettings {
         asset.with_extension(EXTENSION)
     }
 
-    /// Serialize — every dial and the codec, one line each, after a header
-    /// comment saying what the file is.
+    pub fn persisted(&self) -> VideoSettings {
+        let mut compose = ComposeParams::default();
+        for dial in Dial::ALL {
+            dial.set_param(&mut compose, dial.raw_param_value(&self.compose));
+        }
+        VideoSettings { compose, codec: self.codec }
+    }
+
     pub fn to_toml(&self) -> String {
         let mut out = String::from(
             "# auto-ascii player settings for this video, saved with `s` during\n\
@@ -82,7 +85,7 @@ impl VideoSettings {
         );
         let _ = writeln!(out, "codec = \"{}\"", self.codec.name());
         for dial in Dial::ALL {
-            let _ = writeln!(out, "{} = {}", dial.param_key(), dial.param(&self.compose));
+            let _ = writeln!(out, "{} = {}", dial.param_key(), dial.raw_param_value(&self.compose));
         }
         out
     }
@@ -169,6 +172,20 @@ mod tests {
         assert_eq!(VideoSettings::parse(&s.to_toml()), Ok(s));
         let d = VideoSettings::default();
         assert_eq!(VideoSettings::parse(&d.to_toml()), Ok(d));
+    }
+
+    #[test]
+    fn a_round_trip_keeps_exactly_the_persisted_projection() {
+        let mut s = turned();
+        s.compose.edge_t_off = s.compose.edge_t_off.wrapping_add(1);
+        s.compose.coh_min_q8 = s.compose.coh_min_q8.wrapping_add(7);
+        let persisted = s.persisted();
+        assert_eq!(s.to_toml(), persisted.to_toml(), "non-dial fields are not written");
+        assert_eq!(VideoSettings::parse(&s.to_toml()), Ok(persisted));
+        let dials = |v: &VideoSettings| Dial::ALL.map(|d| d.param(&v.compose));
+        assert_eq!(dials(&persisted), dials(&s));
+        assert_eq!(persisted, turned().persisted(), "only non-dial fields differed");
+        assert_eq!(turned().persisted(), turned(), "dial-only settings are their own projection");
     }
 
     #[test]

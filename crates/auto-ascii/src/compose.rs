@@ -24,10 +24,9 @@ use memmap2::Mmap;
 use crate::composition::Composition;
 use crate::error::Error;
 
-/// Encode knobs for [`export`]. The defaults mirror the factory's
-/// committed `params.toml` `[build]` section, so a flattened composition is
-/// encoded like any asset the factory writes. (`auto-ascii-format`'s own
-/// `WriterOptions::default()` differs: it stays at zstd-19.)
+const FACTORY_PARAMS_KEYFRAME_IVL: u8 = 60;
+const FACTORY_PARAMS_ZSTD_LEVEL: i32 = 15;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExportOptions {
     /// Keyframe cadence for the temporal-delta filter (params.toml
@@ -40,7 +39,10 @@ pub struct ExportOptions {
 
 impl Default for ExportOptions {
     fn default() -> ExportOptions {
-        ExportOptions { keyframe_ivl: 60, zstd_level: 15 }
+        ExportOptions {
+            keyframe_ivl: FACTORY_PARAMS_KEYFRAME_IVL,
+            zstd_level: FACTORY_PARAMS_ZSTD_LEVEL,
+        }
     }
 }
 

@@ -895,6 +895,11 @@ mod tests {
     }
 
     #[test]
+    fn facade_export_defaults_match_the_committed_factory_params() {
+        assert_eq!(ExportOptions::default(), export_options().unwrap());
+    }
+
+    #[test]
     fn number_formatting() {
         assert_eq!(fps_text(30.0), "30");
         assert_eq!(fps_text(29.97), "29.970");

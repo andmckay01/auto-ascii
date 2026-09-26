@@ -89,9 +89,11 @@ impl Dial {
         }
     }
 
-    /// Current on-screen value (already un-inverted where the underlying
-    /// field runs the other way).
     pub fn get(self, p: &ComposeParams) -> u8 {
+        self.display_value(p)
+    }
+
+    pub(crate) fn display_value(self, p: &ComposeParams) -> u8 {
         match self {
             Dial::ShadowLift => p.shadow_lift,
             Dial::EdgeStrength => self.max().saturating_sub(p.edge_t_on),
@@ -109,9 +111,11 @@ impl Dial {
         }
     }
 
-    /// The raw field value (not inverted — [`get`](Dial::get) is the
-    /// on-screen reading).
     pub fn param(self, p: &ComposeParams) -> u8 {
+        self.raw_param_value(p)
+    }
+
+    pub(crate) fn raw_param_value(self, p: &ComposeParams) -> u8 {
         match self {
             Dial::ShadowLift => p.shadow_lift,
             Dial::EdgeStrength => p.edge_t_on,
@@ -130,16 +134,10 @@ impl Dial {
         }
     }
 
-    /// Apply a signed number of steps, saturating at the dial's ends.
-    ///
-    /// The top is a stop, not a detent: 255 is no multiple of a 16 step, so
-    /// counting down from it by `step()` would leave the grid the dial
-    /// climbed on, and up N / down N would miss the start by one (255 → 239,
-    /// not 240). A press away from the top counts from the detent just above
-    /// `max()` instead, so every walk retraces its own steps.
     pub fn turn(self, p: &mut ComposeParams, steps: i32) {
-        let (cur, step, max) = (i32::from(self.get(p)), self.step(), i32::from(self.max()));
-        let from = if cur == max { (max + step - 1) / step * step } else { cur };
+        let (cur, step, max) =
+            (i32::from(self.display_value(p)), self.step(), i32::from(self.max()));
+        let from = turn_origin_treating_the_top_as_a_stop(cur, step, max);
         let next = (from + steps * step).clamp(0, max) as u8;
         match self {
             Dial::ShadowLift => p.shadow_lift = next,
@@ -147,6 +145,14 @@ impl Dial {
             Dial::Hysteresis => p.idx_hyst_q8 = next,
         }
     }
+}
+
+fn turn_origin_treating_the_top_as_a_stop(cur: i32, step: i32, max: i32) -> i32 {
+    if cur == max { first_detent_at_or_above(max, step) } else { cur }
+}
+
+fn first_detent_at_or_above(value: i32, step: i32) -> i32 {
+    (value + step - 1) / step * step
 }
 
 fn dial_after_cycle(idx: usize, presses: u32, readout_up: bool) -> usize {
@@ -239,8 +245,8 @@ impl LiveSettings {
     }
 
     fn status(&self) -> &'static str {
-        let current = self.current();
-        self.note.unwrap_or(match self.saved {
+        let current = self.current().persisted();
+        self.note.unwrap_or(match self.saved.map(|s| s.persisted()) {
             Some(s) if s == current => "saved",
             None if current == VideoSettings::default() => "default",
             _ => "s to save",
@@ -725,7 +731,7 @@ impl Player {
                     live.turn(dial, drained.dial_delta);
                     deck.set_compose_params(live.compose);
                 }
-                deck.set_dial_overlay(Some((dial.label(), dial.get(&live.compose), dial.max())));
+                deck.set_dial_overlay(Some((dial.label(), dial.display_value(&live.compose), dial.max())));
                 dial_until = Some(Instant::now() + DIAL_OVERLAY_HIDE_AFTER);
             } else if dial_until.is_some_and(|t| Instant::now() >= t) {
                 deck.set_dial_overlay(None);
@@ -775,7 +781,7 @@ impl Player {
                 deck.set_codec(live.codec);
                 if dial_until.is_some() {
                     let dial = Dial::ALL[dial_idx];
-                    deck.set_dial_overlay(Some((dial.label(), dial.get(&live.compose), dial.max())));
+                    deck.set_dial_overlay(Some((dial.label(), dial.display_value(&live.compose), dial.max())));
                 }
             }
             live.write_info(&mut info);
@@ -1152,6 +1158,10 @@ mod tests {
         }
         live.save(&b);
         assert_eq!(VideoSettings::load(&b).unwrap().unwrap().compose, turned);
+        assert_eq!(live.status(), "saved");
+        live.compose.edge_t_off = live.compose.edge_t_off.wrapping_add(1);
+        assert_eq!(live.status(), "saved", "fields no dial persists never read as unsaved");
+        live.compose = turned;
         assert_eq!(VideoSettings::load(&a).unwrap().unwrap().compose.shadow_lift, 64);
         live.front(0, &a);
         assert_eq!(live.compose, turned, "saving does not clear the session override");
