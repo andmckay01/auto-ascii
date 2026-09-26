@@ -23,59 +23,6 @@ pub(crate) fn load_font_table(spec: &str) -> Result<FontTable, Error> {
     FontTable::parse(&text).map_err(|e| Error::Config(format!("font table {spec}: {e}")))
 }
 
-/// A terminal-free render session over one ASCI asset.
-///
-/// Opens the asset once (memory-mapped, decoded lazily per frame) and turns
-/// `(frame_idx, cols, rows)` into a composed cell grid:
-///
-/// ```
-/// use auto_ascii::RenderSession;
-/// # // The doctest renders a synthetic test asset instead of "intro.ascii".
-/// # let path = std::env::temp_dir().join("auto-ascii-doc-session.ascii");
-/// # let fixture = auto_ascii_eval::fixtures::Fixture::GradientMotion;
-/// # std::fs::write(&path, auto_ascii_eval::fixtures::build_fixture(fixture)).unwrap();
-///
-/// let mut session = RenderSession::open(&path)?;     // "intro.ascii"
-/// let grid = session.render(0, 120, 40)?;
-/// for row in 0..grid.rows() {
-///     let line: String = grid.row(row).iter().map(|c| c.glyph()).collect();
-///     println!("{line}");
-/// }
-/// # assert!(grid.as_slice().iter().any(|c| c.glyph() != ' '), "asset rendered");
-/// # std::fs::remove_file(&path).unwrap();
-/// # Ok::<(), auto_ascii::Error>(())
-/// ```
-///
-/// # Temporal-state semantics
-///
-/// The engine keeps per-cell temporal state (ramp-index hysteresis, edge
-/// on/off memory, orientation bins — the flicker killers) keyed to the
-/// frame sequence you feed it:
-///
-/// * **Monotonic advance** (`frame_idx` ≥ the previous call's, skips
-///   allowed) — full quality. This is normal playback, including
-///   latest-frame-wins frame dropping.
-/// * **Backward jump** (`frame_idx` < the previous call's) — the session
-///   automatically resets all temporal state before rendering: a seek is a
-///   temporal discontinuity, and stale state would ghost pre-seek edges
-///   into the landing frame. The landing frame is rendered cold (exactly
-///   what a fresh session would produce); hysteresis re-converges within a
-///   frame or two.
-/// * **Grid size change** — state is reallocated and reset for the new
-///   grid, same as a terminal resize.
-///
-/// Rendering the *same* `frame_idx` twice returns the same grid without
-/// re-decoding.
-///
-/// # Compositions
-///
-/// [`open_composition`](RenderSession::open_composition) (and
-/// [`from_composition`](RenderSession::from_composition)) opens a stitch of
-/// clips instead of one asset. Everything above still applies: `frame_idx`
-/// counts frames on the COMPOSITION's timeline at its own
-/// [`fps`](RenderSession::fps), each clip decodes from its own mapping, a
-/// clip switch resets temporal state exactly like a backward jump, and a
-/// gap between clips renders an all-blank grid.
 pub struct RenderSession {
     deck: ClipDeck,
     comp: Composition,

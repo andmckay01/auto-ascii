@@ -223,33 +223,6 @@ pub struct Located {
     pub local_frame: u32,
 }
 
-/// An ordered set of clips on one timeline.
-///
-/// Build it from a path ([`single`](Composition::single)), from clips
-/// ([`from_clips`](Composition::from_clips)) or from TOML
-/// ([`from_toml_file`](Composition::from_toml_file)), then call
-/// [`resolve`](Composition::resolve): that is the one step that touches the
-/// assets, and everything below it — [`fps`](Composition::fps),
-/// [`frame_count`](Composition::frame_count),
-/// [`locate`](Composition::locate), [`timeline`](Composition::timeline) —
-/// is defined only after it succeeds (an unresolved composition reports
-/// zeros and locates nothing).
-///
-/// ```
-/// # let dir = std::env::temp_dir();
-/// # let path = dir.join("auto-ascii-doc-composition.ascii");
-/// # let fixture = auto_ascii_eval::fixtures::Fixture::GradientMotion;
-/// # std::fs::write(&path, auto_ascii_eval::fixtures::build_fixture(fixture)).unwrap();
-/// use auto_ascii::Composition;
-///
-/// let mut comp = Composition::single(&path);   // "intro.ascii"
-/// comp.resolve()?;
-/// let at_one_second = comp.locate(1.0).expect("inside the clip");
-/// assert_eq!(at_one_second.clip_idx, 0);
-/// assert_eq!(at_one_second.local_frame, 30);   // 30 fps asset
-/// # std::fs::remove_file(&path).unwrap();
-/// # Ok::<(), auto_ascii::Error>(())
-/// ```
 #[derive(Clone, Debug)]
 pub struct Composition {
     name: String,

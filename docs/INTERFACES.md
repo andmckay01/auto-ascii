@@ -2116,7 +2116,11 @@ facade surface + this hidden module.)
     Same-config rot fixed alongside: `tests/m1_sim.rs` and `tests/sim_e2e.rs`
     carry `#![cfg(feature = "bin")]`, so they no longer silently exercise a
     stale `target/debug/auto-ascii-player` left by an earlier default-feature
-    build. No public signature changed in (c).
+    build. No public signature changed in (c). Superseded by the comment
+    rule: the quickstart, `RenderSession` and `Composition` examples are now
+    `crates/auto-ascii/tests/public_examples.rs` (the terminal builder chain
+    is typechecked behind `terminal` and never run), and the facade no
+    longer carries `#![deny(missing_docs)]`.
 
 25. **M5 item B landed** (font-tables agent; PLAN §3.4 "coverage tables for
     4 common monospace fonts plus one conservative default" + `--font-table`).
