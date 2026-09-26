@@ -412,7 +412,9 @@ Absent planes disable their layers, so older Y+C assets still play.
 `magic "ASCI"`, `version_major/minor`, `header_size`, `flags` (bit0 index, bit1 CRCs),
 `fps_num/den`, `base_w/h`, `aspect_num/den`, `frame_count`, `plane_count`, `codec` (2 = zstd),
 `filter` (1 = temporal delta), `keyframe_ivl`, `plane_ids[8]`, `index_offset`, `meta_offset`.
-Chunks are `tag | flags | size | payload | crc32` (`crates/auto-ascii-format/src/chunk.rs`).
+Chunks are `tag | flags | size | payload | crc32` (`crates/auto-ascii-format/src/chunk.rs`);
+`size` counts payload bytes only, and the 4-byte CRC32 follows iff header `flags` bit1 is set and
+is not counted in `size`.
 Plane subblocks are 64-byte aligned. NORM records are 24 B: `first_frame u32`, `flags u8` (bit0
 cut), then eight `(p2, p98)` pairs indexed by plane position (`crates/auto-ascii-format/src/norm.rs`).
 

@@ -18,7 +18,11 @@ container's deterministic byte contract.
 The evaluation fixture stores uncompressed `BI_RGB` frames in RIFF AVI.
 DIB rows run bottom-up and pixels run B, G, R. Its width is a multiple of
 four, making each row four-byte aligned and each frame chunk even-sized;
-no DIB-row or RIFF-chunk padding enters the pinned fixture bytes. See the
+no DIB-row or RIFF-chunk padding enters the pinned fixture bytes. The
+frames are uncompressed so that no codec, colour conversion beyond a byte
+permutation, or scaler sits in ffmpeg's decode path: every ffmpeg build
+decodes them identically, so an ffmpeg upgrade cannot move the determinism
+guard's pinned sha256 of the asset built from the fixture. See the
 fixture contract in [INTERFACES.md](INTERFACES.md).
 
 ### Edge orientation and provenance
@@ -27,7 +31,9 @@ The factory follows a small Kang-style edge-tangent-flow variant: two
 orientation-aware bilateral passes average doubled-angle vectors, while
 local Scharr magnitude stays unsmoothed. Smoothing magnitude would broaden
 thin contours before downsampling; preserving it and using hysteresis keeps
-those contours available to the renderer. The exact rational vector formula
+those contours available to the renderer. E is hysteresis-thresholded but
+never thinned: non-maximum-suppression ridges are one pixel wide and break
+up when the player box-resamples them into cells. The exact rational vector formula
 and gradient-to-tangent convention are in [INTERFACES.md](INTERFACES.md).
 
 ### Color transforms and temporal smoothing
@@ -35,8 +41,9 @@ and gradient-to-tangent convention are in [INTERFACES.md](INTERFACES.md).
 The RGB24 luma path linearizes sRGB, applies Rec.709 weights in Q16, then
 looks up CIE L* in a 64 KiB table. [INTERFACES.md](INTERFACES.md) owns the
 numeric LUT contract. Luma smoothing is kept light because stronger temporal
-averaging ghosts motion; edge vectors use more averaging to reduce shimmer,
-with the player's dual-threshold gate following their decay. Chroma EMA
+averaging ghosts motion. Edge magnitude and vectors (E/Ex/Ey) use heavier
+averaging, since edge shimmer is the main flicker source; the player's
+dual-threshold gate on E rides that decay. Chroma EMA
 blends the full-precision channels after area averaging and before RGB565
 packing; smoothing packed 5/6/5-bit channels would quantize twice.
 
@@ -46,6 +53,16 @@ The letters codec uses plain picture tone for `LETTERS_FILL_MIN`, rather
 than the ramp's contrast curve. Its value of 236 reserves solid fill for
 true highlights (a lit window or a white core) and keeps it off ordinary lit
 skin, where isolated blocks read as speckle rather than light.
+
+### Shadow lift
+
+The per-shot NORM window (p2→0, p98→255) is linear, so it cannot move a
+dark subject relative to a bright one: on an 8–16 step glyph ramp, a
+subject below the first step renders as the same glyph as black. Shadow
+lift bends the 256-entry levels LUT toward the shadows to buy that subject
+a step, at no per-pixel cost and on top of the per-shot normalization.
+Black and white stay fixed, so it redistributes the middle rather than
+washing the picture out; at full strength a mid-shadow 64 lands at 127.
 
 ## Technology
 
@@ -81,10 +98,12 @@ its repertoire and density constraints remain pinned in tests.
 
 ### Terminal replies and palette stability
 
-[DEC synchronized output](https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036)
-uses DECRPM 0 for unrecognized, 1/2 for set/reset and driveable, and 3/4
-for permanently set/reset. VTE answers `CSI ? 2026 ; 4 $ y`, so wrapping
-frames in mode 2026 would waste bytes. The source anchors are VTE
+For [DEC synchronized output](https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036),
+DECRPM answers 0 = not recognized, 1 = set, 2 = reset, 3 = permanently set
+and 4 = permanently reset. Only 1 or 2 means the mode can be driven: the
+spec's detection table marks 3 as undefined behaviour and 4 as recognized
+but never honored, so only 1/2 enable frame wrapping. VTE answers
+`CSI ? 2026 ; 4 $ y`, so wrapping frames in mode 2026 would waste bytes. The source anchors are VTE
 `src/modes.py` (`CONTOUR_BATCHED_RENDERING`, `MODE_FIXED`, `ALWAYS_RESET`)
 and `src/vteseq.cc` (`Terminal::DECRQM_DEC`). VTE answers CSI 14/18/19 t,
 but not the CSI 16 t cell-size query; its `src/pty.cc` `Pty::set_size`
@@ -115,15 +134,19 @@ pipe cannot stall frame reads. Short raw RGB24 frames are errors. The corpus
 preparer's `reverse`/`areverse` filters buffer whole streams in RAM, so its
 boomerang option suits short clips. Its geometry runs in RGB24 to avoid
 4:2:0 chroma shifts at odd crop offsets, then converts to yuv420p at output.
-ffmpeg autorotates on decode; sample-aspect-ratio and rotation side data
-therefore have to be applied before computing displayed canvas dimensions.
+ffmpeg autorotates on decode, so the filtergraph sees post-rotation frames:
+rotation side data swaps width and height, the sample aspect ratio rescales
+width, and all layout math uses that post-rotation display size.
 
 ### Algorithm provenance
 
-The factory's small incremental SHA-256 follows FIPS 180-4; it hashes the
-eval cache key, determinism fingerprint and import provenance. The player's
-integer shadow lift uses `isqrt(n·255)` for a portable monotonic tone curve
-with fixed black and white endpoints.
+The factory's small incremental SHA-256 follows FIPS 180-4. It computes
+the input-file and params-fingerprint hashes that name eval cache entries,
+the determinism fingerprint and the import provenance hash. The player's
+shadow lift blends toward integer `isqrt(n·255)`, not a `powf` gamma: float
+results are not guaranteed bit-identical across platforms, and the render
+goldens are byte-compared. Both terms are monotonic in `n`, so the ramp
+never inverts, and 0 and 255 are fixed points.
 
 ### Overlay size rationale
 
@@ -185,16 +208,19 @@ reviewer, not gated by the harness exit code.
 ### Memory-mapped assets
 
 The player, `RenderSession`, compositions, the CLI and the factory's eval
-open `.ascii` assets as read-only private `memmap2` mappings. A mapping's
-address does not change when its `Mmap` handle moves, so slices into it
-outlive moves of the handle. Read-only and private only stop this process
-writing through the mapping: another process can still modify or truncate
-the file, and touching a page past a truncation raises `SIGBUS`. Replacing
+open `.ascii` assets as read-only shared mappings (`memmap2::Mmap::map`,
+`PROT_READ` + `MAP_SHARED`). A mapping's address does not change when its
+`Mmap` handle moves, so slices into it outlive moves of the handle.
+Read-only only stops this process writing through the mapping: another
+process can still modify or truncate the file. Because the mapping is
+shared, an in-place rewrite shows through slices the reader has already
+validated, and touching a page past a truncation raises `SIGBUS`. Replacing
 an asset by rename is safe, because the old inode stays mapped; rewriting
 it in place is not.
 
 ### GIF frame timing
 
-GIF frame delays count hundredths of a second, so the review reel's delay
-is a whole number of centiseconds and never below 10 ms: rates above
-100 fps play at 100 fps.
+GIF frame delays count hundredths of a second. The review reel's delay is
+floor(100/fps) centiseconds, minimum 1, so rates that do not divide 100
+play fast (30 fps plays at about 33 fps, 24 fps at 25 fps) and every rate
+above 50 fps plays at 100 fps.

@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn committed_tables_carry_only_the_ownership_header() {
+    fn committed_tables_carry_only_the_generator_header() {
         for table in COMMITTED_TABLES {
             let mut lines = table.lines();
             assert_eq!(lines.next(), Some(TABLE_HEADER));

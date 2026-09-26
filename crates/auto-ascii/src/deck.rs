@@ -36,9 +36,17 @@ pub struct DeckConfig {
 
 pub const MAX_LIVE_CLIPS: usize = 8;
 
+struct Resident {
+    player: pipeline::Player<'static>,
+    #[expect(
+        dead_code,
+        reason = "owns the mapping `player` borrows; declared after it so it drops last"
+    )]
+    map: Mmap,
+}
+
 pub struct ClipDeck {
-    players: Vec<Option<pipeline::Player<'static>>>,
-    maps: Vec<Option<Mmap>>,
+    residents: Vec<Option<Resident>>,
     paths: Vec<PathBuf>,
     dims: Vec<Option<(u16, u16)>>,
     used: Vec<u64>,
@@ -64,7 +72,7 @@ impl std::fmt::Debug for ClipDeck {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClipDeck")
             .field("clips", &self.paths.len())
-            .field("open", &self.players.iter().filter(|p| p.is_some()).count())
+            .field("open", &self.live_clips())
             .field("active", &self.active)
             .field("size", &self.size)
             .finish_non_exhaustive()
@@ -75,8 +83,7 @@ impl ClipDeck {
     pub fn new(paths: Vec<PathBuf>, cfg: DeckConfig) -> ClipDeck {
         let n = paths.len();
         ClipDeck {
-            players: (0..n).map(|_| None).collect(),
-            maps: (0..n).map(|_| None).collect(),
+            residents: (0..n).map(|_| None).collect(),
             paths,
             dims: vec![None; n],
             used: vec![0; n],
@@ -172,8 +179,8 @@ impl ClipDeck {
     }
 
     pub fn showing(&self) -> &Grid<Cell> {
-        match self.active.and_then(|idx| self.players[idx].as_ref()) {
-            Some(player) => player.grid(),
+        match self.active.and_then(|idx| self.residents[idx].as_ref()) {
+            Some(resident) => resident.player.grid(),
             None => &self.blank,
         }
     }
@@ -234,7 +241,7 @@ impl ClipDeck {
 
     pub fn set_compose_params(&mut self, params: ComposeParams) {
         self.compose_params = Some(params);
-        for player in self.players.iter_mut().flatten() {
+        for player in self.players_mut() {
             player.set_compose_params(params);
         }
     }
@@ -245,15 +252,15 @@ impl ClipDeck {
 
     pub fn set_codec(&mut self, codec: Codec) {
         self.codec = codec;
-        for player in self.players.iter_mut().flatten() {
+        for player in self.players_mut() {
             player.set_codec(codec);
         }
     }
 
     pub fn set_glyph_tier(&mut self, glyph_tier: GlyphTier) {
         self.cfg.glyph_tier = glyph_tier;
-        for (idx, player) in self.players.iter_mut().enumerate() {
-            if let Some(p) = player {
+        for (idx, resident) in self.residents.iter_mut().enumerate() {
+            if let Some(Resident { player: p, .. }) = resident {
                 p.set_glyph_tier_for_next_reflow(glyph_tier);
                 p.reset_temporal_state();
                 self.dims[idx] = None;
@@ -263,8 +270,8 @@ impl ClipDeck {
 
     pub fn set_cell_aspect(&mut self, cell_aspect: f64) {
         self.cfg.cell_aspect = cell_aspect;
-        for (idx, player) in self.players.iter_mut().enumerate() {
-            if let Some(p) = player {
+        for (idx, resident) in self.residents.iter_mut().enumerate() {
+            if let Some(Resident { player: p, .. }) = resident {
                 p.set_cell_aspect_for_next_reflow(cell_aspect);
                 self.dims[idx] = None;
             }
@@ -273,39 +280,44 @@ impl ClipDeck {
 
     pub fn enable_layer_mask(&mut self) {
         self.layer_mask = true;
-        for player in self.players.iter_mut().flatten() {
+        for player in self.players_mut() {
             player.enable_layer_mask();
         }
     }
 
     pub fn layer_mask(&self) -> Option<&Grid<u8>> {
         self.active
-            .and_then(|idx| self.players[idx].as_ref())
-            .and_then(pipeline::Player::layer_mask)
+            .and_then(|idx| self.residents[idx].as_ref())
+            .and_then(|resident| resident.player.layer_mask())
     }
 
     pub fn stage(&self) -> StageNs {
-        self.players.iter().flatten().fold(self.carried, |acc, p| add_stage(acc, p.stage()))
+        self.residents
+            .iter()
+            .flatten()
+            .fold(self.carried, |acc, r| add_stage(acc, r.player.stage()))
     }
 
     pub fn live_clips(&self) -> usize {
-        self.players.iter().filter(|p| p.is_some()).count()
+        self.residents.iter().filter(|r| r.is_some()).count()
+    }
+
+    fn players_mut(&mut self) -> impl Iterator<Item = &mut pipeline::Player<'static>> {
+        self.residents.iter_mut().flatten().map(|r| &mut r.player)
     }
 
     fn evict_one(&mut self, keep: usize) -> bool {
         let victim = self
-            .players
+            .residents
             .iter()
             .enumerate()
-            .filter(|(i, player)| *i != keep && player.is_some())
+            .filter(|(i, resident)| *i != keep && resident.is_some())
             .min_by_key(|(i, _)| self.used[*i])
             .map(|(i, _)| i);
         let Some(i) = victim else { return false };
-        if let Some(player) = &self.players[i] {
-            self.carried = add_stage(self.carried, player.stage());
+        if let Some(resident) = self.residents[i].take() {
+            self.carried = add_stage(self.carried, resident.player.stage());
         }
-        self.players[i] = None;
-        self.maps[i] = None;
         self.dims[i] = None;
         if self.active == Some(i) {
             self.active = None;
@@ -314,10 +326,10 @@ impl ClipDeck {
     }
 
     fn open(&mut self, idx: usize) -> Result<(), Error> {
-        if self.players.get(idx).is_none() {
+        if self.residents.get(idx).is_none() {
             return Err(Error::Config(format!("no clip {idx} in this composition")));
         }
-        if self.players[idx].is_some() {
+        if self.residents[idx].is_some() {
             return Ok(());
         }
         while self.live_clips() >= MAX_LIVE_CLIPS && self.evict_one(idx) {}
@@ -344,13 +356,12 @@ impl ClipDeck {
         if self.layer_mask {
             player.enable_layer_mask();
         }
-        self.maps[idx] = Some(map);
-        self.players[idx] = Some(player);
+        self.residents[idx] = Some(Resident { player, map });
         Ok(())
     }
 
     fn player(&mut self, idx: usize) -> &mut pipeline::Player<'static> {
-        self.players[idx].as_mut().expect("clip is open")
+        &mut self.residents[idx].as_mut().expect("clip is open").player
     }
 
     fn apply_sticky(&mut self, idx: usize) {
@@ -358,7 +369,7 @@ impl ClipDeck {
             (self.progress_visible, self.hint_visible, self.dial, self.progress_ctx);
         let paused = self.paused;
         let info = self.info.as_deref();
-        let player = self.players[idx].as_mut().expect("clip is open");
+        let player = &mut self.residents[idx].as_mut().expect("clip is open").player;
         player.set_progress_overlay(progress);
         player.set_hint_overlay(hints);
         player.set_info_overlay(info);

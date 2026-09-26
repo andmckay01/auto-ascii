@@ -557,7 +557,10 @@ impl AsciiWriter<W> {
   pub fn finish(self) -> Result<W>;
       // Rejects a NORM whose last shot starts at or past the frames written,
       // the same bound open() enforces, so the writer never emits an asset
-      // the reader refuses.
+      // the reader refuses. Returns the inner writer flushed, never fsynced:
+      // a caller that renames the result into place must sync_all first to
+      // be crash-durable. Neither current `.part`-then-rename caller
+      // (factory `build.rs`, `auto_ascii::compose` export) does.
 }
 
 // read.rs — over &[u8]; open() now O(pre-frame chunks + FIDX): header
@@ -963,7 +966,8 @@ impl RenderSession {
       // Internally a one-clip `deck::ClipDeck` (M8) holding
       // Player<'static> over the owned map (encapsulated self-reference;
       // drop order pins the borrow, the fake 'static never escapes that
-      // module — the argument is in the `auto_ascii::deck` paragraph below)
+      // module — the soundness argument is in the `auto_ascii::deck` (M8)
+      // paragraph just before `## auto_ascii::pipeline` below)
   pub fn open_composition(impl AsRef<Path>, library_dir: Option<&Path>)
       -> Result<RenderSession, Error>;                    // M8, feature `compose`
   pub fn from_composition(Composition) -> Result<RenderSession, Error>;  // M8
@@ -1067,10 +1071,17 @@ than at each of the four call sites; `stage()` carries evicted clips' time
 and times gap presents, so a composition's budget still adds up. It is the ONE clip-switch
 implementation — `RenderSession`, the terminal `Player` and `--sim` all
 drive it — and it never hands out the `Player<'static>` it holds, which is
-what keeps the fake `'static` inside the module. At most `MAX_LIVE_CLIPS`
+what keeps the fake `'static` inside the module. Soundness of that
+`'static` slice: it points into the OS mapping owned by the clip's `Mmap`,
+whose address is stable however the handle moves, and each open clip is one
+private `Resident { player, map }` slot with `player` declared before
+`map`, so Rust's declaration-order drop kills every borrow before the
+mapping is unmapped — whether the slot is dropped with the deck or taken by
+eviction. Reordering those two fields would still compile and would be a
+use-after-unmap. At most `MAX_LIVE_CLIPS`
 pipelines are resident: opening one past the cap evicts the least recently
-fronted clip, clearing its player BEFORE its mapping (same drop-order
-argument), and re-opening is the lazy path again — cold, which is the
+fronted clip, dropping its slot (player first, then mapping, by the same
+field order), and re-opening is the lazy path again — cold, which is the
 temporal reset a return to a clip wants anyway.
 
 ## auto_ascii::pipeline — the hidden engine room (ex auto-ascii-player lib)
