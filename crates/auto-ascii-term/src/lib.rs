@@ -42,5 +42,5 @@ pub use event::{Event, EventQueue, Key};
 #[cfg(feature = "session")]
 pub use probe::{DEFAULT_PROBE_TIMEOUT, ProbeOptions, ProbeParser, ProbeReplies, probe_caps};
 #[cfg(feature = "session")]
-pub use restore::{RESTORE_SEQ, install_restore_hooks};
+pub use restore::{BACKDROP_RESET, BACKDROP_SET, RESTORE_SEQ, install_restore_hooks};
 pub use sim::SimBackend;

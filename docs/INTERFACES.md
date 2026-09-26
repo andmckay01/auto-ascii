@@ -485,6 +485,8 @@ pub trait Backend {
 // ansi.rs — M1: accepts ALL color tiers (the M0 truecolor-only guard is gone)
 pub struct AnsiBackend;
 impl AnsiBackend { pub fn new(caps: Caps) -> std::io::Result<AnsiBackend> } // enters session
+impl AnsiBackend { pub fn with_backdrop(caps: Caps, backdrop: bool) -> std::io::Result<AnsiBackend> }
+    // note 27(l): backdrop = OSC 11 black on entry, OSC 111 on every restore
 // sim.rs — all headless M0/M1 verification runs here (no GUI on this box)
 pub struct SimBackend;
 impl SimBackend {
@@ -497,6 +499,8 @@ impl SimBackend {
 
 // restore.rs (§3.1 session hygiene; M0 acceptance 3 pty test)
 pub const RESTORE_SEQ: &[u8] = b"\x1b[0m\x1b[?25h\x1b[?7h\x1b[?1049l";
+pub const BACKDROP_SET: &[u8] = b"\x1b]11;rgb:0000/0000/0000\x1b\\";  // note 27(l)
+pub const BACKDROP_RESET: &[u8] = b"\x1b]111\x1b\\";                  // before RESTORE_SEQ
 pub fn install_restore_hooks();   // panic hook + SIGINT/SIGTERM + atexit
 ```
 
@@ -1020,6 +1024,8 @@ impl PlayerBuilder {        // the spec'd builder (§7 M4) + escape hatches
   pub fn no_cache(self, bool) -> Self;            //   (PLAN §3.1)
   pub fn no_quirks(self, bool) -> Self;           // M5 item C: skip the
       // identity-keyed quirk table (auto-ascii-term quirks.rs) post-probe
+  pub fn no_backdrop(self, bool) -> Self;         // note 27(l): keep the
+      // terminal's default background (default: black for the session)
   pub fn font_table(self, impl Into<String>) -> Self;  // M5 item B (§3.4):
       // builtin NAME | PATH; parsed+validated at build(); run() applies the
       // repertoire veto AFTER resolve_for_caps (user-asserted font truth
@@ -1324,7 +1330,7 @@ facade surface + this hidden module.)
   notes 9, 11 and 20):
   `<asset> [--repaint full|diff] [--loop] [--fps-cap FPS] [--cell-aspect F]
   [--duration-secs N] [--seek TIMESTAMP] [--tier TIER] [--no-query]
-  [--no-cache] [--no-quirks] [--palette auto|ascii|unicode|braille]
+  [--no-cache] [--no-quirks] [--no-backdrop] [--palette auto|ascii|unicode|braille]
   [--bench-seek N]
   [--font-table NAME|PATH] [--sim COLSxROWS:NFRAMES] [--sim-tier TIER]
   [--sim-dump PATH] [--sim-resize [COLSxROWS]] [--codec pixels|letters|ascii]`.
@@ -2515,6 +2521,40 @@ facade surface + this hidden module.)
     `other_codecs_keep_their_backgrounds_and_big_overlay_text`, and the
     goldens `ascii_80x24_unicode.txt` / `ascii_80x24_ascii_mono.txt`,
     `settings::tests` (`codec = "ascii"` round trip).
+    (l) **ascii brightness: a black backdrop and a brighter curve.** In
+    Ghostty (default background `#282c34`) ascii's SGR 49 cells sat on
+    slate, which halved the face's contrast above the black level, and
+    letters' brightness came mostly from its tinted backgrounds, which
+    ascii does not have. Two changes, neither touching pixels or letters.
+    (1) The player sets the terminal's default background to black for
+    the session: `AnsiBackend::with_backdrop(caps, true)` writes
+    `BACKDROP_SET` (OSC 11 `rgb:0000/0000/0000`) right after the
+    alt-screen enter, and `restore_now` writes `BACKDROP_RESET` (OSC 111)
+    just before `RESTORE_SEQ` on every restore path, exactly once.
+    `AnsiBackend::new(caps)` is `with_backdrop(caps, false)`. It is on for
+    the whole session, not only while ascii is active: pixels and letters
+    paint every cell's background explicitly, so they look the same, and
+    `/` needs no re-emit. `PlayerBuilder::no_backdrop(true)` /
+    `--no-backdrop` opts out; it is a terminal setting, so it is not saved
+    per video. Terminals without OSC 11 ignore both sequences; one that
+    honours OSC 11 but not OSC 111 would keep black after exit.
+    `SimBackend`, `--sim` and `--sim-dump` never write it, so frame
+    streams are unchanged. (2) ascii codec data: colour rises to full
+    brightness over held tone 24–128 (was 128–224), highlights run toward
+    white from 160 (was 200) to 7/8 at 255 (was 3/4), and the ink target
+    reaches `@` at 216 (was 240), bent up below mid-gray instead of down
+    above it. Measured with a Ghostty-approximating renderer on black, the
+    face's contrast above black is 0.99× letters on the Architect (was
+    0.38× on slate), 1.8× on Terminator, 1.3× on Dune and 0.66× on
+    Interstellar; mean luminance stays 0.43–0.98× letters on faces and
+    0.41–0.78× on frames, because a glyph inks at most 0.28 of its cell.
+    Glyph switches 0.99× pixels. The dial readout marks `(floor)`,
+    `(default)` and `(max)` (`Dial::readout`). Tests: `pty_restore.rs`
+    (`backdrop_is_set_on_entry_and_reset_on_drop`,
+    `backdrop_is_reset_on_sigterm_and_panic`, and no OSC 11/111 without
+    it), `codec::ascii::tests` colour bands rewritten for the new curve,
+    `player::tests::readout_marks_the_floor_the_default_and_the_top`, and
+    the two ascii goldens re-blessed.
 28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
     should take a video from anywhere on the desktop, process it, and land
     it in the folder where the user's processed videos live"). The shape of

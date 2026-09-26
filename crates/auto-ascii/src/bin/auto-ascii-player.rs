@@ -112,6 +112,13 @@ struct Cli {
     #[arg(long)]
     no_quirks: bool,
 
+    /// Keep the terminal's own default background. By default the player
+    /// sets it to black for the session (OSC 11, reset with OSC 111 on
+    /// exit), so the ascii codec, which paints no background, sits on black
+    /// under any theme.
+    #[arg(long)]
+    no_backdrop: bool,
+
     /// Charset-tier override for palette selection: auto (from
     /// the probed glyph repertoire), ascii, unicode (blocks/box-drawing) or
     /// braille (verified fonts only). Applies to interactive and --sim runs.
@@ -396,7 +403,8 @@ fn main() -> Result<()> {
         .looping(cli.loop_playback)
         .no_query(cli.no_query)
         .no_quirks(cli.no_quirks)
-        .no_cache(cli.no_cache);
+        .no_cache(cli.no_cache)
+        .no_backdrop(cli.no_backdrop);
     if let Some(cap) = cli.fps_cap {
         builder = builder.fps_cap(cap);
     }

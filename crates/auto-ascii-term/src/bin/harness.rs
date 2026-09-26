@@ -128,7 +128,9 @@ fn main() {
     }
 
     install_restore_hooks();
-    let mut backend = AnsiBackend::new(Caps::default()).expect("harness requires a tty");
+    let backdrop = std::env::var_os("ASCII_HARNESS_BACKDROP").is_some();
+    let mut backend =
+        AnsiBackend::with_backdrop(Caps::default(), backdrop).expect("harness requires a tty");
 
     let (cols, rows) = backend.caps().cells;
     let mut grid = Grid::new(cols, rows);

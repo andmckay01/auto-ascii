@@ -71,6 +71,27 @@ impl Dial {
         }
     }
 
+    /// The readout label for the dial's current value: [`label`](Dial::label),
+    /// marked when the dial sits at its floor, its default or its top, so a
+    /// turn that cannot go further says so.
+    pub fn readout(self, p: &ComposeParams) -> &'static str {
+        let v = self.get(p);
+        let (floor, default) = (v == 0, v == self.get(&ComposeParams::default()));
+        match (self, floor, default, v == self.max()) {
+            (Dial::ShadowLift, true, true, _) => "shadow lift (floor, default)",
+            (Dial::ShadowLift, true, false, _) => "shadow lift (floor)",
+            (Dial::ShadowLift, _, true, _) => "shadow lift (default)",
+            (Dial::ShadowLift, _, _, true) => "shadow lift (max)",
+            (Dial::EdgeStrength, true, _, _) => "edge strength (floor)",
+            (Dial::EdgeStrength, _, true, _) => "edge strength (default)",
+            (Dial::EdgeStrength, _, _, true) => "edge strength (max)",
+            (Dial::Hysteresis, true, _, _) => "hysteresis (floor)",
+            (Dial::Hysteresis, _, true, _) => "hysteresis (default)",
+            (Dial::Hysteresis, _, _, true) => "hysteresis (max)",
+            _ => self.label(),
+        }
+    }
+
     /// How far one `[`/`]` press moves it. Sized so a dial crosses its useful
     /// range in roughly a dozen presses rather than a hundred.
     pub fn step(self) -> i32 {
@@ -379,6 +400,7 @@ pub struct PlayerBuilder {
     no_query: bool,
     no_quirks: bool,
     no_cache: bool,
+    no_backdrop: bool,
     font_table: Option<String>,
     codec: Option<Codec>,
 }
@@ -491,6 +513,16 @@ impl PlayerBuilder {
         self
     }
 
+    /// Leave the terminal's own default background alone. By default the
+    /// session sets it to black (OSC 11) on entry and resets it (OSC 111) on
+    /// every exit path, so a codec that keeps the terminal background
+    /// ([`Codec::Ascii`]) sits on black under any theme; pixels and letters
+    /// paint every cell and look the same either way.
+    pub fn no_backdrop(mut self, no_backdrop: bool) -> Self {
+        self.no_backdrop = no_backdrop;
+        self
+    }
+
     /// Assert which font the terminal renders with, by ink-coverage table: a
     /// built-in name — `conservative`, `dejavu-sans-mono`, `liberation-mono`,
     /// `ubuntu-mono`, `noto-sans-mono` — or a path to a `auto-ascii-factory
@@ -599,7 +631,8 @@ impl Player {
 
     /// Play the asset: probe the terminal (a DA1-sentinel query volley,
     /// unless a tier is forced or [`no_query`](PlayerBuilder::no_query) is
-    /// set), enter the session (alt screen, raw mode, hidden cursor), run
+    /// set), enter the session (alt screen, raw mode, hidden cursor, black
+    /// backdrop unless [`no_backdrop`](PlayerBuilder::no_backdrop)), run
     /// the wall-clock-paced frame loop, and restore the terminal — also on
     /// panic, SIGINT and SIGTERM (the restore hooks are armed before the
     /// screen is touched).
@@ -638,7 +671,8 @@ impl Player {
         };
         let caps = probe_caps(&probe_opts);
 
-        let mut backend = AnsiBackend::new(caps).map_err(Error::Terminal)?;
+        let mut backend =
+            AnsiBackend::with_backdrop(caps, !self.cfg.no_backdrop).map_err(Error::Terminal)?;
         let aspect = resolve_cell_aspect(self.cfg.cell_aspect, backend.caps().cell_px);
         let depth = pipeline::color_depth(backend.caps().color);
         let mut glyphs = self.cfg.palette.resolve_for_caps(backend.caps());
@@ -725,7 +759,7 @@ impl Player {
                     live.turn(dial, drained.dial_delta);
                     deck.set_compose_params(live.compose);
                 }
-                deck.set_dial_overlay(Some((dial.label(), dial.get(&live.compose), dial.max())));
+                deck.set_dial_overlay(Some((dial.readout(&live.compose), dial.get(&live.compose), dial.max())));
                 dial_until = Some(Instant::now() + DIAL_OVERLAY_HIDE_AFTER);
             } else if dial_until.is_some_and(|t| Instant::now() >= t) {
                 deck.set_dial_overlay(None);
@@ -775,7 +809,7 @@ impl Player {
                 deck.set_codec(live.codec);
                 if dial_until.is_some() {
                     let dial = Dial::ALL[dial_idx];
-                    deck.set_dial_overlay(Some((dial.label(), dial.get(&live.compose), dial.max())));
+                    deck.set_dial_overlay(Some((dial.readout(&live.compose), dial.get(&live.compose), dial.max())));
                 }
             }
             live.write_info(&mut info);
@@ -1180,6 +1214,22 @@ mod tests {
         assert_eq!(live.problems.len(), 1);
         assert!(live.problems[0].contains("clip-a.player.toml") && live.problems[0].contains("line 1"), "{:?}", live.problems);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn readout_marks_the_floor_the_default_and_the_top() {
+        let mut p = ComposeParams::default();
+        assert_eq!(Dial::ShadowLift.readout(&p), "shadow lift (floor, default)");
+        assert_eq!(Dial::EdgeStrength.readout(&p), "edge strength (default)");
+        assert_eq!(Dial::Hysteresis.readout(&p), "hysteresis (default)");
+        Dial::ShadowLift.turn(&mut p, 1);
+        assert_eq!(Dial::ShadowLift.readout(&p), "shadow lift");
+        Dial::ShadowLift.turn(&mut p, 99);
+        assert_eq!(Dial::ShadowLift.readout(&p), "shadow lift (max)");
+        Dial::EdgeStrength.turn(&mut p, -99);
+        assert_eq!(Dial::EdgeStrength.readout(&p), "edge strength (floor)");
+        Dial::Hysteresis.turn(&mut p, 99);
+        assert_eq!(Dial::Hysteresis.readout(&p), "hysteresis (max)");
     }
 
     #[test]

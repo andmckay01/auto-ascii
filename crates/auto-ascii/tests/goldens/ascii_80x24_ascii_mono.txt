@@ -1,26 +1,26 @@
 ascii codec, Ascii tier, Mono, 80x24, frame 5
-|                .......................::::::::::::;;;;;;;;;;;++++++++++++rrrrrr|
-|        X_____________________________________________________________X+rrrrrrrr|
-|        |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@X|rrrrrrrr|
-|         ---------------------------------------------;;++++++++++++rrrrrrrrrrrr|
-|        ........................:::::::::::;;;;;;;;;;;;+++++++++++rrrrrrrrrrrrrc|
-|      ........................:::::::::::;;;;;;;;;;;;+++++++++++rrrrrrrrrrrrrccc|
-|    .....................;.:::::;:::-/-______-\;;;;+++++++++++rrrrrrrrrrrrrccccc|
-|  ...................:.:;.:::+:;:////a##D#a##D-\\\++++++++++rrrrrrrrrrrrrccccccc|
-|...................:....:::::;:://DDDSDDeDSDDeDSDD\\+++++++rrrrrrrrrrrrccccccccc|
-|..................;.:.:+::::+://BB888DDBD#DDBD#DDaD#\++++rrrrrrrrrrrrccccccccccc|
-|.................;..::+::::+::|@BBBB88DD@D#DDSD#DDSD#|+rrrrrrrrrrrrccccccccccccx|
-|..................:+::::+::::|@@@@BBB88DDDD@DDDDSDDDD||rrrrrrrrrrccccccccccccxxx|
-|................:::::::::::;;|D@@@@BB88D@B@@DDBD#DDeD#|rrrrrrrrccccccccccccxxxxx|
-|..............:::::::::::;;;;|D@@@@BB88D@BD@DDBD#DDeD#|rrrrrrccccccccccccxxxxxnn|
-|............:::::::+:::;+;;;;|@@@@BBB88D#DD@D#DDSD#DD|rrrrrccccccccccccxxxxxnnnn|
-|..........:::::::;:::;;;;;;+;;\BBBBB88DDBD#DDBD#DDaD#/rrrccccccccccccxxxxxnnnnnn|
-|........::::::::::;;;;;+;;;;+;;\B888DD#DDSD#8DSD#oD//rrccccccccccccxxxxxnnnnnnnn|
-|......:::::::::::;;;;;+;;;;+;+++\\DD#aDSD#aDSD#aDS/rrccccccccccccxxxxxnnnnnnnnnn|
-|....:::::::::::;;;;;;;+;+;;r++++r+\\\\Se#aoSa--//rrrcccccccccccxxxxxnnnnnnnnnnnn|
-|..:::::::::::;;;;;;;;;;;;++rrrrrr++++r---rrr-rrrrrcccccccccccxxxxxnnnnnn        |
-|:::::::::::;;;;;;;;;;;;++++++++++++rrrrrrrrrrrrrcccccccccccxxxxxnnnnnnn         |
-|::::::::::;;;;;;;;;;;++++++++++++rrrrrrrrrrrrrcccccccccccxxxxxnnnnnnnnn         |
-|::::::::;;;;;;;;;;;++++++++++++rrrrrrrrrrrrrcccccccccccxxxxxnnnnnnnnnnn         |
+|                ...............::::::::;;;;;;;;;++++++++++++rrrrrrrrrrrrrrrrcccc|
+|        X_____________________________________________________________Xrrrcccccc|
+|        |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@X|cccccccc|
+|         ---------------------------------------------rrrrrrrrrrrrrrrrcccccccccc|
+|        ...............:::::::::;;;;;;;;;+++++++++++rrrrrrrrrrrrrrrrcccccccccccx|
+|      ...............:::::::::;;;;;;;;;+++++++++++rrrrrrrrrrrrrrrrcccccccccccxxx|
+|    ...............::::::+:;;;;;+;;;-/-______-\+rrrrrrrrrrrrrrrrcccccccccccxxxnn|
+|  ...............::::;:;+:+;;r;+;////8BBBB8BBB-\\\rrrrrrrrrrrrcccccccccccxxxnnno|
+|...............::::;::::+;;;;+;;//@@BBBB#BBBBDBBBB\\rrrrrrrrcccccccccccxxxnnnooo|
+|.............:::::+:;:;r;;;;r;//@@@@@@B@@B@B@@B@BD@B\rrrrrcccccccccccxxxnnnooooe|
+|...........::::::+::;;r;;;;r;+|@@@@@@@@B@@B@B8@B@BB@B|rrcccccccccccxxxnnnooooeee|
+|..........::::::::;r;;;;r;;++|@@@@@@@@@@B@B@@B@BB@B@B||ccccccccccxxxnnnooooeeeee|
+|........::::::::;;;;;;;;;++++|B@@@@@@@@@@@@@@B@@B@B#@B|ccccccccxxxnnnooooeeeeeaa|
+|......::::::::;;;;;;;;;++++++|B@@@@@@@@@@@@@@B@@B@B#@B|ccccccxxxnnnooooeeeeeaaaa|
+|....::::::::;;;;;;;r;+++r++++|@@@@@@@@@@B@B@@B@BB@B@B|cccccxxxnnnooooeeeeeaaaaaa|
+|..::::::::;;;;;;;+;+++r++++r++\@@@@@@@@B@BB@B@BB@BDBB/cccxxxnnnooooeeeeeaaaaaaaa|
+|::::::::;;;;;;;;;++++++r++++rrr\@@@@@@B@BB@B@BB@B#B//ccxxxnnnooooeeeeeaaaaaaaaaa|
+|::::::;;;;;;;;;+++++++r++++rrrrr\\@BBDBBBBDBBBB8BB/ccxxxnnnooooeeeeeaaaaaaaaaaaa|
+|::::;;;;;;;;;+++++++++r+rrrcrrrrcr\\\\BDB8#BD--//cccxxnnnooooeeeeeaaaaaaaaaaaaaa|
+|::;;;;;;;;;++++++++++++rrrrcccccrrrrrr---ccc-cccccxxnnnooooeeeeeaaaaaaaa        |
+|;;;;;;;;;++++++++++++rrrrrrrrrrrrrrrccccccccccccxxnnnooooeeeeeaaaaaaaaa         |
+|;;;;;;;++++++++++++rrrrrrrrrrrrrrrrcccccccccccxxnnnooooeeeeeaaaaaaaaaaa         |
+|;;;;;++++++++++++rrrrrrrrrrrrrrrrcccccccccccxxnnnooooeeeeeaaaaaaaaaaaaa         |
 |                                                                                |
-colors fnv1a64 1e248131cffee0de
+colors fnv1a64 a860c7778afc8679

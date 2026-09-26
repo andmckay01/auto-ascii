@@ -6,7 +6,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use auto_ascii_term::RESTORE_SEQ;
+use auto_ascii_term::{BACKDROP_RESET, BACKDROP_SET, RESTORE_SEQ};
 
 const ALT_ENTER: &[u8] = b"\x1b[?1049h";
 const DEADLINE_SECS: u64 = 10;
@@ -22,6 +22,10 @@ impl Drop for Pty {
 }
 
 fn spawn_harness(mode: &str) -> (Pty, Child) {
+    spawn_harness_with(mode, false)
+}
+
+fn spawn_harness_with(mode: &str, backdrop: bool) -> (Pty, Child) {
     let mut master: libc::c_int = 0;
     let mut slave: libc::c_int = 0;
     let mut ws = libc::winsize { ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0 };
@@ -43,6 +47,9 @@ fn spawn_harness(mode: &str) -> (Pty, Child) {
     };
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_auto-ascii-term-harness"));
+    if backdrop {
+        cmd.env("ASCII_HARNESS_BACKDROP", "1");
+    }
     cmd.arg(mode)
         .stdin(dup_stdio(slave))
         .stdout(dup_stdio(slave))
@@ -174,6 +181,46 @@ fn drop_restores_terminal_exactly_once() {
         1,
         "restore must run exactly once across Drop + atexit (idempotent)"
     );
+    assert!(find(&out, b"\x1b]11;").is_none(), "no backdrop unless asked for");
+    assert!(find(&out, b"\x1b]111").is_none(), "no backdrop reset unless one was set");
+}
+
+fn assert_backdrop_round_trip(out: &[u8]) {
+    let enter = find(out, ALT_ENTER).expect("session never entered alt screen");
+    let set = find(out, BACKDROP_SET).expect("backdrop never set");
+    let reset = find(out, BACKDROP_RESET).expect("backdrop never reset");
+    let restore = find(out, RESTORE_SEQ).expect("restore sequence missing");
+    assert!(enter < set && set < reset && reset < restore, "{enter} < {set} < {reset} < {restore}");
+    assert_eq!(count(out, BACKDROP_SET), 1);
+    assert_eq!(count(out, BACKDROP_RESET), 1, "reset exactly once across every restore path");
+}
+
+#[test]
+fn backdrop_is_set_on_entry_and_reset_on_drop() {
+    let (pty, mut child) = spawn_harness_with("drop", true);
+    let mut out = Vec::new();
+    drain_to_eof(pty.master, &mut out);
+    assert!(wait_child(&mut child).success());
+    assert_backdrop_round_trip(&out);
+}
+
+#[test]
+fn backdrop_is_reset_on_sigterm_and_panic() {
+    let (pty, mut child) = spawn_harness_with("wait", true);
+    let mut out = Vec::new();
+    wait_until_contains(pty.master, &mut out, BACKDROP_SET);
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    drain_to_eof(pty.master, &mut out);
+    assert_eq!(wait_child(&mut child).signal(), Some(libc::SIGTERM));
+    assert_backdrop_round_trip(&out);
+
+    let (pty, mut child) = spawn_harness_with("panic", true);
+    let mut out = Vec::new();
+    drain_to_eof(pty.master, &mut out);
+    assert_eq!(wait_child(&mut child).code(), Some(101));
+    assert_backdrop_round_trip(&out);
+    let marker = find(&out, b"harness-panic-marker").expect("panic message must reach the pty");
+    assert!(marker > find(&out, BACKDROP_RESET).unwrap(), "reset lands before the panic message");
 }
 
 #[test]
