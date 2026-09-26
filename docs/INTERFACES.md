@@ -1188,23 +1188,28 @@ pub fn Player::set_progress_context(&mut self, Option<ProgressContext>);
     // frame counter; None (every single-asset path) is the M6 row verbatim
 pub fn draw_progress_overlay_clips(grid, frame, frame_count, fps,
                                    clip: Option<(usize, usize)>,
-                                   paused: bool, scale: OverlayScale);
+                                   paused: bool, scale: OverlayScale) -> UiRows;
     // draw_progress_overlay + " c/N " right after the time block, dropped
     // below PROGRESS_HINT_MIN_COLS (64) and for single-clip compositions —
     // so `draw_progress_overlay` is literally this with clip = None
     // (and paused = false, scale = Normal)
 // Zoom discoverability (note 27 (i)) — every overlay row takes a scale:
-pub enum OverlayScale { Normal, Big, Plain }
+pub enum OverlayScale { Normal, Big }
     // Big = 3x5 half-block font, 4 cols x 3 rows per char, upper case;
     // for_grid(cols, rows, GlyphTier) is Big iff tier != Ascii and
     // cols >= BIG_OVERLAY_MIN_COLS (240) and rows >= BIG_OVERLAY_MIN_ROWS
     // (36); line_chars(cols) (cols or cols/4), line_rows() (1 or 3).
-    // Plain (27k) = Normal on DEFAULT_BG cells, printable ASCII only;
-    // for_codec(cols, rows, GlyphTier, Codec) is Plain for a codec whose
-    // pad carries DEFAULT_BG (ascii), else for_grid
-pub fn draw_dial_overlay(grid, label, value, max, scale: OverlayScale);
-pub fn draw_hint_overlay(grid, scale: OverlayScale);
-pub fn draw_info_overlay(grid, text: &str, scale: OverlayScale);
+    // The same on every codec (27o; 27k's Plain and for_codec are gone)
+pub struct UiRows;                          // Copy, Eq, Default (27o)
+    // the rows the overlay painters drew: one line_rows() band per overlay
+    // line, counted up from the bottom. UiRows::NONE; contains(row);
+    // is_empty(); `|` / `|=` join two painters' rows on one grid
+pub fn Player::ui_rows(&self) -> UiRows;    // the last frame's
+pub fn ClipDeck::ui_rows(&self) -> UiRows;  // the showing grid's
+pub fn draw_dial_overlay(grid, label, value, max, scale: OverlayScale) -> UiRows;
+pub fn draw_hint_overlay(grid, scale: OverlayScale) -> UiRows;
+pub fn draw_info_overlay(grid, text: &str, scale: OverlayScale) -> UiRows;
+    // every draw_*_overlay* returns the rows it drew (27o)
     // + right-aligned " WxH cells " when it fits after the text, and below
     // ZOOM_HINT_MAX_COLS (160) a zoom hint on the line above it
 pub const ZOOM_HINT_MAX_COLS: u16;          // 160
@@ -2468,7 +2473,8 @@ facade surface + this hidden module.)
     `GlyphCodec::PAD` (default `Cell::BLANK`; generated `Codec::pad`) lets
     a codec choose its letterbox cell; the frame loop fills with it,
     `ClipDeck` fills composition gaps with it and `draw_enlarge_card` now
-    takes it. Everything the player draws follows the codec: a codec whose
+    takes it. Everything the player draws follows the codec (overlays:
+    superseded by (o)): a codec whose
     pad carries `DEFAULT_BG` gets `OverlayScale::Plain` from
     `OverlayScale::for_codec` at every size — the progress, dial, hint,
     info and zoom rows stay one-cell printable ASCII (never the big
@@ -2662,6 +2668,43 @@ facade surface + this hidden module.)
     the floor in `the_cap_holds_where_it_binds`; `codecs.rs` checks the
     floor and the hue family on the real stream and fails on any escape
     that is not a CSI. Both ascii goldens re-blessed, colors only.
+    (o) **One HUD for every codec; the picture/UI boundary** (McKay: under
+    `ascii` "our text for our terminal instructions … is much too small" on
+    a zoomed-out terminal, and "we can use those pixels for the 2D only, as
+    long as we draft a rule and a clear way to ensure that this happens").
+    The rule: ascii codec: picture cells are printable ASCII 0x20-0x7E,
+    background default or a shade within the cap; block glyphs and
+    full-strength backgrounds are allowed only in UI overlay cells (HUD
+    text), which use the same big text as pixels/letters. (k)'s
+    `OverlayScale::Plain` and `for_codec` are removed: the player and the
+    deck call `for_grid` under every codec, so the progress, dial, hint,
+    info and zoom rows draw with the same scale, layout, colors and big
+    half-block font as pixels/letters (Big from 240x36 on block tiers,
+    Normal on the ASCII glyph tier). The boundary is `pipeline::UiRows`:
+    `paint_line` and every `draw_*_overlay*` return the bands they drew,
+    `Player::ui_rows` / `ClipDeck::ui_rows` report the last frame's (reset
+    on reflow), and every other cell is picture, pad, gap or the enlarge
+    card, all still held to (m)/(n). The card is unchanged (one-cell text on
+    the codec's pad, which is SGR 49 under ascii). Pixels and letters
+    streams stay byte-identical: they already used `for_grid`. Tests:
+    `pipeline::tests::ui_rows_are_exactly_the_rows_the_overlays_draw`
+    (every painter, both tiers, 80x24..1000x300 and the 239/240 boundary,
+    UI rows = painted rows); `codecs.rs`
+    `ascii_picture_cells_are_printable_ascii_over_a_capped_shade` (the
+    deck's escape stream replayed with cursor tracking, sizes 1x1..1000x300
+    with resizes and gaps, every tier × palette, overlays off and on: every
+    printed cell outside `ClipDeck::ui_rows` is printable ASCII within the
+    cap; with overlays on the UI rows carry block text exactly on block
+    tiers), `ascii_draws_the_same_hud_as_pixels_and_letters` (progress,
+    hints, info, dial, each and combined, 80x24..1000x300 and the Big
+    boundary: ascii's UI rows equal pixels' and letters' cell for cell, its
+    picture rows stay within the rule),
+    `ascii_without_overlays_is_all_picture_on_big_grids` (no UI rows, every
+    cell ASCII and `cell_within_cap` at every depth); `zoom_overlay.rs`
+    `big_text_on_wide_grids_and_a_clean_hide` (ascii draws the big bands
+    at 320x90) and `every_overlay_on_tiny_and_threshold_grids` (one HUD for
+    every codec). The ASCII glyph tier still never draws blocks
+    (`overlay_scale_tiers`).
 28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
     should take a video from anywhere on the desktop, process it, and land
     it in the folder where the user's processed videos live"). The shape of

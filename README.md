@@ -117,7 +117,8 @@ on edges, and blocks only where the picture is lit (`█` for near-white, `▀�
 for a bright half). On truecolor and 256-color terminals each character sits
 on a dim tint of its cell's colour, so faces and midtones hold their shape;
 16-color and mono terminals keep a black background.
-`ascii` is letters with only printable ASCII and no blocks. Behind each
+`ascii` is letters with only printable ASCII and no blocks in the picture
+(the controls overlay is the same as in the other codecs). Behind each
 character it paints a dim shade of the character's own colour, the way
 letters does, but only ever a shade: no channel above 96/255 (38%), at most
 0.375× the character's luminance, and a blank cell at most 24/255, so no cell
@@ -162,9 +163,13 @@ zoom-out shortcut (often Cmd - on macOS; bindings vary by terminal). The
 player can't change the font itself
 ([docs/research/zoom.md](docs/research/zoom.md)), so below 160 columns the
 overlay says so. At 240 or more columns and 36 or more rows, on a non-ASCII
-tier, the overlay text is drawn in big block letters so it stays readable,
-except under the `ascii` codec, where overlays stay plain one-character-per-cell
-ASCII on the terminal's default background.
+tier, the overlay text is drawn in big block letters so it stays readable.
+Every codec draws the same overlay, `ascii` included.
+
+**The `ascii` rule.** Picture cells are printable ASCII 0x20-0x7E, background
+default or a shade within the cap; block glyphs and full-strength backgrounds
+are allowed only in UI overlay cells (HUD text), which use the same big text as
+pixels/letters.
 
 Useful flags:
 - `--loop`, `--seek 1:30`, `--fps-cap 30`

@@ -176,15 +176,19 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - Every ASCII-tier glyph is printable ASCII `0x20..=0x7E` (CP437-safe).
     `crates/auto-ascii-core/tests/codec_props.rs` holds `letters` to its repertoire on every
     tier.
-  - While `ascii` is active the player emits no non-ASCII byte and no background SGR outside
-    the capped shade, on any tier or palette: every shaded cell obeys `backing_within_cap` on
-    the colors actually sent, reaches `SHADE_FLOOR`, and on 256-color is one of `SHADES_256` in
-    the glyph's hue family; 16-color and mono carry no background
-    SGR at all, and letterbox pads and gap frames (`Codec::pad`), every overlay row
-    (`OverlayScale::Plain`), the enlarge card and every resize in between keep SGR 49.
+  - **The `ascii` rule:** ascii codec: picture cells are printable ASCII 0x20-0x7E, background
+    default or a shade within the cap; block glyphs and full-strength backgrounds are allowed
+    only in UI overlay cells (HUD text), which use the same big text as pixels/letters. The
+    boundary is `pipeline::UiRows`: every overlay painter returns the rows it drew, and
+    `Player::ui_rows` / `ClipDeck::ui_rows` report the last frame's. Every cell outside them
+    is picture: on any tier or palette it obeys `backing_within_cap` on the colors actually
+    sent, reaches `SHADE_FLOOR`, and on 256-color is one of `SHADES_256` in the glyph's hue
+    family; 16-color and mono picture cells carry no background SGR, and letterbox pads and
+    gap frames (`Codec::pad`), the enlarge card and every resize in between keep SGR 49.
     `crates/auto-ascii/tests/codecs.rs` replays the real escape stream through the deck, with
-    every overlay on, from 1x1 to 400x120, to check this; `codec_props.rs` checks
-    `cell_within_cap` on random planes.
+    overlays off and on, from 1x1 to 1000x300, tracking each printed cell's row against
+    `ClipDeck::ui_rows`, and checks that ascii's UI rows equal pixels' and letters' cell for
+    cell; `codec_props.rs` checks `cell_within_cap` on random planes.
   - Cells without `attrs::DEFAULT_BG` paint byte for byte as before, so `pixels` and `letters`
     streams are unchanged.
   - Adding a codec means one module plus one `registry!` line. The line generates the `Codec`
@@ -295,22 +299,23 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   overlay is up; `v` pins it. The info row above it shows clip name, codec, settings status and
   grid size (` 213x58 cells `). Below 160 columns a zoom hint appears (`Cmd - to zoom out: more
   cells, a sharper picture`, `Ctrl` off macOS). From 240×36 on block tiers, overlay text is drawn
-  in big 3×5 block letters, except under the `ascii` codec, where every row stays one-cell ASCII
-  text in a bright neutral color on the terminal's own background (the row is cleared with
-  default-background spaces, so it reads over the picture).
+  in big 3×5 block letters. The overlay is UI, not picture, so every codec (`ascii` included)
+  draws it the same, cell for cell.
 - **Code:** `crates/auto-ascii/src/pipeline.rs` `draw_progress_overlay_clips`,
   `draw_dial_overlay`, `draw_hint_overlay` (`hint_line`, which drops items by `HINT_DROP_ORDER`
-  to fit), `draw_info_overlay` (`zoom_line`, `ZOOM_HINT_MAX_COLS`), `OverlayScale::for_codec` /
-  `for_grid` (`BIG_OVERLAY_MIN_COLS`, `BIG_OVERLAY_MIN_ROWS`, `BIG_FONT`, `paint_line`;
-  `Plain` for a codec whose pad keeps the terminal background), `draw_enlarge_card` (on the
-  codec's pad). Visibility policy
+  to fit), `draw_info_overlay` (`zoom_line`, `ZOOM_HINT_MAX_COLS`), `OverlayScale::for_grid`
+  (`BIG_OVERLAY_MIN_COLS`, `BIG_OVERLAY_MIN_ROWS`, `BIG_FONT`, `paint_line`), `UiRows` (the
+  rows each painter returns; `Player::ui_rows`, `ClipDeck::ui_rows`), `draw_enlarge_card` (on
+  the codec's pad). Visibility policy
   is `crates/auto-ascii/src/player.rs` `ProgressTimer`, `HintState`, `DIAL_OVERLAY_HIDE_AFTER`
   (2.5 s) and `OVERLAY_HIDE_AFTER` (1 s).
 - **Invariants:**
   - Overlays are drawn over the composed grid and never touch temporal state or the layer mask.
     The parity and console goldens render the bare grid unblessed.
   - Overlay text is printable ASCII (other characters print as `?`). Big text needs `▀▄█`, so
-    the ASCII tier and the `ascii` codec keep one-cell text at every size.
+    the ASCII glyph tier keeps one-cell text at every size, under every codec.
+  - The overlay's scale, layout, colors and glyphs depend on the grid and glyph tier only, never
+    the codec, and its rows are exactly `UiRows`.
   - Under `pixels` and `letters` the overlays paint byte for byte as before `ascii` existed.
   - The player cannot change the terminal font. The zoom hint is the whole feature
     (`docs/research/zoom.md`).
