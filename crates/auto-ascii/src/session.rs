@@ -44,34 +44,10 @@ impl std::fmt::Debug for RenderSession {
 }
 
 impl RenderSession {
-    /// Open an ASCI asset for terminal-free rendering.
-    ///
-    /// The file is memory-mapped read-only and opened as a container
-    /// (header, TRLR, chunk roll, frame index), so a corrupt or truncated
-    /// asset fails HERE rather than at the first frame; frames are decoded
-    /// on demand in [`render`](Self::render). Defaults:
-    /// [`PaletteChoice::Auto`] (Unicode blocks — there is no terminal to
-    /// probe) and cell aspect 2.0 (see
-    /// [`set_cell_aspect`](Self::set_cell_aspect)).
-    ///
-    /// One asset is a one-clip composition internally, so this and
-    /// [`from_composition`](Self::from_composition) are the same code path
-    /// — the clip's frames map to composition frames one for one.
     pub fn open(path: impl AsRef<Path>) -> Result<RenderSession, Error> {
         RenderSession::from_composition(Composition::single(path.as_ref()))
     }
 
-    /// Open a composition TOML for terminal-free rendering.
-    ///
-    /// `library_dir` is where a bare library NAME in the file resolves
-    /// (`<library>/<name>.ascii`); pass
-    /// [`Composition::default_library_dir`] for the usual
-    /// `$AUTO_ASCII_HOME/library` rule, or `None` to accept only paths.
-    ///
-    /// # Errors
-    /// [`Error::Config`] for a malformed file (every clip-level message
-    /// names the clip index) and [`Error::Io`]/[`Error::Format`] when the
-    /// file or one of its clips cannot be read.
     #[cfg(feature = "compose")]
     pub fn open_composition(
         path: impl AsRef<Path>,
@@ -81,13 +57,6 @@ impl RenderSession {
         RenderSession::from_composition(comp)
     }
 
-    /// Render a [`Composition`] built in memory — what
-    /// [`open_composition`](RenderSession::open_composition) is on top of,
-    /// and what a caller who assembled the clips itself wants.
-    ///
-    /// Resolving the composition (reading each clip's header) happens here
-    /// if the caller has not done it already; the clips' decode pipelines
-    /// are built lazily, as the timeline reaches them.
     pub fn from_composition(mut comp: Composition) -> Result<RenderSession, Error> {
         if !comp.is_resolved() {
             comp.resolve()?;
@@ -110,13 +79,6 @@ impl RenderSession {
         self.deck.set_glyph_tier(tier);
     }
 
-    /// Compose asset frame `frame_idx` into a `cols × rows` cell grid and
-    /// return it. The grid is letterboxed to the asset's aspect (blank
-    /// pads); below the 32×9 minimum it renders a centered "enlarge
-    /// terminal" card. The returned borrow is valid until the next call.
-    ///
-    /// See the type-level docs for the temporal-state semantics of
-    /// out-of-order `frame_idx` values.
     pub fn render(
         &mut self,
         frame_idx: u32,
@@ -140,49 +102,23 @@ impl RenderSession {
         Ok(self.deck.showing())
     }
 
-    /// Frames per second the asset was authored at — drive your clock with
-    /// this (frame to show at time `t` is `(t * fps()) as u32`).
     pub fn fps(&self) -> f64 {
         self.comp.fps()
     }
 
-    /// Total frames in the asset — or on the composition's timeline at
-    /// [`fps`](RenderSession::fps) (always > 0).
     pub fn frame_count(&self) -> u32 {
         self.comp.frame_count()
     }
 
-    /// The asset's intended picture aspect ratio, width / height, from the
-    /// ASCI header's `aspect_num/den` (16:9 assets return ≈1.778; degenerate
-    /// zero fields fall back to 16:9). This is the exact ratio the letterbox
-    /// inside [`render`](Self::render) targets; it is exposed for embedders
-    /// sizing their own viewport.
     pub fn aspect(&self) -> f64 {
         self.comp.aspect()
     }
 
-    /// Set the glyph repertoire for subsequent renders. [`PaletteChoice::Auto`]
-    /// means Unicode blocks here (no terminal to probe). Changing the
-    /// palette resets temporal state — remembered ramp indices are stale
-    /// under a different ramp.
     pub fn set_palette(&mut self, palette: PaletteChoice) {
         self.palette = palette;
         self.apply_glyph_tier();
     }
 
-    /// Assert which font the output medium renders with, by ink-coverage
-    /// table: a built-in name — `conservative`, `dejavu-sans-mono`,
-    /// `liberation-mono`, `ubuntu-mono`, `noto-sans-mono` — or a path to a
-    /// `auto-ascii-factory font-table` TOML. `None` clears it.
-    ///
-    /// The table's recorded repertoire then *vetoes* the palette choice:
-    /// a tier whose glyphs the font is missing degrades (braille →
-    /// unicode → ascii) instead of rendering missing-glyph boxes. Like
-    /// [`set_palette`](Self::set_palette), this resets temporal state.
-    ///
-    /// # Errors
-    /// [`Error::Config`] when the spec is neither a built-in name nor a
-    /// readable, parseable table file.
     pub fn set_font_table(&mut self, name_or_path: Option<&str>) -> Result<(), Error> {
         self.font_table = match name_or_path {
             None => None,
@@ -192,25 +128,14 @@ impl RenderSession {
         Ok(())
     }
 
-    /// Choose the glyph codec for subsequent renders — how each cell's
-    /// features become a glyph (see [`Codec`]). The default,
-    /// [`Codec::Pixels`], is the classic picture-like mapping; switching
-    /// resets temporal state, like [`set_palette`](Self::set_palette).
     pub fn set_codec(&mut self, codec: Codec) {
         self.deck.set_codec(codec);
     }
 
-    /// The glyph codec in force.
     pub fn codec(&self) -> Codec {
         self.deck.codec()
     }
 
-    /// Set the cell aspect ratio `cell_h / cell_w` used by the letterbox math.
-    /// Terminal fonts are ≈2.0 (the default); pass 1.0 if your cells are
-    /// square (e.g. a texture atlas of square tiles).
-    ///
-    /// # Errors
-    /// [`Error::Config`] unless `0 < cell_aspect` and it is finite.
     pub fn set_cell_aspect(&mut self, cell_aspect: f64) -> Result<(), Error> {
         if !cell_aspect.is_finite() || cell_aspect <= 0.0 {
             return Err(Error::Config(format!(

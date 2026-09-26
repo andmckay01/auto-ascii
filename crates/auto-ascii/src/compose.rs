@@ -1,16 +1,4 @@
-//! Playback never needs an export — a composition plays virtually,
-//! switching decoders at clip boundaries — but one file is sometimes what
-//! you want to hand someone, and `auto-ascii cut` is exactly an export of a
-//! one-clip composition.
-//!
-//! What it does per output frame: locate the clip on top, decode its planes
-//! (sequential roll where the walk is sequential, FIDX seek otherwise) and
-//! hand them to [`AsciiWriter::write_frame`](auto_ascii_format::AsciiWriter::write_frame) unchanged — planes are copied,
-//! never re-derived, so the export is exactly what the composition plays.
-//! Gaps write black planes. The NORM table is built in one pre-pass over
-//! the clips' own shot tables, with no decoding at all: one record per
-//! (clip slice ∩ source shot), rebased to output frames and cut-flagged at
-//! every clip boundary and gap edge.
+//! Composition-plane and NORM export into an ASCI asset.
 
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -29,11 +17,7 @@ const FACTORY_PARAMS_ZSTD_LEVEL: i32 = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExportOptions {
-    /// Keyframe cadence for the temporal-delta filter (params.toml
-    /// `[build] keyframe_ivl`).
     pub keyframe_ivl: u8,
-    /// zstd level for frame payloads (params.toml `[build] zstd_level`,
-    /// default 15).
     pub zstd_level: i32,
 }
 
@@ -46,40 +30,15 @@ impl Default for ExportOptions {
     }
 }
 
-/// What [`export`] wrote.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExportReport {
-    /// Frames written (the composition's frame count).
     pub frames: u32,
-    /// Frame rate of the written asset (the composition fps).
     pub fps: f64,
-    /// Size of the file on disk.
     pub bytes: u64,
-    /// NORM records written: one per (clip slice ∩ source shot), plus one
-    /// per gap.
     pub shots: u32,
-    /// How many of those carry the CUT flag (the player resets hysteresis
-    /// there).
     pub cuts: u32,
 }
 
-/// Flatten `comp` into one ASCI asset at `out`.
-///
-/// `comp` must be resolved ([`Composition::resolve`]) and every clip must
-/// share one base resolution and one plane set — mixed shapes play fine but
-/// cannot be written into a single header, and the error says which clip to
-/// re-import.
-///
-/// Atomic: the frames go to `<out>.part` and are renamed over `out` only
-/// once the container is complete (FIDX, TRLR and the patched header), so a
-/// failure leaves an existing `out` exactly as it was and no debris behind.
-/// An existing `out` is replaced on success.
-///
-/// # Errors
-/// [`Error::Config`] for an unresolved composition or a clip whose shape
-/// does not match the first one; [`Error::Io`]/[`Error::Format`] when a
-/// clip cannot be read or the output cannot be written;
-/// [`Error::Decode`] on a corrupt frame payload.
 pub fn export(
     comp: &Composition,
     out: &Path,

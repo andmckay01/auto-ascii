@@ -9,8 +9,6 @@ use auto_ascii::pipeline::color_depth;
 use auto_ascii::{Codec, Composition, PaletteChoice, RepaintMode};
 use auto_ascii_term::{Backend, Caps, ColorTier, Event, SimBackend};
 
-/// CLI face of [`auto_ascii::RepaintMode`] (one render path — "full" is diff
-/// with `invalidate()` every frame, the default).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum RepaintArg {
     #[value(help = "Invalidate every frame → full escape stream each present (default)")]
@@ -28,10 +26,6 @@ impl From<RepaintArg> for RepaintMode {
     }
 }
 
-/// Charset-tier override for palette selection. `auto` derives
-/// the tier from the probed `Caps.glyph_support`/`Caps.glyphs`; the explicit
-/// values force it (e.g. `--palette braille` on a terminal whose font is
-/// known-good — braille is never enabled from passive hints alone).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum PaletteArg {
     Auto,

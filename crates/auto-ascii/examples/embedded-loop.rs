@@ -1,5 +1,4 @@
-//! Render frames into a caller-owned loop without a terminal session.
-//! Run with an asset path; `draw` demonstrates consuming the cell grid.
+//! Caller-owned render-loop example.
 
 use std::time::Duration;
 

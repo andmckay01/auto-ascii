@@ -1,17 +1,4 @@
-//! [`ClipDeck`](crate::deck::ClipDeck) — one decode pipeline per composition clip, created on
-//! first use.
-//!
-//! A composition plays virtually: nothing is re-encoded, so an unbounded
-//! stitch costs one mmap and one [`pipeline::Player`] per clip that is
-//! actually reached. The deck owns those, forwards the render calls to
-//! whichever clip is on top, and carries the presentation state
-//! (overlays, dials, compose params) ACROSS a clip switch — the run loop
-//! sets it once and the next clip inherits it.
-//!
-//! Three callers share this: [`crate::RenderSession`] (no backend),
-//! `crate::Player`'s run loop, and the `auto-ascii-player --sim` harness.
-//! Single assets go through it too, as a one-clip composition, so there is
-//! exactly one clip-switch implementation in the tree.
+//! Resident clip pipelines, timeline frames and overlay dispatch.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -39,31 +26,16 @@ fn add_stage(a: StageNs, b: StageNs) -> StageNs {
     }
 }
 
-/// How every clip player in a deck is built — inputs the caller already
-/// resolved: probed caps for the terminal player, headless defaults for
-/// [`crate::RenderSession`].
 #[derive(Clone, Copy, Debug)]
 pub struct DeckConfig {
-    /// Cell aspect `cell_h_px / cell_w_px`.
     pub cell_aspect: f64,
-    /// Invalidate before every present (`RepaintMode::Full`).
     pub repaint_full: bool,
-    /// Color depth of the output medium.
     pub color: ColorDepth,
-    /// Glyph repertoire (already through any font-table veto).
     pub glyph_tier: GlyphTier,
 }
 
-/// How many clip pipelines stay live at once. Each one holds decode
-/// buffers sized for its base resolution plus the asset's FIDX — order
-/// megabytes for a 480×270 six-plane clip — and a composition can stitch
-/// an unbounded number of clips, so the deck keeps the most recently
-/// fronted few and drops the rest. Re-opening an evicted clip is the
-/// ordinary lazy path, and it comes back cold — which is the temporal
-/// reset a return to a clip wants anyway.
 pub const MAX_LIVE_CLIPS: usize = 8;
 
-/// One [`pipeline::Player`] per clip, opened on demand (module docs).
 pub struct ClipDeck {
     players: Vec<Option<pipeline::Player<'static>>>,
     maps: Vec<Option<Mmap>>,
@@ -100,9 +72,6 @@ impl std::fmt::Debug for ClipDeck {
 }
 
 impl ClipDeck {
-    /// A deck over `paths` (a composition's clips, in file order). Nothing
-    /// is opened until a clip is first fronted by
-    /// [`render_at`](ClipDeck::render_at) or [`present_at`](ClipDeck::present_at).
     pub fn new(paths: Vec<PathBuf>, cfg: DeckConfig) -> ClipDeck {
         let n = paths.len();
         ClipDeck {
@@ -130,25 +99,18 @@ impl ClipDeck {
         }
     }
 
-    /// Clips in the deck.
     pub fn len(&self) -> usize {
         self.paths.len()
     }
 
-    /// Whether the deck has no clips (never, for a resolved composition).
     pub fn is_empty(&self) -> bool {
         self.paths.is_empty()
     }
 
-    /// Adopt a new grid size. Players are reflowed lazily, when they are
-    /// next fronted — a composition may hold clips that never play.
     pub fn set_size(&mut self, cols: u16, rows: u16) {
         self.size = (cols, rows);
     }
 
-    /// The grid size in force. [`drain_events`](ClipDeck::drain_events)
-    /// adopts resizes itself, so a run loop watching for "did anything
-    /// change?" reads this rather than the event it never sees.
     pub fn size(&self) -> (u16, u16) {
         self.size
     }
@@ -170,23 +132,12 @@ impl ClipDeck {
         Ok(())
     }
 
-    /// Reset the fronted clip's temporal state (the backward-jump rule —
-    /// a seek must not ghost pre-seek edges into the landing frame).
     pub fn reset_active(&mut self) {
         if let Some(idx) = self.active {
             self.player(idx).reset_temporal_state();
         }
     }
 
-    /// Compose one composition frame — the clip [`Composition::locate_frame`]
-    /// put on top at its own local frame, or a gap — without a backend
-    /// ([`crate::RenderSession`]). Read the result with
-    /// [`showing`](ClipDeck::showing).
-    ///
-    /// This is the whole time→picture dispatch, in one place: every caller
-    /// hands it what `locate_frame` said and nothing decides anything twice.
-    ///
-    /// [`Composition::locate_frame`]: crate::Composition::locate_frame
     pub fn render_at(&mut self, located: Option<Located>) -> Result<(), Error> {
         let Some(loc) = located else {
             self.compose_gap();
@@ -197,9 +148,6 @@ impl ClipDeck {
         self.player(loc.clip_idx).render_grid(loc.local_frame)
     }
 
-    /// [`render_at`](ClipDeck::render_at) and present it. Gap frames are
-    /// presented from the deck's own blank grid; a clip frame goes through
-    /// its pipeline's present, so the diff/damage accounting is untouched.
     pub fn present_at<B: Backend>(
         &mut self,
         backend: &mut B,
@@ -223,9 +171,6 @@ impl ClipDeck {
         self.player(loc.clip_idx).render_present(backend, loc.local_frame)
     }
 
-    /// The grid on screen after the last [`render_at`](ClipDeck::render_at)
-    /// or [`present_at`](ClipDeck::present_at): the fronted clip's, or the
-    /// blank gap grid.
     pub fn showing(&self) -> &Grid<Cell> {
         match self.active.and_then(|idx| self.players[idx].as_ref()) {
             Some(player) => player.grid(),
@@ -233,12 +178,6 @@ impl ClipDeck {
         }
     }
 
-    /// Drain the backend's events for the whole deck: a resize is adopted
-    /// by the deck (and by the fronted player now, the rest when they are
-    /// next fronted) and a seek resets the fronted clip's temporal state —
-    /// the same contract as
-    /// [`pipeline::Player::drain_events`], which is also what a gap frame
-    /// needs when no clip is fronted at all.
     pub fn drain_events<B: Backend>(&mut self, backend: &mut B) -> Drained {
         let (drained, resize) = pipeline::drain_backend_events(backend);
         if let Some((cols, rows)) = resize {
@@ -256,20 +195,16 @@ impl ClipDeck {
         drained
     }
 
-    /// Show/hide the bottom-row progress overlay on whichever clip plays.
     pub fn set_progress_overlay(&mut self, visible: bool) {
         self.mark_hidden_during_gap(self.progress_visible, visible);
         self.progress_visible = visible;
     }
 
-    /// Show/hide the key-hints row.
     pub fn set_hint_overlay(&mut self, visible: bool) {
         self.mark_hidden_during_gap(self.hint_visible, visible);
         self.hint_visible = visible;
     }
 
-    /// Set (or clear) the info row drawn above the hints while they show —
-    /// clip name, codec, settings state. Copies only when the text changes.
     pub fn set_info_overlay(&mut self, info: Option<&str>) {
         match info {
             None => {
@@ -284,28 +219,19 @@ impl ClipDeck {
         }
     }
 
-    /// Report playback as frozen in the progress row: `|` bar head,
-    /// ` PAUSED ` where the percentage goes. The deck holds no
-    /// transport state of its own — this is the run loop's flag, forwarded.
     pub fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
     }
 
-    /// Show/clear the live-dial readout.
     pub fn set_dial_overlay(&mut self, dial: Option<(&'static str, u8, u8)>) {
         self.mark_hidden_during_gap(self.dial.is_some(), dial.is_some());
         self.dial = dial;
     }
 
-    /// Report the COMPOSITION's position in the progress row instead of the
-    /// fronted clip's own. `None` keeps the clip's own reading.
     pub fn set_progress_context(&mut self, ctx: Option<ProgressContext>) {
         self.progress_ctx = ctx;
     }
 
-    /// Retune the compositor on every clip, present and future (the live
-    /// dials — a renderer change; each player resets its hysteresis memory
-    /// when its params actually move, see `pipeline::Player::set_compose_params`).
     pub fn set_compose_params(&mut self, params: ComposeParams) {
         self.compose_params = Some(params);
         for player in self.players.iter_mut().flatten() {
@@ -313,14 +239,10 @@ impl ClipDeck {
         }
     }
 
-    /// The glyph codec in force.
     pub fn codec(&self) -> Codec {
         self.codec
     }
 
-    /// Switch the glyph codec on every clip, present and future (the `/`
-    /// key; each player resets its temporal state when the codec actually
-    /// changes, see `pipeline::Player::set_codec`).
     pub fn set_codec(&mut self, codec: Codec) {
         self.codec = codec;
         for player in self.players.iter_mut().flatten() {
@@ -328,9 +250,6 @@ impl ClipDeck {
         }
     }
 
-    /// Re-key palette selection on every clip (takes effect at the next
-    /// reflow, so every player's dims are dropped) and reset temporal state
-    /// — remembered ramp indices are stale under a different ramp.
     pub fn set_glyph_tier(&mut self, glyph_tier: GlyphTier) {
         self.cfg.glyph_tier = glyph_tier;
         for (idx, player) in self.players.iter_mut().enumerate() {
@@ -342,7 +261,6 @@ impl ClipDeck {
         }
     }
 
-    /// Override the cell aspect on every clip (next reflow).
     pub fn set_cell_aspect(&mut self, cell_aspect: f64) {
         self.cfg.cell_aspect = cell_aspect;
         for (idx, player) in self.players.iter_mut().enumerate() {
@@ -353,7 +271,6 @@ impl ClipDeck {
         }
     }
 
-    /// Collect the winning-layer mask on every clip (the eval/`--sim` view).
     pub fn enable_layer_mask(&mut self) {
         self.layer_mask = true;
         for player in self.players.iter_mut().flatten() {
@@ -361,21 +278,16 @@ impl ClipDeck {
         }
     }
 
-    /// The fronted clip's layer mask for the last rendered frame.
     pub fn layer_mask(&self) -> Option<&Grid<u8>> {
         self.active
             .and_then(|idx| self.players[idx].as_ref())
             .and_then(pipeline::Player::layer_mask)
     }
 
-    /// Per-stage wall times for the whole composition (`--sim`'s JSON
-    /// line): every live clip, plus what evicted clips and gap presents
-    /// already spent. Monotonic — dropping a clip never loses its time.
     pub fn stage(&self) -> StageNs {
         self.players.iter().flatten().fold(self.carried, |acc, p| add_stage(acc, p.stage()))
     }
 
-    /// Clip pipelines resident right now — at most [`MAX_LIVE_CLIPS`].
     pub fn live_clips(&self) -> usize {
         self.players.iter().filter(|p| p.is_some()).count()
     }

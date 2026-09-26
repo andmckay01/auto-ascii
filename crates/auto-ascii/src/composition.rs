@@ -5,7 +5,6 @@ use memmap2::Mmap;
 
 use crate::error::Error;
 
-/// The only composition schema version this build reads.
 pub const SCHEMA_VERSION: i64 = 1;
 
 const FRAME_EPS: f64 = 1e-6;
@@ -33,29 +32,16 @@ impl Part {
     }
 }
 
-/// One clip placed on a composition timeline, exactly as written in the
-/// TOML: `asset` plus the three optional times. None of this is validated
-/// until [`Composition::resolve`] reads the asset headers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Clip {
-    /// The `asset` string as written (the file stem for
-    /// [`Composition::single`]) — what `compose show` prints.
     pub name: String,
-    /// The resolved asset path: an existing path relative to the
-    /// composition file, else `<library>/<asset>.ascii`.
     pub path: PathBuf,
-    /// Trim start inside the asset, seconds (default 0).
     pub in_secs: f64,
-    /// Trim end inside the asset, seconds; `None` means the asset's end.
     pub out_secs: Option<f64>,
-    /// Position on the composition timeline, seconds; `None` means the end
-    /// of the previous clip (0 for the first).
     pub at_secs: Option<f64>,
 }
 
 impl Clip {
-    /// An untrimmed, sequentially placed clip at `path`, named after its
-    /// file stem.
     pub fn new(path: impl Into<PathBuf>) -> Clip {
         let path = path.into();
         let name = path
@@ -66,46 +52,20 @@ impl Clip {
     }
 }
 
-/// One clip's resolved place on the composition timeline, plus the header
-/// facts [`Composition::resolve`] read from its asset. Parallel to
-/// [`Composition::clips`] — index `i` of one describes index `i` of the
-/// other. This is what `compose show` prints and what `export` validates.
-///
-/// The timeline is kept in FRAMES at the composition rate, and the seconds
-/// are derived from them. Seconds alone cannot express a boundary: a clip
-/// whose length is 0.3 s lands on 0.30000000000000004 in binary floating
-/// point, and the frame that starts at exactly 0.3 s would fall to the
-/// wrong clip — or leave a 1e-16 s "gap" for `compose show` to print.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClipSpan {
-    /// First composition frame this clip owns.
     pub start_frame: u32,
-    /// One past the last — EXCLUSIVE, so abutting clips never both own a
-    /// frame and a sequential composition has no gaps at all.
     pub end_frame: u32,
-    /// Start on the composition timeline, seconds: `start_frame` at the
-    /// composition rate (exact on the frame grid, by construction).
     pub start_secs: f64,
-    /// End on the composition timeline, seconds — exclusive, and exactly
-    /// the next clip's `start_secs` when they abut.
     pub end_secs: f64,
-    /// Trim start inside the asset, seconds.
     pub in_secs: f64,
-    /// Trim end inside the asset, seconds (exclusive).
     pub out_secs: f64,
-    /// Asset fps numerator (the exact header rational, never a float).
     pub fps_num: u16,
-    /// Asset fps denominator.
     pub fps_den: u16,
-    /// Frames in the source asset.
     pub frame_count: u32,
-    /// Asset base plane width.
     pub base_w: u16,
-    /// Asset base plane height.
     pub base_h: u16,
-    /// Asset picture aspect numerator (header `aspect_num`).
     pub aspect_num: u16,
-    /// Asset picture aspect denominator.
     pub aspect_den: u16,
     in_frame: u32,
     rate: Option<f64>,
@@ -114,32 +74,26 @@ pub struct ClipSpan {
 }
 
 impl ClipSpan {
-    /// Source asset frame rate.
     pub fn fps(&self) -> f64 {
         f64::from(self.fps_num) / f64::from(self.fps_den)
     }
 
-    /// Length of this clip on the composition timeline, frames.
     pub fn len_frames(&self) -> u32 {
         self.end_frame - self.start_frame
     }
 
-    /// Length of this clip on the composition timeline, seconds.
     pub fn len_secs(&self) -> f64 {
         self.end_secs - self.start_secs
     }
 
-    /// Full duration of the source asset, seconds (before `in`/`out`).
     pub fn source_secs(&self) -> f64 {
         f64::from(self.frame_count) / self.fps()
     }
 
-    /// The asset's plane registry, in subblock order.
     pub fn planes(&self) -> &[u8] {
         &self.plane_ids[..usize::from(self.plane_count)]
     }
 
-    /// Whether this clip owns composition frame `frame`.
     pub fn contains_frame(&self, frame: u32) -> bool {
         frame >= self.start_frame && frame < self.end_frame
     }
@@ -154,49 +108,31 @@ impl ClipSpan {
     }
 }
 
-/// A `[start, end)` stretch of the composition timeline, on the frame grid
-/// with the seconds derived from it — what [`Composition::gaps`] reports
-/// and what an [`Overlap`] covers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Span {
-    /// First composition frame in the stretch.
     pub start_frame: u32,
-    /// One past the last (exclusive).
     pub end_frame: u32,
-    /// `start_frame` at the composition rate.
     pub start_secs: f64,
-    /// `end_frame` at the composition rate.
     pub end_secs: f64,
 }
 
 impl Span {
-    /// Frames in the stretch.
     pub fn len_frames(&self) -> u32 {
         self.end_frame - self.start_frame
     }
 }
 
-/// Two clips sharing a stretch of timeline: `over` is listed later, so it
-/// is the one on screen ([`Composition::overlaps`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Overlap {
-    /// The shared stretch.
     pub span: Span,
-    /// Index of the clip underneath (listed first).
     pub under: usize,
-    /// Index of the clip on top (listed later).
     pub over: usize,
 }
 
-/// What clips listed after it do to a clip ([`Composition::mark_for`]) —
-/// `compose show`'s verdict column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClipMark {
-    /// Every frame of it reaches the screen.
     Clear,
-    /// Some frames are covered by a later clip.
     Partial,
-    /// None of it is ever on top: every frame is covered.
     Hidden,
 }
 
@@ -213,13 +149,9 @@ fn merge_spans(ranges: impl Iterator<Item = (u32, u32)>) -> Vec<(u32, u32)> {
     merged
 }
 
-/// Where a composition time landed: which clip is on top, and which of its
-/// own frames is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Located {
-    /// Index into [`Composition::clips`] / [`Composition::timeline`].
     pub clip_idx: usize,
-    /// Frame index inside that clip's own asset.
     pub local_frame: u32,
 }
 
@@ -239,8 +171,6 @@ pub struct Composition {
 }
 
 impl Composition {
-    /// A one-clip composition over `path`, untrimmed and starting at 0 —
-    /// what the player wraps a plain asset in so one code path serves both.
     pub fn single(path: impl Into<PathBuf>) -> Composition {
         let clip = Clip::new(path);
         let mut comp = Composition::from_clips(clip.name.clone(), vec![clip]);
@@ -248,8 +178,6 @@ impl Composition {
         comp
     }
 
-    /// A composition over clips built by hand — `auto-ascii cut` is exactly
-    /// this with one trimmed clip, exported.
     pub fn from_clips(name: impl Into<String>, clips: Vec<Clip>) -> Composition {
         Composition {
             name: name.into(),
@@ -266,38 +194,18 @@ impl Composition {
         }
     }
 
-    /// The composition's name: the TOML `name`, else the file stem.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// The clips as written, in file order.
     pub fn clips(&self) -> &[Clip] {
         &self.clips
     }
 
-    /// Whether [`resolve`](Composition::resolve) has succeeded.
     pub fn is_resolved(&self) -> bool {
         self.resolved
     }
 
-    /// Validate every clip and compute the timeline.
-    ///
-    /// Clips are placed in file order; `at` overrides the default position
-    /// (the end of the previous clip); the composition ends at the latest
-    /// clip end; the composition fps is the highest clip fps. Each clip is
-    /// opened as a container, not just header-parsed, so a truncated or
-    /// structurally corrupt asset fails HERE — before a `Player` has
-    /// touched the terminal. Idempotent: re-reads and recomputes.
-    ///
-    /// The placement itself is done in FRAMES at the composition rate (see
-    /// [`ClipSpan`]), which is what makes a boundary exact.
-    ///
-    /// # Errors
-    /// [`Error::Io`]/[`Error::Format`] when a clip cannot be opened or is
-    /// not a valid ASCI asset, and [`Error::Config`] — naming the clip
-    /// index — for an empty composition, an unplayable clip or a trim that
-    /// is not `0 <= in < out <= asset duration`.
     pub fn resolve(&mut self) -> Result<(), Error> {
         self.resolved = false;
         self.spans.clear();
@@ -403,47 +311,30 @@ impl Composition {
         Ok(())
     }
 
-    /// Composition frame rate: the highest clip fps.
     pub fn fps(&self) -> f64 {
         self.fps
     }
 
-    /// Composition fps as the exact `(num, den)` header rational of the
-    /// fastest clip — what [`crate::compose::export`] writes back.
     pub fn fps_ratio(&self) -> (u16, u16) {
         (self.fps_num, self.fps_den)
     }
 
-    /// Length of the timeline, seconds: the latest clip end.
     pub fn duration_secs(&self) -> f64 {
         self.duration_secs
     }
 
-    /// Frames on the composition timeline at [`fps`](Composition::fps).
     pub fn frame_count(&self) -> u32 {
         self.frame_count
     }
 
-    /// Picture aspect (width / height) of the first clip — the ratio an
-    /// embedder sizing one viewport for the whole composition wants.
     pub fn aspect(&self) -> f64 {
         self.aspect
     }
 
-    /// Each clip's resolved `[start, end)` on the composition, parallel to
-    /// [`clips`](Composition::clips) — the `compose show` table. Empty
-    /// until [`resolve`](Composition::resolve) succeeds.
     pub fn timeline(&self) -> &[ClipSpan] {
         &self.spans
     }
 
-    /// Which clip is on top at composition time `t_secs`, and which of its
-    /// frames shows.
-    ///
-    /// `None` is a gap — a black frame, not an error. The time is resolved
-    /// to the composition frame that covers it and answered from the frame
-    /// grid, so a boundary belongs to exactly one clip no matter how the
-    /// seconds round.
     pub fn locate(&self, t_secs: f64) -> Option<Located> {
         if !t_secs.is_finite() || t_secs < 0.0 || self.fps <= 0.0 {
             return None;
@@ -455,11 +346,6 @@ impl Composition {
         self.locate_frame(frame as u32)
     }
 
-    /// [`locate`](Composition::locate) for a composition FRAME — the form
-    /// every render path uses, and pure integer arithmetic.
-    ///
-    /// Clip ends are EXCLUSIVE, so abutting clips hand over cleanly, and
-    /// where clips overlap the LATER-listed one is on top.
     pub fn locate_frame(&self, frame_idx: u32) -> Option<Located> {
         self.spans
             .iter()
@@ -469,20 +355,10 @@ impl Composition {
             .map(|(clip_idx, s)| Located { clip_idx, local_frame: s.local_frame(frame_idx) })
     }
 
-    /// Whether this is a STITCH of clips rather than one plain asset
-    /// wrapped for the render path ([`single`](Composition::single)).
-    /// Only presentation depends on it: what an error message calls the
-    /// thing, and whether the progress row prints ` c/N `.
     pub fn is_stitch(&self) -> bool {
         self.stitch
     }
 
-    /// The composition frame playing at `secs` — the one bound check every
-    /// `--seek` goes through (`auto-ascii-player`, `--sim`, `--bench-seek`).
-    ///
-    /// # Errors
-    /// [`Error::Config`] for a negative, infinite or NaN time, and for one
-    /// past the end — naming the composition or the asset as appropriate.
     pub fn frame_at_secs(&self, secs: f64) -> Result<u32, Error> {
         if !secs.is_finite() || secs < 0.0 {
             return Err(Error::Config(format!("seek must be finite and >= 0 (got {secs}s)")));
@@ -498,9 +374,6 @@ impl Composition {
         Ok(frame as u32)
     }
 
-    /// The stretches of timeline no clip covers — black frames, on the
-    /// frame grid so a sliver shorter than one frame cannot exist. This is
-    /// what `compose show` lists as gaps.
     pub fn gaps(&self) -> Vec<Span> {
         let mut gaps = Vec::new();
         let mut cursor = 0u32;
@@ -516,10 +389,6 @@ impl Composition {
         gaps
     }
 
-    /// Every pair of clips that share frames, later-listed one on top.
-    /// Computed on the frame grid, so two clips that abut never report a
-    /// one-ULP overlap; three-deep coverage reports each pair, which is what
-    /// makes a per-clip verdict a sum rather than a special case.
     pub fn overlaps(&self) -> Vec<Overlap> {
         let mut out = Vec::new();
         for (over, top) in self.spans.iter().enumerate() {
@@ -535,9 +404,6 @@ impl Composition {
         out
     }
 
-    /// How much of clip `clip_idx` ever reaches the screen — `compose
-    /// show`'s OVERLAP / UNDER / HIDDEN column as a lookup, not an
-    /// analysis. `None` for an index the composition does not have.
     pub fn mark_for(&self, clip_idx: usize) -> Option<ClipMark> {
         let span = self.spans.get(clip_idx)?;
         let covered: u32 = merge_spans(
@@ -571,25 +437,14 @@ impl Composition {
         }
     }
 
-    /// The run loop's one time→frame expression: the composition frame
-    /// `elapsed_secs` after `base_frame`. A single asset is a one-clip
-    /// composition, so for one this is `base + elapsed * asset_fps`.
     pub fn frame_after(&self, base_frame: u64, elapsed_secs: f64) -> u64 {
         base_frame + (elapsed_secs * self.fps) as u64
     }
 
-    /// Whether `path` names a composition rather than an asset: a `.toml`
-    /// extension, case-insensitively. Every entry point that takes "a clip
-    /// or a composition" — `auto-ascii-player`, `auto-ascii play`, the
-    /// examples — decides it exactly this way.
     pub fn is_toml_path(path: &Path) -> bool {
         path.extension().is_some_and(|e| e.eq_ignore_ascii_case("toml"))
     }
 
-    /// The library folder a bare `asset` name resolves against when the
-    /// caller does not name one: `$AUTO_ASCII_HOME/library`, else
-    /// `~/auto-ascii/library`, and only if that folder exists — otherwise
-    /// `None` and a bare name is an error the user can read.
     pub fn default_library_dir() -> Option<PathBuf> {
         let root = match std::env::var_os("AUTO_ASCII_HOME") {
             Some(dir) if !dir.is_empty() => PathBuf::from(dir),
@@ -627,19 +482,6 @@ pub(crate) fn read_clip(path: &Path) -> Result<AsciiHeader, Error> {
 
 #[cfg(feature = "compose")]
 impl Composition {
-    /// Parse a composition TOML.
-    ///
-    /// `base_dir` is the folder the file lives in (relative `asset` paths
-    /// resolve against it); `library_dir` is where a bare library NAME
-    /// resolves (`<library>/<name>.ascii`) — pass
-    /// [`default_library_dir`](Composition::default_library_dir) unless you
-    /// have a better one. The composition is NOT resolved: call
-    /// [`resolve`](Composition::resolve).
-    ///
-    /// # Errors
-    /// [`Error::Config`] for a wrong `schema`, an unknown key, a malformed
-    /// time or an `asset` that resolves nowhere — every clip-level message
-    /// names the clip's index.
     pub fn from_toml_str(
         text: &str,
         base_dir: &Path,
@@ -714,9 +556,6 @@ impl Composition {
         Ok(Composition::from_clips(name, clips))
     }
 
-    /// [`from_toml_str`](Composition::from_toml_str) over a file: relative
-    /// `asset` paths resolve against the file's folder, the default name is
-    /// the file stem, and every error is prefixed with the path.
     pub fn from_toml_file(
         path: impl AsRef<Path>,
         library_dir: Option<&Path>,
