@@ -13,6 +13,27 @@ fn continued(line: &str) -> bool {
         == 1
 }
 
+fn directive(code: &str) -> Option<(&str, &str)> {
+    let (keyword, tail) = code.split_once(char::is_whitespace).unwrap_or((code, ""));
+    matches!(
+        keyword,
+        "define"
+            | "endef"
+            | "ifdef"
+            | "ifndef"
+            | "ifeq"
+            | "ifneq"
+            | "else"
+            | "endif"
+            | "include"
+            | "-include"
+            | "sinclude"
+            | "override"
+            | "export"
+    )
+    .then_some((keyword, tail.trim_start()))
+}
+
 fn hash(line: &str) -> Result<Option<usize>> {
     let bytes = line.as_bytes();
     let mut escaped = false;
@@ -191,15 +212,18 @@ fn extract_mode(source: &str, oneshell: bool, parse_recipes: bool) -> Result<(Ve
     while row < lines.len() {
         let line = lines[row];
         if defines > 0 {
+            if line.as_bytes().first() == Some(&prefix) {
+                row += 1;
+                continue;
+            }
             let trimmed = line.trim();
-            if trimmed.starts_with("define ") {
+            let token = directive(trimmed);
+            if matches!(token, Some(("define", _))) {
                 defines += 1;
             }
-            if trimmed == "endef"
-                || trimmed.strip_prefix("endef").is_some_and(|tail| {
-                    tail.starts_with(char::is_whitespace) && tail.trim_start().starts_with('#')
-                })
-            {
+            if token.is_some_and(|(keyword, tail)| {
+                keyword == "endef" && (tail.is_empty() || tail.starts_with('#'))
+            }) {
                 defines -= 1;
                 if defines == 0
                     && let Some(at) = hash(line)?
@@ -231,7 +255,9 @@ fn extract_mode(source: &str, oneshell: bool, parse_recipes: bool) -> Result<(Ve
         let logical = &source[offsets[start]..offsets[row]];
         let comment_at = hash(logical)?;
         let code = &logical[..comment_at.unwrap_or(logical.len())];
-        if let Some(inline) = inline_recipe(code)? {
+        if directive(code.trim()).is_none()
+            && let Some(inline) = inline_recipe(code)?
+        {
             row = recipe_end(&lines, row, prefix, oneshell);
             if parse_recipes {
                 found.extend(shell(
@@ -267,11 +293,11 @@ fn extract_mode(source: &str, oneshell: bool, parse_recipes: bool) -> Result<(Ve
             }
             prefix = value.bytes().next().unwrap_or(b'\t');
         }
-        let directive = code
-            .strip_prefix("override ")
-            .or_else(|| code.strip_prefix("export "))
-            .unwrap_or(code);
-        if directive.starts_with("define ") {
+        let mut token = directive(code);
+        while let Some(("override" | "export", tail)) = token {
+            token = directive(tail);
+        }
+        if matches!(token, Some(("define", _))) {
             defines = 1;
         }
     }

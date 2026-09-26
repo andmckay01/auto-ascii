@@ -415,6 +415,93 @@ fn make_define_bodies_are_variable_data_and_oneshell_keeps_context() {
 }
 
 #[test]
+fn make_define_directives_accept_whitespace_separators() {
+    for separator in [" ", "\t", " \t ", "\u{000b}", "\u{000c}", "\r"] {
+        for modifier in [
+            String::new(),
+            format!("override{separator}"),
+            format!("export{separator}"),
+            format!("override{separator}export{separator}"),
+        ] {
+            let source = format!(
+                "{modifier}define{separator}X\n# literal\ndefine{separator}INNER\n# nested literal\nendef{separator}\n# literal after nested\nendef{separator}# actual\n"
+            );
+            assert_eq!(
+                comments(&source, Language::Make),
+                vec![(Kind::Hash, "# actual".into())],
+                "{source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn make_recipe_prefixed_define_delimiters_are_literal_body_data() {
+    for (setup, prefix) in [("", "\t"), (".RECIPEPREFIX := >\n", ">")] {
+        for body in [
+            format!("{prefix}endef\n# literal\n"),
+            format!("{prefix}endef\t# literal on endef\n# literal\n"),
+            format!("{prefix}define\tINNER\n# literal\n"),
+        ] {
+            let source = format!("{setup}define X\n{body}endef\t# actual\n");
+            assert_eq!(
+                comments(&source, Language::Make),
+                vec![(Kind::Hash, "# actual".into())],
+                "{source}"
+            );
+        }
+        let source = format!("{setup}define X\n{prefix}endef\n# literal\n");
+        assert!(scan(&source, Language::Make).is_err(), "{source}");
+    }
+    let source = ".RECIPEPREFIX := >\ndefine X\n# literal\n\tendef\t# actual\n";
+    assert_eq!(
+        comments(source, Language::Make),
+        vec![(Kind::Hash, "# actual".into())]
+    );
+}
+
+#[test]
+fn make_directive_arguments_do_not_start_inline_recipes() {
+    for separator in [" ", "\t", " \t "] {
+        for keyword in [
+            "ifdef", "ifndef", "ifeq", "ifneq", "else", "endif", "include", "-include", "sinclude",
+            "override", "export",
+        ] {
+            let source = format!("{keyword}{separator}name:; '# actual\n");
+            assert_eq!(
+                comments(&source, Language::Make),
+                vec![(Kind::Hash, "# actual".into())],
+                "{source}"
+            );
+        }
+        let source = format!("define{separator}name:; '\n# literal\nendef\n");
+        assert!(comments(&source, Language::Make).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn make_directive_names_in_recipes_still_use_shell_comment_syntax() {
+    for (setup, prefix) in [("", "\t"), (".RECIPEPREFIX := >\n", ">")] {
+        for keyword in [
+            "define", "endef", "ifdef", "ifeq", "else", "endif", "include", "override", "export",
+        ] {
+            let source = format!("{setup}all:\n{prefix}{keyword}\t'# literal' # actual\n");
+            assert_eq!(
+                comments(&source, Language::Make),
+                vec![(Kind::Hash, "# actual".into())],
+                "{source}"
+            );
+            let source = format!("{keyword}_target: ; echo '# literal' # actual\n");
+            assert_eq!(
+                comments(&source, Language::Make),
+                vec![(Kind::Hash, "# actual".into())],
+                "{source}"
+            );
+        }
+    }
+}
+
+#[test]
 fn allowlist_schema_rejects_unknown_missing_blank_and_duplicate_fields() {
     assert!(Allowlist::parse("entries = []").is_ok());
     for source in [
