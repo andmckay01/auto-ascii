@@ -1,53 +1,33 @@
-//! Review reel — the human sign-off artifact.
-//!
-//! `auto-ascii-factory eval --reel out.html` emits one self-contained HTML page:
-//! per corpus clip, an animated GIF of the rasterized render
-//! ([`GIF_SECS`] s @ [`GIF_FPS`] fps) plus [`REEL_ROWS`] timestamp rows of
-//! source PNG | rasterized-render PNG | per-frame metric strip (SSIM,
-//! edge F1 with precision/recall, flicker-to-date). Everything is embedded
-//! base64 (`data:` URIs) — no external requests, same rule as the contact
-//! sheet; the page is the artifact a human signs off, so it must open
-//! anywhere, forever.
-//!
-//! The data is collected by the eval driver (`eval.rs`) during its truecolor
-//! pass; this module owns the GIF encoding and the (pure, unit-testable)
-//! HTML rendering.
+//! Review-reel GIF encoding and HTML generation.
 
 use auto_ascii_eval::{EdgeScore, GrayImage};
 
 use crate::eval::{base64, html_escape};
 use crate::ffmpeg::BoxErr;
 
-/// Timestamp rows per clip (sign-off needs at least 4).
 pub const REEL_ROWS: u32 = 6;
-/// Animated-GIF sampling: ~10 s of clip time at 10 fps.
 pub const GIF_SECS: u32 = 10;
 pub const GIF_FPS: u32 = 10;
 
-/// One timestamp row (truecolor tier).
 pub struct ReelRow {
     pub frame: u32,
     pub secs: f64,
     pub ssim: Option<f64>,
     pub edge: Option<EdgeScore>,
-    /// Cumulative flicker (switches/cell/s) over frames rendered so far.
     pub flicker_to_date: Option<f64>,
     pub src_png: Vec<u8>,
     pub render_png: Vec<u8>,
 }
 
-/// One clip's reel material.
 pub struct ReelClip {
     pub name: String,
     pub fps: f64,
     pub grid_cols: u16,
     pub grid_rows: u16,
     pub frames: u32,
-    /// Clip-level means (the report numbers, for the header line).
     pub ssim_mean: Option<f64>,
     pub edge_f1_mean: Option<f64>,
     pub flicker: Option<f64>,
-    /// Encoded animated GIF (empty = no GIF, e.g. sub-minimum grid).
     pub gif: Vec<u8>,
     pub gif_w: u16,
     pub gif_h: u16,
@@ -92,8 +72,6 @@ fn fmt_opt(v: Option<f64>, digits: usize) -> String {
     v.map_or("n/a".into(), |v| format!("{v:.digits$}"))
 }
 
-/// Render the reel page. Pure (no I/O): unit tests feed synthetic bytes and
-/// assert self-containment.
 pub fn render_reel_html(clips: &[ReelClip], generator: &str) -> String {
     let mut h = String::with_capacity(1 << 22);
     h.push_str(

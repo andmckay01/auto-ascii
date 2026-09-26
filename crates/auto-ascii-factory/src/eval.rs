@@ -1,39 +1,4 @@
-//! `auto-ascii-factory eval` — the agent socket.
-//!
-//! For every video in `--corpus`: build (or reuse) the asset, then drive the
-//! REAL player pipeline (`auto_ascii::pipeline::Player`, a library type so
-//! this driver measures the renderer and not a reimplementation) headlessly
-//! against `SimBackend`, collecting these metrics:
-//!
-//! - **downscale-SSIM** at the truecolor tier: grid rasterized through the
-//!   conservative ink-coverage table, viewport-cropped, compared against the
-//!   source luma normalized by eval-owned per-frame percentiles (independent
-//!   of the factory's NORM levels — no self-grading; see [`frame_ssim`]) and
-//!   downscaled through the player's own resampler (sampled every
-//!   `eval.ssim_every` frames);
-//! - **asset structure**: shot/cut counts, keyframe count, asset bytes —
-//!   the factory-tunable gate (shot thresholds, keyframe cadence, encode
-//!   profile regress HERE even when render metrics stay flat);
-//! - **flicker** (glyph switches/cell/s) on static segments — the NORM cut
-//!   table splits the stream so scene cuts never count as flicker;
-//! - **damage rate + bytes/frame** per tier (truecolor / 256 / mono) from
-//!   `FrameStats`, in pure diff mode (damage is meaningless under
-//!   invalidate-every-frame);
-//! - **per-stage frame times** (decode/resample/compose/present).
-//!
-//! Output: `--out` JSON ([`EvalReport`], deterministic layout), optional
-//! `--baseline` compare (per-metric tolerances from params.toml, nonzero
-//! exit on breach) and an optional `--html` contact sheet — self-contained,
-//! base64-embedded PNGs, source frame vs rasterized render at
-//! `eval.contact_frames` timestamps per clip, for human review.
-//!
-//! Assets are cached under `--cache-dir` keyed by
-//! `(input sha256, build-params sha256, pipeline source fingerprint)` —
-//! eval-only knobs never invalidate the cache
-//! ([`Params::build_fingerprint`]), but any code change to auto-ascii-factory
-//! or auto-ascii-format DOES ([`PIPELINE_FINGERPRINT`]), so an extract-stage
-//! change is never measured against stale cached assets built by older
-//! code.
+//! Corpus rendering, metric collection and evaluation reports.
 
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
@@ -82,17 +47,9 @@ pub struct EvalArgs {
     pub baseline: Option<PathBuf>,
     pub out: PathBuf,
     pub html: Option<PathBuf>,
-    /// Review-reel HTML path (human sign-off artifact — see `reel.rs`).
     pub reel: Option<PathBuf>,
     pub cache_dir: PathBuf,
-    /// Sweep mode: only the truecolor pass runs (it carries every
-    /// gated render metric — ssim/flicker/edge-F1/stage times); the 256/mono
-    /// damage passes are skipped. `auto-ascii-factory eval` always sets false —
-    /// baseline reports keep full tier coverage.
     pub truecolor_only: bool,
-    /// `--font-table NAME|PATH`: ink-coverage table for the SSIM rasterizer.
-    /// `None` = the conservative default (the table baselines are scored
-    /// with unless told otherwise).
     pub font_table: Option<String>,
 }
 

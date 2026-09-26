@@ -1,17 +1,4 @@
-//! `params.toml` — every factory tunable as data; **every tunable lives in
-//! `params.toml`**, which makes it the agent socket.
-//!
-//! The committed repo-root `params.toml` is embedded via `include_str!` and
-//! is the default configuration; `--params FILE` overrides any subset
-//! (missing keys keep the embedded defaults via serde defaults);
-//! `auto-ascii-factory params --dump` prints the effective merged config as
-//! TOML. The in-code `Default` impls and the committed file are pinned to
-//! each other by a unit test — drift is a build break, not a surprise.
-//!
-//! Cache identity: [`Params::build_fingerprint`] serializes exactly the
-//! tables that affect asset bytes (all but `[compose]` and `[eval]`) so
-//! `auto-ascii-factory eval` can key its asset cache on (input sha, params sha)
-//! without eval-only knobs invalidating built assets.
+//! Factory configuration defaults, loading and validation.
 
 use std::path::Path;
 
@@ -20,12 +7,8 @@ use auto_ascii_eval::Tolerances;
 
 use crate::ffmpeg::BoxErr;
 
-/// The committed repo-root defaults, compiled in.
 pub const EMBEDDED_PARAMS: &str = include_str!("../../../params.toml");
 
-/// Effective factory configuration. Every field has a serde default equal to
-/// the embedded `params.toml` value, so a `--params` file may name any
-/// subset of keys.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Params {
@@ -39,7 +22,6 @@ pub struct Params {
     pub eval: EvalParams,
 }
 
-/// `[build]` — encode profile.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildParams {
@@ -47,9 +29,6 @@ pub struct BuildParams {
     pub base_w: u16,
     pub base_h: u16,
     pub zstd_level: i32,
-    /// Keyframe cadence. Wider than the wire type on purpose: the ASCI
-    /// header stores u8, but an agent sweep writing `keyframe_ivl = 600`
-    /// must get the validate() range error, not a serde type error.
     pub keyframe_ivl: u32,
 }
 
@@ -66,7 +45,6 @@ impl Default for BuildParams {
     }
 }
 
-/// `[shots]` — shot detection.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ShotParams {
@@ -83,7 +61,6 @@ impl Default for ShotParams {
     }
 }
 
-/// `[levels]` — per-shot NORM percentiles.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LevelParams {
@@ -97,28 +74,13 @@ impl Default for LevelParams {
     }
 }
 
-/// `[edges]` — Scharr → doubled-angle field → orientation-aware bilateral
-/// smoothing → hysteresis-thresholded unthinned E.
-/// All fields are wider than strictly needed (u32) on purpose: an agent
-/// sweep writing an out-of-range value must get the validate() range error,
-/// not a serde type error (same rule as `keyframe_ivl`).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EdgesParams {
-    /// Right-shift applied to the raw Scharr magnitude `isqrt(gx²+gy²)`.
-    /// At 4, a sharp step edge of L\* contrast Δ scores E ≈ Δ (the Scharr
-    /// tap sum is 16), so edge thresholds read as L\* contrast.
     pub scharr_shift: u32,
-    /// Orientation-aware bilateral smoothing passes on the doubled-angle
-    /// field (default two; 0 disables smoothing).
     pub bilateral_passes: u32,
-    /// Bilateral window radius in pixels (window = 2r+1 square).
     pub bilateral_radius: u32,
-    /// Hysteresis strong seed threshold on the smoothed magnitude (≈ L\*
-    /// contrast units, see `scharr_shift`).
     pub t_hi: u32,
-    /// Hysteresis weak-keep threshold: pixels in `t_lo..t_hi` survive only
-    /// when 8-connected to a strong seed (Canny-style, but UNTHINNED).
     pub t_lo: u32,
 }
 
@@ -134,24 +96,12 @@ impl Default for EdgesParams {
     }
 }
 
-/// `[highlights]` — top-hat highlight + percentile deep-shadow flags for the
-/// H plane. bit0 = highlight, bit1 = deep shadow.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HighlightsParams {
-    /// Box structuring-element radius for the morphological opening (white
-    /// top-hat = luma − opening). Features wider than ~2r+1 px are not
-    /// highlights — they are just bright areas.
     pub tophat_radius: u32,
-    /// Minimum top-hat response (L\* units above the local opening) to flag
-    /// bit0.
     pub tophat_thresh: u32,
-    /// Deep-shadow percentile: the darkest `shadow_pct`% of the frame is
-    /// flag-eligible.
     pub shadow_pct: u32,
-    /// Absolute L\* ceiling on the deep-shadow threshold, so bright scenes
-    /// never flag midtones as shadow: flagged iff
-    /// `y <= min(percentile(shadow_pct), shadow_max_l)`.
     pub shadow_max_l: u32,
 }
 
@@ -161,19 +111,11 @@ impl Default for HighlightsParams {
     }
 }
 
-/// `[temporal]` — per-plane EMA strength, reset at shot
-/// cuts. Alpha = weight of the NEW frame in thousandths: 1000 = no
-/// smoothing, smaller = heavier smoothing. H is not EMA'd (it is bitflags);
-/// it inherits stability by being computed from the EMA'd Y plane.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TemporalParams {
-    /// Y plane alpha (milli). Kept light: heavy smoothing ghosts motion.
     pub ema_alpha_y_milli: u32,
-    /// E/Ex/Ey alpha (milli). Heavier: edge shimmer is the #1 flicker source
-    /// and the player's dual-threshold gate rides the decay.
     pub ema_alpha_e_milli: u32,
-    /// Chroma alpha (milli), applied per channel before RGB565 packing.
     pub ema_alpha_c_milli: u32,
 }
 
@@ -183,40 +125,19 @@ impl Default for TemporalParams {
     }
 }
 
-/// `[compose]` — the player's compositor tunables. These are
-/// RENDERER knobs: the eval driver maps them onto
-/// `auto_ascii_core::ComposeParams` and hands them to the `Player`, so an agent
-/// sweep can tune the edge gate / coherence bands WITHOUT rebuilding assets
-/// — deliberately excluded from [`Params::build_fingerprint`]. The in-code
-/// defaults here are pinned to `ComposeParams::default()` by unit test
-/// (single source of truth: interactive playback uses the core defaults).
-/// Fields are u32-wide for the clean-range-error rule.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ComposeTable {
-    /// Edge gate on-threshold (strict `e > T_on`) on the resampled E plane.
     pub edge_t_on: u32,
-    /// Edge gate hold-threshold (strict `e > T_off` while `was_edge`).
     pub edge_t_off: u32,
-    /// Coherence below this (Q8) suppresses the edge layer entirely.
     pub coh_min_q8: u32,
-    /// Coherence at/above this (Q8) draws directional glyphs; the band in
-    /// between draws the junction glyph.
     pub coh_dir_q8: u32,
-    /// Highlight gate: fires only while `idx < len·hi_cut_q8/256`.
     pub hi_cut_q8: u32,
-    /// Edge suppression on near-white base cells (Q8 of the ramp top).
     pub edge_white_cut_q8: u32,
-    /// `|top − bottom|` at/above this is "large" sub-cell structure.
     pub halfblock_min_delta: u32,
-    /// Edge magnitude at/above this upgrades an ASCII junction `+` to `#`.
     pub edge_strong: u32,
-    /// Quadrant-refinement noise floor, arm threshold (strict `e >`).
     pub quad_e_on: u32,
-    /// Quadrant-refinement noise floor, hold threshold (strict `e >`).
     pub quad_e_off: u32,
-    /// Ramp-index hysteresis width in Q8 fractions of one step (e.g.
-    /// "± 0.35·step" = 90).
     pub idx_hyst_q8: u32,
     pub shadow_lift: u32,
 }
@@ -263,20 +184,14 @@ fn compose_u8(name: &str, v: u32) -> Result<u8, BoxErr> {
     u8::try_from(v).map_err(|_| format!("params: compose.{name} must be in 0..=255").into())
 }
 
-/// `[eval]` — the eval driver's knobs.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EvalParams {
     pub grid_cols: u16,
     pub grid_rows: u16,
-    /// Frames evaluated per clip per tier; 0 = all frames.
     pub max_frames: u32,
-    /// SSIM sampling stride in frames.
     pub ssim_every: u32,
-    /// Contact-sheet snapshots per clip.
     pub contact_frames: u32,
-    /// Baseline-compare tolerances (auto-ascii-eval; serde defaults let a params
-    /// file override any subset).
     pub tolerances: Tolerances,
 }
 
@@ -294,14 +209,10 @@ impl Default for EvalParams {
 }
 
 impl Params {
-    /// The embedded repo-root `params.toml` (the defaults). Panics only if
-    /// the committed file is invalid — a build-time bug, covered by tests.
     pub fn embedded() -> Params {
         toml::from_str(EMBEDDED_PARAMS).expect("committed params.toml must parse")
     }
 
-    /// Effective params: embedded defaults, or `path` parsed with missing
-    /// keys falling back to the defaults. Always validated.
     pub fn load(path: Option<&Path>) -> Result<Params, BoxErr> {
         let params: Params = match path {
             None => Params::embedded(),
@@ -315,14 +226,10 @@ impl Params {
         Ok(params)
     }
 
-    /// Effective config as TOML (`auto-ascii-factory params --dump`).
     pub fn dump(&self) -> String {
         toml::to_string_pretty(self).expect("Params serializes to TOML")
     }
 
-    /// Canonical serialization of exactly the byte-affecting tables — the
-    /// "params sha" half of the eval cache key. Eval-only knobs are
-    /// deliberately excluded (they never change asset bytes).
     pub fn build_fingerprint(&self) -> String {
         #[derive(Serialize)]
         struct Fingerprint<'a> {
@@ -344,9 +251,6 @@ impl Params {
         .expect("fingerprint serializes")
     }
 
-    /// Range checks. The base-dim rule (even, >= 2) follows from the C plane
-    /// being stored at half res — also enforced by the ASCI writer and
-    /// reader; rejecting here gives the friendliest error first.
     pub fn validate(&self) -> Result<(), BoxErr> {
         let b = &self.build;
         if b.fps == 0 || b.fps > 1000 {

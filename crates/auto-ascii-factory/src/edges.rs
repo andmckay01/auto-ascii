@@ -1,51 +1,5 @@
-//! Edge extraction: Scharr gradients on the stored
-//! (EMA'd) L\* plane → doubled-angle orientation field → two passes of
-//! orientation-aware bilateral smoothing → hysteresis-thresholded
-//! **unthinned** edge magnitude (thinning breaks under resampling).
-//!
-//! ## The doubled-angle field
-//!
-//! Orientation is π-periodic; averaging angles is wrong. We store the
-//! doubled-angle vector, which is linear under averaging/resampling:
-//!
-//! ```text
-//!   vx = m·cos 2θg = m·(gx² − gy²) / (gx² + gy²)
-//!   vy = m·sin 2θg = m·(2·gx·gy)   / (gx² + gy²)
-//! ```
-//!
-//! computed **rationally** (no trig, no floats — byte-determinism), where
-//! `θg` is the GRADIENT direction in a y-down raster and `m` the shifted
-//! Scharr magnitude. The edge *tangent* doubled-angle vector is `−(vx, vy)`
-//! (doubling turns the 90° tangent rotation into a negation) — the player's
-//! LUT accounts for that; the asset stores the gradient convention.
-//! Canonical bins: vertical edge → `vx ≈ +m`; horizontal
-//! edge → `vx ≈ −m`; the two diagonals → `vy ≈ ±m`.
-//!
-//! ## Orientation-aware bilateral smoothing (2 passes)
-//!
-//! Pragmatist cut of Kang-style ETF: each pass replaces a pixel's
-//! vector with a weighted average over a `(2r+1)²` window; the weight is a
-//! spatial falloff times `max(dot(v_c, v_n), 0)` — magnitude-proportional
-//! (strong edges dominate) and alignment-gated (perpendicular doubled
-//! vectors have negative dot and contribute nothing, so structure corners
-//! don't smear). Zero-vector centers instead take magnitude-weighted
-//! neighborhoods, letting coherent orientation grow into weak pixels.
-//!
-//! Like real ETF, the passes smooth the ORIENTATION only. E itself stays
-//! the *local* Scharr magnitude — spatially smoothing E would smear thin
-//! contours into plateaus (the exact failure thinning-free extraction must
-//! avoid); E's smoothing is delivered temporally by the EMA
-//! stage. After the passes the field is re-capped to `|v| ≤ E` per pixel:
-//! coherent neighborhoods keep full magnitude, incoherent ones (window
-//! cancellation) store a shorter vector — exactly the player's coherence
-//! signal, baked in per pixel and preserved by resampling.
-//!
-//! E is hysteresis-thresholded (strong ≥ `t_hi` seeds, `t_lo..t_hi` kept
-//! when 8-connected to a seed), never thinned; suppressed pixels zero the
-//! vector too, so cell-level direction bins never aggregate sub-threshold
-//! noise.
+//! Scharr edge magnitude and doubled-angle orientation extraction.
 
-/// Effective `[edges]` config (validated params, narrowed to native types).
 #[derive(Clone, Copy, Debug)]
 pub struct EdgeConfig {
     pub scharr_shift: u32,
@@ -67,8 +21,6 @@ impl EdgeConfig {
     }
 }
 
-/// Reusable per-frame edge extractor: all buffers allocated once at build
-/// start (~1.8 MB at 480×270 — see the features.rs memory note).
 pub struct EdgeExtractor {
     w: usize,
     h: usize,
@@ -110,8 +62,6 @@ impl EdgeExtractor {
         }
     }
 
-    /// Extract from one luma plane. Results via [`e`](EdgeExtractor::e) /
-    /// [`vx`](EdgeExtractor::vx) / [`vy`](EdgeExtractor::vy) (pre-EMA).
     pub fn run(&mut self, luma: &[u8], cfg: &EdgeConfig) {
         assert_eq!(luma.len(), self.w * self.h);
         self.scharr(luma);
@@ -138,17 +88,14 @@ impl EdgeExtractor {
         }
     }
 
-    /// Thresholded, unthinned edge magnitude (pre-EMA).
     pub fn e(&self) -> &[u8] {
         &self.mag
     }
 
-    /// Doubled-angle x component (±255, gradient convention, pre-EMA).
     pub fn vx(&self) -> &[i16] {
         &self.vx
     }
 
-    /// Doubled-angle y component (±255, gradient convention, pre-EMA).
     pub fn vy(&self) -> &[i16] {
         &self.vy
     }
@@ -262,9 +209,6 @@ impl EdgeExtractor {
     }
 }
 
-/// Canny-style dual-threshold keep mask, 8-connected flood fill from strong
-/// seeds — but NO thinning (thinning breaks under resampling).
-/// `keep[i] = 1` iff `mag[i] ≥ t_lo` and connected to some `mag ≥ t_hi`.
 pub fn hysteresis_mask(
     mag: &[u8],
     w: usize,
@@ -301,14 +245,11 @@ pub fn hysteresis_mask(
     }
 }
 
-/// Separable box max filter (radius `r`), replicate borders: `src → dst`
-/// via `tmp`. Used as the bilateral activity guard and by highlights.rs.
 pub fn dilate_box(src: &[u8], w: usize, h: usize, r: usize, tmp: &mut [u8], dst: &mut [u8]) {
     row_extrema::<true>(src, w, h, r, tmp);
     col_extrema::<true>(tmp, w, h, r, dst);
 }
 
-/// Separable box min filter (radius `r`), replicate borders.
 pub fn erode_box(src: &[u8], w: usize, h: usize, r: usize, tmp: &mut [u8], dst: &mut [u8]) {
     row_extrema::<false>(src, w, h, r, tmp);
     col_extrema::<false>(tmp, w, h, r, dst);

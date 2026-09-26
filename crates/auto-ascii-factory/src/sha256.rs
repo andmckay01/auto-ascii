@@ -1,13 +1,4 @@
-//! Minimal SHA-256 (FIPS 180-4) — the eval cache key hash (assets cached by
-//! `(input sha, params sha)`), the determinism-guard fingerprint and the
-//! provenance hash `auto-ascii import` records.
-//! Hand-rolled rather than a new dependency: the factory needs exactly
-//! "hash these bytes", nothing keyed.
-//!
-//! INCREMENTAL: the state is the eight working words plus a tail of at most
-//! 63 bytes, full blocks are compressed straight out of the caller's slice,
-//! and [`sha256_file`] streams 64 KiB at a time, so memory stays constant
-//! whatever the input size.
+//! Incremental SHA-256 hashing for asset identity and provenance.
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -27,9 +18,6 @@ const H0: [u32; 8] = [
 
 const CHUNK: usize = 64 * 1024;
 
-/// An in-progress SHA-256: the eight working words, the bytes that have
-/// not filled a block yet, and how many bytes have been absorbed in total.
-/// 104 bytes of state, whatever the size of the message.
 #[derive(Clone, Debug)]
 pub struct Sha256 {
     h: [u32; 8],
@@ -45,19 +33,15 @@ impl Default for Sha256 {
 }
 
 impl Sha256 {
-    /// A hasher over the empty message.
     pub fn new() -> Sha256 {
         Sha256 { h: H0, tail: [0; 64], tail_len: 0, total: 0 }
     }
 
-    /// Absorb `data`. Any number of calls, any sizes: the digest depends
-    /// only on the concatenation.
     pub fn update(&mut self, data: &[u8]) {
         self.total = self.total.wrapping_add(data.len() as u64);
         self.absorb(data);
     }
 
-    /// Pad and produce the digest.
     pub fn finish(mut self) -> [u8; 32] {
         let bits = self.total.wrapping_mul(8);
         let mut pad = [0u8; 64];
@@ -137,20 +121,16 @@ fn compress(h: &mut [u32; 8], block: &[u8; 64]) {
     }
 }
 
-/// SHA-256 digest of `data`.
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hasher.finish()
 }
 
-/// Lowercase hex digest.
 pub fn sha256_hex(data: &[u8]) -> String {
     hex(sha256(data))
 }
 
-/// Hex digest of a file's contents, read [`CHUNK`] bytes at a time — a
-/// 4 GB video costs 64 KiB of memory here, not 4 GB.
 pub fn sha256_file(path: &std::path::Path) -> std::io::Result<String> {
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;

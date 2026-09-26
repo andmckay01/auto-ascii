@@ -1,6 +1,5 @@
 //! Fixed-point temporal smoothing state for feature planes.
 
-/// One plane's EMA state.
 pub struct EmaPlane {
     acc: Vec<i32>,
     alpha_q8: i32,
@@ -8,20 +7,15 @@ pub struct EmaPlane {
 }
 
 impl EmaPlane {
-    /// `alpha_milli` per params.toml `[temporal]` (validated 1..=1000).
     pub fn new(len: usize, alpha_milli: u32) -> EmaPlane {
         let alpha_q8 = ((alpha_milli * 256 + 500) / 1000).clamp(1, 256) as i32;
         EmaPlane { acc: vec![0; len], alpha_q8, primed: false }
     }
 
-    /// Forget all state; the next apply primes from its input verbatim
-    /// (shot-cut reset).
     pub fn reset(&mut self) {
         self.primed = false;
     }
 
-    /// Smooth an unsigned plane: updates the state and writes the quantized
-    /// result. `src`/`out` lengths must equal the constructed plane length.
     pub fn apply_u8(&mut self, src: &[u8], out: &mut [u8]) {
         assert_eq!(src.len(), self.acc.len());
         assert_eq!(out.len(), self.acc.len());
@@ -40,7 +34,6 @@ impl EmaPlane {
         }
     }
 
-    /// Smooth a signed plane (the pre-quantization Ex/Ey fields, ±255).
     pub fn apply_i16(&mut self, src: &[i16], out: &mut [i16]) {
         assert_eq!(src.len(), self.acc.len());
         assert_eq!(out.len(), self.acc.len());

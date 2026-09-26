@@ -1,46 +1,4 @@
-//! Per-frame feature-plane orchestration (extraction + temporal smoothing):
-//! one rgb24 frame in → the six quantized ASCI planes out (Y, E, Ex, Ey, H,
-//! C — registry order).
-//!
-//! ## Stage order (one frame)
-//!
-//! ```text
-//!   rgb24 ─ L*luts ─→ raw luma ─ EMA(α_y) ─→ Y (stored)
-//!                                   │
-//!                     Scharr → doubled-angle field → 2× orientation-aware
-//!                     bilateral → cap → hysteresis  (edges.rs, from Y)
-//!                                   │
-//!                        E ─ EMA(α_e) ─→ E (stored)
-//!                    vx,vy ─ EMA(α_e) ─ quantize ─→ Ex, Ey (stored)
-//!                                   │
-//!                     top-hat + shadow percentile ─→ H (stored, from Y)
-//!   rgb24 ─ 2×2 avg ─→ r,g,b ─ EMA(α_c) ─ pack565 ─→ C (stored)
-//! ```
-//!
-//! Downstream stages read the EMA'd Y (not raw luma): edges must trace the
-//! plane the player renders, and H/E inherit the EMA's temporal stability
-//! at the source instead of chasing it afterwards. All EMAs reset at shot
-//! cuts; pass 1 replicates the same reset schedule for
-//! its levels pooling (build.rs), which keeps NORM levels equal to the
-//! stored-plane percentiles.
-//!
-//! ## Quantization (factory⇄player wire contract)
-//!
-//! - `Y`, `E`: u8 as computed (E ≈ L\* contrast, see edges.rs).
-//! - `Ex/Ey`: `128 + (v >> 1)` — the ±255 doubled-angle components halved
-//!   into bias-128 u8. Decode: `v ≈ (byte − 128) · 2`; coherence is
-//!   `2·|(Ex−128, Ey−128)| / E`.
-//! - `H`: bit0 highlight, bit1 deep shadow (highlights.rs).
-//! - `C`: RGB565 LE from the EMA'd channel planes.
-//!
-//! ## Memory strategy (planes are ~130 KB/frame — stream!)
-//!
-//! Everything here is O(plane), allocated ONCE at construction and reused
-//! for every frame: ~1.8 MB of edge scratch (edges.rs), ~0.9 MB of EMA
-//! accumulators (7 × Q8 i32 planes), ~1.3 MB of luma/chroma/output
-//! staging — ≈ 4 MB total at 480×270, independent of clip length. Frames
-//! stream straight into the ASCI writer; no plane is ever accumulated
-//! across frames (the EMA state is the only cross-frame memory).
+//! Per-frame feature-plane extraction and temporal state.
 
 use crate::edges::{EdgeConfig, EdgeExtractor};
 use crate::extract::{Extractor, pack_rgb565};
@@ -124,8 +82,6 @@ impl FeatureExtractor {
         }
     }
 
-    /// Extract all six planes from one rgb24 frame. `cut` resets every EMA
-    /// first (never blend across a hard cut).
     pub fn process(&mut self, rgb: &[u8], cut: bool) {
         if cut {
             self.ema_y.reset();

@@ -1,15 +1,4 @@
-//! Shot detection + per-shot levels.
-//!
-//! Boundary test: sum-of-absolute-differences between consecutive frames'
-//! 256-bin L\* histograms, normalized against the maximum possible SAD
-//! (2·npx, fully disjoint histograms), thresholded, debounced by a minimum
-//! shot length. Every honored boundary is a hard cut (histogram delta
-//! finds cuts, not fades) and is flagged as such for the player's hysteresis
-//! reset.
-//!
-//! Levels: each shot pools its frames' histograms and takes p2/p98 once —
-//! one constant level pair per shot is the "temporally stable within shot"
-//! 80/20 (per-frame levels pump, global levels waste range).
+//! Shot-boundary detection and per-shot level pooling.
 
 use crate::lut::{self, Levels};
 
@@ -18,12 +7,8 @@ pub const SHOT_SAD_THRESHOLD_MILLI: u64 = 300;
 const MILLI: u64 = 1000;
 const DISJOINT_HISTOGRAM_SAD_PER_PIXEL: u64 = 2;
 
-/// Minimum shot length in frames: a boundary is honored only once the
-/// current shot is at least this long (debounces flashes/strobes).
-/// params.toml `shots.min_shot_frames` overrides.
 pub const MIN_SHOT_FRAMES: u32 = 8;
 
-/// 256-bin histogram of one luma plane.
 pub fn luma_histogram(luma: &[u8]) -> [u64; 256] {
     let mut hist = [0u64; 256];
     for &v in luma {
@@ -32,18 +17,13 @@ pub fn luma_histogram(luma: &[u8]) -> [u64; 256] {
     hist
 }
 
-/// One detected shot, ready to become a NORM record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Shot {
     pub first_frame: u32,
-    /// True when the shot begins at a detected hard cut (never on shot 0).
     pub cut: bool,
-    /// Pooled p2/p98 of the shot's stored L\* luma.
     pub levels: Levels,
 }
 
-/// Online single-pass detector: feed per-frame histograms in order, then
-/// [`finish`](ShotDetector::finish). Pure integer math — deterministic.
 pub struct ShotDetector {
     npx: u64,
     threshold_milli: u64,
@@ -60,10 +40,6 @@ pub struct ShotDetector {
 }
 
 impl ShotDetector {
-    /// All tunables explicit — the values come from params.toml `[shots]` +
-    /// `[levels]` (the module constants are the embedded defaults,
-    /// re-exported through `params::Params::default`). `npx` = pixels per
-    /// luma plane (normalizes the SAD).
     pub fn with_params(
         npx: u64,
         threshold_milli: u64,
@@ -118,8 +94,6 @@ impl ShotDetector {
         self.frames += 1;
     }
 
-    /// Close the trailing shot and return all shots in frame order.
-    /// Empty iff no frames were pushed.
     pub fn finish(mut self) -> Vec<Shot> {
         if self.frames > 0 {
             self.close_shot();
