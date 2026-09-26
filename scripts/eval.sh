@@ -32,7 +32,7 @@ cargo clippy --workspace --all-targets --quiet -- -D warnings
 section_done
 
 section "comment rule"
-cargo run --quiet --release -p auto-ascii-lint --bin check-comments -- --count --report-only
+cargo run --quiet --release -p auto-ascii-lint --bin check-comments -- --count
 section_done
 
 section "resize fuzz x$FUZZ_CASES"

@@ -37,7 +37,7 @@ fails instead.
    per-tier escape-stream goldens, the Linux console golden, the pipeline
    parity pin and the factory's byte-pin determinism test;
 2. `cargo clippy --workspace --all-targets -- -D warnings`;
-3. the comment rule, currently reporting counts and violations during rollout;
+3. the failing comment rule, which reports counts and violations;
 4. the resize fuzz (`FUZZ_CASES`, default 2000; `FUZZ_CASES=10000
    scripts/eval.sh` is the full depth);
 5. the criterion perf gate (`scripts/perf-gate.sh` against
@@ -94,7 +94,7 @@ Dependencies and extraction boundaries are recorded in
 make comments
 make lint
 cargo run --quiet --release -p auto-ascii-lint --bin check-comments -- --paths crates/auto-ascii-lint scripts
-cargo run --quiet --release -p auto-ascii-lint --bin check-comments -- --count --report-only
+cargo run --quiet --release -p auto-ascii-lint --bin check-comments -- --count
 ```
 
 Scope is tracked plus untracked, nonignored `.rs`, `.sh`, `.py`, `.toml`,
@@ -120,14 +120,12 @@ staleness failures, and 2 for configuration/extraction errors.
 `--report-only` suppresses only the policy failure status; broken scans
 and stale exemptions still fail.
 
-The `comment rule` section of `scripts/eval.sh` temporarily passes
-`--count --report-only`. **To enforce after cleanup, remove only
-`--report-only` from that command.** `make comments` and `make lint`
-already enforce the rule and therefore fail until cleanup. Workspace
-tests cover language fixtures and use isolated repositories for CLI
-regressions and the tooling's own compliance. Only the eval gate scans the
-live worktree. This rollout adds no CI or pre-commit hook: the repo has no
-`.github` CI, and enforcement belongs in the existing eval gate.
+The `comment rule` section of `scripts/eval.sh`, `make comments`, and
+`make lint` all fail on violations or stale exemptions. Workspace tests
+cover language fixtures and use isolated repositories for CLI regressions
+and the tooling's own compliance. The eval gate scans the live worktree.
+The repo has no `.github` CI or pre-commit hook; enforcement is in the
+existing eval gate.
 
 ## Rules that keep the output deterministic
 
