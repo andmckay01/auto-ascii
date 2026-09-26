@@ -22,7 +22,7 @@ fn player(codec: Codec, cols: u16, rows: u16) -> Player<'static> {
 fn round_trip(p: &mut Player<'_>, dial: Dial) {
     let original = p.compose_params();
     let mut changed = original;
-    dial.turn(&mut changed, 1);
+    dial.turn(&mut changed, if dial.get(&original) == dial.max() { -1 } else { 1 });
     assert_ne!(changed, original);
     p.set_compose_params(changed);
     p.set_compose_params(original);

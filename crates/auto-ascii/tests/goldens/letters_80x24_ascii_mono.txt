@@ -6,18 +6,18 @@ letters codec, Ascii tier, Mono, 80x24, frame 5
 |              ...............::::::::::::::;;;;;;;;;;;;;;++++++++++++ccccccccccc|
 |            ...............:::::::::::::::;;;;;;;;;;;;;++++++++++++cccccccccccxx|
 |          ...............;::::::;:::-/-______-\;;;;;;++++++++++++cccccccccccxxxx|
-|        .............:.:;::::;:;:////eGSGSeGSG-\\\;++++++++++++cccccccccccxxxxxx|
+|        .............:.::::::::;:////eGSGSeGSG-\\\;++++++++++++cccccccccccxxxxxx|
 |      .............:.::::::::;:://GGGSGGGGSGGGGSGG\\+++++++++cccccccccccxxxxxxxx|
-|    ...............:::::::::+://DDDDGGGGGSGGGGSGGeGS\++++++cccccccccccxxxxxxxxxx|
-|  ...............:::::;::::+::|888DDDGGGDG8GGDGGGGSGG|+++cccccccccccxxxxxxxxxxxx|
-|...............::::::::::::::|GGB88DDDGB8BB8G8GGSGGGG||ccccccccccccxxxxxxxxxxxnn|
-|.............:::::::::::::::;|DGBB88DMMBBBBBBBGGGGGGGG|ccccccccccxxxxxxxxxxxnnnn|
-|...........:::::::::::::::;;;|DGB888DMBBBBB8BBGGSGGGGS|ccccccccxxxxxxxxxxxnnnnnn|
-|.........::::::::::+::::+;;;;|SG888DDDGB8BBDG8GGDGGGG|cccccccxxxxxxxxxxxnnnnnnnn|
-|.......::::::::::;::::;;;;;+;;\888DDDGGGGG8GGDGSGGeGS/cccccxxxxxxxxxxxnnnnnnnnnn|
-|.....:::::::::::::;:;;;;;;;;+;;\DDDGGGGGGDGGGGSGGGG//ccccxxxxxxxxxxxnnnnnnnnnnnn|
-|...:::::::::::::::;;;;+;;;;+;;;+\\GGSGGSGSDGSGSeGS/ccccxxxxxxxxxxxnnnnnnnnnnnnnn|
-|..::::::::::::::;;;;;;+;;;;c;+++c+\\\\SeSeSSe--//ccccxxxxxxxxxxxnnnnnnnnnnnnnnnn|
+|    ...............::::::::::://DDDDGGGGGDGGGGSGGGGS\++++++cccccccccccxxxxxxxxxx|
+|  ...............:::::::::::::|G88DDDG88D88G8DGGGGSGG|+++cccccccccccxxxxxxxxxxxx|
+|...............::::::::::::::|GGG88DDBBB8BBDB8GGDGGGG||ccccccccccccxxxxxxxxxxxnn|
+|.............:::::::::::::::;|DDGB88MMMBBBBBBBGGGGGGGG|ccccccccccxxxxxxxxxxxnnnn|
+|...........:::::::::::::::;;;|DDG888MMBBBBB8BBGGSGGGGS|ccccccccxxxxxxxxxxxnnnnnn|
+|.........::::::::::+::::+;;;;|GG888DDDBB8B8DB8GGDGGGG|cccccccxxxxxxxxxxxnnnnnnnn|
+|.......::::::::::;::::;;;;;+;;\S88DDDGG8G88G8GGSGGGGS/cccccxxxxxxxxxxxnnnnnnnnnn|
+|.....:::::::::::::;:;;;;;;;;+;;\DDDGGGGGGDGGGGDGGGG//ccccxxxxxxxxxxxnnnnnnnnnnnn|
+|...:::::::::::::::;;;;+;;;;+;;;+\\GGSGGSGSGGSGSeGS/ccccxxxxxxxxxxxnnnnnnnnnnnnnn|
+|..::::::::::::::;;;;;;+;;;;c;+++c+\\\\SGSeSSe--//ccccxxxxxxxxxxxnnnnnnnnnnnnnnnn|
 |::::::::::::::;;;;;;;;;;;;++cccc++++++---ccc-ccccccxxxxxxxxxxxnnnnnnnnnn        |
 |::::::::::::;;;;;;;;;;;;;+++++++++++++cccccccccccxxxxxxxxxxxnnnnnnnnnnn         |
 |::::::::::;;;;;;;;;;;;;+++++++++++++cccccccccccxxxxxxxxxxxnnnnnnnnnnnnn         |

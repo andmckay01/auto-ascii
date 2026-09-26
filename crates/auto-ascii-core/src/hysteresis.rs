@@ -1,5 +1,5 @@
 //! Hysteresis state — the flicker killer: per-cell ramp-index hysteresis
-//! (switch only past a step boundary ± 0.35·step), the temporal
+//! (switch only past a configurable margin around a step boundary), the temporal
 //! dual-threshold edge gate (Canny-style T_on/T_off with a `was_edge` buffer),
 //! and the previous orientation bin for the 8° guard.
 //!
@@ -13,11 +13,18 @@ use crate::orient::BIN_UNSET;
 /// Sentinel for "no previous ramp index" (fresh cell / after reset).
 pub const IDX_UNSET: u8 = 0xFF;
 
-/// Nominal index hysteresis width in Q8 fractions of one ramp step:
+/// Historical calibration width used by the low-level quantizer tests:
 /// round(0.35 · 256) = 90 ("boundary ± 0.35·step"). The live width is the
 /// tunable `ComposeParams::idx_hyst_q8`, which trades stickiness against
 /// responsiveness.
 pub const IDX_HYST_Q8: u32 = 90;
+
+/// Shared player dial ceiling: wider bands retain visibly stale contours.
+pub const IDX_HYST_MAX_Q8: u8 = 128;
+
+/// Live default, chosen at the ceiling to limit glyph switching.
+pub const IDX_HYST_DEFAULT_Q8: u8 = 128;
+
 
 /// Per-cell hysteresis flags. Bits 0–1 are the shared gates below; bits 2–7
 /// are codec-private temporal memory (a [`crate::codec`] may use them freely —

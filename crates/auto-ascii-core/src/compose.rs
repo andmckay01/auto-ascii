@@ -149,8 +149,9 @@ pub struct ComposeParams {
     /// across it alternate quadrant/half-block every frame.
     pub quad_e_off: u8,
     /// Ramp-index hysteresis width in Q8 fractions of one step. The nominal
-    /// width is "boundary ± 0.35·step" = 90 ([`crate::IDX_HYST_Q8`]); wider =
-    /// stickier cells (less flicker), narrower = more responsive.
+    /// live default is 128 (half a step); the player dial spans 0..=128.
+    /// Wider = stickier cells, narrower = more responsive. The low-level
+    /// codec accepts u8 for experiments; the old calibration width was 90.
     pub idx_hyst_q8: u8,
     /// Shadow lift: how far to bend the tone curve toward the shadows when the
     /// NORM levels LUT is built. `0` = off (the plain linear per-shot window);
@@ -180,7 +181,7 @@ impl Default for ComposeParams {
             edge_strong: 96,
             quad_e_on: 2,
             quad_e_off: 1,
-            idx_hyst_q8: 160,
+            idx_hyst_q8: crate::hysteresis::IDX_HYST_DEFAULT_Q8,
             shadow_lift: 0,
         }
     }

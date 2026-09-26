@@ -7,15 +7,15 @@ ascii codec, Ascii tier, Mono, 80x24, frame 5
 |      .................:::::::::;;;;;;;;;;;+++++++++++++rrrrrrrrrrrrrrrrrccccccc|
 |    .................::::+:;::;;;;;;-/-______-\+++++++rrrrrrrrrrrrrrrrrccccccccc|
 |  .................::;::+:;:;+;+;////S8D88#8D8-\\\++rrrrrrrrrrrrrrrrrccccccccccc|
-|.................::;::::;::;;+;;//B88D88a8D88S8D88\\rrrrrrrrrrrrrrrrcccccccccccc|
+|.................::;::::;::;;+;;//B88D88B8D88S8D88\\rrrrrrrrrrrrrrrrcccccccccccc|
 |...............:::+::::+:;;;r;//BBBBB88B8D88B8D88S8D\rrrrrrrrrrrrrccccccccccccxx|
-|.............::::+::::+;;;;r;;|@@@BBBB88@8888#8888#88|rrrrrrrrrrccccccccccccxxxn|
-|...........::::::::r:;;;r;;;;|@@@@@BBBB88B8@88B8D88B8||rrrrrrrccccccccccccxxxnnn|
-|.........::::::::::;;;;;;;;;;|8@@@@@BBB8@B@@88B8888a88|rrrrrccccccccccccxxxnnnoo|
-|.......::::::::::;;;;;;;;;;++|8@@@@BBBB8@B8@88B8888a88|rrrccccccccccccxxxnnnoooo|
+|.............::::+::::+;;;;r;;|@@@BBBB88@8888@8888#88|rrrrrrrrrrccccccccccccxxxn|
+|...........::::::::r:;;;r;;;;|8@@@@BBBB8@B8@88B8D88B8||rrrrrrrccccccccccccxxxnnn|
+|.........::::::::::;;;;;;;;;;|8@@@@@BBB@@@@@88B8888a88|rrrrrccccccccccccxxxnnnoo|
+|.......::::::::::;;;;;;;;;;++|8@@@@BBBB@@B@@88B8888a88|rrrccccccccccccxxxnnnoooo|
 |.....::::::::::;;;;+;;;;r++++|@@@@@BBBB8888@8888#8888|rrccccccccccccxxxnnnnooooo|
 |...::::::::::;;;;+;;;;+++++r++\@@BBBBB88B8D88B8D88S8D/ccccccccccccxxxnnnnooooooo|
-|.::::::::::;;;;;;;+;;+++++++r++\BBBBB8888#88B8#88a8//cccccccccccxxxnnnnooooooooo|
+|.::::::::::;;;;;;;+;;+++++++r++\BBBBB8888#8888#8888//cccccccccccxxxnnnnooooooooo|
 |:::::::::;;;;;;;;;;+++r++++r++++\\88DS8D8DS8D88S8D/cccccccccccxxxnnnnooooooooooo|
 |:::::::;;;;;;;;;;+++++r++++r+r+rrr\\\\DSD#aDS--//cccccccccccxxxnnnnooooooooooooo|
 |:::::;;;;;;;;;;+++++++++++rrrrrrrrrrrr---rrr-rccccccccccccxxxnnnnooooooo        |

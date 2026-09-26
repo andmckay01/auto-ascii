@@ -42,7 +42,7 @@ halfblock_min_delta = 64
 edge_strong = 96
 quad_e_on = 2
 quad_e_off = 1
-idx_hyst_q8 = 160
+idx_hyst_q8 = 128
 shadow_lift = 0
 
 [eval]

@@ -218,6 +218,21 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - a backward jump in `RenderSession::render` (`Player::reset_temporal_state`).
   After a reset the next frame is a cold start, identical to seeking straight to that frame.
 
+Hysteresis dial: 0..128 in steps of 16, default 128 (readout: "default, max").
+The new default changes pixels/letters playback from the former value 160;
+their algorithms and output at the same explicit value are unchanged.
+Saved player settings above 128 clamp to 128; factory params reject values
+above 128. The low-level ComposeParams u8 remains available for experiments.
+Keep hysteresis in all codecs: removing it raises glyph switching markedly.
+See [hysteresis measurements](HYSTERESIS-DECISION.md) for the measured tradeoff
+and glyph-hold calibration.
+
+ASCII's dial calibration uses a `5/16 * idx_hyst_q8` tone deadband and
+`min(1 + idx_hyst_q8/4, 32)` stable-target frames (40 tone units and
+32 frames at default 128). This avoids near-boundary glyph chatter after
+lowering the shared maximum. Current-tone colour and <=4-frame floor
+crossings are unchanged. The previous default used a 45-tone-unit band.
+
 ### 7. Present: quantize, diff, restore
 - **Does:** writes the grid to the terminal with minimal bytes, then always puts the terminal
   back.
@@ -496,7 +511,7 @@ TOML) and `crates/auto-ascii-cli/src/library.rs` `Sidecar`.
 | `compose.halfblock_min_delta` | 64 | top/bottom luma delta that counts as "large" (half-block, quadrant, subposition) |
 | `compose.edge_strong` | 96 | ASCII junction `+` upgrades to `#` at this magnitude |
 | `compose.quad_e_on` / `quad_e_off` | 2 / 1 | quadrant-refinement noise floor (arm/hold), Unicode tiers only |
-| `compose.idx_hyst_q8` | 160 | ramp-index hysteresis width as a Q8 fraction of one step (< 1 step) |
+| `compose.idx_hyst_q8` | 128 | ramp-index hysteresis width as a Q8 fraction of one step (< 1 step) |
 | `compose.shadow_lift` | 0 | bends the NORM LUT toward the shadows (0 off, 255 a full sqrt curve); endpoints fixed |
 | `eval.grid_cols` / `grid_rows` | 300 / 80 | eval render grid |
 | `eval.max_frames` | 900 | frames per clip per tier (0 = all) |

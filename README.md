@@ -133,6 +133,21 @@ ASCII colour and shade follow current brightness independently of glyph
 hysteresis, so playback cannot retain old brightness bands. A steady tone
 settles the glyph within 32 frames; black-floor crossings take at most four.
 
+Hysteresis dial: 0..128 in steps of 16, default 128 (readout: "default, max").
+The new default changes pixels/letters playback from the former value 160;
+their algorithms and output at the same explicit value are unchanged.
+Saved player settings above 128 clamp to 128; factory params reject values
+above 128. The low-level ComposeParams u8 remains available for experiments.
+Keep hysteresis in all codecs: removing it raises glyph switching markedly.
+See [hysteresis measurements](docs/HYSTERESIS-DECISION.md) for the measured tradeoff
+and glyph-hold calibration.
+
+ASCII's dial calibration uses a `5/16 * idx_hyst_q8` tone deadband and
+`min(1 + idx_hyst_q8/4, 32)` stable-target frames (40 tone units and
+32 frames at default 128). This avoids near-boundary glyph chatter after
+lowering the shared maximum. Current-tone colour and <=4-frame floor
+crossings are unchanged. The previous default used a 45-tone-unit band.
+
 **Black backdrop.** While it plays, the player sets your terminal's default
 background to black (OSC 11). `ascii` needs it: its unshaded cells (shadows,
 blank cells, and everything on 16-colour terminals) use the terminal's

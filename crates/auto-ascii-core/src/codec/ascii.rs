@@ -29,8 +29,8 @@
 //! on the same current-tone coverage curve, limited by one common channel
 //! scale to preserve colour. Color and shade follow current tone,
 //! independently of glyph hysteresis, so old contours cannot latch brightness.
-//! Within `9/32 × idx_hyst_q8` tone units the glyph waits for a stable input:
-//! `min(1 + idx_hyst_q8 / 5, 32)` consecutive frames at the same tone, then
+//! Within `5/16 × idx_hyst_q8` tone units the glyph waits for a stable input:
+//! `min(1 + idx_hyst_q8 / 4, 32)` consecutive frames at the same tone, then
 //! adopts it directly. Large changes respond immediately. Black-floor crossings
 //! need at most four consecutive frames on the new side (even if tone varies).
 //! This avoids walking noisy glyphs through intermediate ramp steps while
@@ -402,7 +402,7 @@ fn tint(c: Rgb, n: u8) -> Rgb {
 
 #[inline]
 fn held_tone(n: u8, prev: u8, hyst_q8: u8, s: &mut CellState) -> u8 {
-    let band = (hyst_q8 as u16 * 9 / 32) as u8;
+    let band = (hyst_q8 as u16 * 5 / 16) as u8;
     let floor_crossing = (n < BLACK_FLOOR) != (prev < BLACK_FLOOR);
     let same_target = s.tone_candidate == n
         || (floor_crossing && (s.tone_candidate < BLACK_FLOOR) == (n < BLACK_FLOOR));
@@ -410,7 +410,7 @@ fn held_tone(n: u8, prev: u8, hyst_q8: u8, s: &mut CellState) -> u8 {
     let wait = if floor_crossing {
         (FLOOR_SETTLE_FRAMES - 1).min(hyst_q8 / 8)
     } else {
-        (hyst_q8 / 5).min(SETTLE_MAX_FRAMES - 1)
+        (hyst_q8 / 4).min(SETTLE_MAX_FRAMES - 1)
     };
     let ready = count >= wait;
     s.tone_candidate = n;
@@ -730,6 +730,18 @@ mod tests {
     }
 
     #[test]
+    fn default_glyph_hold_rejects_near_boundary_chatter() {
+        let mut state = CellState::default();
+        let width = ComposeParams::default().idx_hyst_q8;
+        let mut held = held_tone(120, IDX_UNSET, width, &mut state);
+        for n in [159, 120].into_iter().cycle().take(100) {
+            held = held_tone(n, held, width, &mut state);
+            assert_eq!(held, 120, "nearby alternating samples must not flash glyphs");
+        }
+        assert_eq!(held_tone(161, held, width, &mut state), 161, "large changes remain immediate");
+    }
+
+    #[test]
     fn glyph_tone_settles_and_floor_crossings_do_not_latch() {
         for (from, to) in [(0, 40), (40, 12), (120, 150), (150, 120), (200, 170)] {
             let mut st = HysteresisState::new(1, 1);
@@ -756,7 +768,7 @@ mod tests {
 
     #[test]
     fn glyph_tone_is_monotone_and_settles_within_32_frames() {
-        for width in [0, 16, 90, 160, 255] {
+        for width in [0, 16, 90, 128, 160, 255] {
             for from in 0..=254u8 {
                 for to in 0..=254u8 {
                     let mut held = from;

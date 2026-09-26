@@ -7,15 +7,15 @@ letters codec, UnicodeBlocks tier, truecolor, 80x24, frame 5
 |            ...............:::::::::::::::;;;;;;;;;;;;;++++++++++++cccccccccccxx|
 |          ...............;::::::;:::-/-______-\;;;;;;++++++++++++cccccccccccxxxx|
 |        .............:.:;::::;:;:////eGSGSeGSG-\\\;++++++++++++cccccccccccxxxxxx|
-|      .............:.::::::::;:://GGGSGGoGSGGoGSGG\\+++++++++cccccccccccxxxxxxxx|
-|    ..............;::::;::::+://DDDDGGG8GSGGeGSGGeGS\++++++cccccccccccxxxxxxxxxx|
-|  ...............;::::;::::+::|888DDDGGGeGGGGeGGGGSGG|+++cccccccccccxxxxxxxxxxxx|
-|...............::::+::::+::::|BB█████████████GGGSGGGG||ccccccccccccxxxxxxxxxxxnn|
-|.............:::::::::::::::;|MB██████████████DGGGGoGG|ccccccccccxxxxxxxxxxxnnnn|
-|...........:::::::::::::::;;;|MB██████████████DGSGGoGS|ccccccccxxxxxxxxxxxnnnnnn|
+|      .............:.::::::::;:://GGGSGGGGSGGoGSGG\\+++++++++cccccccccccxxxxxxxx|
+|    ..............;::::;::::+://DDDDGGGDGSGGDGSGGeGS\++++++cccccccccccxxxxxxxxxx|
+|  ...............;::::;::::+::|888DDDGGG8GGGG8GGGGSGG|+++cccccccccccxxxxxxxxxxxx|
+|...............::::+::::+::::|GB█████████████GGGSGGGG||ccccccccccccxxxxxxxxxxxnn|
+|.............:::::::::::::::;|GB██████████████GGGGGoGG|ccccccccccxxxxxxxxxxxnnnn|
+|...........:::::::::::::::;;;|GB██████████████GGSGGoGS|ccccccccxxxxxxxxxxxnnnnnn|
 |.........::::::::::+::::+;;;;|BB8███████████GGGGSGGGG|cccccccxxxxxxxxxxxnnnnnnnn|
-|.......::::::::::;::::;;;;;+;;\888DDDGGG8GSGGeGSGGeGS/cccccxxxxxxxxxxxnnnnnnnnnn|
-|.....:::::::::::::;:;;;;;;;;+;;\DDDGGGGDGSGGDGSGGGG//ccccxxxxxxxxxxxnnnnnnnnnnnn|
+|.......::::::::::;::::;;;;;+;;\888DDDGGGDGSGGDGSGGeGS/cccccxxxxxxxxxxxnnnnnnnnnn|
+|.....:::::::::::::;:;;;;;;;;+;;\DDDGGGGGGSGGGGSGGGG//ccccxxxxxxxxxxxnnnnnnnnnnnn|
 |...:::::::::::::::;;;;+;;;;+;;;+\\GGSeGSGSeGSGSeGS/ccccxxxxxxxxxxxnnnnnnnnnnnnnn|
 |..::::::::::::::;;;;;;+;;;;c;+++c+\\\\SeSeoSe--//ccccxxxxxxxxxxxnnnnnnnnnnnnnnnn|
 |::::::::::::::;;;;;;;;;;;;++cccc++++++---ccc-ccccccxxxxxxxxxxxnnnnnnnnnn        |
