@@ -385,14 +385,6 @@ impl<'a> AsciiReader<'a> {
         }
     }
 
-    /// Decode one plane of one frame into `dst` (len ≥ the plane's raw size;
-    /// `&mut self` for the reused zstd context). Keyframes (and every frame
-    /// of INTRA assets) decode standalone: one zstd block into `dst`. Delta
-    /// frames REQUIRE `dst` to already hold the fully decoded previous frame
-    /// of the same plane (the standing double buffer): the delta is decoded
-    /// to scratch and memadded in place. For random access use
-    /// [`seek_plane_into`](AsciiReader::seek_plane_into). Only the requested
-    /// plane's subblock is decompressed. Returns the raw byte count.
     pub fn decode_plane_into(&mut self, frame_idx: u32, plane_id: u8, dst: &mut [u8]) -> Result<usize> {
         let n = (self.header.plane_count as usize).min(8);
         if !self.header.plane_ids[..n].contains(&plane_id) {

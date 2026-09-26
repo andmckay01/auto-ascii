@@ -62,8 +62,6 @@ static RESTORE_FD: AtomicI32 = AtomicI32::new(-1);
 
 #[cfg(unix)]
 struct TermiosStore(UnsafeCell<MaybeUninit<libc::termios>>);
-// SAFETY: written once by `arm` before RESTORE_FD is published, read only
-// after observing RESTORE_FD >= 0 (same thread for the signal case).
 #[cfg(unix)]
 unsafe impl Sync for TermiosStore {}
 #[cfg(unix)]

@@ -1,22 +1,4 @@
-//! Temporal EMA on feature planes: sensor-noise
-//! suppression, the first line of anti-flicker defense. Reset at shot cuts —
-//! blending across a hard cut ghosts the old scene into the new one.
-//!
-//! Pure integer fixed point (byte-determinism): the accumulator
-//! holds `value · 256` (Q8) per pixel, alpha is Q8 derived from the
-//! params.toml milli value. `alpha_milli = 1000` (Q8 256) is an exact
-//! passthrough, so "EMA off" costs nothing in precision. Update rule:
-//!
-//! ```text
-//!   acc += (alpha_q8 · ((new << 8) − acc) + 128) >> 8   // round-half-up
-//!   out  = (acc + 128) >> 8                             // Q8 → value
-//! ```
-//!
-//! The state converges to within one Q8 LSB of a held input, which rounds to
-//! the exact input byte — a static scene reaches a byte-stable plane (the
-//! flicker gate's premise). One `EmaPlane` per stored plane channel; the
-//! accumulator is the ONLY cross-frame state in the factory's extract stage
-//! (O(plane), never O(frames) — see the memory note in `features.rs`).
+//! Fixed-point temporal smoothing state for feature planes.
 
 /// One plane's EMA state.
 pub struct EmaPlane {

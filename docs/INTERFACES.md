@@ -962,8 +962,8 @@ impl RenderSession {
       // cells (embedder owns quantization), cell aspect 2.0.
       // Internally a one-clip `deck::ClipDeck` (M8) holding
       // Player<'static> over the owned map (encapsulated self-reference;
-      // SAFETY comment in deck.rs — drop order pins the borrow, the fake
-      // 'static never escapes that module)
+      // drop order pins the borrow, the fake 'static never escapes that
+      // module — the argument is in the `auto_ascii::deck` paragraph below)
   pub fn open_composition(impl AsRef<Path>, library_dir: Option<&Path>)
       -> Result<RenderSession, Error>;                    // M8, feature `compose`
   pub fn from_composition(Composition) -> Result<RenderSession, Error>;  // M8

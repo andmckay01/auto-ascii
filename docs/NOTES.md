@@ -56,3 +56,20 @@ exactly as a user resizing a terminal window would. RSS samples come from
 harness still storms and validates escape streams but `rss.csv` holds only
 its header. The RSS slope (< 1 MB/h after warmup, PLAN M5) is reported for a
 reviewer, not gated by the harness exit code.
+
+### Memory-mapped assets
+
+The player, `RenderSession`, compositions, the CLI and the factory's eval
+open `.ascii` assets as read-only private `memmap2` mappings. A mapping's
+address does not change when its `Mmap` handle moves, so slices into it
+outlive moves of the handle. Read-only and private only stop this process
+writing through the mapping: another process can still modify or truncate
+the file, and touching a page past a truncation raises `SIGBUS`. Replacing
+an asset by rename is safe, because the old inode stays mapped; rewriting
+it in place is not.
+
+### GIF frame timing
+
+GIF frame delays count hundredths of a second, so the review reel's delay
+is a whole number of centiseconds and never below 10 ms: rates above
+100 fps play at 100 fps.

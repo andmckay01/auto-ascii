@@ -127,8 +127,6 @@ pub fn asset_info(path: &Path) -> Result<AssetInfo, BoxErr> {
     }
     let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
     let bytes = file.metadata().map_err(|e| format!("stat {}: {e}", path.display()))?.len();
-    // Safety: read-only private map of a file nothing mutates while we hold
-    // it — the same contract the player's mmap assumes.
     let mmap = unsafe { Mmap::map(&file) }.map_err(|e| format!("mmap {}: {e}", path.display()))?;
     let reader = AsciiReader::open(&mmap)
         .map_err(|e| format!("{} is not a valid ASCI asset: {e}", path.display()))?;

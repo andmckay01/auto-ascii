@@ -606,9 +606,6 @@ impl Composition {
 pub(crate) fn read_clip(path: &Path) -> Result<AsciiHeader, Error> {
     let file = std::fs::File::open(path)
         .map_err(|source| Error::Io { path: path.into(), source })?;
-    // SAFETY: read-only private map of a file we never mutate through this
-    // mapping; same not-truncated-mid-use contract as every other reader
-    // here. The mapping dies at the end of this function.
     let map = unsafe { Mmap::map(&file) }
         .map_err(|source| Error::Io { path: path.into(), source })?;
     let header = auto_ascii_format::AsciiReader::open(&map)

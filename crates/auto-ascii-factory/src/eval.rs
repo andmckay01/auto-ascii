@@ -120,10 +120,6 @@ pub(crate) fn resolve_font_table(spec: Option<&str>) -> Result<CoverageTable, Bo
     .into())
 }
 
-/// Edge-truth memo across sweep combos: the source Canny masks
-/// depend only on (clip, ingest fps, grid, sampled frame set) — never on the
-/// tunables under test — so a sweep computes them once per clip, not once
-/// per combo. Keyed by every input that shapes the mask set.
 pub type TruthCache = BTreeMap<String, BTreeMap<u32, EdgeMask>>;
 
 struct Snap {
@@ -279,8 +275,6 @@ pub(crate) fn eval_clip(
 
     let file = std::fs::File::open(&asset_path)
         .map_err(|e| format!("open {}: {e}", asset_path.display()))?;
-    // Safety: read-only private map of a file nothing mutates during eval
-    // (same contract as the player's mmap).
     let mmap = unsafe { Mmap::map(&file) }
         .map_err(|e| format!("mmap {}: {e}", asset_path.display()))?;
 

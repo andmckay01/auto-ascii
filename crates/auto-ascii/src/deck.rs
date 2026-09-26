@@ -412,23 +412,8 @@ impl ClipDeck {
         let path = self.paths[idx].clone();
         let file = std::fs::File::open(&path)
             .map_err(|source| Error::Io { path: path.clone(), source })?;
-        // SAFETY: read-only private map of a file we never mutate through
-        // this mapping; the standard mmap'd-reader assumption that the
-        // asset is not truncated mid-use (the same contract RenderSession
-        // and the player binary take).
         let map = unsafe { Mmap::map(&file) }
             .map_err(|source| Error::Io { path: path.clone(), source })?;
-        // SAFETY of the 'static lifetime: `bytes` points into the OS
-        // mapping owned by `map`, whose address is stable for the life of
-        // that object (moving the `Mmap` handle — into `self.maps` below,
-        // or with the Vec if it reallocates — moves a pointer, not the
-        // mapping). The only consumer is the player stored at the same
-        // index, and `players` is declared BEFORE `maps`, so Rust's
-        // declaration-order drop guarantees every borrow dies before the
-        // mapping is unmapped. The only other way a slot dies is
-        // `evict_one`, which clears the player first for exactly the same
-        // reason. The fake 'static never escapes this module: no method
-        // here hands out the player itself.
         let bytes: &'static [u8] =
             unsafe { std::slice::from_raw_parts(map.as_ptr(), map.len()) };
         let reader = AsciiReader::open(bytes)

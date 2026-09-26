@@ -139,8 +139,6 @@ pub fn export(
     for clip in comp.clips() {
         let file = std::fs::File::open(&clip.path)
             .map_err(|source| Error::Io { path: clip.path.clone(), source })?;
-        // SAFETY: read-only private map of a file we never mutate through
-        // this mapping; the standard not-truncated-mid-use contract.
         let map = unsafe { Mmap::map(&file) }
             .map_err(|source| Error::Io { path: clip.path.clone(), source })?;
         maps.push(map);

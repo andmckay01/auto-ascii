@@ -37,9 +37,6 @@ pub struct Quirk {
     /// (alacritty, VTE, the Linux console) can never match — by design,
     /// their identity was not *queried*.
     pub xtversion_prefix: &'static str,
-    /// Additionally require the XTGETTCAP `RGB` reading to be exactly this
-    /// (`None` = don't care). Lets an entry key on the *combination* of who
-    /// answered and what it said about direct color.
     pub rgb_reply: Option<Option<bool>>,
     /// Raise the color tier to at least this (identity proves more than the
     /// replies could).

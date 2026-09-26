@@ -69,11 +69,6 @@ pub mod h_flags {
     pub const DEEP_SHADOW: u8 = 1 << 1;
 }
 
-/// Per-cell winning-layer ids — render metadata. A `Grid<u8>` of these (the
-/// **LayerMask**, filled by [`compose_frame_masked`]) makes the layer-priority
-/// decision observable per cell; the eval harness reads it for the edge-F1
-/// prediction side ("cells where the edge layer won"). Values are data, not
-/// bitflags — exactly one layer wins (override, never blend).
 pub mod layer {
     /// L0 base ramp won (also letterbox pads and Y-only back-compat cells).
     pub const BASE: u8 = 0;
