@@ -1,63 +1,21 @@
-//! Baseline compare: per-metric tolerances → pass/fail + deltas, so a
-//! deliberate param regression trips the eval.
-//!
-//! Direction-aware: SSIM regresses downward; flicker, bytes and damage
-//! regress upward. Improvements always pass — tolerances bound regressions
-//! only. A metric present in the baseline but missing from the current run
-//! fails (coverage must not silently shrink); a metric new in the current
-//! run is informational only.
-//!
-//! **Stage times are informational-only**: eval stage timers are wall-clock
-//! on a shared box, and a co-tenant process can double them with zero code
-//! change. Their deltas are still recorded (always `pass`) and an
-//! over-tolerance jump earns an `info:` note, but they never gate the
-//! compare; the criterion perf gate (`perf/thresholds.toml`,
-//! `scripts/perf-gate.sh`) is the precise instrument for stage-time
-//! regressions. The stage_ms metric *disappearing* still fails (structural
-//! coverage, not a timing).
+//! Eval report comparisons and regression tolerances.
 
 use serde::{Deserialize, Serialize};
 
 use crate::report::EvalReport;
 use crate::stats::Stage;
 
-/// Per-metric regression tolerances. All fields have serde defaults so a
-/// params.toml `[eval.tolerances]` table can override any subset.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Tolerances {
-    /// Max allowed absolute SSIM drop (SSIM is 0..=1; absolute is stabler
-    /// than relative near 1.0).
     pub ssim_max_drop: f64,
-    /// Max allowed absolute increase in flicker switches/cell/s (the gate
-    /// scale is "≤ 2", so absolute units are the natural tolerance).
     pub flicker_max_increase: f64,
-    /// Max allowed absolute edge-F1 drop (F1 is 0..=1, same reasoning as
-    /// SSIM). An absurd edge threshold collapses F1 and must trip the compare.
     pub edge_f1_max_drop: f64,
-    /// Max allowed fractional increase in avg bytes/frame per tier
-    /// (0.20 = +20%).
     pub bytes_frac_max_increase: f64,
-    /// Max allowed absolute increase in avg damage rate per tier
-    /// (rates are 0..=1 fractions of the grid).
     pub damage_rate_max_increase: f64,
-    /// INFORMATIONAL threshold on per-stage mean frame time increases: stage
-    /// deltas never gate the compare — they are wall-clock on a noisy box and
-    /// the criterion perf gate is the precise instrument — but a fractional
-    /// increase beyond this earns an `info:` note in the report so drift
-    /// stays visible.
     pub stage_ms_frac_max_increase: f64,
-    /// Max allowed absolute change (either direction) in `shot_count` and
-    /// `cut_count`. Shot structure has no "better" direction — a params
-    /// change that alters the cut roster (e.g. killed cut detection) is
-    /// exactly what this gate exists to flag.
     pub shot_structure_max_delta: f64,
-    /// Max allowed fractional DROP in `keyframe_count` (fewer keyframes =
-    /// longer delta rolls = worse seeks). Increases pass on their
-    /// own; the size cost of extra keyframes is bounded by `asset_bytes`.
     pub keyframes_frac_max_drop: f64,
-    /// Max allowed fractional increase in `asset_bytes` (encode-profile
-    /// bloat, e.g. a zstd_level downgrade). Shrink always passes.
     pub asset_bytes_frac_max_increase: f64,
 }
 
@@ -77,39 +35,29 @@ impl Default for Tolerances {
     }
 }
 
-/// One compared metric.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MetricDelta {
-    /// Clip name the metric belongs to.
     pub clip: String,
-    /// Metric path, e.g. `"ssim"`, `"flicker"`, `"bytes_per_frame/256"`,
-    /// `"damage_rate/truecolor"`, `"stage_ms/resample"`.
     pub metric: String,
     pub baseline: f64,
     pub current: f64,
-    /// `current − baseline`.
     pub delta: f64,
     pub pass: bool,
 }
 
-/// Result of a baseline comparison.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CompareReport {
-    /// True iff every delta passed and no structural problem was found.
     pub pass: bool,
     pub deltas: Vec<MetricDelta>,
-    /// Structural findings (schema mismatch, missing clips/metrics/tiers).
     pub notes: Vec<String>,
 }
 
 impl CompareReport {
-    /// Deltas that failed their tolerance.
     pub fn failures(&self) -> impl Iterator<Item = &MetricDelta> {
         self.deltas.iter().filter(|d| !d.pass)
     }
 }
 
-/// Compare a run against a recorded baseline under the given tolerances.
 pub fn compare_reports(
     current: &EvalReport,
     baseline: &EvalReport,

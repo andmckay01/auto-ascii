@@ -1,40 +1,23 @@
-//! Damage/bytes aggregation from backend `FrameStats` (damage rate and
-//! bytes/frame per tier), and per-stage frame timers.
+//! Backend damage statistics and pipeline-stage timing summaries.
 
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use auto_ascii_term::FrameStats;
 
-/// Aggregated present-path statistics for one run at one tier — the JSON
-/// form of a `Vec<FrameStats>` (one per presented frame).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DamageStats {
-    /// Frames presented (including dropped ones).
     pub frames: u32,
-    /// Frames flagged dropped by the backend.
     pub dropped_frames: u32,
-    /// Total bytes written across all frames.
     pub bytes_total: u64,
-    /// Mean bytes per frame.
     pub avg_bytes_per_frame: f64,
-    /// Worst single frame.
     pub max_bytes_per_frame: u32,
-    /// Mean fraction of grid cells damaged per frame (0..=1).
     pub avg_damage_rate: f64,
-    /// Worst single-frame damage fraction (0..=1).
     pub max_damage_rate: f64,
-    /// Mean simulated/real `write(2)` time, milliseconds.
     pub avg_write_ms: f64,
-    /// `avg_bytes_per_frame · fps` — the sustained output byte rate.
     pub bytes_per_sec: f64,
 }
 
-/// Aggregate a run's per-frame stats. `grid_cells` is the full terminal grid
-/// cell count (damage rates are relative to it); `fps` is the playback rate
-/// used to express byte throughput.
-///
-/// An empty slice yields all-zero stats (frames = 0).
 pub fn aggregate_frame_stats(stats: &[FrameStats], grid_cells: u32, fps: f64) -> DamageStats {
     let frames = stats.len() as u32;
     let mut dropped = 0u32;
@@ -67,8 +50,6 @@ pub fn aggregate_frame_stats(stats: &[FrameStats], grid_cells: u32, fps: f64) ->
     }
 }
 
-/// The four player pipeline stages, as reported in its `--sim` JSON
-/// (`stage_ms:{decode,resample,compose,present}`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     Decode,
@@ -90,16 +71,13 @@ impl Stage {
     }
 }
 
-/// Per-stage timing summary, milliseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StageStat {
-    /// Samples recorded for this stage.
     pub frames: u32,
     pub mean_ms: f64,
     pub max_ms: f64,
 }
 
-/// The JSON form of one run's stage timings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StageTimesMs {
     pub decode: StageStat,
@@ -119,8 +97,6 @@ impl StageTimesMs {
     }
 }
 
-/// Streaming per-stage timer accumulator: `record` each stage's duration
-/// every frame, then `report()` for the serializable summary.
 #[derive(Clone, Debug, Default)]
 pub struct StageAccum {
     agg: [(u32, u64, u64); 4],

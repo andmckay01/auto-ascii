@@ -1,44 +1,15 @@
-//! Edge F1: cell-level precision/recall/F1 of the renderer's edge
-//! layer against **Canny on the SOURCE frame at grid resolution**.
-//!
-//! Ground truth is deliberately *never* the factory's own E plane (no
-//! self-grading): the driver feeds the raw source luma (the fps-normalized
-//! ingest stream, before any factory tunable touches it), this module
-//! downscales it to the viewport grid through auto-ascii-core's own [`Resampler`]
-//! (the same box-average semantics the player uses) and runs
-//! [`imageproc::edges::canny`] on the result ([`canny_edge_truth`]).
-//!
-//! Prediction is the set of cells where the compositor's **edge layer won**
-//! — observable through the render-metadata `LayerMask` (a `Grid<u8>` of
-//! `auto_ascii_core::compose::layer` ids filled by `compose_frame_masked`;
-//! [`edge_cells_from_layers`] crops the viewport and selects
-//! [`layer::EDGE`]).
-//!
-//! Matching uses a **1-cell tolerance ring** ([`EDGE_MATCH_TOLERANCE`],
-//! Chebyshev distance): glyph quantization means a contour legitimately
-//! lands one cell off the downscaled Canny ridge, and the renderer's edge
-//! magnitude is unthinned by design — off-by-one cells count as
-//! hits on both the precision and the recall side. Scores are NaN-free by
-//! construction (see [`edge_f1`] for the empty-mask conventions).
+//! Cell-level source-edge truth, layer predictions and tolerant F1 scoring.
 
 use crate::raster::GrayImage;
 use imageproc::edges::canny;
 use auto_ascii_core::compose::layer;
 use auto_ascii_core::{Grid, Resampler, Viewport};
 
-/// Canny hysteresis thresholds (imageproc: Sobel gradient magnitude on the
-/// internally Gaussian-blurred image, σ = 1.4). Fixed and eval-owned — like
-/// the SSIM reference percentiles they must stay independent of the params
-/// under test. At the 300×80 reference grid, low 60 / high 140 lands truth
-/// density in the "real contours" band (~4–10% of cells): subject outlines
-/// and limbs stay, fine micro-texture (grass blades, grain) drops out.
 pub const CANNY_LOW: f32 = 60.0;
 pub const CANNY_HIGH: f32 = 140.0;
 
-/// Tolerance ring radius (cells, Chebyshev) used by the report metric.
 pub const EDGE_MATCH_TOLERANCE: u16 = 1;
 
-/// A binary cell mask at grid resolution (row-major, `w × h`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EdgeMask {
     w: u16,
@@ -47,8 +18,6 @@ pub struct EdgeMask {
 }
 
 impl EdgeMask {
-    /// All-false mask. Zero-sized masks are legal (empty frame conventions
-    /// apply — see [`edge_f1`]).
     pub fn new(w: u16, h: u16) -> EdgeMask {
         EdgeMask { w, h, bits: vec![false; w as usize * h as usize] }
     }
@@ -71,7 +40,6 @@ impl EdgeMask {
         self.bits[y as usize * self.w as usize + x as usize] = v;
     }
 
-    /// Number of set cells.
     pub fn count(&self) -> u32 {
         self.bits.iter().map(|&b| u32::from(b)).sum()
     }
@@ -85,18 +53,6 @@ impl EdgeMask {
     }
 }
 
-/// Ground truth: Canny on the source luma **downscaled to grid resolution**.
-///
-/// `src` is the raw source luma at `src_w × src_h` (the factory's ingest
-/// scale, e.g. 480×270); the downscale to `grid_w × grid_h` viewport cells
-/// runs through auto-ascii-core's [`Resampler`] — the identical box-average the
-/// player applies, so truth and prediction see the same spatial quantization
-/// (grid cells are ~1:2 anisotropic; Canny at cell granularity is the metric
-/// definition, not a raster-space edge map). Thresholds: [`CANNY_LOW`] /
-/// [`CANNY_HIGH`], documented above.
-///
-/// # Panics
-/// If `src` is shorter than `src_w × src_h` or any dimension is zero.
 pub fn canny_edge_truth(
     src: &[u8],
     src_w: u16,
@@ -119,12 +75,6 @@ pub fn canny_edge_truth(
     mask
 }
 
-/// Prediction: viewport cells whose winning layer was the edge layer, from a
-/// render-metadata `LayerMask` (`Grid<u8>` of `auto_ascii_core::compose::layer`
-/// ids at full terminal dimensions — pads are cropped here).
-///
-/// # Panics
-/// If the grid is smaller than the viewport + pads.
 pub fn edge_cells_from_layers(layers: &Grid<u8>, vp: &Viewport) -> EdgeMask {
     assert!(
         layers.cols() >= vp.pad_left + vp.cols && layers.rows() >= vp.pad_top + vp.rows,
@@ -142,31 +92,15 @@ pub fn edge_cells_from_layers(layers: &Grid<u8>, vp: &Viewport) -> EdgeMask {
     mask
 }
 
-/// Cell-level edge score. All fields are finite for every input.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EdgeScore {
     pub precision: f64,
     pub recall: f64,
     pub f1: f64,
-    /// Ground-truth edge cells in the frame.
     pub truth_cells: u32,
-    /// Predicted (edge-layer-won) cells in the frame.
     pub predicted_cells: u32,
 }
 
-/// Precision/recall/F1 with a Chebyshev tolerance ring of `tol` cells
-/// (off-by-`tol` counts as a hit on BOTH sides; the report uses
-/// [`EDGE_MATCH_TOLERANCE`] = 1).
-///
-/// NaN-safe empty-mask conventions (documented contract):
-/// - no truth, no prediction → precision = recall = f1 = 1.0 (nothing to
-///   find, nothing drawn — perfect agreement; e.g. a flat black frame);
-/// - no truth, some prediction → precision = 0 (every prediction false),
-///   recall = 1 (vacuous), f1 = 0;
-/// - some truth, no prediction → precision = 1 (vacuous), recall = 0, f1 = 0.
-///
-/// # Panics
-/// On dimension mismatch.
 pub fn edge_f1(truth: &EdgeMask, pred: &EdgeMask, tol: u16) -> EdgeScore {
     assert_eq!(
         (truth.w, truth.h),
@@ -212,7 +146,6 @@ pub fn edge_f1(truth: &EdgeMask, pred: &EdgeMask, tol: u16) -> EdgeScore {
     EdgeScore { precision, recall, f1, truth_cells, predicted_cells }
 }
 
-/// Convenience for tests/drivers: mask from a grayscale image (nonzero = edge).
 pub fn mask_from_gray(img: &GrayImage) -> EdgeMask {
     let mut mask = EdgeMask::new(img.w(), img.h());
     for (i, &v) in img.as_slice().iter().enumerate() {
