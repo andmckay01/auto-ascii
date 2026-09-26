@@ -145,10 +145,6 @@ enum Cmd {
     Home,
 }
 
-/// `compose …`. `<name>` is a path to a `.toml` if one exists, else
-/// `compositions/<name>.toml` — the file is the source of truth, and these
-/// subcommands only ever edit the same bytes an agent would have written by
-/// hand.
 #[derive(Subcommand)]
 enum ComposeCmd {
     #[command(about = "Start `compositions/<name>.toml` (fails if it is already there)")]
