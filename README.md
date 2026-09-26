@@ -118,14 +118,30 @@ for a bright half). On truecolor and 256-color terminals each character sits
 on a dim tint of its cell's colour, so faces and midtones hold their shape;
 16-color and mono terminals keep a black background.
 `ascii` is letters with only printable ASCII: no blocks, no tint and no
-background color at all (the terminal's own shows through), every glyph in
-its cell's color brightened to make up for the ink a character leaves
-unfilled. Glyph selection is the same on every terminal tier; colours
-follow the terminal's capabilities.
+background color at all (the terminal's own shows through). With no
+background to carry the picture, each glyph is its cell's color at full
+brightness from mid-gray up, and denser glyphs carry the lighter tones, with
+`@` kept for near-white. Glyph selection is the same on every terminal tier;
+colours follow the terminal's capabilities.
+
+**Black backdrop.** While it plays, the player sets your terminal's default
+background to black (OSC 11). `ascii` needs it: on a grey or light theme its
+characters would sit on that colour instead of black. `pixels` and `letters`
+paint every cell themselves and look the same either way. On exit it sends
+OSC 111, which resets the background to the one in your terminal's config or
+profile (not to a colour something else set at runtime). That reset runs on a
+normal quit, on an error, on a Rust panic, on SIGINT (Ctrl-C), SIGTERM and
+SIGHUP, and at process exit. Nothing can run when the player is killed with
+SIGKILL or dies from an abort or a segfault; if a tab is left black, run
+`printf '\e]111\e\\'` in it or open a new one. `--no-backdrop` keeps your
+terminal's background; the mono tier (`--tier mono`) never sets it, since it
+draws in your terminal's own foreground colour. `auto-ascii play` always uses
+the backdrop. Terminals that don't understand OSC 11 ignore it.
 
 **Dials** retune the renderer while the video plays. Shadow lift opens dark
 scenes. Edge strength sets how many contours get strokes. Hysteresis trades
-flicker against responsiveness. Nothing is rebuilt: the same asset re-renders
+flicker against responsiveness. The readout says when a dial is at its
+floor, its default or its top. Nothing is rebuilt: the same asset re-renders
 at the new setting. `s` saves the dials and codec beside the asset as
 `<name>.player.toml`, and they load the next time that video plays.
 
@@ -148,6 +164,7 @@ Useful flags:
 - `--codec pixels|letters|ascii`
 - `--palette ascii|unicode|braille`, `--tier truecolor|256|16|mono`
 - `--no-query` (skip capability queries)
+- `--no-backdrop` (keep the terminal's own background)
 - `--font-table NAME|PATH` (tell the player which font your terminal uses)
 
 `auto-ascii-player --help` lists everything.

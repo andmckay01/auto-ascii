@@ -144,8 +144,9 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   cell flagged `attrs::DEFAULT_BG` so the painter emits SGR 49 (the terminal's own background)
   instead of a color. Everything else the player draws while `ascii` is active follows the same
   rule (flow 10). Tone is glyph ink plus the foreground, on an 18-step ramp ordered by
-  JetBrains Mono coverage: dim colors get a gentle lift, lit cells rise to full brightness and
-  highlights run toward white, hue kept.
+  JetBrains Mono coverage: the colour rises to full brightness by mid-gray tone (hue kept),
+  highlights run toward white, and above mid-gray tone lives in ink alone, with `@` kept for
+  near-white. The player's black backdrop (flow 7) puts it on black in any terminal theme.
 - **User:** `/` cycles codecs while playing (`pixels` → `letters` → `ascii`), `--codec
   pixels|letters|ascii` picks one at startup, and `s` saves it for this video (flow 9).
 - **Code:** `crates/auto-ascii-core/src/codec/mod.rs` `GlyphCodec` (trait: `NAME`, `cell`),
@@ -207,7 +208,12 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   terminal) and `crates/auto-ascii-term/src/sim.rs` `SimBackend` (in memory, throttleable) both
   present through it, behind the `crates/auto-ascii-term/src/backend.rs` `Backend` trait.
   `crates/auto-ascii-term/src/restore.rs` `install_restore_hooks` / `arm` / `restore_now` emit
-  `RESTORE_SEQ` exactly once, from `Drop`, the panic hook, SIGINT/SIGTERM or atexit.
+  `RESTORE_SEQ` exactly once, from `Drop`, the panic hook, SIGINT/SIGTERM/SIGHUP or atexit. The
+  player's session also sets a black backdrop: `AnsiBackend::with_backdrop` writes `BACKDROP_SET`
+  (OSC 11) after the alt-screen enter and `restore_now` writes `BACKDROP_RESET` (OSC 111, back to
+  the configured background) before `RESTORE_SEQ` on the same paths. `--no-backdrop` /
+  `PlayerBuilder::no_backdrop` turns it off; the Mono tier never sets it. `auto-ascii play` always
+  sets it.
 - **Invariants:**
   - Quantize before diff, so cells that quantize equal cost zero bytes.
   - Repaint mode `full` (default) invalidates every frame. `diff` rewrites only damaged cells.
@@ -215,13 +221,20 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     overlay cells.
   - crossterm is used for raw mode, alt screen and events only, never per-cell output. The
     player links no video codecs and no rayon.
+  - The backdrop is session-wide and never part of a frame: `SimBackend` and `--sim-dump`
+    streams are the same with or without it, and pixels and letters paint every background
+    themselves, so only SGR 49 cells (`ascii`) change on screen. It is reset exactly once
+    (`crates/auto-ascii-term/tests/pty_restore.rs`, SIGHUP included). SIGKILL, `abort` and
+    segfaults run no code, so they leave it set (`printf '\e]111\e\\'` resets it).
+  - Never on the Mono tier: Mono paints no foreground, so the terminal's default (black on a light
+    theme) would vanish on a black backdrop.
 
 ### 8. Interactive player: transport and keys
 - **Does:** plays an asset or composition at its own fps with pause, jump and scrub.
 - **User:** `auto-ascii-player <asset|comp.toml>` or `auto-ascii play <clip|composition>`.
   `q`/`Esc`/Ctrl-C quit · space pause · `0`–`9` jump to 0–90% · `←`/`→` ±5 s · `d` / `[` `]`
   dials · `/` codec · `s` save · `v` controls. Flags: `--loop`, `--fps-cap N`, `--seek T`,
-  `--duration-secs S`, `--repaint full|diff`, `--cell-aspect R`.
+  `--duration-secs S`, `--repaint full|diff`, `--cell-aspect R`, `--no-backdrop`.
 - **Code:** `crates/auto-ascii/src/bin/auto-ascii-player.rs` (clap; argv maps 1:1 onto
   `PlayerBuilder`) → `crates/auto-ascii/src/player.rs` `PlayerBuilder::build` (validates before
   touching the terminal) → `Player::run`, the event loop over `ClipDeck`
@@ -242,8 +255,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **User:** `d` shows the dial readout and then cycles **shadow lift → edge strength →
   hysteresis**. `[`/`]` turn the selected dial. `s` writes `<name>.player.toml` beside the
   asset, and the next time that video comes to the front its dials and codec load.
-- **Code:** `crates/auto-ascii/src/player.rs` `Dial` (`ALL`, `label`, `step`, `max`, `get`,
-  `turn`, `param_key`, `set_param`) and `dial_after_cycle` (the first `d` only reveals the
+- **Code:** `crates/auto-ascii/src/player.rs` `Dial` (`ALL`, `label`, `readout`, `step`, `max`,
+  `get`, `turn`, `param_key`, `set_param`) and `dial_after_cycle` (the first `d` only reveals the
   readout). `LiveSettings` (`front`, `turn`, `cycle`, `save`, `status`, `write_info`) tracks the fronted
   clip, a `--codec` override and the session's `/` and dial choices. `crates/auto-ascii/src/settings.rs`
   `VideoSettings` (`path_for`, `to_toml`, `parse`, `load`, `save`). Shadow lift bends the NORM
@@ -251,6 +264,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Invariants:**
   - Dials map to `[compose]` fields (`shadow_lift`, `edge_t_on` shown inverted as "edge
     strength", `idx_hyst_q8`). No asset is touched.
+  - The readout marks a dial at its floor, its default or its top (`Dial::readout`); shadow lift
+    starts at `(floor, default)`.
   - A dial walk retraces its own steps: the top of the scale is a stop, and a press away from it
     counts from the detent above `max()` (`Dial::turn`; `crates/auto-ascii/tests/dials.rs`).
   - Codec precedence: a `/` press this session beats `--codec`, which beats the saved file,

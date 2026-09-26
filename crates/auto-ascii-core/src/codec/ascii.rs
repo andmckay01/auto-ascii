@@ -12,14 +12,17 @@
 //! Tone therefore lives in two places only: how much of the cell the glyph
 //! inks, and how bright its color is. The glyph comes from the held tone
 //! through an 18-step ramp that tops out in the densest glyphs (`#`, `D`,
-//! `8`, `B`, `@`, `@` kept for near-white). The color is the cell's chroma
-//! sample (gray fallback), hue kept, in three bands of the same held tone:
-//! below `LIT_FROM` its brightness `y` is lifted to `y·(1 + (1 − y)²)` (at
-//! most 4×) so a dim-but-lit area still reads without the shadows turning
-//! grey; from `LIT_FROM` to `LIT_FULL` it rises to full brightness, since a
-//! glyph inks at most about a quarter of its cell; from `HI_FROM` up it runs
-//! toward white (three quarters of the way at 255), so a highlight outshines
-//! the lit surface around it. Stability follows letters on untinted tiers:
+//! `8`, `B`, `@`); the ink target runs linearly in tone from the black floor
+//! to `TONE_TOP`, bent up below mid-gray so midtones ink sooner, and each
+//! tone takes the step of nearest ink, so `@` starts at held tone 225, a
+//! little below `TONE_TOP`, and stays for near-white. The color is the
+//! cell's chroma sample (gray fallback), hue kept: its brightness `y` starts
+//! lifted to `y·(1 + (1 − y)²)` (at most 4×) and, over held tone `LIT_FROM`
+//! to `LIT_FULL`, rises to full brightness, since a glyph inks at most about
+//! a quarter of its cell and has no background to carry the picture; from
+//! `HI_FROM` up it runs toward white (seven eighths of the way at 255), so a
+//! highlight outshines the lit surface around it. Between `LIT_FULL` and
+//! `HI_FROM` tone is carried by ink alone. Stability follows letters on untinted tiers:
 //! the displayed tone is held within a deadband of `9/32 × idx_hyst_q8` tone
 //! units, a lit cell is held down to half the black floor, and the
 //! top-/bottom-heavy choice reuses letters' dual threshold. The output is the
@@ -76,13 +79,13 @@ const TONE_TOP: u8 = 240;
 
 const GAIN_MAX_Q8: u32 = 1024;
 
-const LIT_FROM: u8 = 128;
+const LIT_FROM: u8 = 24;
 
-const LIT_FULL: u8 = 224;
+const LIT_FULL: u8 = 128;
 
-const HI_FROM: u8 = 200;
+const HI_FROM: u8 = 160;
 
-const HI_WHITE_Q8: u32 = 192;
+const HI_WHITE_Q8: u32 = 224;
 
 const STEP: [u8; 256] = step_table();
 
@@ -111,7 +114,7 @@ const fn step_table() -> [u8; 256] {
     let mut n = BLACK_FLOOR as usize;
     while n < 256 {
         let u = unit(n);
-        let mut want = if u > 128 { u - (u - 128) * (255 - u) / 254 } else { u };
+        let mut want = if u < 128 { u + (128 - u) * u / 254 } else { u };
         if want < lo {
             want = lo;
         }
@@ -319,7 +322,8 @@ mod tests {
         assert_eq!(cold(&inp(BLACK_FLOOR - 1, BLACK_FLOOR - 1)).glyph(), ' ');
         assert_ne!(cold(&inp(BLACK_FLOOR, BLACK_FLOOR)).glyph(), ' ');
         assert_eq!(cold(&inp(255, 255)).glyph(), '@');
-        assert_eq!(cold(&inp(TONE_TOP, TONE_TOP)).glyph(), '@');
+        assert_eq!(cold(&inp(225, 225)).glyph(), '@', "@ starts at held tone 225");
+        assert_eq!(cold(&inp(224, 224)).glyph(), 'B', "and not a step sooner");
         let mid = cold(&inp(128, 128)).glyph();
         assert!("rcxno".contains(mid), "mid-gray is a lowercase midtone: {mid:?}");
     }
@@ -346,26 +350,32 @@ mod tests {
 
     #[test]
     fn color_keeps_hue_lifts_darks_and_orders_brightness() {
-        let dim = cold(&CellInputs { chroma: Some(Rgb::new(40, 20, 10)), ..inp(120, 120) }).fg;
+        let dim = cold(&CellInputs { chroma: Some(Rgb::new(40, 20, 10)), ..inp(LIT_FROM, LIT_FROM) }).fg;
         assert!(dim.r > 40 && dim.r <= 160, "dark colors lift, at most 4x: {dim:?}");
         assert_eq!((dim.r / 2, dim.r / 4), (dim.g, dim.b), "hue kept: {dim:?}");
         let white = cold(&CellInputs { chroma: Some(Rgb::WHITE), ..inp(250, 250) }).fg;
         assert_eq!(white, Rgb::WHITE, "nothing clips");
+        let mid = (LIT_FROM + LIT_FULL) / 2;
         let mut last = 0;
         for m in (8..=255u16).step_by(8) {
-            let c = cold(&CellInputs { chroma: Some(Rgb::gray(m as u8)), ..inp(150, 150) }).fg;
+            let c = cold(&CellInputs { chroma: Some(Rgb::gray(m as u8)), ..inp(mid, mid) }).fg;
             assert!(c.r >= last, "value {m}: {} below {last}", c.r);
             last = c.r;
         }
-        let lit = cold(&CellInputs { chroma: Some(Rgb::gray(200)), ..inp(150, 150) }).fg.r;
-        assert!(255 - lit >= 20, "a lit surface stays below white: {lit}");
+        let lit = cold(&CellInputs { chroma: Some(Rgb::gray(120)), ..inp(mid, mid) }).fg.r;
+        assert!(lit > 120 && 255 - lit >= 20, "a half-lit surface lifts but stays below white: {lit}");
         let skin = Rgb::new(160, 120, 80);
         let at = |n: u8| cold(&CellInputs { chroma: Some(skin), ..inp(n, n) }).fg;
-        assert_eq!(at(100), at(LIT_FROM), "below LIT_FROM the tone leaves the color alone");
+        let mut last = 0;
+        for n in (LIT_FROM..=LIT_FULL).step_by(8) {
+            assert!(at(n).r > last, "tone {n} brightens the color: {:?}", at(n));
+            last = at(n).r;
+        }
         let full = at(LIT_FULL);
         assert!(full.r == 255 && full.r > full.g && full.g > full.b, "lit cells reach full brightness: {full:?}");
+        assert_eq!(at(HI_FROM), full, "full brightness, hue kept, up to HI_FROM");
         let core = at(255);
-        assert!(core.r == 255 && core.b > 200, "a highlight runs toward white: {core:?}");
+        assert!(core.r == 255 && core.b > 200 && core.b > full.b, "a highlight runs toward white: {core:?}");
     }
 
     #[test]

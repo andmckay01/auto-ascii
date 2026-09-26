@@ -128,7 +128,12 @@ fn main() {
     }
 
     install_restore_hooks();
-    let mut backend = AnsiBackend::new(Caps::default()).expect("harness requires a tty");
+    let backdrop = std::env::var_os("ASCII_HARNESS_BACKDROP").is_some();
+    let mut caps = Caps::default();
+    if std::env::var_os("ASCII_HARNESS_MONO").is_some() {
+        caps.color = auto_ascii_term::ColorTier::Mono;
+    }
+    let mut backend = AnsiBackend::with_backdrop(caps, backdrop).expect("harness requires a tty");
 
     let (cols, rows) = backend.caps().cells;
     let mut grid = Grid::new(cols, rows);
