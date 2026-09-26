@@ -1,19 +1,4 @@
-//! ASCI reader over a byte slice — mmap-friendly: map the file (e.g. with
-//! `memmap2`) and hand the `&[u8]` here; this crate never opens files.
-//!
-//! Playback contract: decoding a frame is one zstd block decode plus (for
-//! delta frames) one memadd into the caller's standing double buffer — zero
-//! allocation per frame after `open`.
-//!
-//! Validation split: [`AsciiReader::open`] validates the header, the TRLR
-//! tail anchor, the pre-frame chunk roll (META/NORM) and the whole FIDX — it
-//! never touches frame payloads, so cold open + seek stay fast on multi-GB
-//! files. Per-frame structure is (re)validated on every decode;
-//! [`AsciiReader::verify`] is the full chunk-walk + CRC32 pass.
-//!
-//! Seek: binary-search the keyframe roster to the nearest keyframe at or
-//! before the target, then ≤ `keyframe_ivl − 1` delta rolls —
-//! [`AsciiReader::seek_plane_into`].
+//! ASCI byte-slice reader, frame decoding and integrity verification.
 
 use crate::chunk::{
     CHUNK_HEADER_SIZE, ChunkHeader, FIDX_ENTRY_SIZE, FrameIndexEntry, TAG_FIDX, TAG_FRAM,
@@ -24,7 +9,6 @@ use crate::header::{HEADER_SIZE, AsciiHeader, codec, filter, header_flags, plane
 use crate::meta::Meta;
 use crate::norm::{NORM_RECORD_SIZE, PlaneLevels, ShotRecord};
 
-/// Random-access reader over a complete ASCI byte image.
 pub struct AsciiReader<'a> {
     bytes: &'a [u8],
     header: AsciiHeader,
@@ -71,11 +55,6 @@ fn walk_chunks(
 }
 
 impl<'a> AsciiReader<'a> {
-    /// Parse + validate the header, check the TRLR tail anchor (absence ⇒
-    /// [`crate::AsciiError::Truncated`]), roll the pre-frame chunks (META /
-    /// NORM / unknowns — skipped by size unless required), then load FIDX via
-    /// `index_offset` and build the keyframe roster. Frame payloads are never
-    /// touched here.
     pub fn open(bytes: &'a [u8]) -> Result<AsciiReader<'a>> {
         if bytes.len() < HEADER_SIZE as usize {
             return Err(AsciiError::Truncated);
@@ -288,7 +267,6 @@ impl<'a> AsciiReader<'a> {
         self.header.frame_count
     }
 
-    /// Decode the META chunk (CBOR; unknown keys ignored).
     pub fn meta(&self) -> Result<Meta> {
         let offset = usize::try_from(self.header.meta_offset)
             .map_err(|_| AsciiError::Corrupt("meta_offset overflow"))?;
@@ -314,36 +292,26 @@ impl<'a> AsciiReader<'a> {
         ciborium::de::from_reader(payload).map_err(|_| AsciiError::BadMeta)
     }
 
-    /// NORM shot records in `first_frame` order (empty slice when the asset
-    /// has no NORM chunk).
     #[inline]
     pub fn shots(&self) -> &[ShotRecord] {
         &self.shots
     }
 
-    /// The shot containing `frame_idx` (binary search over `first_frame`),
-    /// or `None` when the asset has no NORM chunk.
     pub fn shot_for_frame(&self, frame_idx: u32) -> Option<&ShotRecord> {
         let p = self.shots.partition_point(|s| s.first_frame <= frame_idx);
         if p == 0 { None } else { Some(&self.shots[p - 1]) }
     }
 
-    /// Position of `plane_id` in the header registry (the index into
-    /// [`ShotRecord::levels`]), or `None` if the plane is not in this asset.
     pub fn plane_index(&self, plane_id: u8) -> Option<usize> {
         let n = (self.header.plane_count as usize).min(8);
         self.header.plane_ids[..n].iter().position(|&id| id == plane_id)
     }
 
-    /// Runtime p2/p98 levels for one plane at one frame (the per-shot
-    /// auto-levels of the shot containing it). `None` when the asset has no
-    /// NORM chunk or the plane is not in this asset.
     pub fn norm_levels(&self, frame_idx: u32, plane_id: u8) -> Option<PlaneLevels> {
         let pi = self.plane_index(plane_id)?;
         self.shot_for_frame(frame_idx).map(|s| s.levels[pi])
     }
 
-    /// Whether `frame_idx` carries the KEYFRAME flag (FIDX bit0).
     pub fn is_keyframe(&self, frame_idx: u32) -> Result<bool> {
         self.index
             .get(frame_idx as usize)
@@ -351,9 +319,6 @@ impl<'a> AsciiReader<'a> {
             .ok_or(AsciiError::BadFrameIndex(frame_idx))
     }
 
-    /// Nearest keyframe at or before `frame_idx` (binary search over the
-    /// keyframe roster built from FIDX flags). For INTRA assets every frame
-    /// stands alone, so this is `frame_idx` itself.
     pub fn nearest_keyframe_at_or_before(&self, frame_idx: u32) -> Result<u32> {
         if frame_idx >= self.header.frame_count {
             return Err(AsciiError::BadFrameIndex(frame_idx));
@@ -368,11 +333,6 @@ impl<'a> AsciiReader<'a> {
         Ok(self.keyframes[p - 1])
     }
 
-    /// Stored dimensions of a plane in this asset: `base_w × base_h` for
-    /// Y/E/Ex/Ey/H, half res for C. `None` if the plane is not in the header
-    /// registry — or is an unknown (future) ID whose geometry this reader
-    /// cannot claim (its raw size travels in the FRAM subblock header
-    /// instead).
     pub fn plane_dims(&self, plane_id: u8) -> Option<(u16, u16)> {
         self.plane_index(plane_id)?;
         let (w, h) = (self.header.base_w, self.header.base_h);
@@ -477,10 +437,6 @@ impl<'a> AsciiReader<'a> {
         Err(AsciiError::BadPlaneId(plane_id))
     }
 
-    /// Random-access decode: binary-search to the nearest keyframe at or
-    /// before `frame_idx`, decode it intra into `dst`, then roll
-    /// ≤ `keyframe_ivl − 1` deltas forward. `dst` contents on entry are
-    /// irrelevant. Returns the raw byte count.
     pub fn seek_plane_into(&mut self, frame_idx: u32, plane_id: u8, dst: &mut [u8]) -> Result<usize> {
         let key = self.nearest_keyframe_at_or_before(frame_idx)?;
         let mut written = self.decode_plane_into(key, plane_id, dst)?;
@@ -490,8 +446,6 @@ impl<'a> AsciiReader<'a> {
         Ok(written)
     }
 
-    /// Full-file integrity walk: walk all chunks, verify framing, every CRC32
-    /// and the TRLR.
     pub fn verify(&self) -> Result<()> {
         let with_crc = self.header.flags & header_flags::CRCS_PRESENT != 0;
         let mut trlr_ok = false;
