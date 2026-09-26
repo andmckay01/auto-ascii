@@ -50,6 +50,30 @@ pub fn in_scope(path: &str, prefixes: &[String]) -> bool {
         })
 }
 
+pub fn path_metadata(root: &Path, path: &str) -> Result<Option<std::fs::Metadata>> {
+    if !relative_path(path) {
+        bail!("invalid worktree path: {path}");
+    }
+    let mut full = root.to_owned();
+    let mut metadata = None;
+    for component in Path::new(path).components() {
+        full.push(component);
+        let next = match full.symlink_metadata() {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        if next.file_type().is_symlink() {
+            bail!(
+                "scoped source symlink refused: {path} (component {})",
+                full.display()
+            );
+        }
+        metadata = Some(next);
+    }
+    Ok(metadata)
+}
+
 pub fn worktree_files(root: &Path, prefixes: &[String]) -> Result<Vec<String>> {
     let output = Command::new("git")
         .current_dir(root)
@@ -70,22 +94,11 @@ pub fn worktree_files(root: &Path, prefixes: &[String]) -> Result<Vec<String>> {
     let names = String::from_utf8(output.stdout)?;
     let mut paths = BTreeSet::new();
     for path in names.split('\0').filter(|p| !p.is_empty()) {
-        if language(path).is_some() && in_scope(path, prefixes) {
-            if !relative_path(path) {
-                bail!("invalid worktree path: {path}");
-            }
-            let full = root.join(path);
-            let metadata = match full.symlink_metadata() {
-                Ok(metadata) => metadata,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.into()),
-            };
-            if metadata.file_type().is_symlink() {
-                bail!("scoped source symlink refused: {path}");
-            }
-            if metadata.is_file() {
-                paths.insert(path.to_owned());
-            }
+        if language(path).is_some()
+            && in_scope(path, prefixes)
+            && path_metadata(root, path)?.is_some_and(|metadata| metadata.is_file())
+        {
+            paths.insert(path.to_owned());
         }
     }
     Ok(paths.into_iter().collect())

@@ -5,7 +5,7 @@ mod make;
 mod rust;
 mod scope;
 
-pub use scope::{in_scope, language, worktree_files};
+pub use scope::{in_scope, language, path_metadata, worktree_files};
 
 use anyhow::{Result, bail};
 use serde::Deserialize;
@@ -93,10 +93,14 @@ pub fn scan(source: &str, lang: Language) -> Result<Vec<Comment>> {
     Ok(clusters)
 }
 
-pub fn shebang_end(source: &str) -> usize {
+pub fn shebang_end(source: &str, lang: Language) -> usize {
     let bom = source.len() - source.trim_start_matches('\u{feff}').len();
     let text = &source[bom..];
-    if text.starts_with("#!/") {
+    if matches!(lang, Language::Rust | Language::Shell | Language::Python)
+        && text
+            .strip_prefix("#!")
+            .is_some_and(|tail| tail.trim_start_matches([' ', '\t']).starts_with('/'))
+    {
         bom + text.find('\n').unwrap_or(text.len())
     } else {
         bom
@@ -119,7 +123,7 @@ pub fn violation(source: &str, c: &Comment, lang: Language) -> Option<String> {
             .into(),
         );
     }
-    let preamble = shebang_end(source).min(c.start);
+    let preamble = shebang_end(source, lang).min(c.start);
     if !source[preamble..c.start].trim().is_empty() {
         return Some(
             if c.standalone {

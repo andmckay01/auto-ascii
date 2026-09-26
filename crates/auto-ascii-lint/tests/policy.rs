@@ -512,3 +512,114 @@ fn bom_preserves_adjacent_header_lines_in_every_language() {
         assert!(failures(&source, lang).is_empty(), "{lang:?}");
     }
 }
+
+#[test]
+fn make_assignments_take_precedence_over_inline_recipes() {
+    for operator in ["=", ":=", "::=", ":::=", "?=", "+=", "!="] {
+        for prefix in ["", "override ", "export ", "all: ", "all: private "] {
+            let source = format!("{prefix}X {operator} before; echo '# hidden'\n");
+            assert_eq!(
+                comments(&source, Language::Make),
+                vec![(Kind::Hash, "# hidden'".into())],
+                "{source}"
+            );
+            assert_eq!(
+                failures(&source, Language::Make),
+                ["trailing comment"],
+                "{source}"
+            );
+            let source = format!("{prefix}X {operator} before; (\n");
+            assert!(comments(&source, Language::Make).is_empty(), "{source}");
+        }
+    }
+    for source in [
+        "all: ; X=1; echo '# literal' # actual\n",
+        "all:: ; echo '# literal' # actual\n",
+        "$(subst :=,x,all): ; echo '# literal' # actual\n",
+    ] {
+        assert_eq!(
+            comments(source, Language::Make),
+            vec![(Kind::Hash, "# actual".into())]
+        );
+    }
+}
+
+#[test]
+fn oneshell_collects_blank_lines_and_inline_first_commands() {
+    for first in ["all:\n\tif true; then\n", "all: ; if true; then\n"] {
+        let source = format!(".ONESHELL:\n{first}\n\techo \"#\"\n\tfi\n");
+        assert!(comments(&source, Language::Make).is_empty());
+        let source = format!(
+            ".ONESHELL:\n{first}\n# Make comment\n\techo \"#\" # shell comment\n\tfi\nother: ; echo '# literal'\n"
+        );
+        let atoms = scan(&source, Language::Make).unwrap();
+        assert_eq!(
+            atoms
+                .iter()
+                .map(|c| &source[c.start..c.end])
+                .collect::<Vec<_>>(),
+            ["# Make comment", "# shell comment"]
+        );
+        assert_eq!(failures(&source, Language::Make).len(), 2);
+    }
+    let source = ".ONESHELL:\n.RECIPEPREFIX := >\nall: ; cat <<'DATA'\n\n># heredoc data\n>DATA\n>echo ok # actual\n";
+    assert_eq!(
+        comments(source, Language::Make),
+        vec![(Kind::Hash, "# actual".into())]
+    );
+}
+
+#[test]
+fn oneshell_applies_to_recipes_before_the_directive() {
+    let source = "all: ; if true; then\n\n\techo '#'\n\tfi\n.ONESHELL :\n";
+    assert!(comments(source, Language::Make).is_empty());
+    let source = "define DATA\n.ONESHELL:\nendef\nall:\n\tif true; then\n\techo ok\n\tfi\n";
+    assert!(scan(source, Language::Make).is_err());
+}
+
+#[test]
+fn spaced_script_shebangs_do_not_consume_header_lines() {
+    for (lang, marker, code) in [
+        (Language::Shell, "#", "echo ok"),
+        (Language::Python, "#", "x = 1"),
+        (Language::Rust, "//!", "fn main() {}"),
+    ] {
+        for space in ["", " ", "\t", " \t "] {
+            for bom in ["", "\u{feff}"] {
+                let header = format!("{marker} Owns this file.\r\n").repeat(5);
+                let source = format!("{bom}#!{space}/usr/bin/env script\r\n{header}{code}\r\n");
+                assert!(failures(&source, lang).is_empty(), "{lang:?}: {source}");
+                assert_eq!(comments(&source, lang).len(), 1);
+            }
+        }
+    }
+    for attribute in [
+        "#![allow(dead_code)]",
+        "#! [allow(dead_code)]",
+        "#!\t[allow(dead_code)]",
+    ] {
+        let source = format!("{attribute}\n//! Late header.\n");
+        assert_eq!(failures(&source, Language::Rust).len(), 1);
+    }
+}
+
+#[test]
+fn data_files_treat_shebang_shaped_lines_as_header_comments() {
+    for lang in [Language::Toml, Language::Make, Language::Gitignore] {
+        for first in ["#!/first-header", "#! /first-header", "#!anything"] {
+            let source = format!("{first}\n\n# second-header\n");
+            let atoms = scan(&source, lang).unwrap();
+            assert_eq!(atoms.len(), 2, "{lang:?}: {source}");
+            assert_eq!(atoms[1].line, 3);
+            assert_eq!(
+                failures(&source, lang),
+                ["comment outside the leading file header"]
+            );
+            let source = format!("{first}\n{}", "# header\n".repeat(5));
+            assert_eq!(
+                failures(&source, lang),
+                ["file header has 6 text lines; maximum is 5"]
+            );
+        }
+    }
+}

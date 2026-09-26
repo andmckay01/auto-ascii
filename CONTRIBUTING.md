@@ -60,8 +60,10 @@ Nothing committed depends on the corpus: synthetic fixtures in
 
 A source file may have one optional leading ownership paragraph, at most
 five text lines. Rust uses adjacent `//!` lines; shell, Python, TOML,
-Makefile and `.gitignore` use adjacent `#` lines. A BOM, leading whitespace
-and an executable shebang may precede the header. Rust inner attributes
+Makefile and `.gitignore` use adjacent `#` lines. A BOM and leading whitespace
+may precede the header. In shell, Python and Rust scripts, an interpreter
+shebang (`#!/path` or `#! /path`) may also precede it. A `#!` line in TOML,
+Makefiles or `.gitignore` is an ordinary comment. Rust inner attributes
 may follow it, but cannot precede it. Delimiter-only outer lines do not
 count; a blank comment line inside the paragraph fails. A blank source
 line separates clusters, so a later block is a second header and fails.
@@ -82,6 +84,8 @@ rustc's lexer for Rust, Tree-sitter grammars for shell and TOML, Python's
 standard tokenizer and AST for Python, and narrow Make/gitignore scanners.
 This preserves literal text, including raw/byte/C strings, generated TOML,
 shell expansions and heredocs, without maintaining a second Rust lexer.
+Make assignments retain Make comment syntax; `.ONESHELL` recipes preserve
+shell context across blank lines and inline first commands.
 Development checks require `python3` 3.12+ on PATH; no pip install is needed.
 Dependencies and extraction boundaries are recorded in
 [Technology notes](docs/NOTES.md#technology).
@@ -97,8 +101,10 @@ Scope is tracked plus untracked, nonignored `.rs`, `.sh`, `.py`, `.toml`,
 Makefiles and `.gitignore` files. Cargo.lock is generated dependency data
 and excluded, as are Markdown, JSON, goldens, snapshots, LICENSE and other
 extensions. Credential-like paths are never read; scoped source symlinks
-are refused. `--paths` selects repository-relative files or directories,
-with directory boundaries, and scopes allowlist staleness too.
+are refused, including symlinked parent directories below the repository
+root. The same restriction applies to the allowlist. `--paths` selects
+repository-relative files or directories, with directory boundaries, and
+scopes allowlist staleness too.
 
 `scripts/comment-allowlist.toml` starts empty (`entries = []`). Its only
 entry fields are `path`, exact `comment` cluster text, and a nonempty
@@ -118,9 +124,10 @@ The `comment rule` section of `scripts/eval.sh` temporarily passes
 `--count --report-only`. **To enforce after cleanup, remove only
 `--report-only` from that command.** `make comments` and `make lint`
 already enforce the rule and therefore fail until cleanup. Workspace
-tests cover the language fixtures, CLI, repository scan and the tooling's
-own compliance. This rollout adds no CI or pre-commit hook: the repo has
-no `.github` CI, and enforcement belongs in the existing eval gate.
+tests cover language fixtures and use isolated repositories for CLI
+regressions and the tooling's own compliance. Only the eval gate scans the
+live worktree. This rollout adds no CI or pre-commit hook: the repo has no
+`.github` CI, and enforcement belongs in the existing eval gate.
 
 ## Rules that keep the output deterministic
 

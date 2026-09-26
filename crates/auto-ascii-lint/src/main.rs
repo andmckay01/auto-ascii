@@ -1,7 +1,7 @@
 //! Worktree comment policy command and Markdown count report.
 
 use anyhow::{Context, Result, bail};
-use auto_ascii_lint::{Allowlist, language, scan, violation, worktree_files};
+use auto_ascii_lint::{Allowlist, language, path_metadata, scan, violation, worktree_files};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
@@ -70,7 +70,9 @@ fn run() -> Result<bool> {
     if !output.status.success() {
         bail!("run check-comments inside a Git worktree");
     }
-    let root = PathBuf::from(String::from_utf8(output.stdout)?.trim());
+    let root = PathBuf::from(String::from_utf8(output.stdout)?.trim()).canonicalize()?;
+    path_metadata(&root, "scripts/comment-allowlist.toml")?
+        .context("scripts/comment-allowlist.toml is missing")?;
     let allowlist = Allowlist::parse(&std::fs::read_to_string(
         root.join("scripts/comment-allowlist.toml"),
     )?)?;

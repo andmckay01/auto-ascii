@@ -57,8 +57,78 @@ fn variable_end(bytes: &[u8], start: usize) -> Result<usize> {
     Ok(end)
 }
 
+fn inline_recipe(code: &str) -> Result<Option<usize>> {
+    let bytes = code.as_bytes();
+    let mut target = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'$' if i + 1 < bytes.len() => {
+                i = if matches!(bytes[i + 1], b'(' | b'{') {
+                    variable_end(bytes, i)?
+                } else {
+                    i + 2
+                };
+            }
+            b'=' => return Ok(None),
+            b';' => return Ok(target.then_some(i + 1)),
+            b':' => {
+                target = true;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    Ok(None)
+}
+
+fn recipe_end(lines: &[&str], mut row: usize, prefix: u8, oneshell: bool) -> usize {
+    while row < lines.len()
+        && (continued(lines[row - 1])
+            || oneshell
+                && (lines[row].as_bytes().first() == Some(&prefix)
+                    || lines[row].trim().is_empty()
+                    || lines[row].trim_start().starts_with('#')))
+    {
+        row += 1;
+    }
+    row
+}
+
 fn shell(source: &str, start: usize, end: usize, prefix: u8, inline: bool) -> Result<Vec<Comment>> {
     let mut bytes = source.as_bytes()[start..end].to_vec();
+    let mut found = Vec::new();
+    let mut offset = 0;
+    let mut continuation = false;
+    let mut make_comment = None;
+    for (row, line) in source[start..end].split_inclusive('\n').enumerate() {
+        if make_comment.is_none()
+            && !(continuation || row == 0 && inline)
+            && line.as_bytes().first() != Some(&prefix)
+            && line.trim_start().starts_with('#')
+        {
+            make_comment = Some(offset + line.find('#').unwrap());
+        }
+        continuation = continued(line);
+        if let Some(at) = make_comment {
+            for byte in &mut bytes[offset..offset + line.len()] {
+                if *byte != b'\n' {
+                    *byte = b' ';
+                }
+            }
+            if !continuation || offset + line.len() == bytes.len() {
+                found.push(Comment::new(
+                    source,
+                    start + at,
+                    start + offset + line.len(),
+                    Kind::Hash,
+                ));
+                make_comment = None;
+            }
+        }
+        offset += line.len();
+    }
     let mut row_start = !inline;
     let mut i = 0;
     while i < bytes.len() {
@@ -94,13 +164,20 @@ fn shell(source: &str, start: usize, end: usize, prefix: u8, inline: bool) -> Re
         i += 1;
     }
     let masked = String::from_utf8(bytes)?;
-    Ok(syntax_comments(&masked, tree_sitter_bash::LANGUAGE.into())?
-        .into_iter()
-        .map(|c| Comment::new(source, start + c.start, start + c.end, Kind::Hash))
-        .collect())
+    found.extend(
+        syntax_comments(&masked, tree_sitter_bash::LANGUAGE.into())?
+            .into_iter()
+            .map(|c| Comment::new(source, start + c.start, start + c.end, Kind::Hash)),
+    );
+    Ok(found)
 }
 
 pub fn extract(source: &str) -> Result<Vec<Comment>> {
+    let (_, oneshell) = extract_mode(source, false, false)?;
+    Ok(extract_mode(source, oneshell, true)?.0)
+}
+
+fn extract_mode(source: &str, oneshell: bool, parse_recipes: bool) -> Result<(Vec<Comment>, bool)> {
     let lines: Vec<_> = source.split_inclusive('\n').collect();
     let mut offsets = vec![0];
     for line in &lines {
@@ -108,7 +185,7 @@ pub fn extract(source: &str) -> Result<Vec<Comment>> {
     }
     let mut prefix = b'\t';
     let mut defines = 0;
-    let mut oneshell = false;
+    let mut has_oneshell = oneshell;
     let mut found = Vec::new();
     let mut row = 0;
     while row < lines.len() {
@@ -140,14 +217,10 @@ pub fn extract(source: &str) -> Result<Vec<Comment>> {
         }
         if line.as_bytes().first() == Some(&prefix) {
             let start = row;
-            row += 1;
-            while row < lines.len()
-                && (continued(lines[row - 1])
-                    || oneshell && lines[row].as_bytes().first() == Some(&prefix))
-            {
-                row += 1;
+            row = recipe_end(&lines, row + 1, prefix, oneshell);
+            if parse_recipes {
+                found.extend(shell(source, offsets[start], offsets[row], prefix, false)?);
             }
-            found.extend(shell(source, offsets[start], offsets[row], prefix, false)?);
             continue;
         }
         let start = row;
@@ -158,19 +231,17 @@ pub fn extract(source: &str) -> Result<Vec<Comment>> {
         let logical = &source[offsets[start]..offsets[row]];
         let comment_at = hash(logical)?;
         let code = &logical[..comment_at.unwrap_or(logical.len())];
-        let inline = code.find(':').and_then(|colon| {
-            (!code[..colon].contains('='))
-                .then(|| code[colon + 1..].find(';').map(|semi| colon + 2 + semi))
-                .flatten()
-        });
-        if let Some(inline) = inline {
-            found.extend(shell(
-                source,
-                offsets[start] + inline,
-                offsets[row],
-                prefix,
-                true,
-            )?);
+        if let Some(inline) = inline_recipe(code)? {
+            row = recipe_end(&lines, row, prefix, oneshell);
+            if parse_recipes {
+                found.extend(shell(
+                    source,
+                    offsets[start] + inline,
+                    offsets[row],
+                    prefix,
+                    true,
+                )?);
+            }
         } else if let Some(at) = comment_at {
             found.push(Comment::new(
                 source,
@@ -180,8 +251,11 @@ pub fn extract(source: &str) -> Result<Vec<Comment>> {
             ));
         }
         let code = code.trim();
-        if code == ".ONESHELL:" {
-            oneshell = true;
+        if code
+            .split_once(':')
+            .is_some_and(|(target, tail)| target.trim() == ".ONESHELL" && tail.trim().is_empty())
+        {
+            has_oneshell = true;
         }
         if code.starts_with(".RECIPEPREFIX") {
             let (_, value) = code
@@ -204,5 +278,5 @@ pub fn extract(source: &str) -> Result<Vec<Comment>> {
     if defines != 0 {
         bail!("unterminated Make define body");
     }
-    Ok(found)
+    Ok((found, has_oneshell))
 }

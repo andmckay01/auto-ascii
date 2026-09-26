@@ -1,11 +1,11 @@
 //! Rust comment tokens and literal prose documentation attributes.
 
-use crate::{Comment, Kind, shebang_end};
+use crate::{Comment, Kind, Language, shebang_end};
 use anyhow::{Result, bail};
 use ra_ap_rustc_lexer::{DocStyle, FrontmatterAllowed, LiteralKind, TokenKind, tokenize};
 
 pub fn extract(source: &str) -> Result<Vec<Comment>> {
-    let mut offset = shebang_end(source);
+    let mut offset = shebang_end(source, Language::Rust);
     let mut comments = Vec::new();
     let mut significant = Vec::new();
     for token in tokenize(&source[offset..], FrontmatterAllowed::No) {

@@ -1,4 +1,4 @@
-//! CLI scope, exit status, report mode and repository integration checks.
+//! Isolated CLI fixtures for scope, exit status and report mode.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -143,25 +143,29 @@ fn invalid_schema_and_syntax_fail_even_in_report_mode() {
 }
 
 #[test]
-fn repository_scans_and_tooling_itself_has_no_violations() {
-    let root = workspace();
-    let result = Command::new(env!("CARGO_BIN_EXE_check-comments"))
-        .current_dir(&root)
-        .args(["--count", "--report-only"])
-        .output()
-        .unwrap();
-    assert!(result.status.success(), "{}", output(&result));
-    let result = Command::new(env!("CARGO_BIN_EXE_check-comments"))
-        .current_dir(&root)
-        .args([
-            "--paths",
-            "crates/auto-ascii-lint",
-            "scripts/comment-allowlist.toml",
-        ])
-        .output()
-        .unwrap();
-    assert!(result.status.success(), "{}", output(&result));
-    assert!(output(&result).contains("0 violation(s)"));
+fn isolated_tooling_snapshot_has_no_violations() {
+    let repo = Repo::new();
+    for (path, source) in [
+        ("Cargo.toml", include_str!("../Cargo.toml")),
+        ("src/lib.rs", include_str!("../src/lib.rs")),
+        ("src/main.rs", include_str!("../src/main.rs")),
+        ("src/make.rs", include_str!("../src/make.rs")),
+        ("src/scope.rs", include_str!("../src/scope.rs")),
+        ("src/extract.rs", include_str!("../src/extract.rs")),
+        ("src/rust.rs", include_str!("../src/rust.rs")),
+        ("src/python.py", include_str!("../src/python.py")),
+        ("tests/policy.rs", include_str!("policy.rs")),
+        ("tests/cli.rs", include_str!("cli.rs")),
+    ] {
+        repo.write(path, source);
+    }
+    let unrelated = Repo::new();
+    unrelated.write("review-invalid.sh", "echo 'unterminated\n");
+    for args in [&["--count", "--report-only"][..], &[]] {
+        let result = repo.run(args);
+        assert!(result.status.success(), "{}", output(&result));
+        assert!(output(&result).contains("0 violation(s)"));
+    }
 }
 
 #[cfg(unix)]
@@ -174,4 +178,58 @@ fn source_symlinks_are_refused_only_within_the_selected_scope() {
     assert_eq!(result.status.code(), Some(2));
     assert!(output(&result).contains("source symlink refused"));
     assert_eq!(repo.run(&["--paths", "one.rs"]).status.code(), Some(0));
+}
+
+#[cfg(unix)]
+#[test]
+fn tracked_source_parent_symlinks_are_refused_before_reading() {
+    let repo = Repo::new();
+    let outside = Repo::new();
+    repo.write("nested/deeper/probe.rs", "//! Owner.\n");
+    outside.write("deeper/probe.rs", "/* unterminated");
+    assert!(
+        Command::new("git")
+            .current_dir(&repo.0)
+            .args(["add", "nested/deeper/probe.rs"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::rename(repo.0.join("nested"), repo.0.join("saved-nested")).unwrap();
+    std::os::unix::fs::symlink(&outside.0, repo.0.join("nested")).unwrap();
+    for args in [
+        &["--paths", "nested"][..],
+        &["--report-only", "--paths", "nested/deeper/probe.rs"],
+    ] {
+        let result = repo.run(args);
+        assert_eq!(result.status.code(), Some(2), "{}", output(&result));
+        assert!(output(&result).contains("source symlink refused"));
+        assert!(!output(&result).contains("extraction failed"));
+    }
+    assert_eq!(
+        repo.run(&["--paths", "saved-nested"]).status.code(),
+        Some(0)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn allowlist_leaf_and_parent_symlinks_are_refused_even_outside_scan_scope() {
+    for parent in [false, true] {
+        let repo = Repo::new();
+        let outside = Repo::new();
+        repo.write("one.rs", "//! Owner.\n");
+        outside.write("scripts/comment-allowlist.toml", "invalid TOML [[[\n");
+        let path = if parent {
+            "scripts"
+        } else {
+            "scripts/comment-allowlist.toml"
+        };
+        std::fs::rename(repo.0.join(path), repo.0.join("saved-allowlist")).unwrap();
+        std::os::unix::fs::symlink(outside.0.join(path), repo.0.join(path)).unwrap();
+        let result = repo.run(&["--report-only", "--paths", "one.rs"]);
+        assert_eq!(result.status.code(), Some(2), "{}", output(&result));
+        assert!(output(&result).contains("symlink refused"));
+        assert!(output(&result).contains("scripts/comment-allowlist.toml"));
+    }
 }

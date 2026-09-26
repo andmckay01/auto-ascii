@@ -8,7 +8,10 @@ use std::process::{Command, Stdio};
 pub fn extract(source: &str, lang: Language) -> Result<Vec<Comment>> {
     match lang {
         Language::Rust => crate::rust::extract(source),
-        Language::Shell => syntax_comments(source, tree_sitter_bash::LANGUAGE.into()),
+        Language::Shell => Ok(syntax_comments(source, tree_sitter_bash::LANGUAGE.into())?
+            .into_iter()
+            .filter(|c| c.start >= shebang_end(source, lang))
+            .collect()),
         Language::Toml => syntax_comments(source, tree_sitter_toml_ng::LANGUAGE.into()),
         Language::Python => python(source),
         Language::Make => crate::make::extract(source),
@@ -55,7 +58,7 @@ pub fn syntax_comments(source: &str, language: tree_sitter::Language) -> Result<
             );
         }
         let comment = node.kind() == "comment";
-        if comment && node.start_byte() + bom >= shebang_end(source) {
+        if comment {
             found.push(Comment::new(
                 source,
                 node.start_byte() + bom,
@@ -102,6 +105,7 @@ fn python(source: &str) -> Result<Vec<Comment>> {
     let atoms: Vec<(usize, usize, bool)> = serde_json::from_slice(&output.stdout)?;
     Ok(atoms
         .into_iter()
+        .filter(|(start, _, _)| start + bom >= shebang_end(source, Language::Python))
         .map(|(start, end, doc)| {
             Comment::new(
                 source,

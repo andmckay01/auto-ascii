@@ -25,8 +25,6 @@ def token_offset(position):
 found = []
 for token in tokenize.tokenize(io.BytesIO(data).readline):
     if token.type == tokenize.COMMENT:
-        if token.start == (1, 0) and token.string.startswith("#!/"):
-            continue
         found.append([token_offset(token.start), token_offset(token.end), False])
 
 for node in ast.walk(ast.parse(source)):
