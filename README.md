@@ -117,16 +117,20 @@ on edges, and blocks only where the picture is lit (`█` for near-white, `▀�
 for a bright half). On truecolor and 256-color terminals each character sits
 on a dim tint of its cell's colour, so faces and midtones hold their shape;
 16-color and mono terminals keep a black background.
-`ascii` is letters with only printable ASCII: no blocks, no tint and no
-background color at all (the terminal's own shows through). With no
-background to carry the picture, each glyph is its cell's color at full
-brightness from mid-gray up, and denser glyphs carry the lighter tones, with
-`@` kept for near-white. Glyph selection is the same on every terminal tier;
-colours follow the terminal's capabilities.
+`ascii` is letters with only printable ASCII and no blocks. Behind each
+character it paints a dim shade of the character's own colour, the way
+letters does, but only ever a shade: no channel above 96/255 (38%), at most
+0.375× the character's luminance, and a blank cell at most 24/255, so no cell
+ever reads as a pixel and no shade drowns its character. On 256-colour
+terminals the shade is a neutral grey; 16-colour and mono terminals get no
+shade (the terminal's own background shows through). Glyph selection is the
+same on every terminal tier; colours follow the terminal's capabilities.
 
 **Black backdrop.** While it plays, the player sets your terminal's default
-background to black (OSC 11). `ascii` needs it: on a grey or light theme its
-characters would sit on that colour instead of black. `pixels` and `letters`
+background to black (OSC 11). `ascii` needs it: its unshaded cells (shadows,
+blank cells, and everything on 16-colour terminals) use the terminal's
+background, and on a grey or light theme they would sit on that colour, next
+to shades designed for black. `pixels` and `letters`
 paint every cell themselves and look the same either way. On exit it sends
 OSC 111, which resets the background to the one in your terminal's config or
 profile (not to a colour something else set at runtime). That reset runs on a

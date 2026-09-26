@@ -168,7 +168,10 @@ pub struct RampView;  // &'static glyphs + effective len (per-tier cap, §1b:
 pub struct PaletteSet { pub base: RampView, pub highlight: RampView,
                         pub edge: &'static EdgeLut, pub halfblock: bool,
                         pub quadrant: bool, pub braille: bool, pub subpos: bool,
-                        pub bg_tint: bool }  // True/C256: a dim bg tint survives
+                        pub bg_tint: bool,   // True/C256: a dim bg tint survives
+                        pub color: ColorDepth }  // note 27(m): the depth it was
+                            // selected for (ascii holds its shade cap after
+                            // quantization)
 pub fn select_palettes(GlyphTier, ColorDepth, viewport_cols: u16) -> PaletteSet;
 // Key (§1b): C16/Mono → palette 8 base uncapped ("mono longest"); True caps
 // ramps to 8, C256 to 12; Ascii → coarse/fine by density + subpos; unicode
@@ -453,7 +456,8 @@ pub const QUIRKS: &[Quirk];   // kitty-rgbless-xtgettcap, xterm-no-direct-color
 pub fn apply_quirks(caps: &mut Caps, &ProbeReplies) -> Vec<&'static str>;
     // returns the names applied (probe logging/tests)
 
-// quant.rs — NEW at M1 (PLAN §3.1 quantize-before-diff; pure math)
+// quant.rs — NEW at M1 (PLAN §3.1 quantize-before-diff; pure math). Note
+// 27(m): the math moved to auto_ascii_core::quant; this module re-exports it.
 pub fn rgb_to_256(Rgb) -> u8;     // xterm 6×6×6 cube (16–231) + gray ramp (232–255)
 pub fn rgb_to_16(Rgb) -> u8;      // nearest of the standard 16 (xterm defaults)
 pub fn ansi256_to_rgb(u8) -> Rgb; // canonical inverse (roundtrip-exact 16..=255)
@@ -2451,7 +2455,8 @@ facade surface + this hidden module.)
     and `auto-ascii/tests/codecs.rs` `letters_goldens_untinted_tiers`
     (`letters_80x24_unicode_16color.txt`, `letters_80x24_ascii_mono.txt`,
     blessed from the pre-change build).
-    (k) **The `ascii` codec** (after the letters pass). Letters swaps to
+    (k) **The `ascii` codec** (after the letters pass; its background is
+    superseded by (m): ascii now paints a capped shade). Letters swaps to
     solid colour too readily for a viewer who wants type only, so a third
     codec, `ascii`, is letters with the pixels taken out: every glyph is
     printable ASCII on every tier and palette, and there is no block, no
@@ -2569,7 +2574,56 @@ facade surface + this hidden module.)
     `codec::ascii::tests` colour bands rewritten for the new curve and the
     `@` onset pinned at 225,
     `player::tests::readout_marks_the_floor_the_default_and_the_top`, and
-    the two ascii goldens re-blessed.
+    the two ascii goldens re-blessed. (m) later retunes the glyph color
+    (full brightness over 48–176) now that a shade carries tone.
+    (m) **ascii paints a capped background shade** (McKay: keep the shade
+    that makes letters look best, "but only allow it to be a shade … no
+    full pixels ever or shades that clash with the ascii letters"). On
+    truecolor and 256-color every ascii cell but deep shadow gets a
+    background built like letters' tint: chroma × the coverage curve of the
+    HELD tone (the glyph's, so the shade steps when the glyph does) × 0.6
+    (`SHADE_Q8` 154); half variants use the dim half's tone. It is then held
+    to the cap, `codec::ascii::backing_within_cap(glyph, fg, bg)`, on the
+    colors the terminal is sent. With Y = relative luminance (sRGB decoded,
+    Rec. 709 weights, `codec::ascii::luminance`, Q16): a glyph cell's shade
+    has no channel above `SHADE_CEIL` 96 (38%) and Y(bg) ≤ 96/256 ·
+    Y(fg) (`SHADE_CONTRAST_Q8`); a space's has no channel above
+    `SHADE_BLANK_CEIL` 24 (the black floor). A shade over the cap is scaled
+    down, hue kept (ceiling: exactly; ratio: bisection on the scale), and
+    one that ends black is dropped to `attrs::DEFAULT_BG`. Hue: truecolor
+    shades are the chroma sample scaled (same hue, darker); 256-color
+    shades are the largest xterm gray-ramp level (232–255, emitted
+    unchanged by the painter) under both limits, checked against the fg as
+    `rgb_to_256` will send it, so the cap holds after quantization and no
+    cube color can land on another hue. 16-color and mono paint no shade.
+    `codec::ascii::cell_within_cap(cell, depth)` states the whole per-depth
+    contract. To let the codec see the quantized fg, the quantizer moved
+    to `auto_ascii_core::quant` (`auto_ascii_term::quant` re-exports the
+    same four functions, byte-for-byte the same math) and `PaletteSet`
+    gained `color: ColorDepth`. Glyph repertoire unchanged: printable ASCII
+    only, no blocks, half-blocks or shade glyphs. Pads, gaps, overlays and
+    the enlarge card keep SGR 49; the session backdrop (l) stays, because
+    unshaded cells still show the terminal's own background and the shade
+    is designed against black. With the shade carrying tone, the glyph
+    color eases back: full brightness over held tone 48–176 (was 24–128).
+    Measured (Ghostty-approximating renderer, black backdrop, 200x56 and
+    128x45): face mean 1.12× letters on the Architect, 1.31× Terminator,
+    1.22× Dune, 0.84× Interstellar (its core is solid white blocks in
+    letters; the shade stops at 96). The ratio cap never bound on real
+    assets (max Y(bg)/Y(fg) 0.12 over 523k shaded cells), the ceiling does.
+    Glyph switches 0.997× pixels; background changes 8.30 /cell/s against
+    letters' 9.21. Pixels and letters streams stay byte-identical to main.
+    Tests: `codec::ascii::tests::every_backing_is_a_capped_shade_of_the_glyph_color`
+    (every tier × depth, same-hue check on truecolor),
+    `the_cap_holds_where_it_binds` (ceiling, blank ceiling, ratio
+    bisection, 256 gray, 16/mono none),
+    `glyph_and_color_are_the_same_on_every_tier`, `codec_props.rs`
+    `ascii_is_printable_ascii_over_a_capped_shade`, and
+    `auto-ascii/tests/codecs.rs` `ascii_draws_printable_ascii_over_a_capped_shade`
+    (replays the deck's escape stream, every tier × palette, overlays on and
+    off, 1x1..400x120, resizes, gaps, and checks the cap on every shaded
+    character as sent). Both ascii goldens are re-blessed, colors only
+    (the shade and the eased glyph color); every glyph row is unchanged.
 28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
     should take a video from anywhere on the desktop, process it, and land
     it in the folder where the user's processed videos live"). The shape of

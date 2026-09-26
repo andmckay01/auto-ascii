@@ -1,32 +1,40 @@
-//! `ascii` — printable ASCII only, on the terminal's own background.
+//! `ascii` — printable ASCII only, over a capped shade.
 //!
 //! The same drawing as [`letters`](super::letters) — a ramp ordered by
 //! measured ink, a top-/bottom-heavy variant where a cell's two halves
-//! disagree, directional strokes on edges — with every solid shape and every
-//! background taken away. On every tier and palette selection each glyph is
-//! printable ASCII `0x20..=0x7E` and each cell carries
-//! [`attrs::DEFAULT_BG`], so the painter never sets a background color and the
-//! terminal's own shows through (letterbox pads and composition gaps too, via
-//! [`GlyphCodec::PAD`]).
+//! disagree, directional strokes on edges — with every solid shape taken
+//! away. On every tier and palette selection each glyph is printable ASCII
+//! `0x20..=0x7E`. Where letters' tint would light the cell, `ascii` paints a
+//! background **shade** instead, and only ever a shade: on truecolor and
+//! 256-color a cell's background is its chroma sample (gray fallback) times
+//! letters' coverage curve of the held tone times 0.6, then held to
+//! [`backing_within_cap`] — no channel above [`SHADE_CEIL`] (a glyph cell) or
+//! [`SHADE_BLANK_CEIL`] (a space), and at most [`SHADE_CONTRAST_Q8`]/256 of
+//! the glyph's [`luminance`]. A shade that breaks the cap is scaled down, hue
+//! kept, and one that cannot fit is dropped. Truecolor keeps the chroma's hue,
+//! only darker; 256-color uses the neutral xterm gray ramp, which the painter
+//! sends unchanged, so the cap holds on what the terminal shows and no shade
+//! lands on another hue. 16-color and mono paint no shade. Cells without one
+//! carry [`attrs::DEFAULT_BG`], so the terminal's own background shows through
+//! (letterbox pads and composition gaps too, via [`GlyphCodec::PAD`]).
+//! [`cell_within_cap`] states the whole contract per color depth.
 //!
-//! Tone therefore lives in two places only: how much of the cell the glyph
-//! inks, and how bright its color is. The glyph comes from the held tone
-//! through an 18-step ramp that tops out in the densest glyphs (`#`, `D`,
-//! `8`, `B`, `@`); the ink target runs linearly in tone from the black floor
-//! to `TONE_TOP`, bent up below mid-gray so midtones ink sooner, and each
-//! tone takes the step of nearest ink, so `@` starts at held tone 225, a
-//! little below `TONE_TOP`, and stays for near-white. The color is the
-//! cell's chroma sample (gray fallback), hue kept: its brightness `y` starts
-//! lifted to `y·(1 + (1 − y)²)` (at most 4×) and, over held tone `LIT_FROM`
-//! to `LIT_FULL`, rises to full brightness, since a glyph inks at most about
-//! a quarter of its cell and has no background to carry the picture; from
-//! `HI_FROM` up it runs toward white (seven eighths of the way at 255), so a
-//! highlight outshines the lit surface around it. Between `LIT_FULL` and
-//! `HI_FROM` tone is carried by ink alone. Stability follows letters on untinted tiers:
-//! the displayed tone is held within a deadband of `9/32 × idx_hyst_q8` tone
-//! units, a lit cell is held down to half the black floor, and the
-//! top-/bottom-heavy choice reuses letters' dual threshold. The output is the
-//! same on every tier; the backend quantizes the color.
+//! The glyph comes from the held tone through an 18-step ramp that tops out
+//! in the densest glyphs (`#`, `D`, `8`, `B`, `@`); the ink target runs
+//! linearly in tone from the black floor to `TONE_TOP`, bent up below
+//! mid-gray so midtones ink sooner, and each tone takes the step of nearest
+//! ink, so `@` starts at held tone 225, a little below `TONE_TOP`, and stays
+//! for near-white. The glyph's color is the chroma sample, hue kept: its
+//! brightness `y` starts lifted to `y·(1 + (1 − y)²)` (at most 4×) and, over
+//! held tone `LIT_FROM` to `LIT_FULL`, rises to full brightness, since a glyph
+//! inks at most about a quarter of its cell; from `HI_FROM` up it runs toward
+//! white (seven eighths of the way at 255), so a highlight outshines the lit
+//! surface around it. Stability follows letters on untinted tiers: the
+//! displayed tone is held within a deadband of `9/32 × idx_hyst_q8` tone
+//! units, a lit cell is held down to half the black floor, the shade follows
+//! the held tone rather than the instantaneous one, and the top-/bottom-heavy
+//! choice reuses letters' dual threshold. Glyph and glyph color are the same
+//! on every tier; the backend quantizes the color.
 //!
 //! **Ramp order.** Coverage was measured on JetBrains Mono 2.304 Regular
 //! (Ghostty's bundled default) as antialiased ink over the advance ×
@@ -37,7 +45,7 @@
 //!
 //! **Design constants.** The glyph tables, [`ASCII_INK`] and the thresholds
 //! below (`BLACK_FLOOR`, `FLOOR_HOLD`, `TONE_TOP`, `GAIN_MAX_Q8`, `LIT_FROM`,
-//! `LIT_FULL`, `HI_FROM`, `HI_WHITE_Q8`, the curves
+//! `LIT_FULL`, `HI_FROM`, `HI_WHITE_Q8`, `SHADE_Q8`, the shade cap, the curves
 //! in `value_table` and `step_table` and the deadband factor in `held_tone`)
 //! are this codec's DATA, pinned by its tests and goldens; what a viewer
 //! tunes stays in `ComposeParams`, exactly as for letters.
@@ -48,7 +56,8 @@ use crate::codec::letters::{EDGE, HALF_MASK, HALF_NONE, HALF_SHIFT, HALF_TOP, JU
 use crate::compose::{CellInputs, ComposeParams, boost, h_flags, layer, shade};
 use crate::hysteresis::{CellState, IDX_UNSET, cell_flags, edge_gate};
 use crate::orient::{bin_with_guard, coherence_at_least, debias};
-use crate::palette::{ASCII_HIGHLIGHT, GlyphClass, PaletteSet, subpos};
+use crate::quant::{ansi256_to_rgb, rgb_to_256};
+use crate::palette::{ASCII_HIGHLIGHT, ColorDepth, GlyphClass, PaletteSet, subpos};
 
 /// Base ramp, darkest first — 18 steps of printable ASCII, strictly
 /// increasing in measured ink.
@@ -79,13 +88,48 @@ const TONE_TOP: u8 = 240;
 
 const GAIN_MAX_Q8: u32 = 1024;
 
-const LIT_FROM: u8 = 24;
+const LIT_FROM: u8 = 48;
 
-const LIT_FULL: u8 = 128;
+const LIT_FULL: u8 = 176;
 
 const HI_FROM: u8 = 160;
 
 const HI_WHITE_Q8: u32 = 224;
+
+/// Brightest channel a glyph cell's backing shade may have: 96 of 255,
+/// 38% of full.
+pub const SHADE_CEIL: u8 = 96;
+
+/// Brightest channel the backing of a space may have: the black floor, so
+/// no blank cell is brighter than the dimmest tone `ascii` draws a glyph for.
+pub const SHADE_BLANK_CEIL: u8 = BLACK_FLOOR;
+
+/// A glyph cell's backing may have at most this fraction (Q8, 96/256 =
+/// 0.375) of its glyph's relative luminance.
+pub const SHADE_CONTRAST_Q8: u32 = 96;
+
+const SHADE_Q8: u32 = 154;
+
+const GRAY_RAMP: [u8; 24] = gray_ramp();
+
+const LINEAR: [u16; 256] = [
+    0, 20, 40, 60, 80, 99, 119, 139, 159, 179, 199, 219, 241, 264, 288, 313,
+    340, 367, 396, 427, 458, 491, 526, 562, 599, 637, 677, 718, 761, 805, 851, 898,
+    947, 997, 1048, 1101, 1156, 1212, 1270, 1330, 1391, 1453, 1517, 1583, 1651, 1720, 1790, 1863,
+    1937, 2013, 2090, 2170, 2250, 2333, 2418, 2504, 2592, 2681, 2773, 2866, 2961, 3058, 3157, 3258,
+    3360, 3464, 3570, 3678, 3788, 3900, 4014, 4129, 4247, 4366, 4488, 4611, 4736, 4864, 4993, 5124,
+    5257, 5392, 5530, 5669, 5810, 5953, 6099, 6246, 6395, 6547, 6700, 6856, 7014, 7174, 7335, 7500,
+    7666, 7834, 8004, 8177, 8352, 8528, 8708, 8889, 9072, 9258, 9445, 9635, 9828, 10022, 10219, 10417,
+    10619, 10822, 11028, 11235, 11446, 11658, 11873, 12090, 12309, 12530, 12754, 12980, 13209, 13440, 13673, 13909,
+    14146, 14387, 14629, 14874, 15122, 15371, 15623, 15878, 16135, 16394, 16656, 16920, 17187, 17456, 17727, 18001,
+    18277, 18556, 18837, 19121, 19407, 19696, 19987, 20281, 20577, 20876, 21177, 21481, 21787, 22096, 22407, 22721,
+    23038, 23357, 23678, 24002, 24329, 24658, 24990, 25325, 25662, 26001, 26344, 26688, 27036, 27386, 27739, 28094,
+    28452, 28813, 29176, 29542, 29911, 30282, 30656, 31033, 31412, 31794, 32179, 32567, 32957, 33350, 33745, 34143,
+    34544, 34948, 35355, 35764, 36176, 36591, 37008, 37429, 37852, 38278, 38706, 39138, 39572, 40009, 40449, 40891,
+    41337, 41785, 42236, 42690, 43147, 43606, 44069, 44534, 45002, 45473, 45947, 46423, 46903, 47385, 47871, 48359,
+    48850, 49344, 49841, 50341, 50844, 51349, 51858, 52369, 52884, 53401, 53921, 54445, 54971, 55500, 56032, 56567,
+    57105, 57646, 58190, 58737, 59287, 59840, 60396, 60955, 61517, 62082, 62650, 63221, 63795, 64372, 64952, 65535,
+];
 
 const STEP: [u8; 256] = step_table();
 
@@ -95,6 +139,16 @@ const fn unit(n: usize) -> u32 {
     let span = (TONE_TOP - BLACK_FLOOR) as u32;
     let x = n as u32 - BLACK_FLOOR as u32;
     (if x < span { x } else { span }) * 255 / span
+}
+
+const fn gray_ramp() -> [u8; 24] {
+    let mut t = [0u8; 24];
+    let mut i = 0;
+    while i < 24 {
+        t[i] = 8 + 10 * i as u8;
+        i += 1;
+    }
+    t
 }
 
 const fn value_table() -> [u8; 256] {
@@ -129,8 +183,101 @@ const fn step_table() -> [u8; 256] {
 }
 
 #[inline]
-const fn put(g: char, fg: Rgb) -> Cell {
-    Cell { ch: g as u32, fg, bg: Rgb::BLACK, attrs: attrs::DEFAULT_BG }
+const fn put(g: char, fg: Rgb, bg: Option<Rgb>) -> Cell {
+    match bg {
+        Some(bg) => Cell { ch: g as u32, fg, bg, attrs: 0 },
+        None => Cell { ch: g as u32, fg, bg: Rgb::BLACK, attrs: attrs::DEFAULT_BG },
+    }
+}
+
+/// Relative luminance of an sRGB color (decoded to linear light, Rec. 709
+/// weights), in Q16: 0 for black, 65535 for white.
+#[inline]
+pub fn luminance(c: Rgb) -> u32 {
+    let l = |v: u8| LINEAR[v as usize] as u32;
+    (13933 * l(c.r) + 46871 * l(c.g) + 4732 * l(c.b)) >> 16
+}
+
+/// The cap every `ascii` backing shade obeys, checked on the colors the
+/// terminal is sent (after the backend's quantization): a space's backing
+/// has no channel above [`SHADE_BLANK_CEIL`]; a glyph's has no channel above
+/// [`SHADE_CEIL`] and at most [`SHADE_CONTRAST_Q8`]/256 of the glyph's
+/// [`luminance`]. A cell on the terminal's own background passes trivially.
+pub fn backing_within_cap(glyph: char, fg: Rgb, bg: Rgb) -> bool {
+    let top = bg.r.max(bg.g).max(bg.b);
+    if glyph == ' ' {
+        return top <= SHADE_BLANK_CEIL;
+    }
+    top <= SHADE_CEIL && (luminance(bg) << 8) <= SHADE_CONTRAST_Q8 * luminance(fg)
+}
+
+/// The whole background contract of an `ascii` cell rendered for `color`,
+/// on the colors the codec emits: on 16-color and mono the terminal's own
+/// background; on truecolor the terminal's own or a backing within
+/// [`backing_within_cap`]; on 256-color the terminal's own or a gray from the
+/// xterm gray ramp (quantized unchanged, neutral, so never a clashing hue)
+/// within the cap against the glyph's color as quantized.
+pub fn cell_within_cap(cell: &Cell, color: ColorDepth) -> bool {
+    if cell.attrs & attrs::DEFAULT_BG != 0 {
+        return true;
+    }
+    match color {
+        ColorDepth::True => backing_within_cap(cell.glyph(), cell.fg, cell.bg),
+        ColorDepth::C256 => {
+            GRAY_RAMP.iter().any(|&g| cell.bg == Rgb::gray(g))
+                && backing_within_cap(cell.glyph(), ansi256_to_rgb(rgb_to_256(cell.fg)), cell.bg)
+        }
+        ColorDepth::C16 | ColorDepth::Mono => false,
+    }
+}
+
+#[inline]
+fn scaled(c: Rgb, k: u32) -> Rgb {
+    let s = |v: u8| ((v as u32 * k) >> 16) as u8;
+    Rgb::new(s(c.r), s(c.g), s(c.b))
+}
+
+#[inline]
+fn backing(c: Rgb, n: u8, glyph: char, fg: Rgb, color: ColorDepth) -> Option<Rgb> {
+    let deep = match color {
+        ColorDepth::True => false,
+        ColorDepth::C256 => true,
+        ColorDepth::C16 | ColorDepth::Mono => return None,
+    };
+    let top = c.r.max(c.g).max(c.b) as u32;
+    let f = BLACK_FLOOR as u32;
+    let x = ((n as u32).saturating_sub(f) << 8) / (255 - f);
+    let cov = (x + ((x * x * (768 - 2 * x)) >> 16)) >> 1;
+    let mut k = cov * SHADE_Q8;
+    if top == 0 || k == 0 {
+        return None;
+    }
+    let blank = glyph == ' ';
+    let ceil = if blank { SHADE_BLANK_CEIL } else { SHADE_CEIL } as u32;
+    if (top * k) >> 16 > ceil {
+        k = (ceil << 16).div_ceil(top);
+    }
+    let limit = if blank {
+        u32::MAX
+    } else {
+        let seen = if deep { ansi256_to_rgb(rgb_to_256(fg)) } else { fg };
+        (SHADE_CONTRAST_Q8 * luminance(seen)) >> 8
+    };
+    let bg = if deep {
+        let want = luminance(scaled(c, k)).min(limit);
+        let g = GRAY_RAMP.iter().rev().find(|&&g| luminance(Rgb::gray(g)) <= want)?;
+        Rgb::gray(*g)
+    } else if luminance(scaled(c, k)) <= limit {
+        scaled(c, k)
+    } else {
+        let (mut lo, mut hi) = (0, k);
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2;
+            if luminance(scaled(c, mid)) <= limit { lo = mid } else { hi = mid }
+        }
+        scaled(c, lo)
+    };
+    (bg != Rgb::BLACK).then_some(bg)
 }
 
 #[inline]
@@ -164,7 +311,7 @@ pub struct Ascii;
 impl GlyphCodec for Ascii {
     const NAME: &'static str = "ascii";
 
-    const PAD: Cell = put(' ', Rgb::WHITE);
+    const PAD: Cell = put(' ', Rgb::WHITE, None);
 
     /// Layer priority mirrors letters: edge → deep shadow → highlight → half
     /// variant (STRUCTURE) → base ramp.
@@ -172,7 +319,7 @@ impl GlyphCodec for Ascii {
     fn cell(
         inp: &CellInputs,
         lut: &[u8; 256],
-        _set: &PaletteSet,
+        set: &PaletteSet,
         params: &ComposeParams,
         s: &mut CellState,
     ) -> (Cell, u8) {
@@ -202,7 +349,9 @@ impl GlyphCodec for Ascii {
             s.flags &= !cell_flags::WAS_EDGE;
         }
 
-        let fg = tint(inp.chroma.unwrap_or(Rgb::gray(n)), h);
+        let c = inp.chroma.unwrap_or(Rgb::gray(n));
+        let fg = tint(c, h);
+        let cell = |g: char, fg: Rgb, tone: u8| put(g, fg, backing(c, tone, g, fg, set.color));
         let dx = -debias(inp.ex);
         let dy = -debias(inp.ey);
         let plain_idx = ((n as u32 * len) >> 8).min(len - 1);
@@ -217,27 +366,28 @@ impl GlyphCodec for Ascii {
             } else {
                 JUNCTION
             };
-            return (put(g, fg), layer::EDGE);
+            return (cell(g, fg, h), layer::EDGE);
         }
 
         if deep_shadow {
-            return (put(ASCII_RAMP[0], fg), layer::SHADOW);
+            return (put(ASCII_RAMP[0], fg, None), layer::SHADOW);
         }
 
         let hi_cut = ((len * params.hi_cut_q8 as u32) >> 8).max(1);
         if inp.h & h_flags::HIGHLIGHT != 0 && (i as u32) < hi_cut {
             let hlen = ASCII_HIGHLIGHT.len() as u32;
             let hidx = ((i as u32 * hlen) / hi_cut).min(hlen - 1) as usize;
-            return (put(ASCII_HIGHLIGHT[hidx], boost(fg)), layer::HIGHLIGHT);
+            return (cell(ASCII_HIGHLIGHT[hidx], boost(fg), h), layer::HIGHLIGHT);
         }
 
         if half != HALF_NONE && i > 0 {
             let g = if half == HALF_TOP { ASCII_TOP[i] } else { ASCII_BOTTOM[i] };
             let lit = lt.max(lb);
-            return (put(g, tint(inp.chroma.map_or(Rgb::gray(lit), |c| shade(c, lit, n.max(1))), h)), layer::STRUCTURE);
+            let fg = tint(inp.chroma.map_or(Rgb::gray(lit), |c| shade(c, lit, n.max(1))), h);
+            return (cell(g, fg, lt.min(lb)), layer::STRUCTURE);
         }
 
-        (put(ASCII_RAMP[i], fg), layer::BASE)
+        (cell(ASCII_RAMP[i], fg, h), layer::BASE)
     }
 }
 
@@ -329,23 +479,61 @@ mod tests {
     }
 
     #[test]
-    fn every_cell_keeps_the_terminal_background() {
+    fn every_backing_is_a_capped_shade_of_the_glyph_color() {
         let skin = Rgb::new(200, 150, 120);
         for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
             for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
                 let set = select_palettes(tier, color, 100);
                 let mut st = HysteresisState::new(1, 1);
-                for (t, b, e, h) in [(0, 0, 0, 0), (120, 120, 0, 0), (250, 60, 0, 0), (60, 250, 0, 0),
-                    (100, 100, 200, 0), (40, 40, 0, 1), (200, 200, 0, 2), (255, 255, 0, 0)] {
-                    let i = CellInputs { e, ex: 40, ey: 128, h, chroma: Some(skin), ..inp(t, b) };
-                    let c = step(&i, &set, &ComposeParams::default(), &mut st);
-                    assert_eq!((c.bg, c.attrs), (Rgb::BLACK, attrs::DEFAULT_BG), "{tier:?} {color:?}");
-                    assert!((' '..='~').contains(&c.glyph()), "{:?}", c.glyph());
+                let mut shaded = 0;
+                for chroma in [Some(skin), Some(Rgb::WHITE), Some(Rgb::new(255, 40, 0)), Some(Rgb::new(20, 60, 255)), None] {
+                    for (t, b, e, h) in [(0, 0, 0, 0), (120, 120, 0, 0), (250, 60, 0, 0), (60, 250, 0, 0),
+                        (100, 100, 200, 0), (40, 40, 0, 1), (200, 200, 0, 2), (30, 30, 0, 2), (255, 255, 0, 0)] {
+                        let i = CellInputs { e, ex: 40, ey: 128, h, chroma, ..inp(t, b) };
+                        let c = step(&i, &set, &ComposeParams::default(), &mut st);
+                        assert!(cell_within_cap(&c, color), "{tier:?} {color:?} {i:?}: {c:?}");
+                        assert!((' '..='~').contains(&c.glyph()), "{:?}", c.glyph());
+                        if c.attrs & attrs::DEFAULT_BG == 0 {
+                            shaded += 1;
+                            if color == ColorDepth::True
+                                && let Some(k) = chroma
+                            {
+                                let m = k.r.max(k.g).max(k.b) as u32;
+                                let s = c.bg.r.max(c.bg.g).max(c.bg.b) as u32;
+                                for (v, w) in [(k.r, c.bg.r), (k.g, c.bg.g), (k.b, c.bg.b)] {
+                                    assert!((v as u32 * s / m).abs_diff(w as u32) <= 1, "{c:?}: same hue as {k:?}");
+                                }
+                            }
+                        }
+                    }
                 }
+                let tinted = matches!(color, ColorDepth::True | ColorDepth::C256);
+                assert_eq!(shaded > 0, tinted, "{tier:?} {color:?}: shade only where the tier carries it");
             }
         }
         assert_eq!(Ascii::PAD.attrs, attrs::DEFAULT_BG);
         assert_eq!(Ascii::PAD.glyph(), ' ');
+    }
+
+    #[test]
+    fn the_cap_holds_where_it_binds() {
+        let white = Rgb::WHITE;
+        let lit = backing(white, 255, '@', white, ColorDepth::True).unwrap();
+        assert_eq!(lit, Rgb::gray(SHADE_CEIL), "the brightest shade is the ceiling, never a pixel");
+        let blank = backing(white, 255, ' ', white, ColorDepth::True).unwrap();
+        assert_eq!(blank, Rgb::gray(SHADE_BLANK_CEIL), "a space gets at most the blank ceiling");
+        let dim = Rgb::gray(70);
+        let under = backing(white, 255, 'x', dim, ColorDepth::True).unwrap();
+        assert!(backing_within_cap('x', dim, under), "{under:?}");
+        assert!(!backing_within_cap('x', dim, Rgb::gray(under.r + 2)), "the largest shade under the cap");
+        let q = backing(white, 255, 'x', dim, ColorDepth::C256).unwrap();
+        assert!(cell_within_cap(&put('x', dim, Some(q)), ColorDepth::C256), "{q:?}");
+        assert_eq!(backing(white, 255, 'x', Rgb::BLACK, ColorDepth::True), None, "a black glyph: no shade");
+        for color in [ColorDepth::C16, ColorDepth::Mono] {
+            assert_eq!(backing(white, 255, '@', white, color), None);
+        }
+        assert_eq!((SHADE_CEIL, SHADE_BLANK_CEIL, SHADE_CONTRAST_Q8), (96, 24, 96));
+        assert_eq!((luminance(Rgb::BLACK), luminance(Rgb::WHITE)), (0, 65535));
     }
 
     #[test]
@@ -373,7 +561,9 @@ mod tests {
         }
         let full = at(LIT_FULL);
         assert!(full.r == 255 && full.r > full.g && full.g > full.b, "lit cells reach full brightness: {full:?}");
-        assert_eq!(at(HI_FROM), full, "full brightness, hue kept, up to HI_FROM");
+        let hi = at(HI_FROM);
+        let (r, g, b) = (hi.r as u32, hi.g as u32, hi.b as u32);
+        assert!((r * 3 / 4).abs_diff(g) <= 1 && (r / 2).abs_diff(b) <= 1, "no white yet at HI_FROM: {hi:?}");
         let core = at(255);
         assert!(core.r == 255 && core.b > 200 && core.b > full.b, "a highlight runs toward white: {core:?}");
     }
@@ -414,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn same_output_on_every_tier() {
+    fn glyph_and_color_are_the_same_on_every_tier() {
         for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
             for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
                 for cols in [40, 100] {
@@ -423,7 +613,11 @@ mod tests {
                     for n in [31, 34, 120, 100, 140, 110, 150, 200, 40, 0, 255] {
                         let i = CellInputs { chroma: Some(Rgb::new(90, 120, 60)), ..inp(n, n / 2) };
                         let p = ComposeParams::default();
-                        assert_eq!(step(&i, &set, &p, &mut a), step(&i, &uni(), &p, &mut b), "{tier:?} {color:?}");
+                        let (x, y) = (step(&i, &set, &p, &mut a), step(&i, &uni(), &p, &mut b));
+                        assert_eq!((x.glyph(), x.fg), (y.glyph(), y.fg), "{tier:?} {color:?}");
+                        if color == ColorDepth::True {
+                            assert_eq!(x, y, "{tier:?}: the glyph tier never changes the shade");
+                        }
                     }
                 }
             }

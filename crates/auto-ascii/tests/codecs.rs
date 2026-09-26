@@ -4,14 +4,13 @@ use std::path::PathBuf;
 use auto_ascii::deck::{ClipDeck, DeckConfig};
 use auto_ascii::pipeline::{Player, ProgressContext, color_depth};
 use auto_ascii::{Codec, Located, RenderSession};
-use auto_ascii_core::cell::attrs;
-use auto_ascii_core::codec::ascii::ascii_glyphs;
+use auto_ascii_core::codec::ascii::{ascii_glyphs, backing_within_cap, cell_within_cap};
 use auto_ascii_core::codec::letters::letters_glyphs;
 use auto_ascii_core::{Cell, ColorDepth, GlyphTier, Grid, Rgb};
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
 use auto_ascii_format::header::plane_id;
 use auto_ascii_format::{AsciiReader, AsciiWriter, Meta, PlaneRef, WriterOptions};
-use auto_ascii_term::{Backend, Caps, ColorTier, Event, Key, SimBackend};
+use auto_ascii_term::{Backend, Caps, ColorTier, Event, Key, SimBackend, quant};
 
 const W: usize = 192;
 const H: usize = 108;
@@ -433,6 +432,60 @@ fn background_sgrs(bytes: &[u8]) -> Result<Vec<String>, String> {
     Ok(found)
 }
 
+type Printed = (char, Option<Rgb>, Option<Rgb>);
+
+fn sgr_color(ps: &[&str]) -> Option<Rgb> {
+    let n = |k: usize| ps.get(k).and_then(|v| v.parse::<u8>().ok());
+    match ps.get(1) {
+        Some(&"2") => Some(Rgb::new(n(2)?, n(3)?, n(4)?)),
+        Some(&"5") => Some(quant::ansi256_to_rgb(n(2)?)),
+        _ => None,
+    }
+}
+
+fn printed_cells(bytes: &[u8]) -> Result<Vec<Printed>, String> {
+    let (mut out, mut fg, mut bg) = (Vec::new(), None, None);
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b != 0x1b {
+            if !(0x20..=0x7e).contains(&b) {
+                return Err(format!("byte {b:#04x} at {i} outside an escape sequence"));
+            }
+            out.push((b as char, fg, bg));
+            i += 1;
+            continue;
+        }
+        let start = i + 2;
+        let end = (start..bytes.len())
+            .find(|&j| (0x40..=0x7e).contains(&bytes[j]))
+            .ok_or_else(|| format!("unterminated CSI at {i}"))?;
+        if bytes[end] == b'm' {
+            let params = std::str::from_utf8(&bytes[start..end]).map_err(|e| e.to_string())?;
+            let ps: Vec<&str> = params.split(';').collect();
+            let mut k = 0;
+            while k < ps.len() {
+                match ps[k].parse::<u32>().unwrap_or(0) {
+                    v @ (38 | 48) => {
+                        let n = if ps.get(k + 1) == Some(&"2") { 5 } else { 3 };
+                        let c = sgr_color(&ps[k..(k + n).min(ps.len())]);
+                        if v == 38 { fg = c } else { bg = c }
+                        k += n;
+                        continue;
+                    }
+                    0 => (fg, bg) = (None, None),
+                    39 => fg = None,
+                    49 => bg = None,
+                    _ => {}
+                }
+                k += 1;
+            }
+        }
+        i = end + 1;
+    }
+    Ok(out)
+}
+
 const SIZES: [(u16, u16); 10] =
     [(80, 24), (1, 1), (8, 3), (5, 2), (400, 120), (213, 58), (31, 8), (240, 36), (120, 40), (100, 60)];
 
@@ -481,14 +534,28 @@ fn deck_stream(codec: Codec, tier: GlyphTier, color: ColorTier, overlays: bool) 
 }
 
 #[test]
-fn ascii_draws_nothing_but_printable_ascii_on_the_terminal_background() {
+fn ascii_draws_printable_ascii_over_a_capped_shade() {
     for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
         for color in [ColorTier::True, ColorTier::C256, ColorTier::C16, ColorTier::Mono] {
             for overlays in [false, true] {
                 let what = format!("{tier:?} {color:?} overlays {overlays}");
                 let out = deck_stream(Codec::Ascii, tier, color, overlays);
                 let bg = background_sgrs(&out).unwrap_or_else(|e| panic!("{what}: {e}"));
-                assert!(bg.is_empty(), "{what}: background SGR {bg:?}");
+                let cells = printed_cells(&out).unwrap_or_else(|e| panic!("{what}: {e}"));
+                let mut shaded = 0;
+                for &(ch, fg, back) in &cells {
+                    let Some(back) = back else { continue };
+                    shaded += 1;
+                    let fg = fg.unwrap_or_else(|| panic!("{what}: {ch:?} on a shade needs its own color"));
+                    assert!(backing_within_cap(ch, fg, back), "{what}: {ch:?} {fg:?} on {back:?}");
+                    if color == ColorTier::C256 {
+                        assert!(back.r == back.g && back.g == back.b, "{what}: 256-color shades are neutral: {back:?}");
+                    }
+                }
+                match color {
+                    ColorTier::True | ColorTier::C256 => assert!(shaded > 0, "{what}: the picture is shaded"),
+                    ColorTier::C16 | ColorTier::Mono => assert!(bg.is_empty(), "{what}: background SGR {bg:?}"),
+                }
                 let text = String::from_utf8_lossy(&out);
                 assert!(text.contains('@') && text.contains('/'), "{what}: a real picture");
                 assert!(text.contains("AUTO-ASCII"), "{what}: the enlarge card was drawn");
@@ -498,7 +565,7 @@ fn ascii_draws_nothing_but_printable_ascii_on_the_terminal_background() {
                     }
                 }
                 if color != ColorTier::Mono {
-                    assert!(text.contains("49m"), "{what}: the default background is set");
+                    assert!(text.contains("49m"), "{what}: pads, gaps and overlays keep the default background");
                 }
             }
         }
@@ -528,7 +595,7 @@ fn ascii_goldens() {
         p.reflow(&mut backend, 80, 24);
         let grid = render(&mut p, &mut backend, FRAMES - 1);
         let allowed = ascii_glyphs();
-        assert!(grid.as_slice().iter().all(|c| allowed.contains(&c.glyph()) && c.attrs == attrs::DEFAULT_BG));
+        assert!(grid.as_slice().iter().all(|c| allowed.contains(&c.glyph()) && cell_within_cap(c, color)));
         let text: String = grid.as_slice().iter().map(|c| c.glyph()).collect();
         assert!(text.contains(['|', '/', '\\']), "{name}: edge strokes");
         assert!(text.contains('@'), "{name}: the disc core is the densest glyph");

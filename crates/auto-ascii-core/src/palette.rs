@@ -365,6 +365,9 @@ pub struct PaletteSet {
     /// own color (truecolor and 256-color; 16-color would snap it to a
     /// palette hue and mono drops it).
     pub bg_tint: bool,
+    /// The color depth this set was selected for, for codecs whose colors
+    /// must hold a rule after the backend quantizes them.
+    pub color: ColorDepth,
 }
 
 /// Select the palette configuration (keyed by charset tier × layer role;
@@ -396,6 +399,7 @@ pub fn select_palettes(tier: GlyphTier, color: ColorDepth, viewport_cols: u16) -
         braille: matches!(tier, GlyphTier::BrailleVerified) && density == DensityBand::Fine,
         subpos: !unicode,
         bg_tint: matches!(color, ColorDepth::True | ColorDepth::C256),
+        color,
     }
 }
 

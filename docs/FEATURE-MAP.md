@@ -140,13 +140,17 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   (`PaletteSet::bg_tint`), so midtones and faces keep their shape at pixels' brightness, and
   holds glyphs longer (a wider tone deadband and a floor hold) since the tint carries the tone.
   On 16-color and mono it keeps a black background and the narrower deadband. `ascii` is
-  letters without blocks, tint or any background: printable ASCII on every tier and palette, each
-  cell flagged `attrs::DEFAULT_BG` so the painter emits SGR 49 (the terminal's own background)
-  instead of a color. Everything else the player draws while `ascii` is active follows the same
-  rule (flow 10). Tone is glyph ink plus the foreground, on an 18-step ramp ordered by
-  JetBrains Mono coverage: the colour rises to full brightness by mid-gray tone (hue kept),
-  highlights run toward white, and above mid-gray tone lives in ink alone, with `@` kept for
-  near-white. The player's black backdrop (flow 7) puts it on black in any terminal theme.
+  letters without blocks: printable ASCII on every tier and palette, over a capped background
+  shade on truecolor and 256-color. The shade is letters' tint of the held tone, held to
+  `backing_within_cap`: no channel above `SHADE_CEIL` (96), at most `SHADE_CONTRAST_Q8`/256
+  (0.375) of the glyph's relative luminance, a space no brighter than `SHADE_BLANK_CEIL` (24);
+  scaled down (hue kept) to fit, dropped if it cannot. Truecolor keeps the chroma's hue, 256-color
+  uses the neutral gray ramp so the cap holds after quantization. 16-color and mono paint no
+  shade. Unshaded cells are flagged `attrs::DEFAULT_BG`, so the painter emits SGR 49 (the
+  terminal's own background); pads, gaps and everything else the player draws while `ascii` is
+  active follow that rule (flow 10). Tone is glyph ink, glyph color and shade, on an 18-step
+  ramp ordered by JetBrains Mono coverage, with `@` from held tone 225. The player's black
+  backdrop (flow 7) puts the unshaded cells on black in any terminal theme.
 - **User:** `/` cycles codecs while playing (`pixels` → `letters` → `ascii`), `--codec
   pixels|letters|ascii` picks one at startup, and `s` saves it for this video (flow 9).
 - **Code:** `crates/auto-ascii-core/src/codec/mod.rs` `GlyphCodec` (trait: `NAME`, `cell`),
@@ -169,11 +173,14 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - Every ASCII-tier glyph is printable ASCII `0x20..=0x7E` (CP437-safe).
     `crates/auto-ascii-core/tests/codec_props.rs` holds `letters` to its repertoire on every
     tier.
-  - While `ascii` is active the player emits no non-ASCII byte and no background SGR, on any
-    tier or palette: the picture, letterbox pads and gap frames (`Codec::pad`), every overlay
-    row (`OverlayScale::Plain`), the enlarge card, and every resize in between.
-    `crates/auto-ascii/tests/codecs.rs` parses the real escape stream through the deck, with
-    every overlay on, from 1x1 to 400x120, to check this.
+  - While `ascii` is active the player emits no non-ASCII byte and no background SGR outside
+    the capped shade, on any tier or palette: every shaded cell obeys `backing_within_cap` on
+    the colors actually sent (256-color: gray ramp only), 16-color and mono carry no background
+    SGR at all, and letterbox pads and gap frames (`Codec::pad`), every overlay row
+    (`OverlayScale::Plain`), the enlarge card and every resize in between keep SGR 49.
+    `crates/auto-ascii/tests/codecs.rs` replays the real escape stream through the deck, with
+    every overlay on, from 1x1 to 400x120, to check this; `codec_props.rs` checks
+    `cell_within_cap` on random planes.
   - Cells without `attrs::DEFAULT_BG` paint byte for byte as before, so `pixels` and `letters`
     streams are unchanged.
   - Adding a codec means one module plus one `registry!` line. The line generates the `Codec`
@@ -223,7 +230,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     player links no video codecs and no rayon.
   - The backdrop is session-wide and never part of a frame: `SimBackend` and `--sim-dump`
     streams are the same with or without it, and pixels and letters paint every background
-    themselves, so only SGR 49 cells (`ascii`) change on screen. It is reset exactly once
+    themselves, so only SGR 49 cells (`ascii`'s unshaded ones) change on screen. It is reset exactly once
     (`crates/auto-ascii-term/tests/pty_restore.rs`, SIGHUP included). SIGKILL, `abort` and
     segfaults run no code, so they leave it set (`printf '\e]111\e\\'` resets it).
   - Never on the Mono tier: Mono paints no foreground, so the terminal's default (black on a light
