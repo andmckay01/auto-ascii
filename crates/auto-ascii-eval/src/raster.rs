@@ -83,13 +83,24 @@ impl GrayImage {
     }
 }
 
-/// Gamma-space Rec. 709 luma of an [`Rgb`] cell color, integer fixed-point
-/// (`(13933·r + 46875·g + 4732·b) >> 16`, weights = round(coeff · 65536)).
-/// The common video approximation — chroma fg is near-gray at cell
-/// granularity, so linear-light exactness buys nothing here.
+const REC709_RED_Q16: u32 = 13933;
+const REC709_GREEN_Q16: u32 = 46875;
+const REC709_BLUE_Q16: u32 = 4732;
+const Q16_SHIFT: u32 = 16;
+const Q16_ROUND_HALF: u32 = 1 << (Q16_SHIFT - 1);
+const _: () = assert!(
+    ((REC709_RED_Q16 + REC709_GREEN_Q16 + REC709_BLUE_Q16) * u8::MAX as u32 + Q16_ROUND_HALF)
+        >> Q16_SHIFT
+        == u8::MAX as u32
+);
+
 #[inline]
 pub fn luma8(c: Rgb) -> u8 {
-    ((13933 * c.r as u32 + 46875 * c.g as u32 + 4732 * c.b as u32 + 32768) >> 16) as u8
+    ((REC709_RED_Q16 * c.r as u32
+        + REC709_GREEN_Q16 * c.g as u32
+        + REC709_BLUE_Q16 * c.b as u32
+        + Q16_ROUND_HALF)
+        >> Q16_SHIFT) as u8
 }
 
 /// Rasterization knobs.

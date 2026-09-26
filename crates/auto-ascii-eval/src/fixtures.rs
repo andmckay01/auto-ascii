@@ -49,14 +49,16 @@ use auto_ascii_format::{
 pub const FIXTURE_BASE_W: u16 = 192;
 /// See [`FIXTURE_BASE_W`].
 pub const FIXTURE_BASE_H: u16 = 108;
-/// Frames per fixture (2.4 s @ 30 fps — spans three keyframe groups).
 pub const FIXTURE_FRAMES: u32 = 72;
-/// Keyframe cadence (smaller than the production 60 so seeks cross
-/// keyframe boundaries within 72 frames).
 pub const FIXTURE_KEYFRAME_IVL: u8 = 24;
-/// First frame of scene B in [`Fixture::HardCut`] (mid-GOP: frame 36 is not
-/// a keyframe, so the cut also exercises delta decode across a shot change).
 pub const HARD_CUT_FRAME: u32 = 36;
+const _: () = assert!(FIXTURE_KEYFRAME_IVL > 0);
+const _: () = assert!(FIXTURE_FRAMES >= 3 * FIXTURE_KEYFRAME_IVL as u32, "three keyframe groups");
+const _: () = assert!(HARD_CUT_FRAME > 0 && HARD_CUT_FRAME < FIXTURE_FRAMES);
+const _: () = assert!(
+    !HARD_CUT_FRAME.is_multiple_of(FIXTURE_KEYFRAME_IVL as u32),
+    "the cut lands mid-GOP so delta decode crosses a shot change"
+);
 
 /// The three deterministic synthetic fixtures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -279,8 +281,6 @@ pub struct FixtureRenderer<'a> {
 }
 
 impl<'a> FixtureRenderer<'a> {
-    /// Open `asset` (ASCI bytes) for rendering with `palette`. Call
-    /// [`reflow`](FixtureRenderer::reflow) before the first render.
     pub fn new(asset: &'a [u8], palette: GoldenPalette) -> FixtureRenderer<'a> {
         let reader = AsciiReader::open(asset).expect("fixture asset must be a valid ASCI");
         let (src_w, src_h) = reader.plane_dims(plane_id::Y).expect("fixture has a Y plane");

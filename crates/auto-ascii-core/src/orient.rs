@@ -68,10 +68,6 @@ fn cross(a: (i64, i64), b: (i64, i64)) -> i64 {
     a.0 * b.1 - a.1 * b.0
 }
 
-/// Direction bin with the 8° hysteresis guard: keep `prev` while the vector
-/// stays within `prev`'s sector expanded by 8° of θ on both sides; switch
-/// (via [`octant_bin`]) only strictly beyond the guard. `prev` ≥ 8 (e.g.
-/// [`BIN_UNSET`]) means no history.
 #[inline]
 pub fn bin_with_guard(dx: i32, dy: i32, prev: u8) -> u8 {
     if dx == 0 && dy == 0 {
@@ -87,16 +83,18 @@ pub fn bin_with_guard(dx: i32, dy: i32, prev: u8) -> u8 {
     octant_bin(dx, dy)
 }
 
-/// Coherence test: coherence = |(Ex, Ey)| / max(E, 1), where the stored
-/// components are half scale, so coherence = 2·|(dx,dy)| / e. Returns
-/// whether coherence ≥ `t_q8`/256 — compared squared, no sqrt:
-/// `(2·|v|·256)² ≥ (e·t)²  ⇔  mag²·262144 ≥ e²·t²`.
+const HALF_SCALE_TO_FULL: i64 = 2;
+const Q8_ONE: i64 = 256;
+const COHERENCE_CROSS_SCALE_SQUARED: i64 =
+    (HALF_SCALE_TO_FULL * Q8_ONE) * (HALF_SCALE_TO_FULL * Q8_ONE);
+
 #[inline]
-pub fn coherence_at_least(dx: i32, dy: i32, e: u8, t_q8: u8) -> bool {
-    let mag2 = (dx as i64) * (dx as i64) + (dy as i64) * (dy as i64);
+pub fn coherence_at_least(half_dx: i32, half_dy: i32, e: u8, t_q8: u8) -> bool {
+    let (half_dx, half_dy) = (half_dx as i64, half_dy as i64);
+    let half_mag_squared = half_dx * half_dx + half_dy * half_dy;
     let e = e.max(1) as i64;
     let t = t_q8 as i64;
-    mag2 * 262144 >= e * e * t * t
+    half_mag_squared * COHERENCE_CROSS_SCALE_SQUARED >= e * e * t * t
 }
 
 #[cfg(test)]
@@ -151,6 +149,30 @@ mod tests {
         assert_eq!(bin_with_guard(dx, dy, BIN_UNSET), octant_bin(dx, dy));
         assert_eq!(bin_with_guard(0, 0, BIN_UNSET), 0);
         assert_eq!(bin_with_guard(0, 0, 5), 5, "zero vector keeps history");
+    }
+
+    const GUARD_THETA_DEGREES: f64 = 8.0;
+    const GUARD_VECTOR_Q14_SCALE: f64 = 16384.0;
+
+    fn q14_unit_at_doubled_angle(degrees: f64) -> (i64, i64) {
+        let a = degrees.to_radians();
+        let q14 = |v: f64| (v * GUARD_VECTOR_Q14_SCALE).round() as i64;
+        (q14(a.cos()), q14(a.sin()))
+    }
+
+    #[test]
+    fn guard_vectors_widen_each_doubled_angle_sector_by_the_theta_guard() {
+        let doubled_guard = 2.0 * GUARD_THETA_DEGREES;
+        for k in 0..8 {
+            let sector_start = 45.0 * k as f64;
+            assert_eq!(GUARD_LO[k], q14_unit_at_doubled_angle(sector_start - doubled_guard));
+            assert_eq!(GUARD_HI[k], q14_unit_at_doubled_angle(sector_start + 45.0 + doubled_guard));
+        }
+    }
+
+    #[test]
+    fn coherence_scale_is_the_squared_half_scale_q8_product() {
+        assert_eq!(COHERENCE_CROSS_SCALE_SQUARED, 262_144);
     }
 
     #[test]

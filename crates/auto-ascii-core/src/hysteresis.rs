@@ -19,9 +19,6 @@ pub const IDX_UNSET: u8 = 0xFF;
 /// responsiveness.
 pub const IDX_HYST_Q8: u32 = 90;
 
-/// Per-cell hysteresis flags. Bits 0–1 are the shared gates below; bits 2–7
-/// are codec-private temporal memory (a [`crate::codec`] may use them freely —
-/// a codec switch resets all state, so no bit outlives the codec that set it).
 pub mod cell_flags {
     /// The edge gate was on last frame (dual-threshold memory).
     pub const WAS_EDGE: u8 = 1;
@@ -31,12 +28,13 @@ pub mod cell_flags {
     /// arm independently: a cell can be well below the edge gate and still
     /// carry real sub-cell diagonal structure.
     pub const WAS_QUADRANT: u8 = 1 << 1;
+    pub const SHARED_MASK: u8 = WAS_EDGE | WAS_QUADRANT;
+    pub const CODEC_PRIVATE_MASK: u8 = !SHARED_MASK;
 }
 
 /// Per-cell temporal state: previous ramp index, orientation bin, flags.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CellState {
-    /// Previous effective ramp index ([`IDX_UNSET`] = none).
     pub idx: u8,
     /// Previous orientation bin ([`BIN_UNSET`] = none).
     pub bin: u8,

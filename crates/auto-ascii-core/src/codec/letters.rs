@@ -101,6 +101,9 @@ pub(super) const HALF_NONE: u8 = 0;
 pub(super) const HALF_TOP: u8 = 1;
 const HALF_BOTTOM: u8 = 2;
 const WAS_FILL: u8 = 1 << 4;
+const _: () = assert!(HALF_MASK & !cell_flags::CODEC_PRIVATE_MASK == 0);
+const _: () = assert!(WAS_FILL & !cell_flags::CODEC_PRIVATE_MASK == 0);
+const _: () = assert!(WAS_FILL & HALF_MASK == 0);
 
 const HALF_HOLD_Q8: u16 = 160;
 

@@ -45,6 +45,16 @@ pub struct Resampler {
     dst_h: u16,
 }
 
+const Q8_WEIGHT_ONE: u64 = 256;
+const Q16_SHIFT: u32 = 16;
+const Q16_ROUND_HALF: u32 = 1 << (Q16_SHIFT - 1);
+const MAX_HPASS_SUM: u64 = Q8_WEIGHT_ONE * u8::MAX as u64;
+const MAX_VPASS_SUM: u64 = Q8_WEIGHT_ONE * MAX_HPASS_SUM + Q16_ROUND_HALF as u64;
+const _: () = assert!(Q8_WEIGHT_ONE * Q8_WEIGHT_ONE == 1 << Q16_SHIFT);
+const _: () = assert!(MAX_HPASS_SUM <= u16::MAX as u64);
+const _: () = assert!(MAX_VPASS_SUM <= u32::MAX as u64);
+const _: () = assert!(MAX_VPASS_SUM >> Q16_SHIFT <= u8::MAX as u64);
+
 fn build_axis(src: u16, dst: u16, taps: &mut Vec<Tap1D>, weights: &mut Vec<u16>) {
     let src = src.max(1) as u64;
     let dst = dst.max(1) as u64;
@@ -63,11 +73,11 @@ fn build_axis(src: u16, dst: u16, taps: &mut Vec<Tap1D>, weights: &mut Vec<u16>)
             let lo = left.max(s * dst);
             let hi = right.min((s + 1) * dst);
             cum += hi - lo;
-            let q = cum * 256 / span;
+            let q = cum * Q8_WEIGHT_ONE / span;
             weights.push((q - prev_q) as u16);
             prev_q = q;
         }
-        debug_assert_eq!(prev_q, 256);
+        debug_assert_eq!(prev_q, Q8_WEIGHT_ONE);
         taps.push(Tap1D {
             src_start: s0 as u16,
             ntaps: (s1 - s0) as u16,
@@ -102,15 +112,6 @@ impl Resampler {
         }
     }
 
-    /// Resample one u8 plane. `src.len()` must be `src_w × src_h`,
-    /// `dst.len()` at least `dst_w × dst_h`. Zero allocation; H-pass into the
-    /// internal shared `u16` buffer, V-pass accumulates in `u32`, rounds and
-    /// shifts out (`(acc + 0x8000) >> 16`). No floats.
-    ///
-    /// Range safety: each Q8 run sums to exactly 256, so H-pass values fit
-    /// `u16` (≤ 256·255 = 65 280) and the V-pass accumulator fits `u32`
-    /// (≤ 256·65 280 + 0x8000), and the shifted result is always ≤ 255 —
-    /// no clamp needed.
     pub fn apply(&mut self, src: &[u8], dst: &mut [u8]) {
         let sw = self.src_w as usize;
         let sh = self.src_h as usize;
@@ -147,7 +148,7 @@ impl Resampler {
                     let sy = t.src_start as usize + j;
                     acc += w as u32 * hbuf[sy * dw + x] as u32;
                 }
-                drow[x] = ((acc + 0x8000) >> 16) as u8;
+                drow[x] = ((acc + Q16_ROUND_HALF) >> Q16_SHIFT) as u8;
             }
         }
     }
