@@ -155,8 +155,10 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   active follow that rule (flow 10). Glyphs use an 18-step ramp ordered by JetBrains Mono
   coverage, with `@` from held tone 225. Glyph color and shade follow current tone
   independently, preventing stale brightness bands. Within the `5/8 × idx_hyst_q8` band
-  the glyph follows a smoothed tone and settles a steady change within 41 frames; floor
-  crossings take at most four. The half, edge and orientation gates retain hysteresis. The player's black
+  (narrowing to `idx_hyst_q8 / 4` in busy cells)
+  the glyph follows a smoothed tone: a steady change settles within 41 frames past
+  `idx_hyst_q8 / 8`, or within 74 when it lies at least 4 units inside another ramp step;
+  floor crossings take at most four. The half, edge and orientation gates retain hysteresis. The player's black
   backdrop (flow 7) puts the unshaded cells on black in any terminal theme.
 - **User:** `/` cycles codecs while playing (`pixels` → `letters` → `ascii`), `--codec
   pixels|letters|ascii` picks one at startup, and `s` saves it for this video (flow 9).

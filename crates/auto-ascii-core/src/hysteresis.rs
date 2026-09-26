@@ -51,8 +51,9 @@ pub struct CellState {
     /// ASCII-only smoothed input tone ([`IDX_UNSET`] = none); ignored by
     /// pixels and letters.
     pub tone_candidate: u8,
-    /// ASCII-only settling count: consecutive frames the smoothed tone (or a
-    /// black-floor crossing) has pointed one way, with bit 7 set for down.
+    /// ASCII-only settling count (bits 0–5): consecutive frames the smoothed
+    /// tone (or a black-floor crossing) has pointed one way; bit 7 is set for
+    /// down, bit 6 for the slow convergence path.
     pub tone_age: u8,
 }
 

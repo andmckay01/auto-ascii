@@ -403,9 +403,6 @@ fn background_sgrs(bytes: &[u8]) -> Result<Vec<String>, String> {
             continue;
         }
         if bytes.get(i + 1) != Some(&b'[') {
-            return Err(format!("non-CSI escape at {i}"));
-        }
-        if bytes.get(i + 1) != Some(&b'[') {
             return Err(format!("escape at {i} is not a CSI: {:?}", bytes.get(i + 1).map(|&b| b as char)));
         }
         let start = i + 2;

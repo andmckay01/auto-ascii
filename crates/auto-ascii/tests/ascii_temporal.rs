@@ -137,6 +137,26 @@ fn ascii_glyphs_settle_on_real_playback() {
     }
 }
 
+#[test]
+fn ascii_repeated_frames_converge_to_cold_glyphs() {
+    for (cols, rows) in [(80, 24), (200, 56)] {
+        let mut warm = player(Codec::Ascii, cols, rows);
+        for f in 0..150 {
+            warm.render_grid(f).unwrap();
+        }
+        for _ in 0..80 {
+            warm.render_grid(149).unwrap();
+        }
+        let mut cold = player(Codec::Ascii, cols, rows);
+        cold.render_grid(149).unwrap();
+        let far = warm.grid().as_slice().iter().zip(cold.grid().as_slice())
+            .filter(|(a, b)| ramp_gap(a.glyph(), b.glyph()) >= 2)
+            .count();
+        eprintln!("{cols}x{rows}: {far} cells two or more ramp steps from cold after 80 repeats");
+        assert!(far * 200 <= cols as usize * rows as usize, "{cols}x{rows}: {far} stale glyphs");
+    }
+}
+
 fn toggles(codec: Codec) -> usize {
     toggles_in(ASSET, codec, (200, 56), 60..150)
 }

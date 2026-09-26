@@ -30,13 +30,22 @@
 //! scale to preserve colour. Color and shade follow current tone,
 //! independently of glyph hysteresis, so old contours cannot latch brightness.
 //! A tone more than `5/8 × idx_hyst_q8` units from the held tone replaces it
-//! at once. Nearer changes go through a smoothed tone, which moves a quarter
+//! at once. That band narrows, down to `idx_hyst_q8 / 4`, in busy cells: a
+//! per-cell activity level (0–15, codec flag bits 4–7) moves an eighth of
+//! the way, rounded up, toward a quarter of each input's distance from the
+//! smoothed tone, and falls one level at most per frame, only while inputs
+//! are at least eight levels calmer; each level above 9 takes
+//! `3/16 × idx_hyst_q8` off the band. Fast-changing picture follows sooner while static noise
+//! keeps the wide band. Nearer changes go through a smoothed tone, which moves a quarter
 //! of the way (rounded up) toward each input: once it has stayed more than
 //! `idx_hyst_q8 / 8` units to one side of the held tone, on another ramp
 //! step, for `min(1 + idx_hyst_q8 / 4, 32)` consecutive frames, the glyph
-//! adopts it. Noise averages out instead of resetting the wait: within 41
-//! frames a steady tone's glyph is its own ramp step or held within
-//! `idx_hyst_q8 / 8` units of it, and a single noisy sample cannot flip it back.
+//! adopts it. A smoothed tone nearer than that, but at least 4 units inside
+//! another ramp step, converges after twice the wait (`min(h/2, 63) + 1`
+//! frames), so a steady picture ends on the cold glyph within 74 frames,
+//! except a tone within 4 units of a step boundary, which may keep the
+//! neighbouring glyph. Noise averages out instead of resetting the waits, and
+//! a single noisy sample cannot flip the glyph back.
 //! Black-floor crossings need at most four consecutive frames on the new
 //! side (even if tone varies). Half/edge/orientation gates retain their own
 //! hysteresis. Glyph and glyph color are the same on every tier; the backend
@@ -52,7 +61,8 @@
 //! **Design constants.** The glyph tables, [`ASCII_INK`] and the thresholds
 //! below (`BLACK_FLOOR`, `TONE_TOP`, `SHADE_Q8`, the shade cap and floor,
 //! the 256-color entries and hue test, the curve in `step_table` and the
-//! band, margin and smoothing factors in `held_tone`)
+//! band, activity, margin, clearance, wait and smoothing factors in
+//! `held_tone` and `jump_band`)
 //! are this codec's DATA, pinned by its tests and goldens; what a viewer
 //! tunes stays in `ComposeParams`, exactly as for letters.
 
@@ -89,8 +99,14 @@ pub const ASCII_BOTTOM: &[char] = &[
 const BLACK_FLOOR: u8 = 24;
 
 const SETTLE_MAX_FRAMES: u8 = 32;
+const CONVERGE_MAX_FRAMES: u8 = 64;
+const CONVERGE_CLEAR: u8 = 4;
 const FLOOR_SETTLE_FRAMES: u8 = 4;
 const SETTLE_DOWN: u8 = 0x80;
+const SETTLE_SLOW: u8 = 0x40;
+const SETTLE_COUNT: u8 = 0x3F;
+const ACTIVITY_SHIFT: u8 = 4;
+const ACTIVE: u8 = 9;
 
 const TONE_TOP: u8 = 240;
 
@@ -411,27 +427,44 @@ fn tint(c: Rgb, n: u8) -> Rgb {
 }
 
 #[inline]
+fn jump_band(n: u8, from: u8, hyst_q8: u8, flags: &mut u8) -> u8 {
+    let seen = (n.abs_diff(from) / 4).min(15);
+    let was = *flags >> ACTIVITY_SHIFT;
+    let now = if seen > was { was + (seen - was).div_ceil(8) } else { was - (was - seen) / 8 };
+    *flags = (*flags & ((1 << ACTIVITY_SHIFT) - 1)) | (now << ACTIVITY_SHIFT);
+    let h = hyst_q8 as u32;
+    let cut = now.saturating_sub(ACTIVE) as u32 * (h * 3 / 16);
+    (h * 5 / 8).saturating_sub(cut).max(h / 4) as u8
+}
+
+#[inline]
 fn held_tone(n: u8, prev: u8, hyst_q8: u8, s: &mut CellState) -> u8 {
     let n = n.min(IDX_UNSET - 1);
-    if prev == IDX_UNSET || n.abs_diff(prev) > (hyst_q8 as u16 * 5 / 8) as u8 {
+    let from = if s.tone_candidate == IDX_UNSET { prev } else { s.tone_candidate };
+    if prev == IDX_UNSET || n.abs_diff(prev) > jump_band(n, from, hyst_q8, &mut s.flags) {
         s.tone_candidate = n;
         s.tone_age = 0;
         return n;
     }
-    let from = if s.tone_candidate == IDX_UNSET { prev } else { s.tone_candidate };
     let smooth = if n >= from { from + (n - from).div_ceil(4) } else { from - (from - n).div_ceil(4) };
     s.tone_candidate = smooth;
     let floor_crossing = (n < BLACK_FLOOR) != (prev < BLACK_FLOOR);
-    let (down, wait) = if floor_crossing {
-        (n < BLACK_FLOOR, (FLOOR_SETTLE_FRAMES - 1).min(hyst_q8 / 8))
-    } else if smooth.abs_diff(prev) > hyst_q8 / 8 && STEP[smooth as usize] != STEP[prev as usize] {
-        (smooth < prev, (hyst_q8 / 4).min(SETTLE_MAX_FRAMES - 1))
+    let down = smooth < prev;
+    let inside = if down { smooth.saturating_add(CONVERGE_CLEAR) } else { smooth.saturating_sub(CONVERGE_CLEAR) };
+    let (side, wait) = if floor_crossing {
+        (if n < BLACK_FLOOR { SETTLE_DOWN } else { 0 }, (FLOOR_SETTLE_FRAMES - 1).min(hyst_q8 / 8))
+    } else if STEP[smooth as usize] == STEP[prev as usize] {
+        s.tone_age = 0;
+        return prev;
+    } else if smooth.abs_diff(prev) > hyst_q8 / 8 {
+        (if down { SETTLE_DOWN } else { 0 }, (hyst_q8 / 4).min(SETTLE_MAX_FRAMES - 1))
+    } else if STEP[inside as usize] != STEP[prev as usize] {
+        (SETTLE_SLOW | if down { SETTLE_DOWN } else { 0 }, (hyst_q8 / 2).min(CONVERGE_MAX_FRAMES - 1))
     } else {
         s.tone_age = 0;
         return prev;
     };
-    let side = if down { SETTLE_DOWN } else { 0 };
-    let count = if s.tone_age != 0 && s.tone_age & SETTLE_DOWN == side { s.tone_age & !SETTLE_DOWN } else { 0 };
+    let count = if s.tone_age != 0 && s.tone_age & !SETTLE_COUNT == side { s.tone_age & SETTLE_COUNT } else { 0 };
     if count < wait {
         s.tone_age = side | (count + 1);
         return prev;
@@ -794,23 +827,57 @@ mod tests {
     }
 
     #[test]
-    fn glyph_tone_is_monotone_and_settles_within_41_frames() {
+    fn glyph_tone_is_monotone_and_converges_within_74_frames() {
         for width in [0, 16, 90, 128, 160, 255] {
             for from in 0..=254u8 {
                 for to in 0..=254u8 {
                     let mut held = from;
                     let mut state = CellState::default();
-                    for f in 0..64 {
+                    for f in 0..100 {
                         let next = held_tone(to, held, width, &mut state);
                         assert!(next >= held.min(to) && next <= held.max(to));
-                        assert!(f < 41 || next == held, "{from}->{to}, width {width}: moved at frame {f}");
+                        assert!(f < 74 || next == held, "{from}->{to}, width {width}: moved at frame {f}");
                         held = next;
                     }
-                    let near = STEP[held as usize] == STEP[to as usize] || held.abs_diff(to) <= width / 8;
+                    let edge = if held < to { to.saturating_sub(CONVERGE_CLEAR) } else { to.saturating_add(CONVERGE_CLEAR) };
+                    let near = STEP[held as usize] == STEP[to as usize] || STEP[edge as usize] == STEP[held as usize];
                     assert!(near, "{from}->{to}, width {width}: held {held}");
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_steady_tone_inside_the_margin_reaches_its_own_glyph() {
+        let width = ComposeParams::default().idx_hyst_q8;
+        let mut state = CellState::default();
+        let mut held = held_tone(142, IDX_UNSET, width, &mut state);
+        assert_ne!(STEP[142], STEP[158]);
+        let mut settled = None;
+        for f in 0..80 {
+            held = held_tone(158, held, width, &mut state);
+            if settled.is_none() && STEP[held as usize] == STEP[158] {
+                settled = Some(f);
+            }
+        }
+        assert!(settled.is_some_and(|f| f >= 63), "{settled:?}: waits twice the settle time, then converges");
+        assert_eq!(held, 158);
+    }
+
+    #[test]
+    fn active_cells_take_moderate_changes_at_once() {
+        let width = ComposeParams::default().idx_hyst_q8;
+        let mut quiet = CellState::default();
+        let held = held_tone(200, IDX_UNSET, width, &mut quiet);
+        assert_eq!(held_tone(150, held, width, &mut quiet), 200, "a quiet cell holds a 50-unit change");
+        let mut active = CellState::default();
+        let mut held = held_tone(200, IDX_UNSET, width, &mut active);
+        for n in [40, 200].into_iter().cycle().take(8) {
+            held = held_tone(n, held, width, &mut active);
+        }
+        assert_eq!(held, 200);
+        assert_eq!(held_tone(150, held, width, &mut active), 150, "a busy cell's band narrows to h/4");
+        assert_eq!(held_tone(135, 150, width, &mut active), 150, "small changes still wait");
     }
 
     #[test]

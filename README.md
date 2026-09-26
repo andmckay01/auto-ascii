@@ -130,9 +130,12 @@ same contrast cap and stay within the glyph's hue family. 16-colour and mono
 terminals get no shade (the terminal's own background shows through). Glyph selection is the
 same on every terminal tier; colours follow the terminal's capabilities.
 ASCII colour and shade follow current brightness independently of glyph
-hysteresis, so playback cannot retain old brightness bands. The glyph
-follows a smoothed tone: a noisy but steady change settles it within 41
-frames, and black-floor crossings take at most four.
+hysteresis, so playback cannot retain old brightness bands. Big changes
+switch the glyph at once (sooner in busy, fast-changing areas); otherwise it
+follows a smoothed tone. A steady change of more than 16 tone units settles
+within 41 frames; a smaller one within 74, unless the tone sits within 4
+units of the boundary to the neighbouring glyph, which may then stay.
+Black-floor crossings take at most four frames.
 
 **Black backdrop.** While it plays, the player sets your terminal's default
 background to black (OSC 11). `ascii` needs it: its unshaded cells (shadows,

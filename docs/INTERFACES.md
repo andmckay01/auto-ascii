@@ -2711,10 +2711,12 @@ facade surface + this hidden module.)
     (p) **ASCII brightness convergence at every zoom.** Supersedes the
     held-tone color/shade and permanent floor retention in (k)/(n).
     `Ascii::cell` uses the current ink tone for foreground and background;
-    glyph history cannot freeze either. `held_tone` now debounces a stable
-    candidate inside the existing deadband, then adopts it directly after
-    `min(1 + idx_hyst_q8 / 5, 32)` frames. Black-floor crossings take at most
-    four consecutive frames on the new side; large changes remain immediate.
+    glyph history cannot freeze either. (The glyph rule written here, an
+    exact-repeat candidate adopted after `min(1 + idx_hyst_q8 / 5, 32)`
+    frames, is superseded: see "Hysteresis range and ASCII glyph hold" at the
+    end of this file and the `ascii` module docs.) Black-floor crossings take
+    at most four consecutive frames on the new side; large changes remain
+    immediate.
     `CellState` adds two ASCII-only bytes (`tone_candidate`, `tone_age`),
     reset by existing scene/codec/resize/dial resets. Pixels and letters ignore
     them and retain their rendering behavior. Letters' indefinite retention
@@ -2724,9 +2726,11 @@ facade surface + this hidden module.)
     bounds any-cell disagreement at 22% (measured 17.2–20.9%) and shade
     disagreement at 3% (measured at most 1.83%) after 120 frames over five
     zoom sizes. The old codec fails with 44.7% at 80x24. Tests live in
-    `ascii_temporal.rs`: startup versus codec cycling, startup/resize versus
-    every dial round trip, playback versus cold, and glyph switches ≤1.2x
-    pixels. Core tests pin 32-frame constant-tone settling, four-frame floor
+    `ascii_temporal.rs`. Startup versus codec cycling and startup/resize
+    versus every dial round trip are reset invariants: both sides start cold,
+    so they also pass on 3cef5ec. Playback versus cold, glyphs two steps from
+    cold, repeated-frame convergence and glyph switches ≤1.2x pixels are the
+    regressions. Core tests pin constant-tone settling, four-frame floor
     response, and current foreground/shade while glyph history waits.
     The two ASCII goldens change color hashes only; glyph rows and letters
     goldens do not change. The candidate's gradual glyph walk was rejected because it
@@ -3025,5 +3029,11 @@ letters does, for dark colour continuity; a shade that scales to exact black
 uses the terminal's own background.
 
 Hysteresis range and ASCII glyph hold: `IDX_HYST_MAX_Q8` = default = 128
-(`hysteresis.rs`); the rule is in the `ascii` module docs and the
-measurements in [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).
+(`hysteresis.rs`). `held_tone` jumps beyond `5/8 × idx_hyst_q8` (down to
+`idx_hyst_q8 / 4` as a per-cell activity level in ascii's flag bits 4–7
+rises above 9; `jump_band`), settles a
+smoothed tone more than `idx_hyst_q8 / 8` away after `min(1 + h/4, 32)`
+frames, and converges nearer smoothed tones that sit at least 4 units inside
+another ramp step after `min(h/2, 63) + 1` frames (`CellState::tone_age`:
+bit 7 down, bit 6 slow path, bits 0–5 count). The rule is in the `ascii`
+module docs and the measurements in [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).
