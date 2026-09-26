@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use auto_ascii::deck::{ClipDeck, DeckConfig};
 use auto_ascii::pipeline::{Player, ProgressContext, color_depth};
 use auto_ascii::{Codec, Located, RenderSession};
-use auto_ascii_core::codec::ascii::{ascii_glyphs, backing_within_cap, cell_within_cap};
+use auto_ascii_core::codec::ascii::{
+    SHADE_FLOOR, SHADES_256, ascii_glyphs, backing_within_cap, cell_within_cap, in_hue_family,
+};
 use auto_ascii_core::codec::letters::letters_glyphs;
 use auto_ascii_core::{Cell, ColorDepth, GlyphTier, Grid, Rgb};
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
@@ -403,6 +405,9 @@ fn background_sgrs(bytes: &[u8]) -> Result<Vec<String>, String> {
         if bytes.get(i + 1) != Some(&b'[') {
             return Err(format!("non-CSI escape at {i}"));
         }
+        if bytes.get(i + 1) != Some(&b'[') {
+            return Err(format!("escape at {i} is not a CSI: {:?}", bytes.get(i + 1).map(|&b| b as char)));
+        }
         let start = i + 2;
         let end = (start..bytes.len())
             .find(|&j| (0x40..=0x7e).contains(&bytes[j]))
@@ -455,6 +460,9 @@ fn printed_cells(bytes: &[u8]) -> Result<Vec<Printed>, String> {
             out.push((b as char, fg, bg));
             i += 1;
             continue;
+        }
+        if bytes.get(i + 1) != Some(&b'[') {
+            return Err(format!("escape at {i} is not a CSI: {:?}", bytes.get(i + 1).map(|&b| b as char)));
         }
         let start = i + 2;
         let end = (start..bytes.len())
@@ -548,8 +556,10 @@ fn ascii_draws_printable_ascii_over_a_capped_shade() {
                     shaded += 1;
                     let fg = fg.unwrap_or_else(|| panic!("{what}: {ch:?} on a shade needs its own color"));
                     assert!(backing_within_cap(ch, fg, back), "{what}: {ch:?} {fg:?} on {back:?}");
+                    assert!(back.r.max(back.g).max(back.b) >= SHADE_FLOOR, "{what}: {back:?} reads as black");
                     if color == ColorTier::C256 {
-                        assert!(back.r == back.g && back.g == back.b, "{what}: 256-color shades are neutral: {back:?}");
+                        assert!(SHADES_256.contains(&back), "{what}: {back:?} is not a 256-color shade");
+                        assert!(in_hue_family(fg, back), "{what}: {back:?} leaves {fg:?}'s hue family");
                     }
                 }
                 match color {

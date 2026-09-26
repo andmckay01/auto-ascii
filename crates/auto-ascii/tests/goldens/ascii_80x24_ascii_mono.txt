@@ -23,4 +23,4 @@ ascii codec, Ascii tier, Mono, 80x24, frame 5
 |:;;;;;;;;;;;+++++++++++++rrrrrrrrrrrrrrrrrcccccccccccccxxnnnnoooooooooo         |
 |;;;;;;;;;;+++++++++++++rrrrrrrrrrrrrrrrrcccccccccccccxxnnnnoooooooooooo         |
 |                                                                                |
-colors fnv1a64 d59e853172fde9a2
+colors fnv1a64 9d278e2555ef95f1

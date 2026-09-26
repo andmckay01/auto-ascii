@@ -114,8 +114,8 @@ struct Cli {
 
     /// Keep the terminal's own default background. By default the player
     /// sets it to black for the session (OSC 11, reset with OSC 111 on
-    /// exit), so the ascii codec, which paints no background, sits on black
-    /// under any theme.
+    /// exit), so the ascii codec's unshaded cells (dark areas, pads, gaps,
+    /// and every cell on 16-color and mono) sit on black under any theme.
     #[arg(long)]
     no_backdrop: bool,
 

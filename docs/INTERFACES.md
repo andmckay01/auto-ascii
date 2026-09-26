@@ -2624,6 +2624,44 @@ facade surface + this hidden module.)
     off, 1x1..400x120, resizes, gaps, and checks the cap on every shaded
     character as sent). Both ascii goldens are re-blessed, colors only
     (the shade and the eased glyph color); every glyph row is unchanged.
+    (n) **Review fixes to the shade** (two independent reviews of (m)). The
+    cap is unchanged. **256-color hue family:** (m)'s neutral gray lost the
+    glyph's hue. The shade is now the nearest, by OKLab distance with the
+    chroma plane counted double (`ΔL² + 2(Δa² + Δb²)`), of
+    `codec::ascii::SHADES_256` (gray ramp 8–88, cube gray 95, and the six
+    cube colors with every level 0 or 95, the only chromatic entries under
+    the 96 ceiling; each quantizes to itself) among those that pass the cap
+    against the glyph's quantized color and are `in_hue_family` with it: a
+    gray, or a chromatic entry within 30° of OKLab hue of a glyph color with
+    chroma ≥ 0.03. OKLab is computed in `f32` with a Newton cube root, so
+    the choice is the same on every platform. Preferring any in-family
+    chromatic entry was prototyped and rejected: it put saturated level-95
+    backings under 35–47% of shaded cells, 2–4× brighter than the shade
+    they replace, and pale glyphs over saturated red or green read as a
+    clash. The nearest entry keeps the hue where the shade is bright and
+    saturated (Interstellar's cyan window gets (0,95,95)); dim shades land
+    on grays. **Floor:** a shade whose brightest channel ends below
+    `SHADE_FLOOR` 8 is not sent (it reads as black): ascii bytes per frame
+    −8.5%, background changes 8.30 → 7.45 /cell/s. **Held-tone gray:**
+    with no chroma the shade's gray comes from the held tone, not the
+    instantaneous one. **Brightness:** the dark glyph lift is gone (below
+    held tone 48 a glyph takes its sample's color), the highlight run
+    reaches white at 255, and over held tone 128–192 a pale color's shade
+    runs toward neutral at its own top channel, as far as the color is pale
+    (least channel over greatest). Face means vs letters: Architect 1.13,
+    Terminator 1.26, Dune 1.17, Interstellar 0.86 (from 1.12 / 1.31 / 1.22
+    / 0.84). Interstellar's box is 8% letters' solid white; under the cap
+    the brightest ascii cell is a white `@` (the densest printable ASCII
+    glyph) on a 96 shade, and every lever that lifts the sphere further
+    (earlier `@`, stronger shade) lifted the faces as much and flattened
+    highlights, so ~0.86 is kept. Glyph switches stay 0.997× pixels.
+    `--no-backdrop` help now describes ascii's unshaded cells. Tests:
+    `a_256_color_shade_is_a_gray_or_in_the_glyphs_hue_family`,
+    `shades_256_quantize_to_themselves_and_lab_is_sane`,
+    `a_pale_shade_runs_toward_neutral_a_saturated_one_keeps_its_color`,
+    the floor in `the_cap_holds_where_it_binds`; `codecs.rs` checks the
+    floor and the hue family on the real stream and fails on any escape
+    that is not a CSI. Both ascii goldens re-blessed, colors only.
 28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
     should take a video from anywhere on the desktop, process it, and land
     it in the folder where the user's processed videos live"). The shape of

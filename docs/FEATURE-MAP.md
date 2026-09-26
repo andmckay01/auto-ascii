@@ -144,9 +144,12 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   shade on truecolor and 256-color. The shade is letters' tint of the held tone, held to
   `backing_within_cap`: no channel above `SHADE_CEIL` (96), at most `SHADE_CONTRAST_Q8`/256
   (0.375) of the glyph's relative luminance, a space no brighter than `SHADE_BLANK_CEIL` (24);
-  scaled down (hue kept) to fit, dropped if it cannot. Truecolor keeps the chroma's hue, 256-color
-  uses the neutral gray ramp so the cap holds after quantization. 16-color and mono paint no
-  shade. Unshaded cells are flagged `attrs::DEFAULT_BG`, so the painter emits SGR 49 (the
+  scaled down (hue kept) to fit, dropped if its brightest channel ends below `SHADE_FLOOR` (8).
+  Over held tone 128-192 a pale color's shade runs toward neutral at its own top channel.
+  Truecolor sends that shade; 256-color sends the nearest (OKLab, chroma plane weighted 2x) of
+  `SHADES_256` (grays 8-95 and the six level-95 cube colors) that passes the cap against the
+  quantized glyph color and is `in_hue_family` with it (gray, or within 30° of its hue).
+  16-color and mono paint no shade. Unshaded cells are flagged `attrs::DEFAULT_BG`, so the painter emits SGR 49 (the
   terminal's own background); pads, gaps and everything else the player draws while `ascii` is
   active follow that rule (flow 10). Tone is glyph ink, glyph color and shade, on an 18-step
   ramp ordered by JetBrains Mono coverage, with `@` from held tone 225. The player's black
@@ -175,7 +178,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     tier.
   - While `ascii` is active the player emits no non-ASCII byte and no background SGR outside
     the capped shade, on any tier or palette: every shaded cell obeys `backing_within_cap` on
-    the colors actually sent (256-color: gray ramp only), 16-color and mono carry no background
+    the colors actually sent, reaches `SHADE_FLOOR`, and on 256-color is one of `SHADES_256` in
+    the glyph's hue family; 16-color and mono carry no background
     SGR at all, and letterbox pads and gap frames (`Codec::pad`), every overlay row
     (`OverlayScale::Plain`), the enlarge card and every resize in between keep SGR 49.
     `crates/auto-ascii/tests/codecs.rs` replays the real escape stream through the deck, with

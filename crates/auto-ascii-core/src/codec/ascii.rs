@@ -6,35 +6,42 @@
 //! away. On every tier and palette selection each glyph is printable ASCII
 //! `0x20..=0x7E`. Where letters' tint would light the cell, `ascii` paints a
 //! background **shade** instead, and only ever a shade: on truecolor and
-//! 256-color a cell's background is its chroma sample (gray fallback) times
-//! letters' coverage curve of the held tone times 0.6, then held to
-//! [`backing_within_cap`] — no channel above [`SHADE_CEIL`] (a glyph cell) or
-//! [`SHADE_BLANK_CEIL`] (a space), and at most [`SHADE_CONTRAST_Q8`]/256 of
-//! the glyph's [`luminance`]. A shade that breaks the cap is scaled down, hue
-//! kept, and one that cannot fit is dropped. Truecolor keeps the chroma's hue,
-//! only darker; 256-color uses the neutral xterm gray ramp, which the painter
-//! sends unchanged, so the cap holds on what the terminal shows and no shade
-//! lands on another hue. 16-color and mono paint no shade. Cells without one
-//! carry [`attrs::DEFAULT_BG`], so the terminal's own background shows through
-//! (letterbox pads and composition gaps too, via [`GlyphCodec::PAD`]).
-//! [`cell_within_cap`] states the whole contract per color depth.
+//! 256-color a cell's background starts as its chroma sample (a gray of the
+//! held tone when there is none) times letters' coverage curve of the held
+//! tone times 0.6; over held tone `PALE_FROM` to `PALE_FULL` a pale color's
+//! shade runs toward neutral at its own brightest channel, as far as the
+//! color is pale (its least channel over its greatest), hue kept. It is then
+//! held to [`backing_within_cap`] — no channel above [`SHADE_CEIL`] (a glyph
+//! cell) or [`SHADE_BLANK_CEIL`] (a space), and at most
+//! [`SHADE_CONTRAST_Q8`]/256 of the glyph's [`luminance`]. A shade that
+//! breaks the cap is scaled down, hue kept; one whose brightest channel ends
+//! below [`SHADE_FLOOR`] would read as black and is not sent. Truecolor sends
+//! that shade. 256-color sends the nearest of [`SHADES_256`] (OKLab distance,
+//! the chroma plane counted double so hue weighs more than lightness) among
+//! those within the cap against the glyph's color as quantized and
+//! [`in_hue_family`] with it: a gray, or one of the six cube colors at level
+//! 95 within 30° of the glyph's hue. The cube has no darker chromatic entry,
+//! so dim shades land on grays. 16-color and mono paint no shade. Cells
+//! without one carry [`attrs::DEFAULT_BG`], so the terminal's own background
+//! shows through (letterbox pads and composition gaps too, via
+//! [`GlyphCodec::PAD`]). [`cell_within_cap`] states the whole contract per
+//! color depth.
 //!
 //! The glyph comes from the held tone through an 18-step ramp that tops out
 //! in the densest glyphs (`#`, `D`, `8`, `B`, `@`); the ink target runs
 //! linearly in tone from the black floor to `TONE_TOP`, bent up below
 //! mid-gray so midtones ink sooner, and each tone takes the step of nearest
 //! ink, so `@` starts at held tone 225, a little below `TONE_TOP`, and stays
-//! for near-white. The glyph's color is the chroma sample, hue kept: its
-//! brightness `y` starts lifted to `y·(1 + (1 − y)²)` (at most 4×) and, over
-//! held tone `LIT_FROM` to `LIT_FULL`, rises to full brightness, since a glyph
-//! inks at most about a quarter of its cell; from `HI_FROM` up it runs toward
-//! white (seven eighths of the way at 255), so a highlight outshines the lit
-//! surface around it. Stability follows letters on untinted tiers: the
-//! displayed tone is held within a deadband of `9/32 × idx_hyst_q8` tone
-//! units, a lit cell is held down to half the black floor, the shade follows
-//! the held tone rather than the instantaneous one, and the top-/bottom-heavy
-//! choice reuses letters' dual threshold. Glyph and glyph color are the same
-//! on every tier; the backend quantizes the color.
+//! for near-white. The glyph's color is the chroma sample, hue kept: over
+//! held tone `LIT_FROM` to `LIT_FULL` its brightness rises from the sample's
+//! own to full, since a glyph inks at most about a quarter of its cell; from
+//! `HI_FROM` up it runs toward white (all the way at 255), so a highlight
+//! outshines the lit surface around it. Stability follows letters on
+//! untinted tiers: the displayed tone is held within a deadband of
+//! `9/32 × idx_hyst_q8` tone units, a lit cell is held down to half the black
+//! floor, the shade follows the held tone rather than the instantaneous one,
+//! and the top-/bottom-heavy choice reuses letters' dual threshold. Glyph and
+//! glyph color are the same on every tier; the backend quantizes the color.
 //!
 //! **Ramp order.** Coverage was measured on JetBrains Mono 2.304 Regular
 //! (Ghostty's bundled default) as antialiased ink over the advance ×
@@ -44,9 +51,10 @@
 //! glyphs `| / \ - _ = X` stay out of every ramp table, as in letters.
 //!
 //! **Design constants.** The glyph tables, [`ASCII_INK`] and the thresholds
-//! below (`BLACK_FLOOR`, `FLOOR_HOLD`, `TONE_TOP`, `GAIN_MAX_Q8`, `LIT_FROM`,
-//! `LIT_FULL`, `HI_FROM`, `HI_WHITE_Q8`, `SHADE_Q8`, the shade cap, the curves
-//! in `value_table` and `step_table` and the deadband factor in `held_tone`)
+//! below (`BLACK_FLOOR`, `FLOOR_HOLD`, `TONE_TOP`, `LIT_FROM`, `LIT_FULL`,
+//! `HI_FROM`, `PALE_FROM`, `PALE_FULL`, `SHADE_Q8`, the shade cap and floor,
+//! the 256-color entries and hue test, the curve in `step_table` and the
+//! deadband factor in `held_tone`)
 //! are this codec's DATA, pinned by its tests and goldens; what a viewer
 //! tunes stays in `ComposeParams`, exactly as for letters.
 
@@ -86,15 +94,15 @@ const FLOOR_HOLD: u8 = 12;
 
 const TONE_TOP: u8 = 240;
 
-const GAIN_MAX_Q8: u32 = 1024;
-
 const LIT_FROM: u8 = 48;
 
 const LIT_FULL: u8 = 176;
 
 const HI_FROM: u8 = 160;
 
-const HI_WHITE_Q8: u32 = 224;
+const PALE_FROM: u8 = 128;
+
+const PALE_FULL: u8 = 192;
 
 /// Brightest channel a glyph cell's backing shade may have: 96 of 255,
 /// 38% of full.
@@ -108,9 +116,42 @@ pub const SHADE_BLANK_CEIL: u8 = BLACK_FLOOR;
 /// 0.375) of its glyph's relative luminance.
 pub const SHADE_CONTRAST_Q8: u32 = 96;
 
+/// A backing whose brightest channel is below this is not sent: it reads as
+/// black on any display, and 8 is the darkest xterm gray.
+pub const SHADE_FLOOR: u8 = 8;
+
+/// A chromatic 256-color backing is within 30° of OKLab hue of the glyph's
+/// color as quantized: cos² of that angle.
+pub const SHADE_HUE_COS2: f32 = 0.75;
+
+/// Least OKLab chroma a quantized glyph color needs to have a hue family.
+pub const SHADE_HUE_MIN_CHROMA: f32 = 0.03;
+
 const SHADE_Q8: u32 = 154;
 
-const GRAY_RAMP: [u8; 24] = gray_ramp();
+/// The xterm-256 entries a backing can land on under [`SHADE_CEIL`]: the
+/// gray ramp through 88, the cube's gray at 95, and the six cube colors
+/// whose levels are all 0 or 95. Each is its own quantization.
+pub const SHADES_256: [Rgb; 16] = [
+    Rgb::gray(8),
+    Rgb::gray(18),
+    Rgb::gray(28),
+    Rgb::gray(38),
+    Rgb::gray(48),
+    Rgb::gray(58),
+    Rgb::gray(68),
+    Rgb::gray(78),
+    Rgb::gray(88),
+    Rgb::gray(95),
+    Rgb::new(95, 0, 0),
+    Rgb::new(0, 95, 0),
+    Rgb::new(0, 0, 95),
+    Rgb::new(95, 95, 0),
+    Rgb::new(95, 0, 95),
+    Rgb::new(0, 95, 95),
+];
+
+const SHADES_256_LAB: [Lab; 16] = shades_lab();
 
 const LINEAR: [u16; 256] = [
     0, 20, 40, 60, 80, 99, 119, 139, 159, 179, 199, 219, 241, 264, 288, 313,
@@ -133,33 +174,82 @@ const LINEAR: [u16; 256] = [
 
 const STEP: [u8; 256] = step_table();
 
-const VALUE: [u8; 256] = value_table();
-
 const fn unit(n: usize) -> u32 {
     let span = (TONE_TOP - BLACK_FLOOR) as u32;
     let x = n as u32 - BLACK_FLOOR as u32;
     (if x < span { x } else { span }) * 255 / span
 }
 
-const fn gray_ramp() -> [u8; 24] {
-    let mut t = [0u8; 24];
+#[derive(Clone, Copy)]
+struct Lab {
+    l: f32,
+    a: f32,
+    b: f32,
+}
+
+const fn cbrt(x: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let mut y = f32::from_bits(x.to_bits() / 3 + 0x2a51_4067);
     let mut i = 0;
-    while i < 24 {
-        t[i] = 8 + 10 * i as u8;
+    while i < 4 {
+        y = (2.0 * y + x / (y * y)) / 3.0;
+        i += 1;
+    }
+    y
+}
+
+const fn oklab(c: Rgb) -> Lab {
+    let r = LINEAR[c.r as usize] as f32 / 65535.0;
+    let g = LINEAR[c.g as usize] as f32 / 65535.0;
+    let b = LINEAR[c.b as usize] as f32 / 65535.0;
+    let l = cbrt(0.412_221_46 * r + 0.536_332_55 * g + 0.051_445_995 * b);
+    let m = cbrt(0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b);
+    let s = cbrt(0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b);
+    Lab {
+        l: 0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
+        a: 1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
+        b: 0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
+    }
+}
+
+const fn shades_lab() -> [Lab; 16] {
+    let mut t = [Lab { l: 0.0, a: 0.0, b: 0.0 }; 16];
+    let mut i = 0;
+    while i < 16 {
+        t[i] = oklab(SHADES_256[i]);
         i += 1;
     }
     t
 }
 
-const fn value_table() -> [u8; 256] {
-    let mut t = [0u8; 256];
-    let mut m = 0;
-    while m < 256 {
-        let d = 255 - m as u32;
-        t[m] = (m as u32 + m as u32 * d * d / (255 * 255)) as u8;
-        m += 1;
-    }
-    t
+#[inline]
+fn neutral(c: Rgb) -> bool {
+    c.r == c.g && c.g == c.b
+}
+
+#[inline]
+fn hue_near(glyph: Lab, shade: Lab) -> bool {
+    let c2 = |x: Lab| x.a * x.a + x.b * x.b;
+    let dot = glyph.a * shade.a + glyph.b * shade.b;
+    c2(glyph) >= SHADE_HUE_MIN_CHROMA * SHADE_HUE_MIN_CHROMA
+        && dot > 0.0
+        && dot * dot >= SHADE_HUE_COS2 * c2(glyph) * c2(shade)
+}
+
+/// Whether `shade` sits in the hue family of the glyph color `glyph`: a
+/// neutral gray always does; a chromatic color does when `glyph` has at
+/// least [`SHADE_HUE_MIN_CHROMA`] and the two OKLab hues are within 30°
+/// ([`SHADE_HUE_COS2`]).
+pub fn in_hue_family(glyph: Rgb, shade: Rgb) -> bool {
+    neutral(shade) || hue_near(oklab(glyph), oklab(shade))
+}
+
+#[inline]
+fn shade_distance(want: Lab, e: Lab) -> f32 {
+    let (dl, da, db) = (want.l - e.l, want.a - e.a, want.b - e.b);
+    dl * dl + 2.0 * (da * da + db * db)
 }
 
 const fn step_table() -> [u8; 256] {
@@ -214,18 +304,24 @@ pub fn backing_within_cap(glyph: char, fg: Rgb, bg: Rgb) -> bool {
 /// The whole background contract of an `ascii` cell rendered for `color`,
 /// on the colors the codec emits: on 16-color and mono the terminal's own
 /// background; on truecolor the terminal's own or a backing within
-/// [`backing_within_cap`]; on 256-color the terminal's own or a gray from the
-/// xterm gray ramp (quantized unchanged, neutral, so never a clashing hue)
-/// within the cap against the glyph's color as quantized.
+/// [`backing_within_cap`] whose brightest channel reaches [`SHADE_FLOOR`];
+/// on 256-color the terminal's own or one of [`SHADES_256`] (quantized
+/// unchanged) that is [`in_hue_family`] of, and within the cap against, the
+/// glyph's color as quantized.
 pub fn cell_within_cap(cell: &Cell, color: ColorDepth) -> bool {
     if cell.attrs & attrs::DEFAULT_BG != 0 {
         return true;
     }
     match color {
-        ColorDepth::True => backing_within_cap(cell.glyph(), cell.fg, cell.bg),
+        ColorDepth::True => {
+            cell.bg.r.max(cell.bg.g).max(cell.bg.b) >= SHADE_FLOOR
+                && backing_within_cap(cell.glyph(), cell.fg, cell.bg)
+        }
         ColorDepth::C256 => {
-            GRAY_RAMP.iter().any(|&g| cell.bg == Rgb::gray(g))
-                && backing_within_cap(cell.glyph(), ansi256_to_rgb(rgb_to_256(cell.fg)), cell.bg)
+            let seen = ansi256_to_rgb(rgb_to_256(cell.fg));
+            SHADES_256.contains(&cell.bg)
+                && in_hue_family(seen, cell.bg)
+                && backing_within_cap(cell.glyph(), seen, cell.bg)
         }
         ColorDepth::C16 | ColorDepth::Mono => false,
     }
@@ -239,11 +335,26 @@ fn scaled(c: Rgb, k: u32) -> Rgb {
 
 #[inline]
 fn backing(c: Rgb, n: u8, glyph: char, fg: Rgb, color: ColorDepth) -> Option<Rgb> {
-    let deep = match color {
-        ColorDepth::True => false,
-        ColorDepth::C256 => true,
+    let seen = match color {
+        ColorDepth::True => fg,
+        ColorDepth::C256 => ansi256_to_rgb(rgb_to_256(fg)),
         ColorDepth::C16 | ColorDepth::Mono => return None,
     };
+    let want = ideal_backing(c, n, glyph, seen)?;
+    if color == ColorDepth::True {
+        return Some(want);
+    }
+    let (w, g) = (oklab(want), oklab(seen));
+    SHADES_256
+        .iter()
+        .zip(&SHADES_256_LAB)
+        .filter(|&(&e, &lab)| backing_within_cap(glyph, seen, e) && (neutral(e) || hue_near(g, lab)))
+        .min_by(|x, y| shade_distance(w, *x.1).total_cmp(&shade_distance(w, *y.1)))
+        .map(|(&e, _)| e)
+}
+
+#[inline]
+fn ideal_backing(c: Rgb, n: u8, glyph: char, seen: Rgb) -> Option<Rgb> {
     let top = c.r.max(c.g).max(c.b) as u32;
     let f = BLACK_FLOOR as u32;
     let x = ((n as u32).saturating_sub(f) << 8) / (255 - f);
@@ -257,17 +368,9 @@ fn backing(c: Rgb, n: u8, glyph: char, fg: Rgb, color: ColorDepth) -> Option<Rgb
     if (top * k) >> 16 > ceil {
         k = (ceil << 16).div_ceil(top);
     }
-    let limit = if blank {
-        u32::MAX
-    } else {
-        let seen = if deep { ansi256_to_rgb(rgb_to_256(fg)) } else { fg };
-        (SHADE_CONTRAST_Q8 * luminance(seen)) >> 8
-    };
-    let bg = if deep {
-        let want = luminance(scaled(c, k)).min(limit);
-        let g = GRAY_RAMP.iter().rev().find(|&&g| luminance(Rgb::gray(g)) <= want)?;
-        Rgb::gray(*g)
-    } else if luminance(scaled(c, k)) <= limit {
+    let limit = if blank { u32::MAX } else { (SHADE_CONTRAST_Q8 * luminance(seen)) >> 8 };
+    let c = pale_toward_neutral(c, n);
+    let bg = if luminance(scaled(c, k)) <= limit {
         scaled(c, k)
     } else {
         let (mut lo, mut hi) = (0, k);
@@ -277,7 +380,17 @@ fn backing(c: Rgb, n: u8, glyph: char, fg: Rgb, color: ColorDepth) -> Option<Rgb
         }
         scaled(c, lo)
     };
-    (bg != Rgb::BLACK).then_some(bg)
+    (bg.r.max(bg.g).max(bg.b) >= SHADE_FLOOR).then_some(bg)
+}
+
+#[inline]
+fn pale_toward_neutral(c: Rgb, n: u8) -> Rgb {
+    let m = c.r.max(c.g).max(c.b) as u32;
+    let lo = c.r.min(c.g).min(c.b) as u32;
+    let ramp = (n.clamp(PALE_FROM, PALE_FULL) - PALE_FROM) as u32 * 256 / (PALE_FULL - PALE_FROM) as u32;
+    let w = ((lo << 8) / m.max(1) * ramp) >> 8;
+    let s = |v: u8| (v as u32 + (((m - v as u32) * w) >> 8)) as u8;
+    Rgb::new(s(c.r), s(c.g), s(c.b))
 }
 
 #[inline]
@@ -286,11 +399,10 @@ fn tint(c: Rgb, h: u8) -> Rgb {
     if m == 0 {
         return c;
     }
-    let lift = GAIN_MAX_Q8.min(((VALUE[m as usize] as u32) << 8) / m);
     let full = (255 << 8) / m;
     let b = (h.clamp(LIT_FROM, LIT_FULL) - LIT_FROM) as u32 * 256 / (LIT_FULL - LIT_FROM) as u32;
-    let g = lift + (((full.max(lift) - lift) * b) >> 8);
-    let w = (h.saturating_sub(HI_FROM) as u32 * HI_WHITE_Q8) / (255 - HI_FROM) as u32;
+    let g = 256 + (((full - 256) * b) >> 8);
+    let w = (h.saturating_sub(HI_FROM) as u32 * 256) / (255 - HI_FROM) as u32;
     let s = |x: u8| {
         let v = ((x as u32 * g) >> 8).min(255);
         (v + (((255 - v) * w) >> 8)) as u8
@@ -351,7 +463,8 @@ impl GlyphCodec for Ascii {
 
         let c = inp.chroma.unwrap_or(Rgb::gray(n));
         let fg = tint(c, h);
-        let cell = |g: char, fg: Rgb, tone: u8| put(g, fg, backing(c, tone, g, fg, set.color));
+        let base = inp.chroma.unwrap_or(Rgb::gray(h));
+        let cell = |g: char, fg: Rgb, tone: u8| put(g, fg, backing(base, tone, g, fg, set.color));
         let dx = -debias(inp.ex);
         let dy = -debias(inp.ey);
         let plain_idx = ((n as u32 * len) >> 8).min(len - 1);
@@ -500,9 +613,16 @@ mod tests {
                             {
                                 let m = k.r.max(k.g).max(k.b) as u32;
                                 let s = c.bg.r.max(c.bg.g).max(c.bg.b) as u32;
-                                for (v, w) in [(k.r, c.bg.r), (k.g, c.bg.g), (k.b, c.bg.b)] {
-                                    assert!((v as u32 * s / m).abs_diff(w as u32) <= 1, "{c:?}: same hue as {k:?}");
+                                let (v, w) = ([k.r, k.g, k.b], [c.bg.r, c.bg.g, c.bg.b]);
+                                for i in 0..3 {
+                                    assert!(w[i] as u32 + 1 >= v[i] as u32 * s / m, "{c:?}: between {k:?}'s hue and neutral");
+                                    for j in 0..3 {
+                                        assert!(v[i] < v[j] || w[i] >= w[j], "{c:?}: same hue as {k:?}");
+                                    }
                                 }
+                            }
+                            if color == ColorDepth::C256 {
+                                assert!(SHADES_256.contains(&c.bg), "{c:?}");
                             }
                         }
                     }
@@ -529,18 +649,21 @@ mod tests {
         let q = backing(white, 255, 'x', dim, ColorDepth::C256).unwrap();
         assert!(cell_within_cap(&put('x', dim, Some(q)), ColorDepth::C256), "{q:?}");
         assert_eq!(backing(white, 255, 'x', Rgb::BLACK, ColorDepth::True), None, "a black glyph: no shade");
+        let faint = Rgb::new(40, 20, 10);
+        assert_eq!(backing(faint, 40, 'x', white, ColorDepth::True), None, "a shade below the floor is not sent");
+        let lit = backing(faint, 255, 'x', white, ColorDepth::True).unwrap();
+        assert!(lit.r >= SHADE_FLOOR, "{lit:?}");
         for color in [ColorDepth::C16, ColorDepth::Mono] {
             assert_eq!(backing(white, 255, '@', white, color), None);
         }
-        assert_eq!((SHADE_CEIL, SHADE_BLANK_CEIL, SHADE_CONTRAST_Q8), (96, 24, 96));
+        assert_eq!((SHADE_CEIL, SHADE_BLANK_CEIL, SHADE_CONTRAST_Q8, SHADE_FLOOR), (96, 24, 96, 8));
         assert_eq!((luminance(Rgb::BLACK), luminance(Rgb::WHITE)), (0, 65535));
     }
 
     #[test]
-    fn color_keeps_hue_lifts_darks_and_orders_brightness() {
+    fn color_keeps_hue_and_orders_brightness() {
         let dim = cold(&CellInputs { chroma: Some(Rgb::new(40, 20, 10)), ..inp(LIT_FROM, LIT_FROM) }).fg;
-        assert!(dim.r > 40 && dim.r <= 160, "dark colors lift, at most 4x: {dim:?}");
-        assert_eq!((dim.r / 2, dim.r / 4), (dim.g, dim.b), "hue kept: {dim:?}");
+        assert_eq!(dim, Rgb::new(40, 20, 10), "below LIT_FROM a glyph takes the sample's own color");
         let white = cold(&CellInputs { chroma: Some(Rgb::WHITE), ..inp(250, 250) }).fg;
         assert_eq!(white, Rgb::WHITE, "nothing clips");
         let mid = (LIT_FROM + LIT_FULL) / 2;
@@ -565,7 +688,68 @@ mod tests {
         let (r, g, b) = (hi.r as u32, hi.g as u32, hi.b as u32);
         assert!((r * 3 / 4).abs_diff(g) <= 1 && (r / 2).abs_diff(b) <= 1, "no white yet at HI_FROM: {hi:?}");
         let core = at(255);
-        assert!(core.r == 255 && core.b > 200 && core.b > full.b, "a highlight runs toward white: {core:?}");
+        assert!(core.r == 255 && core.b >= 253, "a highlight runs all the way to white: {core:?}");
+        assert!(at(224).b > full.b && at(224).b < 255, "and gets there gradually: {:?}", at(224));
+    }
+
+    #[test]
+    fn a_pale_shade_runs_toward_neutral_a_saturated_one_keeps_its_color() {
+        let bg = |c: Rgb, n: u8| backing(c, n, '@', Rgb::WHITE, ColorDepth::True).unwrap();
+        let pale = Rgb::new(255, 212, 160);
+        let (low, high) = (bg(pale, PALE_FROM), bg(pale, 255));
+        assert_eq!(high.r, SHADE_CEIL, "{high:?}");
+        assert!(high.r - high.b < low.r - low.b && high.b > (160 * SHADE_CEIL as u32 / 255) as u8, "{low:?} -> {high:?}");
+        assert!(high.r >= high.g && high.g >= high.b, "hue kept: {high:?}");
+        let red = Rgb::new(255, 40, 0);
+        let (r, s) = (bg(red, 255), bg(Rgb::new(255, 0, 0), 255));
+        assert_eq!((s.g, s.b), (0, 0), "a pure color stays pure: {s:?}");
+        assert!(r.g <= 16 && r.b == 0, "a saturated color barely moves: {r:?}");
+    }
+
+    #[test]
+    fn shades_256_quantize_to_themselves_and_lab_is_sane() {
+        for e in SHADES_256 {
+            assert_eq!(ansi256_to_rgb(rgb_to_256(e)), e);
+            assert!(e.r.max(e.g).max(e.b) <= SHADE_CEIL);
+        }
+        let (k, w) = (oklab(Rgb::BLACK), oklab(Rgb::WHITE));
+        assert!(k.l.abs() < 1e-4 && (w.l - 1.0).abs() < 1e-3 && w.a.abs() < 1e-3 && w.b.abs() < 1e-3);
+        let red = oklab(Rgb::new(255, 0, 0));
+        assert!((red.l - 0.628).abs() < 2e-3 && (red.a - 0.225).abs() < 2e-3 && (red.b - 0.126).abs() < 2e-3);
+        assert!((cbrt(0.001) - 0.1).abs() < 1e-6 && (cbrt(0.5) - 0.793_700_5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_256_color_shade_is_a_gray_or_in_the_glyphs_hue_family() {
+        let set = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::C256, 100);
+        let mut chromatic = 0;
+        for r in (0..=255u16).step_by(51) {
+            for g in (0..=255u16).step_by(51) {
+                for b in (0..=255u16).step_by(51) {
+                    let chroma = Rgb::new(r as u8, g as u8, b as u8);
+                    for n in [40u8, 90, 130, 160, 200, 255] {
+                        let i = CellInputs { chroma: Some(chroma), ..inp(n, n) };
+                        let c = step(&i, &set, &ComposeParams::default(), &mut HysteresisState::new(1, 1));
+                        assert!(cell_within_cap(&c, ColorDepth::C256), "{chroma:?} {n}: {c:?}");
+                        if c.attrs & attrs::DEFAULT_BG != 0 || neutral(c.bg) {
+                            continue;
+                        }
+                        chromatic += 1;
+                        let (seen, bg) = (oklab(ansi256_to_rgb(rgb_to_256(c.fg))), oklab(c.bg));
+                        let (hs, hb) = (seen.b.atan2(seen.a), bg.b.atan2(bg.a));
+                        let d = (hs - hb).abs().min(core::f32::consts::TAU - (hs - hb).abs()).to_degrees();
+                        assert!(d <= 30.0 + 1e-3, "{chroma:?} {n}: {c:?} is {d}° off the glyph's hue");
+                    }
+                }
+            }
+        }
+        assert!(chromatic > 0, "saturated glyphs keep their hue family on 256-color");
+        let cyan = CellInputs { chroma: Some(Rgb::new(0, 200, 200)), ..inp(160, 160) };
+        let c = step(&cyan, &set, &ComposeParams::default(), &mut HysteresisState::new(1, 1));
+        assert_eq!(c.bg, Rgb::new(0, 95, 95), "{c:?}");
+        let dim = CellInputs { chroma: Some(Rgb::new(200, 60, 0)), ..inp(60, 60) };
+        let c = step(&dim, &set, &ComposeParams::default(), &mut HysteresisState::new(1, 1));
+        assert!(c.attrs & attrs::DEFAULT_BG != 0 || neutral(c.bg), "a dim shade is nearest a gray: {c:?}");
     }
 
     #[test]
