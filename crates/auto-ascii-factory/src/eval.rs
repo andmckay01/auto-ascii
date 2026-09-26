@@ -393,7 +393,7 @@ pub(crate) fn eval_clip(
             auto_ascii::pipeline::color_depth(tier),
             auto_ascii_core::GlyphTier::Ascii,
         )?;
-        player.set_compose_params(params.compose.to_core());
+        player.set_compose_params(params.compose.to_core()?);
         if truecolor {
             player.enable_layer_mask();
         }

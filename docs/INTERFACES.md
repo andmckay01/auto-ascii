@@ -555,6 +555,9 @@ impl AsciiWriter<W> {
       // else per-byte cur−prev (mod 256) per plane before zstd. Rejected frames
       // never touch the delta reference (tested).
   pub fn finish(self) -> Result<W>;
+      // Rejects a NORM whose last shot starts at or past the frames written,
+      // the same bound open() enforces, so the writer never emits an asset
+      // the reader refuses.
 }
 
 // read.rs — over &[u8]; open() now O(pre-frame chunks + FIDX): header

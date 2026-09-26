@@ -110,7 +110,7 @@ pub struct AsciiWriter<W: Write + Seek> {
     raw_sizes: Vec<usize>,
     index: Vec<FrameIndexEntry>,
     frames_written: u32,
-    norm_written: bool,
+    last_shot_start: Option<u32>,
     pos: u64,
     codecs: Vec<PlaneCodec>,
     payload_buf: Vec<u8>,
@@ -234,7 +234,7 @@ impl<W: Write + Seek> AsciiWriter<W> {
             raw_sizes,
             index: Vec::new(),
             frames_written: 0,
-            norm_written: false,
+            last_shot_start: None,
             pos: 0,
             codecs,
             payload_buf: Vec::new(),
@@ -248,16 +248,11 @@ impl<W: Write + Seek> AsciiWriter<W> {
         Ok(this)
     }
 
-    /// Write the NORM chunk (per-shot runtime levels + cut flags).
-    /// Must be called before the first [`write_frame`](AsciiWriter::write_frame)
-    /// and at most once. `shots[0].first_frame` must be 0 and `first_frame`
-    /// strictly increasing; upper bounds are checked by the reader against
-    /// the final `frame_count` (unknown while streaming).
     pub fn write_norm(&mut self, shots: &[ShotRecord]) -> Result<()> {
         if self.frames_written > 0 {
             return Err(AsciiError::Corrupt("writer: NORM must precede all frames"));
         }
-        if self.norm_written {
+        if self.last_shot_start.is_some() {
             return Err(AsciiError::Corrupt("writer: duplicate NORM chunk"));
         }
         if shots.is_empty() {
@@ -275,7 +270,7 @@ impl<W: Write + Seek> AsciiWriter<W> {
             payload.extend_from_slice(&shot.to_bytes());
         }
         emit_chunk(&mut self.w, &mut self.pos, self.opts.with_crc, TAG_NORM, 0, &payload)?;
-        self.norm_written = true;
+        self.last_shot_start = shots.last().map(|shot| shot.first_frame);
         Ok(())
     }
 
@@ -366,6 +361,9 @@ impl<W: Write + Seek> AsciiWriter<W> {
     /// back and patch `frame_count` + `index_offset` in the header. Returns
     /// the inner writer (flushed, not synced).
     pub fn finish(mut self) -> Result<W> {
+        if self.last_shot_start.is_some_and(|start| start >= self.frames_written) {
+            return Err(AsciiError::Corrupt("writer: NORM shot starts past the last written frame"));
+        }
         let index_offset = self.pos;
 
         let mut fidx = Vec::with_capacity(self.index.len() * FIDX_ENTRY_SIZE);

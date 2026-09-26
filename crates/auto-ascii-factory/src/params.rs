@@ -218,9 +218,6 @@ pub struct ComposeTable {
     /// Ramp-index hysteresis width in Q8 fractions of one step (e.g.
     /// "± 0.35·step" = 90).
     pub idx_hyst_q8: u32,
-    /// Shadow lift (`auto_ascii_core::ComposeParams::shadow_lift`): 0 = off, 255 =
-    /// a full sqrt curve. A RENDERER knob like the rest of this table, so it
-    /// is sweepable and costs no asset rebuild.
     pub shadow_lift: u32,
 }
 
@@ -244,23 +241,26 @@ impl Default for ComposeTable {
 }
 
 impl ComposeTable {
-    /// The auto-ascii-core shape (fields are validated to fit u8).
-    pub fn to_core(self) -> auto_ascii_core::ComposeParams {
-        auto_ascii_core::ComposeParams {
-            edge_t_on: self.edge_t_on as u8,
-            edge_t_off: self.edge_t_off as u8,
-            coh_min_q8: self.coh_min_q8 as u8,
-            coh_dir_q8: self.coh_dir_q8 as u8,
-            hi_cut_q8: self.hi_cut_q8 as u8,
-            edge_white_cut_q8: self.edge_white_cut_q8 as u8,
-            halfblock_min_delta: self.halfblock_min_delta as u8,
-            edge_strong: self.edge_strong as u8,
-            quad_e_on: self.quad_e_on as u8,
-            quad_e_off: self.quad_e_off as u8,
-            idx_hyst_q8: self.idx_hyst_q8 as u8,
-            shadow_lift: self.shadow_lift as u8,
-        }
+    pub fn to_core(self) -> Result<auto_ascii_core::ComposeParams, BoxErr> {
+        Ok(auto_ascii_core::ComposeParams {
+            edge_t_on: compose_u8("edge_t_on", self.edge_t_on)?,
+            edge_t_off: compose_u8("edge_t_off", self.edge_t_off)?,
+            coh_min_q8: compose_u8("coh_min_q8", self.coh_min_q8)?,
+            coh_dir_q8: compose_u8("coh_dir_q8", self.coh_dir_q8)?,
+            hi_cut_q8: compose_u8("hi_cut_q8", self.hi_cut_q8)?,
+            edge_white_cut_q8: compose_u8("edge_white_cut_q8", self.edge_white_cut_q8)?,
+            halfblock_min_delta: compose_u8("halfblock_min_delta", self.halfblock_min_delta)?,
+            edge_strong: compose_u8("edge_strong", self.edge_strong)?,
+            quad_e_on: compose_u8("quad_e_on", self.quad_e_on)?,
+            quad_e_off: compose_u8("quad_e_off", self.quad_e_off)?,
+            idx_hyst_q8: compose_u8("idx_hyst_q8", self.idx_hyst_q8)?,
+            shadow_lift: compose_u8("shadow_lift", self.shadow_lift)?,
+        })
     }
+}
+
+fn compose_u8(name: &str, v: u32) -> Result<u8, BoxErr> {
+    u8::try_from(v).map_err(|_| format!("params: compose.{name} must be in 0..=255").into())
 }
 
 /// `[eval]` — the eval driver's knobs.
@@ -423,23 +423,7 @@ impl Params {
             }
         }
         let c = &self.compose;
-        for (name, v) in [
-            ("edge_t_on", c.edge_t_on),
-            ("edge_t_off", c.edge_t_off),
-            ("coh_min_q8", c.coh_min_q8),
-            ("coh_dir_q8", c.coh_dir_q8),
-            ("hi_cut_q8", c.hi_cut_q8),
-            ("edge_white_cut_q8", c.edge_white_cut_q8),
-            ("halfblock_min_delta", c.halfblock_min_delta),
-            ("edge_strong", c.edge_strong),
-            ("quad_e_on", c.quad_e_on),
-            ("quad_e_off", c.quad_e_off),
-            ("idx_hyst_q8", c.idx_hyst_q8),
-        ] {
-            if v > 255 {
-                return Err(format!("params: compose.{name} must be in 0..=255").into());
-            }
-        }
+        c.to_core()?;
         if c.edge_t_off > c.edge_t_on {
             return Err("params: compose must satisfy edge_t_off <= edge_t_on".into());
         }
@@ -589,7 +573,7 @@ mod tests {
 
     #[test]
     fn compose_table_pins_core_defaults() {
-        let t = ComposeTable::default().to_core();
+        let t = ComposeTable::default().to_core().unwrap();
         let d = auto_ascii_core::ComposeParams::default();
         assert_eq!(t.edge_t_on, d.edge_t_on);
         assert_eq!(t.edge_t_off, d.edge_t_off);
@@ -602,6 +586,7 @@ mod tests {
         assert_eq!(t.quad_e_on, d.quad_e_on);
         assert_eq!(t.quad_e_off, d.quad_e_off);
         assert_eq!(t.idx_hyst_q8, d.idx_hyst_q8);
+        assert_eq!(t.shadow_lift, d.shadow_lift);
     }
 
     #[test]
@@ -609,6 +594,14 @@ mod tests {
         let mut p = Params::default();
         p.compose.edge_t_on = 300;
         assert!(p.validate().unwrap_err().to_string().contains("0..=255"));
+        let mut p = Params::default();
+        p.compose.shadow_lift = 255;
+        p.validate().unwrap();
+        assert_eq!(p.compose.to_core().unwrap().shadow_lift, 255);
+        p.compose.shadow_lift = 256;
+        let err = p.validate().unwrap_err().to_string();
+        assert_eq!(err, "params: compose.shadow_lift must be in 0..=255");
+        assert!(p.compose.to_core().is_err(), "no silent truncation to 0");
         let mut p = Params::default();
         p.compose.edge_t_off = p.compose.edge_t_on + 1;
         assert!(p.validate().unwrap_err().to_string().contains("edge_t_off <= edge_t_on"));
