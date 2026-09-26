@@ -25,7 +25,6 @@ pub const IDX_HYST_MAX_Q8: u8 = 128;
 /// Live default, chosen at the ceiling to limit glyph switching.
 pub const IDX_HYST_DEFAULT_Q8: u8 = 128;
 
-
 /// Per-cell hysteresis flags. Bits 0–1 are the shared gates below; bits 2–7
 /// are codec-private temporal memory (a [`crate::codec`] may use them freely —
 /// a codec switch resets all state, so no bit outlives the codec that set it).
@@ -49,9 +48,11 @@ pub struct CellState {
     pub bin: u8,
     /// See [`cell_flags`].
     pub flags: u8,
-    /// ASCII-only candidate tone; ignored by pixels and letters.
+    /// ASCII-only smoothed input tone ([`IDX_UNSET`] = none); ignored by
+    /// pixels and letters.
     pub tone_candidate: u8,
-    /// Consecutive frames at the ASCII candidate tone (or side of the black floor).
+    /// ASCII-only settling count: consecutive frames the smoothed tone (or a
+    /// black-floor crossing) has pointed one way, with bit 7 set for down.
     pub tone_age: u8,
 }
 

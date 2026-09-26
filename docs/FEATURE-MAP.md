@@ -154,9 +154,9 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   terminal's own background); pads, gaps and everything else the player draws while `ascii` is
   active follow that rule (flow 10). Glyphs use an 18-step ramp ordered by JetBrains Mono
   coverage, with `@` from held tone 225. Glyph color and shade follow current tone
-  independently, preventing stale brightness bands. Within the deadband a stable glyph
-  tone settles in at most 32 frames; floor crossings take at most four. The half, edge and
-  orientation gates retain hysteresis. The player's black
+  independently, preventing stale brightness bands. Within the `5/8 × idx_hyst_q8` band
+  the glyph follows a smoothed tone and settles a steady change within 41 frames; floor
+  crossings take at most four. The half, edge and orientation gates retain hysteresis. The player's black
   backdrop (flow 7) puts the unshaded cells on black in any terminal theme.
 - **User:** `/` cycles codecs while playing (`pixels` → `letters` → `ascii`), `--codec
   pixels|letters|ascii` picks one at startup, and `s` saves it for this video (flow 9).
@@ -218,20 +218,10 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - a backward jump in `RenderSession::render` (`Player::reset_temporal_state`).
   After a reset the next frame is a cold start, identical to seeking straight to that frame.
 
-Hysteresis dial: 0..128 in steps of 16, default 128 (readout: "default, max").
-The new default changes pixels/letters playback from the former value 160;
-their algorithms and output at the same explicit value are unchanged.
-Saved player settings above 128 clamp to 128; factory params reject values
-above 128. The low-level ComposeParams u8 remains available for experiments.
-Keep hysteresis in all codecs: removing it raises glyph switching markedly.
-See [hysteresis measurements](HYSTERESIS-DECISION.md) for the measured tradeoff
-and glyph-hold calibration.
-
-ASCII's dial calibration uses a `5/16 * idx_hyst_q8` tone deadband and
-`min(1 + idx_hyst_q8/4, 32)` stable-target frames (40 tone units and
-32 frames at default 128). This avoids near-boundary glyph chatter after
-lowering the shared maximum. Current-tone colour and <=4-frame floor
-crossings are unchanged. The previous default used a 45-tone-unit band.
+- **Dial:** 0..128 in steps of 16, default and maximum 128 (`IDX_HYST_MAX_Q8`). Saved
+  player settings clamp; factory params reject larger values. The range, the 160 → 128
+  default change and ASCII's glyph-hold calibration are measured in
+  [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).
 
 ### 7. Present: quantize, diff, restore
 - **Does:** writes the grid to the terminal with minimal bytes, then always puts the terminal
@@ -473,7 +463,7 @@ cut), then eight `(p2, p98)` pairs indexed by plane position (`crates/auto-ascii
 codec = "letters"
 shadow_lift = 64
 edge_t_on = 32
-idx_hyst_q8 = 160
+idx_hyst_q8 = 128
 ```
 
 **Library sidecar and composition schema:** `docs/AGENT-GUIDE.md` (JSON shapes, `schema = 1`

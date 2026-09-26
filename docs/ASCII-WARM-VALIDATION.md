@@ -24,8 +24,9 @@ Four 200x56 crops, letters / previous ASCII / new ASCII rendered luma:
 
 Background HSV saturation (letters / previous / new): 36.11/26.93/36.11%,
 83.16/63.92/83.16%, 1.47/1.26/1.47%, 31.64/18.51/31.59%. Retaining the dark
-1..7 shades restores 4.7–19.9% of the crop cells, while omitting exact black
-avoids redundant explicit-black SGR. This is a continuity choice, not a
+1..7 shades restores 4.7–19.9% of the crop cells, at a byte cost (every
+nonblack shade is sent, as letters does); a shade that scales to exact black
+uses the terminal's own background. This is a continuity choice, not a
 claim that all those shades are visibly distinct on every display.
 
 At the unchanged Part A default 160, 120-frame windows at 200x56 plus

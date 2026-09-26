@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use auto_ascii::deck::{ClipDeck, DeckConfig};
 use auto_ascii::pipeline::Player;
 use auto_ascii::{Codec, Dial, Located};
-use auto_ascii_core::codec::ascii::cell_within_cap;
+use auto_ascii_core::codec::ascii::{ASCII_RAMP, cell_within_cap};
 use auto_ascii_core::{Cell, ColorDepth, GlyphTier};
 use auto_ascii_format::AsciiReader;
 use auto_ascii_term::{Event, Key, SimBackend};
@@ -11,8 +11,12 @@ use auto_ascii_term::{Event, Key, SimBackend};
 const ASSET: &[u8] = include_bytes!("fixtures/architect-motion.bin");
 
 fn player(codec: Codec, cols: u16, rows: u16) -> Player<'static> {
+    player_of(ASSET, codec, cols, rows)
+}
+
+fn player_of(asset: &'static [u8], codec: Codec, cols: u16, rows: u16) -> Player<'static> {
     let mut p = Player::new(
-        AsciiReader::open(ASSET).unwrap(), 2.0, false, ColorDepth::True, GlyphTier::UnicodeBlocks,
+        AsciiReader::open(asset).unwrap(), 2.0, false, ColorDepth::True, GlyphTier::UnicodeBlocks,
     ).unwrap();
     p.set_codec(codec);
     p.reflow_grid(cols, rows);
@@ -105,11 +109,43 @@ fn ascii_real_playback_stays_close_to_cold_at_zoom_sizes() {
     }
 }
 
+fn ramp_gap(a: char, b: char) -> usize {
+    let step = |c| ASCII_RAMP.iter().position(|&r| r == c);
+    step(a).zip(step(b)).map_or(0, |(a, b)| a.abs_diff(b))
+}
+
+#[test]
+fn ascii_glyphs_settle_on_real_playback() {
+    for (cols, rows) in [(80, 24), (200, 56)] {
+        let mut warm = player(Codec::Ascii, cols, rows);
+        let mut cold = player(Codec::Ascii, cols, rows);
+        let mut stuck = vec![true; cols as usize * rows as usize];
+        for f in 0..150 {
+            warm.render_grid(f).unwrap();
+            if f < 105 {
+                continue;
+            }
+            cold.reset_temporal_state();
+            cold.render_grid(f).unwrap();
+            for ((s, a), b) in stuck.iter_mut().zip(warm.grid().as_slice()).zip(cold.grid().as_slice()) {
+                *s &= ramp_gap(a.glyph(), b.glyph()) >= 2;
+            }
+        }
+        let stuck = stuck.iter().filter(|&&s| s).count();
+        eprintln!("{cols}x{rows}: {stuck} cells two or more ramp steps from cold for 45 frames");
+        assert!(stuck * 100 <= cols as usize * rows as usize, "{cols}x{rows}: {stuck} stale glyphs");
+    }
+}
+
 fn toggles(codec: Codec) -> usize {
-    let mut p = player(codec, 200, 56);
+    toggles_in(ASSET, codec, (200, 56), 60..150)
+}
+
+fn toggles_in(asset: &'static [u8], codec: Codec, (cols, rows): (u16, u16), frames: std::ops::Range<u32>) -> usize {
+    let mut p = player_of(asset, codec, cols, rows);
     let mut prev: Vec<Cell> = Vec::new();
     let mut switches = 0;
-    for f in 60..150 {
+    for f in frames {
         p.render_grid(f).unwrap();
         switches += prev.iter().zip(p.grid().as_slice()).filter(|(a, b)| a.glyph() != b.glyph()).count();
         prev.clear();
@@ -124,4 +160,33 @@ fn ascii_real_asset_glyph_toggle_rate_is_bounded_by_pixels() {
     let pixels = toggles(Codec::Pixels);
     eprintln!("glyph switches: ascii {ascii}, pixels {pixels}");
     assert!(ascii * 5 <= pixels * 6, "ascii {ascii}, pixels {pixels}");
+}
+
+fn assert_toggles_bounded_by_pixels(asset: &'static [u8], sizes: &[(u16, u16)]) {
+    for &size in sizes {
+        let ascii = toggles_in(asset, Codec::Ascii, size, 0..90);
+        let pixels = toggles_in(asset, Codec::Pixels, size, 0..90);
+        eprintln!("{size:?}: glyph switches ascii {ascii}, pixels {pixels}");
+        assert!(ascii * 5 <= pixels * 6, "{size:?}: ascii {ascii}, pixels {pixels}");
+    }
+}
+
+#[test]
+fn ascii_toggle_rate_is_bounded_on_death_star() {
+    assert_toggles_bounded_by_pixels(include_bytes!("fixtures/death-star-466.bin"), &[(80, 24), (200, 56)]);
+}
+
+#[test]
+fn ascii_toggle_rate_is_bounded_on_millennium_falcon() {
+    assert_toggles_bounded_by_pixels(include_bytes!("fixtures/falcon-3545.bin"), &[(80, 24), (200, 56)]);
+}
+
+#[test]
+fn ascii_toggle_rate_is_bounded_on_techno_6() {
+    assert_toggles_bounded_by_pixels(include_bytes!("fixtures/techno6-390.bin"), &[(80, 24)]);
+}
+
+#[test]
+fn ascii_toggle_rate_is_bounded_on_darth_vader() {
+    assert_toggles_bounded_by_pixels(include_bytes!("fixtures/vader-1126.bin"), &[(80, 24), (200, 56)]);
 }

@@ -29,13 +29,18 @@
 //! on the same current-tone coverage curve, limited by one common channel
 //! scale to preserve colour. Color and shade follow current tone,
 //! independently of glyph hysteresis, so old contours cannot latch brightness.
-//! Within `5/16 × idx_hyst_q8` tone units the glyph waits for a stable input:
-//! `min(1 + idx_hyst_q8 / 4, 32)` consecutive frames at the same tone, then
-//! adopts it directly. Large changes respond immediately. Black-floor crossings
-//! need at most four consecutive frames on the new side (even if tone varies).
-//! This avoids walking noisy glyphs through intermediate ramp steps while
-//! bounding constant-input settling at 32 frames. Half/edge/orientation gates
-//! retain their own hysteresis. Glyph and glyph color are the same on every tier; the backend quantizes the color.
+//! A tone more than `5/8 × idx_hyst_q8` units from the held tone replaces it
+//! at once. Nearer changes go through a smoothed tone, which moves a quarter
+//! of the way (rounded up) toward each input: once it has stayed more than
+//! `idx_hyst_q8 / 8` units to one side of the held tone, on another ramp
+//! step, for `min(1 + idx_hyst_q8 / 4, 32)` consecutive frames, the glyph
+//! adopts it. Noise averages out instead of resetting the wait: within 41
+//! frames a steady tone's glyph is its own ramp step or held within
+//! `idx_hyst_q8 / 8` units of it, and a single noisy sample cannot flip it back.
+//! Black-floor crossings need at most four consecutive frames on the new
+//! side (even if tone varies). Half/edge/orientation gates retain their own
+//! hysteresis. Glyph and glyph color are the same on every tier; the backend
+//! quantizes the color.
 //!
 //! **Ramp order.** Coverage was measured on JetBrains Mono 2.304 Regular
 //! (Ghostty's bundled default) as antialiased ink over the advance ×
@@ -47,7 +52,7 @@
 //! **Design constants.** The glyph tables, [`ASCII_INK`] and the thresholds
 //! below (`BLACK_FLOOR`, `TONE_TOP`, `SHADE_Q8`, the shade cap and floor,
 //! the 256-color entries and hue test, the curve in `step_table` and the
-//! deadband factor in `held_tone`)
+//! band, margin and smoothing factors in `held_tone`)
 //! are this codec's DATA, pinned by its tests and goldens; what a viewer
 //! tunes stays in `ComposeParams`, exactly as for letters.
 
@@ -85,6 +90,7 @@ const BLACK_FLOOR: u8 = 24;
 
 const SETTLE_MAX_FRAMES: u8 = 32;
 const FLOOR_SETTLE_FRAMES: u8 = 4;
+const SETTLE_DOWN: u8 = 0x80;
 
 const TONE_TOP: u8 = 240;
 
@@ -99,7 +105,10 @@ pub const SHADE_BLANK_CEIL: u8 = 0;
 /// 0.375) of its glyph's relative luminance.
 pub const SHADE_CONTRAST_Q8: u32 = 96;
 
-/// Retain dark colour continuity; omit only exact black, avoiding redundant SGR.
+/// Least brightest channel a truecolor shade keeps. Floor 1 sends every
+/// nonblack scaled shade, as letters does, so dark colours stay continuous;
+/// a shade that scales to exact black falls back to the terminal's own
+/// background instead.
 pub const SHADE_FLOOR: u8 = 1;
 
 /// A chromatic 256-color backing is within 30° of OKLab hue of the glyph's
@@ -295,10 +304,11 @@ pub fn luminance(c: Rgb) -> u32 {
 }
 
 /// The cap every `ascii` backing shade obeys, checked on the colors the
-/// terminal is sent (after the backend's quantization): a space's backing
-/// has no channel above [`SHADE_BLANK_CEIL`]; a glyph's has no channel above
-/// [`SHADE_CEIL`] and at most [`SHADE_CONTRAST_Q8`]/256 of the glyph's
-/// [`luminance`]. A cell on the terminal's own background passes trivially.
+/// terminal is sent (after the backend's quantization). No channel may
+/// exceed [`SHADE_BLANK_CEIL`] under a space or [`SHADE_CEIL`] under a
+/// glyph, whose backing also keeps at most [`SHADE_CONTRAST_Q8`]/256 of the
+/// glyph's [`luminance`]. A cell on the terminal's own background passes
+/// trivially.
 pub fn backing_within_cap(glyph: char, fg: Rgb, bg: Rgb) -> bool {
     let top = bg.r.max(bg.g).max(bg.b);
     if glyph == ' ' {
@@ -402,21 +412,34 @@ fn tint(c: Rgb, n: u8) -> Rgb {
 
 #[inline]
 fn held_tone(n: u8, prev: u8, hyst_q8: u8, s: &mut CellState) -> u8 {
-    let band = (hyst_q8 as u16 * 5 / 16) as u8;
+    let n = n.min(IDX_UNSET - 1);
+    if prev == IDX_UNSET || n.abs_diff(prev) > (hyst_q8 as u16 * 5 / 8) as u8 {
+        s.tone_candidate = n;
+        s.tone_age = 0;
+        return n;
+    }
+    let from = if s.tone_candidate == IDX_UNSET { prev } else { s.tone_candidate };
+    let smooth = if n >= from { from + (n - from).div_ceil(4) } else { from - (from - n).div_ceil(4) };
+    s.tone_candidate = smooth;
     let floor_crossing = (n < BLACK_FLOOR) != (prev < BLACK_FLOOR);
-    let same_target = s.tone_candidate == n
-        || (floor_crossing && (s.tone_candidate < BLACK_FLOOR) == (n < BLACK_FLOOR));
-    let count = if same_target { s.tone_age } else { 0 };
-    let wait = if floor_crossing {
-        (FLOOR_SETTLE_FRAMES - 1).min(hyst_q8 / 8)
+    let (down, wait) = if floor_crossing {
+        (n < BLACK_FLOOR, (FLOOR_SETTLE_FRAMES - 1).min(hyst_q8 / 8))
+    } else if smooth.abs_diff(prev) > hyst_q8 / 8 && STEP[smooth as usize] != STEP[prev as usize] {
+        (smooth < prev, (hyst_q8 / 4).min(SETTLE_MAX_FRAMES - 1))
     } else {
-        (hyst_q8 / 4).min(SETTLE_MAX_FRAMES - 1)
+        s.tone_age = 0;
+        return prev;
     };
-    let ready = count >= wait;
-    s.tone_candidate = n;
-    s.tone_age = count.saturating_add(1);
-    let h = if prev == IDX_UNSET || n.abs_diff(prev) > band || ready { n } else { prev };
-    h.min(IDX_UNSET - 1)
+    let side = if down { SETTLE_DOWN } else { 0 };
+    let count = if s.tone_age != 0 && s.tone_age & SETTLE_DOWN == side { s.tone_age & !SETTLE_DOWN } else { 0 };
+    if count < wait {
+        s.tone_age = side | (count + 1);
+        return prev;
+    }
+    let h = if floor_crossing { n } else { smooth };
+    s.tone_candidate = h;
+    s.tone_age = 0;
+    h
 }
 
 /// The `ascii` codec. See the module docs.
@@ -734,11 +757,15 @@ mod tests {
         let mut state = CellState::default();
         let width = ComposeParams::default().idx_hyst_q8;
         let mut held = held_tone(120, IDX_UNSET, width, &mut state);
-        for n in [159, 120].into_iter().cycle().take(100) {
-            held = held_tone(n, held, width, &mut state);
-            assert_eq!(held, 120, "nearby alternating samples must not flash glyphs");
+        let mut changes = 0;
+        for n in [159, 120].into_iter().cycle().take(200) {
+            let next = held_tone(n, held, width, &mut state);
+            changes += usize::from(next != held);
+            held = next;
         }
-        assert_eq!(held_tone(161, held, width, &mut state), 161, "large changes remain immediate");
+        assert!(changes <= 1 && (120..=159).contains(&held), "nearby alternating samples must not flash glyphs");
+        let far = held + (width as u16 * 5 / 8) as u8 + 1;
+        assert_eq!(held_tone(far, held, width, &mut state), far, "large changes remain immediate");
     }
 
     #[test]
@@ -746,7 +773,7 @@ mod tests {
         for (from, to) in [(0, 40), (40, 12), (120, 150), (150, 120), (200, 170)] {
             let mut st = HysteresisState::new(1, 1);
             glyph(&inp(from, from), &mut st);
-            for _ in 0..31 {
+            for _ in 0..40 {
                 glyph(&inp(to, to), &mut st);
             }
             assert_eq!(step(&inp(to, to), &uni(), &ComposeParams::default(), &mut st), cold(&inp(to, to)));
@@ -767,21 +794,41 @@ mod tests {
     }
 
     #[test]
-    fn glyph_tone_is_monotone_and_settles_within_32_frames() {
+    fn glyph_tone_is_monotone_and_settles_within_41_frames() {
         for width in [0, 16, 90, 128, 160, 255] {
             for from in 0..=254u8 {
                 for to in 0..=254u8 {
                     let mut held = from;
                     let mut state = CellState::default();
-                    for _ in 0..32 {
+                    for f in 0..64 {
                         let next = held_tone(to, held, width, &mut state);
                         assert!(next >= held.min(to) && next <= held.max(to));
+                        assert!(f < 41 || next == held, "{from}->{to}, width {width}: moved at frame {f}");
                         held = next;
                     }
-                    assert_eq!(held, to, "{from}->{to}, width {width}");
+                    let near = STEP[held as usize] == STEP[to as usize] || held.abs_diff(to) <= width / 8;
+                    assert!(near, "{from}->{to}, width {width}: held {held}");
                 }
             }
         }
+    }
+
+    #[test]
+    fn noisy_steady_tone_settles_once() {
+        let width = ComposeParams::default().idx_hyst_q8;
+        let mut state = CellState::default();
+        let mut held = held_tone(120, IDX_UNSET, width, &mut state);
+        let mut changes = Vec::new();
+        for (f, jitter) in [0u8, 7, 2, 9, 4, 11, 1, 6, 10, 3, 8, 5].into_iter().cycle().take(120).enumerate() {
+            let next = held_tone(150 + jitter, held, width, &mut state);
+            if next != held {
+                changes.push(f);
+            }
+            held = next;
+        }
+        assert_eq!(changes.len(), 1, "one settle, no chatter: {changes:?}");
+        assert!(changes[0] < 41, "settled at frame {}", changes[0]);
+        assert!((150..=161).contains(&held) && STEP[held as usize] != STEP[120], "{held}");
     }
 
     #[test]

@@ -155,11 +155,12 @@ impl Dial {
 
     /// Apply a signed number of steps, saturating at the dial's ends.
     ///
-    /// The top is a stop, not a detent: 255 is no multiple of a 16 step, so
-    /// counting down from it by `step()` would leave the grid the dial
-    /// climbed on, and up N / down N would miss the start by one (255 → 239,
-    /// not 240). A press away from the top counts from the detent just above
-    /// `max()` instead, so every walk retraces its own steps.
+    /// The top is a stop, not a detent. Where `max()` is no multiple of
+    /// `step()` (shadow lift's 255 against 16), counting down from it would
+    /// leave the grid the dial climbed on, and up N / down N would miss the
+    /// start by one (255 → 239, not 240). A press away from the top counts
+    /// from the detent just above `max()` instead, so every walk retraces its
+    /// own steps.
     pub fn turn(self, p: &mut ComposeParams, steps: i32) {
         let (cur, step, max) = (i32::from(self.get(p)), self.step(), i32::from(self.max()));
         let from = if cur == max { (max + step - 1) / step * step } else { cur };

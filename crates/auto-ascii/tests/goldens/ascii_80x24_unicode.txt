@@ -7,17 +7,17 @@ ascii codec, UnicodeBlocks tier, True, 80x24, frame 5
 |      .................:::::::::;;;;;;;;;;;+++++++++++++rrrrrrrrrrrrrrrrrccccccc|
 |    .................::::+:;::;;;;;;-/-______-\+++++++rrrrrrrrrrrrrrrrrccccccccc|
 |  .................::;::+:;:;+;+;////S8D88#8D8-\\\++rrrrrrrrrrrrrrrrrccccccccccc|
-|.................::;::::;::;;+;;//B88D88B8D88S8D88\\rrrrrrrrrrrrrrrrcccccccccccc|
-|...............:::+::::+:;;;r;//BBBBB88B8D88B8D88S8D\rrrrrrrrrrrrrccccccccccccxx|
-|.............::::+::::+;;;;r;;|@@@BBBB88@8888@8888#88|rrrrrrrrrrccccccccccccxxxn|
-|...........::::::::r:;;;r;;;;|8@@@@BBBB8@B8@88B8D88B8||rrrrrrrccccccccccccxxxnnn|
-|.........::::::::::;;;;;;;;;;|8@@@@@BBB@@@@@88B8888a88|rrrrrccccccccccccxxxnnnoo|
-|.......::::::::::;;;;;;;;;;++|8@@@@BBBB@@B@@88B8888a88|rrrccccccccccccxxxnnnoooo|
-|.....::::::::::;;;;+;;;;r++++|@@@@@BBBB8888@8888#8888|rrccccccccccccxxxnnnnooooo|
-|...::::::::::;;;;+;;;;+++++r++\@@BBBBB88B8D88B8D88S8D/ccccccccccccxxxnnnnooooooo|
-|.::::::::::;;;;;;;+;;+++++++r++\BBBBB8888#8888#8888//cccccccccccxxxnnnnooooooooo|
-|:::::::::;;;;;;;;;;+++r++++r++++\\88DS8D8DS8D88S8D/cccccccccccxxxnnnnooooooooooo|
-|:::::::;;;;;;;;;;+++++r++++r+r+rrr\\\\DSD#aDS--//cccccccccccxxxnnnnooooooooooooo|
+|.................::;::::;::;;+;;//B88D88a8D88S8D88\\rrrrrrrrrrrrrrrrcccccccccccc|
+|...............:::+::::+:;;;r;//BBBBB88S8D88S8D88B8D\rrrrrrrrrrrrrccccccccccccxx|
+|.............::::+::::+;;;;r;;|@@@BBBB88#8888#8888#88|rrrrrrrrrrccccccccccccxxxn|
+|...........::::::::r:;;;r;;;;|@@@@@BBBB88@8D88B8D88B8||rrrrrrrccccccccccccxxxnnn|
+|.........::::::::::r;;;;c;;;;|@@@@@@BBB88@8888B8888B88|rrrrrccccccccccccxxxnnnoo|
+|.......::::::::::;;r;;;;c;;++|@@@@@BBBB88@8888B8888B88|rrrccccccccccccxxxnnnoooo|
+|.....::::::::::;;;;+;;;;r++++|@@@@@BBBB88@8#8888B8888|rrccccccccccccxxxnnnnooooo|
+|...::::::::::;;;;+;;;;+++x+r++\@@BBBBB88S8D8888D8888r/ccccccccccccxxxnnnnooooooo|
+|.::::::::::;;;;;;;+;;+++++++r++\BBBBB88e8B8888B8888//cccccccccccxxxnnnnooooooooo|
+|:::::::::;;;;;;;;;;+++r++++r++++\\88DSBD8D8888888r/cccccccccccxxxnnnnooooooooooo|
+|:::::::;;;;;;;;;;+++++r++++r+r+rrr\\\\D8D8888--//cccccccccccxxxnnnnooooooooooooo|
 |:::::;;;;;;;;;;+++++++++++rrrrrrrrrrrr---rrr-rccccccccccccxxxnnnnooooooo        |
 |:::;;;;;;;;;;++++++++++++++rrrrrrrrrrrrrrrrrcccccccccccccxxnnnnoooooooo         |
 |:;;;;;;;;;;;+++++++++++++rrrrrrrrrrrrrrrrrcccccccccccccxxnnnnoooooooooo         |

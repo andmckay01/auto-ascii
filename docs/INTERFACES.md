@@ -275,9 +275,9 @@ pub struct ComposeParams { pub edge_t_on/edge_t_off: u8,        // 32/16 (M3
                                      // real fine diagonal to a half-block
   pub idx_hyst_q8: u8 }              // §3.5 idx hysteresis width in Q8 steps
                                      // (promoted at M3 Tune, note 21);
-                                     // default 160 since the Tune finish
-                                     // (corpus-swept, note 22; spec nominal
-                                     // 0.35·step = IDX_HYST_Q8 = 90)
+                                     // default 128 = IDX_HYST_MAX_Q8 (was
+                                     // 160 from the Tune finish, note 22;
+                                     // spec nominal 0.35·step = 90)
   // + Default (the M3 baseline; all params.toml candidates)
 pub fn compose_cell(&CellInputs, lut: &[u8;256], &PaletteSet, &ComposeParams,
                     &mut HysteresisState, col: u16, row: u16) -> Cell;
@@ -3020,20 +3020,10 @@ Q8 gain with common-channel gamut limiting. Colours follow current tone;
 the bounded glyph settling fix remains. The 41 safe xterm candidates are
 15 ramp grays through 148 and 26 nonblack cube entries at levels 0/95/135;
 all must pass the existing quantized hue-family and luminance checks.
-16/mono remain unshaded. Floor 1 preserves dark colour continuity and omits
-exact black, which would add a redundant explicit-background SGR.
+16/mono remain unshaded. Floor 1 sends every nonblack scaled shade, as
+letters does, for dark colour continuity; a shade that scales to exact black
+uses the terminal's own background.
 
-Hysteresis dial: 0..128 in steps of 16, default 128 (readout: "default, max").
-The new default changes pixels/letters playback from the former value 160;
-their algorithms and output at the same explicit value are unchanged.
-Saved player settings above 128 clamp to 128; factory params reject values
-above 128. The low-level ComposeParams u8 remains available for experiments.
-Keep hysteresis in all codecs: removing it raises glyph switching markedly.
-See [hysteresis measurements](HYSTERESIS-DECISION.md) for the measured tradeoff
-and glyph-hold calibration.
-
-ASCII's dial calibration uses a `5/16 * idx_hyst_q8` tone deadband and
-`min(1 + idx_hyst_q8/4, 32)` stable-target frames (40 tone units and
-32 frames at default 128). This avoids near-boundary glyph chatter after
-lowering the shared maximum. Current-tone colour and <=4-frame floor
-crossings are unchanged. The previous default used a 45-tone-unit band.
+Hysteresis range and ASCII glyph hold: `IDX_HYST_MAX_Q8` = default = 128
+(`hysteresis.rs`); the rule is in the `ascii` module docs and the
+measurements in [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).

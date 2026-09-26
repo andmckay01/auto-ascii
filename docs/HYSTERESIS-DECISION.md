@@ -18,16 +18,63 @@ not promise no temporal difference or eliminate half/edge/orientation state.
 
 Simply lowering the dial was insufficient: the unchanged embedded Architect
 regression measured 3,002 ASCII switches against pixels' 2,365 (1.269x).
-Lengthening stable-target settling alone gave 2,935 (1.241x). Final ASCII
-uses letters' 5/16 tone-band factor and min(1+h/4,32) stable-target frames:
-40 tone units and 32 frames at h=128, versus the old default's 45 and 32.
-This suppresses near-boundary glyph chatter without restoring stale colour.
-Large changes remain immediate; current fg/bg still respond on frame one;
-black-floor crossings still settle within four. The original flicker test
-passes unchanged. A new oscillating-tone regression also catches this bug.
+Lengthening stable-target settling alone gave 2,935 (1.241x). The first
+calibration used a 5/16 band (40 tone units at 128) and settled only after
+32 frames of a bit-identical tone. Review showed both halves failing on
+real video, so ASCII's glyph hold was recalibrated (next section).
+
+**ASCII glyph hold, recalibrated.** Two problems at b890cea: glyph switching
+exceeded 1.2x pixels on other assets (Death Star 1.280x, Millennium Falcon
+1.248x, techno 6 1.207x; held-out windows up to Darth Vader 1.352x), and
+settling needed an exactly repeated tone, which video noise almost never
+produces, so glyphs within the band stayed stale until a big change.
+
+The hold now has three parts. Changes beyond 5/8 h (80 tone units at 128)
+are immediate. Nearer, a smoothed tone moves a quarter of the way toward
+each input; when it stays more than h/8 (16) units to one side of the held
+tone, on another ramp step, for min(1+h/4, 32) frames, the glyph adopts
+the smoothed tone. Floor crossings keep their four-frame rule. Adopting the
+smoothed value, not a fresh noisy sample, stops the settle from re-arming;
+the wider immediate band trades motion switches for settling. A steady tone
+settles within 41 frames onto its own step or within h/8 of it.
+
+Measured on all 21 assets in auto-ascii-run (Codex's windows: the four
+standard clips plus the middle of each other asset), plus two held-out
+windows per asset at a quarter and three quarters. Each is 90 frames from a
+cold start at 80x24 and 200x56, default 128 against pixels at 128.
+"Stuck" counts cells whose glyph differs from a cold render on each of the
+last 45 of 180 continuous frames; "far" requires two or more ramp steps.
+
+| Windows | Worst ratio before → after | Stuck before → after | Far before → after | Letters / pixels stuck |
+|---|---:|---:|---:|---:|
+| 21 main | 1.280 → 1.163 | 6.94% → 2.99% | 2.12% → 0.24% | 8.14% / 3.06% |
+| 42 held-out | 1.352 → 1.108 | 6.27% → 2.89% | 1.78% → 0.20% | 8.23% / 3.38% |
+
+At 500x140 the seven worst windows go from 1.166–1.324x to 0.644–1.131x.
+The cost is lag in motion. At three checkpoints, cells two or more ramp
+steps from a cold render rise from 13.6% to 18.5% (main windows; any glyph
+difference 37.7% to 39.1%): a fade now moves the glyph in fewer, larger
+steps, up to about 40 frames late, while nothing stays far from its tone for
+good. A 1/2 or 9/16 band lags less (16.4% / 17.8%) but reaches 1.186x /
+1.173x on the Death Star window and fails its test excerpt (1.215x /
+1.205x); a second, smoothed-tone jump path at 7/16 gained little (16.5%)
+at 1.184x. About 40% of Death Star's ASCII switches involve edge strokes,
+which pixels does not draw, so the tone hold carries the whole margin.
+
+Per-window numbers, the search over about 850 hold variants and its probes
+are in compare/ascii-hold. A 12-unit margin or a 24-frame wait reduced
+"stuck" further but broke 1.2x on the Architect or Death Star. Widening the band under the old exact-repeat settle passed 1.2x
+but left more cells stuck (9.2% at 7/16). Tolerance settles that adopted a
+raw sample re-armed on noise and reached 1.24–5.5x on the static Architect.
+
+Five new temporal tests fail at b890cea and pass now: excerpts of the
+Death Star, Falcon, techno 6 and Darth Vader windows bound switching at 1.2x
+pixels, and the Architect excerpt bounds glyphs held two or more steps from
+cold for 45 frames at 1% of cells (was 1.7–1.9%).
 
 Keep hysteresis for **all three codecs**. Zero only removes the dial-controlled
-part, not fixed edge/orientation/half/fill gates. Four-clip means at 200x56:
+part, not fixed edge/orientation/half/fill gates. Four-clip means at 200x56
+(the ascii row predates the recalibration above):
 
 | Codec | Glyph/s at 0 | At new default | Off/default | End luma error at 128 | At old max 255 |
 |---|---:|---:|---:|---:|---:|
@@ -41,7 +88,7 @@ ramp hold to suppress threshold chatter; keep letters' tone hold because
 turning it off greatly increases glyph changes; keep ASCII's bounded tone
 hold because colour continuity alone does not stabilize the character ink.
 
-At the new default, against pixels at the SAME new default:
+At the first 128 calibration (b890cea), against pixels at the SAME default:
 
 | Clip / grid | ASCII glyph/s | ASCII/pixels | Letters/pixels | ASCII bg/s | Letters bg/s | ASCII end luma MAE |
 |---|---:|---:|---:|---:|---:|---:|

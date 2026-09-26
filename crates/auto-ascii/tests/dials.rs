@@ -322,9 +322,8 @@ fn hysteresis_turned_down_and_up_tracks_in_both_directions() {
     p.set_compose_params(compose);
     assert_eq!(pair(&mut p, &mut backend), origin, "down 8 / up 8 must restore the picture");
 
-    // The new default is also the maximum: extra upward presses are stops.
     dial.turn(&mut compose, 6);
-    assert_eq!(compose.idx_hyst_q8, 128);
+    assert_eq!(compose.idx_hyst_q8, 128, "the default is the maximum; extra upward presses stop there");
     p.set_compose_params(compose);
     let capped = pair(&mut p, &mut backend);
     assert_eq!(glyph_at(&capped, &p, P_COL), held_p);
