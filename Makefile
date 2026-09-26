@@ -1,4 +1,4 @@
-.PHONY: build release dist test eval clean
+.PHONY: build release dist test eval comments lint clean
 
 build:
 	cargo build --release -p auto-ascii --features bin
@@ -11,6 +11,13 @@ test:
 
 eval:
 	./scripts/eval.sh
+
+comments:
+	cargo run --quiet --release -p auto-ascii-lint --bin check-comments --
+
+lint:
+	cargo clippy --workspace --all-targets -- -D warnings
+	$(MAKE) comments
 
 clean:
 	cargo clean

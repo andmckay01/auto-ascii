@@ -37,11 +37,12 @@ fails instead.
    per-tier escape-stream goldens, the Linux console golden, the pipeline
    parity pin and the factory's byte-pin determinism test;
 2. `cargo clippy --workspace --all-targets -- -D warnings`;
-3. the resize fuzz (`FUZZ_CASES`, default 2000; `FUZZ_CASES=10000
+3. the comment rule, currently reporting counts and violations during rollout;
+4. the resize fuzz (`FUZZ_CASES`, default 2000; `FUZZ_CASES=10000
    scripts/eval.sh` is the full depth);
-4. the criterion perf gate (`scripts/perf-gate.sh` against
+5. the criterion perf gate (`scripts/perf-gate.sh` against
    `perf/thresholds.toml`);
-5. a corpus eval, only when `corpus/` holds local videos
+6. a corpus eval, only when `corpus/` holds local videos
    ([corpus/README.md](corpus/README.md)). It runs a release build of
    `auto-ascii-factory eval` against `runs/base.json` when that file exists
    (`EVAL_BASELINE=path` points it elsewhere), writing
@@ -54,6 +55,72 @@ time.
 
 Nothing committed depends on the corpus: synthetic fixtures in
 `auto-ascii-eval` back every golden, fuzz and perf check.
+
+## Comment rule
+
+A source file may have one optional leading ownership paragraph, at most
+five text lines. Rust uses adjacent `//!` lines; shell, Python, TOML,
+Makefile and `.gitignore` use adjacent `#` lines. A BOM, leading whitespace
+and an executable shebang may precede the header. Rust inner attributes
+may follow it, but cannot precede it. Delimiter-only outer lines do not
+count; a blank comment line inside the paragraph fails. A blank source
+line separates clusters, so a later block is a second header and fails.
+Ownership versus justification, banners and document pointers remain
+review judgments; the checker enforces syntax, position and size.
+
+Every other source comment is forbidden, including trailing comments,
+Rust item/block docs, prose `doc = ...` attributes (also inside `cfg_attr`
+and literal macro bodies), and Python module/class/function docstrings.
+Non-prose metadata such as `#[doc(hidden)]` and lint reasons inside
+`#[expect(..., reason = "...")]` are allowed. Express knowledge in code
+first: names, constants, types, assertions and tests. Facts code cannot
+carry belong in [docs/NOTES.md](docs/NOTES.md); code must not point there.
+Preserve load-bearing doctests as real tests/examples during cleanup.
+
+The unpublished `auto-ascii-lint` crate provides `check-comments`. It uses
+rustc's lexer for Rust, Tree-sitter grammars for shell and TOML, Python's
+standard tokenizer and AST for Python, and narrow Make/gitignore scanners.
+This preserves literal text, including raw/byte/C strings, generated TOML,
+shell expansions and heredocs, without maintaining a second Rust lexer.
+Development checks require `python3` 3.12+ on PATH; no pip install is needed.
+Dependencies and extraction boundaries are recorded in
+[Technology notes](docs/NOTES.md#technology).
+
+```sh
+make comments
+make lint
+cargo run --quiet --release -p auto-ascii-lint --bin check-comments -- --paths crates/auto-ascii-lint scripts
+cargo run --quiet --release -p auto-ascii-lint --bin check-comments -- --count --report-only
+```
+
+Scope is tracked plus untracked, nonignored `.rs`, `.sh`, `.py`, `.toml`,
+Makefiles and `.gitignore` files. Cargo.lock is generated dependency data
+and excluded, as are Markdown, JSON, goldens, snapshots, LICENSE and other
+extensions. Credential-like paths are never read; scoped source symlinks
+are refused. `--paths` selects repository-relative files or directories,
+with directory boundaries, and scopes allowlist staleness too.
+
+`scripts/comment-allowlist.toml` starts empty (`entries = []`). Its only
+entry fields are `path`, exact `comment` cluster text, and a nonempty
+`reason`. Unknown/missing fields, duplicate entries and stale exemptions
+fail; an already-compliant header needs no exemption and makes an entry
+stale. There is no README doc-attribute exception or whole-file exemption.
+
+Default output is `file:line: reason` per violating cluster. `--count`
+instead prints scanned/commented files, clusters and physical comment
+lines by crate/area, including compliant headers and blank comment lines.
+Both print violation totals. Exit codes are 0 for success, 1 for policy or
+staleness failures, and 2 for configuration/extraction errors.
+`--report-only` suppresses only the policy failure status; broken scans
+and stale exemptions still fail.
+
+The `comment rule` section of `scripts/eval.sh` temporarily passes
+`--count --report-only`. **To enforce after cleanup, remove only
+`--report-only` from that command.** `make comments` and `make lint`
+already enforce the rule and therefore fail until cleanup. Workspace
+tests cover the language fixtures, CLI, repository scan and the tooling's
+own compliance. This rollout adds no CI or pre-commit hook: the repo has
+no `.github` CI, and enforcement belongs in the existing eval gate.
 
 ## Rules that keep the output deterministic
 
@@ -110,6 +177,7 @@ Nothing committed depends on the corpus: synthetic fixtures in
 | `crates/auto-ascii-factory` | offline factory, eval and sweep drivers (unpublished; lib + bin) |
 | `crates/auto-ascii-core` / `-format` / `-term` | engine, container, terminal backend |
 | `crates/auto-ascii-eval` | metrics, fixtures, report schema (unpublished) |
+| `crates/auto-ascii-lint` | comment policy checker and fixtures (unpublished) |
 | `params.toml`, `perf/thresholds.toml` | the tunables and the perf gates |
 | `scripts/` | `eval.sh` (the gate), `perf-gate.sh`, `release.sh` |
 | `tools/` | `prep_video.py`, `soak.py` |

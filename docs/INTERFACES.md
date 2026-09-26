@@ -52,6 +52,9 @@ crates/
                         It is a THIRD crate because the factory already
                         depends on the facade, so the binary needing both
                         cannot live in either.
+  auto-ascii-lint     lib+bin source comment policy checker (unpublished).
+                        bin: check-comments; developer tooling only, with no
+                        runtime dependency edge into the player or factory.
 ```
 
 - Root workspace: resolver 3, edition 2024, `license = "MIT"`,
