@@ -13,9 +13,9 @@ use auto_ascii_term::{Backend, Caps, ColorTier, Event, SimBackend};
 /// with `invalidate()` every frame, the default).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum RepaintArg {
-    /// Invalidate every frame → full escape stream each present (default).
+    #[value(help = "Invalidate every frame → full escape stream each present (default)")]
     Full,
-    /// Pure diff: only damaged cells are rewritten; invalidate on resize only.
+    #[value(help = "Pure diff: only damaged cells are rewritten; invalidate on resize only")]
     Diff,
 }
 
@@ -54,113 +54,157 @@ impl From<PaletteArg> for PaletteChoice {
 #[derive(Parser)]
 #[command(name = "auto-ascii-player", version, about = "Play ASCI assets in the terminal")]
 struct Cli {
-    /// ASCI asset (mmap'd read-only via memmap2), or a composition `.toml` —
-    /// a stitch of clips played virtually, on one timeline. Bare library
-    /// names inside a composition resolve under
-    /// `$AUTO_ASCII_HOME/library` (default `~/auto-ascii/library`).
+    #[arg(
+        help = "ASCI asset (mmap'd read-only via memmap2), or a composition `.toml` — a stitch of \
+                clips played virtually, on one timeline. Bare library names inside a composition \
+                resolve under `$AUTO_ASCII_HOME/library` (default `~/auto-ascii/library`)"
+    )]
     asset: PathBuf,
 
-    /// Repaint mode (default: invalidate every frame).
-    #[arg(long, value_enum, default_value_t = RepaintArg::Full)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = RepaintArg::Full,
+        help = "Repaint mode (default: invalidate every frame)"
+    )]
     repaint: RepaintArg,
 
-    /// Loop playback instead of exiting at the last frame.
-    #[arg(long = "loop")]
+    #[arg(long = "loop", help = "Loop playback instead of exiting at the last frame")]
     loop_playback: bool,
 
-    /// Cap the presentation rate below the asset fps (frames are still
-    /// selected by wall clock, so capping skips asset frames — it never
-    /// slows the video down). Minimum 1 fps.
-    #[arg(long, value_name = "FPS")]
+    #[arg(
+        long,
+        value_name = "FPS",
+        help = "Cap the presentation rate below the asset fps (frames are still selected by wall \
+                clock, so capping skips asset frames — it never slows the video down). Minimum 1 \
+                fps"
+    )]
     fps_cap: Option<f64>,
 
-    /// Cell aspect override `cell_h_px / cell_w_px`. Default:
-    /// derived from the terminal's reported cell pixel size, else 2.0.
-    #[arg(long, value_name = "RATIO")]
+    #[arg(
+        long,
+        value_name = "RATIO",
+        help = "Cell aspect override `cell_h_px / cell_w_px`. Default: derived from the \
+                terminal's reported cell pixel size, else 2.0"
+    )]
     cell_aspect: Option<f64>,
 
-    /// Stop after N seconds (interactive benching); default: play to end.
-    #[arg(long, value_name = "SECS")]
+    #[arg(
+        long,
+        value_name = "SECS",
+        help = "Stop after N seconds (interactive benching); default: play to end"
+    )]
     duration_secs: Option<f64>,
 
-    /// Start at TIMESTAMP — plain seconds ("42.5") or colon form ("1:30",
-    /// "0:01:30.5"). Uses the FIDX seek path (keyframe binary search +
-    /// ≤ keyframe_ivl−1 delta rolls). Interactively, keys 0–9 also
-    /// jump to 0–90% of the asset.
-    #[arg(long, value_name = "TIMESTAMP")]
+    #[arg(
+        long,
+        value_name = "TIMESTAMP",
+        help = "Start at TIMESTAMP — plain seconds (\"42.5\") or colon form (\"1:30\", \
+                \"0:01:30.5\"). Uses the FIDX seek path (keyframe binary search + ≤ \
+                keyframe_ivl−1 delta rolls). Interactively, keys 0–9 also jump to 0–90% of the \
+                asset"
+    )]
     seek: Option<String>,
 
-    /// Force the color tier (truecolor|256|16|mono) — skips the probe volley
-    /// entirely (an escape hatch; passive env hints still fill the glyph
-    /// repertoire).
-    #[arg(long, value_name = "TIER")]
+    #[arg(
+        long,
+        value_name = "TIER",
+        help = "Force the color tier (truecolor|256|16|mono) — skips the probe volley entirely \
+                (an escape hatch; passive env hints still fill the glyph repertoire)"
+    )]
     tier: Option<ColorTier>,
 
-    /// Never write the probe volley; passive env hints only (an escape
-    /// hatch for hostile PTYs).
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Never write the probe volley; passive env hints only (an escape hatch for hostile \
+                PTYs)"
+    )]
     no_query: bool,
 
-    /// Bypass the probe cache (no read, no write).
-    #[arg(long)]
+    #[arg(long, help = "Bypass the probe cache (no read, no write)")]
     no_cache: bool,
 
-    /// Skip the identity-keyed quirk table: take the probe
-    /// replies at face value instead of applying the known per-terminal
-    /// corrections (keyed on the XTVERSION reply, never on TERM). Implies
-    /// the probe cache is not written.
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Skip the identity-keyed quirk table: take the probe replies at face value instead \
+                of applying the known per-terminal corrections (keyed on the XTVERSION reply, \
+                never on TERM). Implies the probe cache is not written"
+    )]
     no_quirks: bool,
 
-    /// Charset-tier override for palette selection: auto (from
-    /// the probed glyph repertoire), ascii, unicode (blocks/box-drawing) or
-    /// braille (verified fonts only). Applies to interactive and --sim runs.
-    #[arg(long, value_enum, default_value_t = PaletteArg::Auto)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = PaletteArg::Auto,
+        help = "Charset-tier override for palette selection: auto (from the probed glyph \
+                repertoire), ascii, unicode (blocks/box-drawing) or braille (verified fonts \
+                only). Applies to interactive and --sim runs"
+    )]
     palette: PaletteArg,
 
-    /// Assert the terminal's font by ink-coverage table: a
-    /// built-in name (conservative, dejavu-sans-mono, liberation-mono,
-    /// ubuntu-mono, noto-sans-mono) or a path to a `auto-ascii-factory
-    /// font-table` TOML. The table's recorded repertoire vetoes the palette
-    /// tier (braille -> unicode -> ascii) so a font missing e.g. box-drawing
-    /// diagonals degrades instead of drawing missing-glyph boxes. Applies to
-    /// interactive and --sim runs.
-    #[arg(long, value_name = "NAME|PATH")]
+    #[arg(
+        long,
+        value_name = "NAME|PATH",
+        help = "Assert the terminal's font by ink-coverage table: a built-in name (conservative, \
+                dejavu-sans-mono, liberation-mono, ubuntu-mono, noto-sans-mono) or a path to a \
+                `auto-ascii-factory font-table` TOML. The table's recorded repertoire vetoes the \
+                palette tier (braille -> unicode -> ascii) so a font missing e.g. box-drawing \
+                diagonals degrades instead of drawing missing-glyph boxes. Applies to interactive \
+                and --sim runs"
+    )]
     font_table: Option<String>,
 
     #[arg(long, value_name = "NAME", value_parser = parse_codec, help = codec_help())]
     codec: Option<Codec>,
 
-    /// Headless mode: render NFRAMES frames to SimBackend at COLSxROWS as
-    /// fast as possible (no pacing), never touch the tty, print one JSON
-    /// stats line (acceptance runs at 213x58:900 and 320x90:900).
-    #[arg(long, value_name = "COLSxROWS:NFRAMES")]
+    #[arg(
+        long,
+        value_name = "COLSxROWS:NFRAMES",
+        help = "Headless mode: render NFRAMES frames to SimBackend at COLSxROWS as fast as \
+                possible (no pacing), never touch the tty, print one JSON stats line (acceptance \
+                runs at 213x58:900 and 320x90:900)"
+    )]
     sim: Option<String>,
 
-    /// With --sim: color tier of the simulated terminal (falls back to
-    /// --tier; default truecolor) — headless tier byte checks.
-    #[arg(long, value_name = "TIER", requires = "sim")]
+    #[arg(
+        long,
+        value_name = "TIER",
+        requires = "sim",
+        help = "With --sim: color tier of the simulated terminal (falls back to --tier; default \
+                truecolor) — headless tier byte checks"
+    )]
     sim_tier: Option<ColorTier>,
 
-    /// With --sim: write every presented frame's raw escape bytes to PATH
-    /// (concatenated) for byte-level assertions on tier output.
-    #[arg(long, value_name = "PATH", requires = "sim")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        requires = "sim",
+        help = "With --sim: write every presented frame's raw escape bytes to PATH (concatenated) \
+                for byte-level assertions on tier output"
+    )]
     sim_dump: Option<PathBuf>,
 
-    /// With --sim: inject a Resize event at frame NFRAMES/2 to the given
-    /// size (default 100x40) — proves resize reflow; reported as
-    /// `grid_after` in the JSON.
-    #[arg(long, value_name = "COLSxROWS", requires = "sim",
-          num_args = 0..=1, default_missing_value = "100x40")]
+    #[arg(
+        long,
+        value_name = "COLSxROWS",
+        requires = "sim",
+        num_args = 0..=1,
+        default_missing_value = "100x40",
+        help = "With --sim: inject a Resize event at frame NFRAMES/2 to the given size (default \
+                100x40) — proves resize reflow; reported as `grid_after` in the JSON"
+    )]
     sim_resize: Option<String>,
 
-    /// Headless scrub-latency benchmark: perform N random seeks — each one a
-    /// hysteresis reset +
-    /// FIDX keyframe seek + delta rolls + resample + compose + present to a
-    /// 300x80 SimBackend, exactly the interactive scrub path — and print one
-    /// JSON line with p50/p95/max latency in ms. Deterministic seek
-    /// sequence (seeded LCG); never touches the tty.
-    #[arg(long, value_name = "N", conflicts_with = "sim")]
+    #[arg(
+        long,
+        value_name = "N",
+        conflicts_with = "sim",
+        help = "Headless scrub-latency benchmark: perform N random seeks — each one a hysteresis \
+                reset + FIDX keyframe seek + delta rolls + resample + compose + present to a \
+                300x80 SimBackend, exactly the interactive scrub path — and print one JSON line \
+                with p50/p95/max latency in ms. Deterministic seek sequence (seeded LCG); never \
+                touches the tty"
+    )]
     bench_seek: Option<u32>,
 }
 

@@ -17,136 +17,153 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Build an asset: `auto-ascii-factory build <in.mp4> -o out.ascii
-    /// [--ss T] [--t T] [--fps 30] [--res 480x270]`.
-    /// Emits ASCI v1: Y, E, Ex, Ey, H and C planes, temporal delta +
-    /// keyframes, NORM per-shot levels + cut flags (applied at runtime by
-    /// the player).
+    #[command(
+        about = "Build an asset: `auto-ascii-factory build <in.mp4> -o out.ascii [--ss T] [--t T] \
+                 [--fps 30] [--res 480x270]`. Emits ASCI v1: Y, E, Ex, Ey, H and C planes, \
+                 temporal delta + keyframes, NORM per-shot levels + cut flags (applied at runtime \
+                 by the player)"
+    )]
     Build {
-        /// Input video (any ffmpeg-readable container).
+        #[arg(help = "Input video (any ffmpeg-readable container)")]
         input: PathBuf,
-        /// Output .ascii path.
-        #[arg(short, long)]
+        #[arg(short, long, help = "Output .ascii path")]
         output: PathBuf,
-        /// Start offset in seconds (ffmpeg `-ss`, input seeking).
-        #[arg(long, value_parser = parse_ss)]
+        #[arg(
+            long,
+            value_parser = parse_ss,
+            help = "Start offset in seconds (ffmpeg `-ss`, input seeking)"
+        )]
         ss: Option<f64>,
-        /// Duration limit in seconds (ffmpeg `-t`).
-        #[arg(long = "t", value_parser = parse_t)]
+        #[arg(long = "t", value_parser = parse_t, help = "Duration limit in seconds (ffmpeg `-t`)")]
         t: Option<f64>,
-        /// Output frame rate override (default: params.toml `build.fps`).
-        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=1000))]
+        #[arg(
+            long,
+            value_parser = clap::value_parser!(u16).range(1..=1000),
+            help = "Output frame rate override (default: params.toml `build.fps`)"
+        )]
         fps: Option<u16>,
-        /// Stored plane resolution override as WxH (default: params.toml
-        /// `build.base_w/base_h`). Dimensions must be even and >= 2: the
-        /// chroma plane C is stored at half res.
-        #[arg(long, value_parser = parse_res)]
+        #[arg(
+            long,
+            value_parser = parse_res,
+            help = "Stored plane resolution override as WxH (default: params.toml \
+                    `build.base_w/base_h`). Dimensions must be even and >= 2: the chroma plane C \
+                    is stored at half res"
+        )]
         res: Option<(u16, u16)>,
-        /// Tunables file (every tunable lives in params.toml — the agent
-        /// socket). Missing keys keep the embedded defaults.
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Tunables file (every tunable lives in params.toml — the agent socket). \
+                    Missing keys keep the embedded defaults"
+        )]
         params: Option<PathBuf>,
     },
-    /// Print header, chunks, sizes, per-plane value stats; verify CRCs.
+    #[command(about = "Print header, chunks, sizes, per-plane value stats; verify CRCs")]
     Inspect {
-        /// Asset to inspect.
+        #[arg(help = "Asset to inspect")]
         asset: PathBuf,
-        /// Dump decoded planes of sampled frames into this directory as
-        /// PGM/PPM images (Y/E as gray, Ex/Ey as bias-128 gray, H as a
-        /// flag map, C as color) for eyeball review.
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Dump decoded planes of sampled frames into this directory as PGM/PPM images \
+                    (Y/E as gray, Ex/Ey as bias-128 gray, H as a flag map, C as color) for \
+                    eyeball review"
+        )]
         dump_planes: Option<PathBuf>,
-        /// Frame indices for --dump-planes and the stats sampler
-        /// (repeatable; default: 4 frames spread over the asset).
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Frame indices for --dump-planes and the stats sampler (repeatable; default: 4 \
+                    frames spread over the asset)"
+        )]
         frame: Vec<u32>,
     },
-    /// Inspect the effective tunables: `auto-ascii-factory params --dump`
-    /// prints the merged config (embedded defaults + --params file) as TOML.
+    #[command(
+        about = "Inspect the effective tunables: `auto-ascii-factory params --dump` prints the \
+                 merged config (embedded defaults + --params file) as TOML"
+    )]
     Params {
-        /// Tunables file to merge over the embedded defaults.
-        #[arg(long)]
+        #[arg(long, help = "Tunables file to merge over the embedded defaults")]
         params: Option<PathBuf>,
-        /// Print the effective config to stdout.
-        #[arg(long)]
+        #[arg(long, help = "Print the effective config to stdout")]
         dump: bool,
     },
-    /// The agent socket: build every video in --corpus
-    /// (cached by input+params sha), run the player pipeline headlessly,
-    /// emit metrics JSON (+ HTML contact sheet), optionally compare against
-    /// a baseline (nonzero exit on tolerance breach).
+    #[command(
+        about = "The agent socket: build every video in --corpus (cached by input+params sha), \
+                 run the player pipeline headlessly, emit metrics JSON (+ HTML contact sheet), \
+                 optionally compare against a baseline (nonzero exit on tolerance breach)"
+    )]
     Eval {
-        /// Directory of corpus videos (non-recursive; mp4/mov/mkv/webm/avi).
-        #[arg(long)]
+        #[arg(long, help = "Directory of corpus videos (non-recursive; mp4/mov/mkv/webm/avi)")]
         corpus: PathBuf,
-        /// Tunables file (see `build --params`).
-        #[arg(long)]
+        #[arg(long, help = "Tunables file (see `build --params`)")]
         params: Option<PathBuf>,
-        /// Baseline metrics JSON to compare against (runs/base.json).
-        #[arg(long)]
+        #[arg(long, help = "Baseline metrics JSON to compare against (runs/base.json)")]
         baseline: Option<PathBuf>,
-        /// Output metrics JSON path (e.g. runs/X.json).
-        #[arg(long)]
+        #[arg(long, help = "Output metrics JSON path (e.g. runs/X.json)")]
         out: PathBuf,
-        /// Optional self-contained HTML contact sheet path (runs/X.html).
-        #[arg(long)]
+        #[arg(long, help = "Optional self-contained HTML contact sheet path (runs/X.html)")]
         html: Option<PathBuf>,
-        /// Optional review-reel HTML path (human sign-off artifact):
-        /// per clip, >=4 source|render timestamp rows with per-frame
-        /// metrics plus an animated GIF of the rasterized render.
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Optional review-reel HTML path (human sign-off artifact): per clip, >=4 \
+                    source|render timestamp rows with per-frame metrics plus an animated GIF of \
+                    the rasterized render"
+        )]
         reel: Option<PathBuf>,
-        /// Asset cache directory, keyed by (input sha, params sha).
-        #[arg(long, default_value = "runs/cache")]
+        #[arg(
+            long,
+            default_value = "runs/cache",
+            help = "Asset cache directory, keyed by (input sha, params sha)"
+        )]
         cache_dir: PathBuf,
-        /// Ink-coverage table for the SSIM rasterizer: a built-in
-        /// name (conservative, dejavu-sans-mono, liberation-mono,
-        /// ubuntu-mono, noto-sans-mono) or a path to a `auto-ascii-factory
-        /// font-table` TOML. Default: conservative (the committed baseline's
-        /// table — absolute SSIM is only comparable within one table).
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Ink-coverage table for the SSIM rasterizer: a built-in name (conservative, \
+                    dejavu-sans-mono, liberation-mono, ubuntu-mono, noto-sans-mono) or a path to \
+                    a `auto-ascii-factory font-table` TOML. Default: conservative (the committed \
+                    baseline's table — absolute SSIM is only comparable within one table)"
+        )]
         font_table: Option<String>,
     },
-    /// Rasterize every glyph the 8 shipped palettes can emit through a
-    /// monospace font at 64x128 px and write a deterministic
-    /// ink-coverage table (TOML). The committed tables under fonts/ are
-    /// generated this way (see fonts/README.md); `--font-table NAME|PATH`
-    /// consumes them in the player and in `eval`.
+    #[command(
+        about = "Rasterize every glyph the 8 shipped palettes can emit through a monospace font \
+                 at 64x128 px and write a deterministic ink-coverage table (TOML). The committed \
+                 tables under fonts/ are generated this way (see fonts/README.md); `--font-table \
+                 NAME|PATH` consumes them in the player and in `eval`"
+    )]
     FontTable {
-        /// Monospace font file (.ttf/.otf). Omit with --conservative.
+        #[arg(help = "Monospace font file (.ttf/.otf). Omit with --conservative")]
         font: Option<PathBuf>,
-        /// Output table path (e.g. fonts/dejavu-sans-mono.toml).
-        #[arg(short, long)]
+        #[arg(short, long, help = "Output table path (e.g. fonts/dejavu-sans-mono.toml)")]
         output: PathBuf,
-        /// Table name recorded in the file (default: the font file stem).
-        #[arg(long)]
+        #[arg(long, help = "Table name recorded in the file (default: the font file stem)")]
         name: Option<String>,
-        /// Emit the built-in conservative (ASCII-repertoire) table in the
-        /// same format instead of rasterizing a font.
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Emit the built-in conservative (ASCII-repertoire) table in the same format \
+                    instead of rasterizing a font"
+        )]
         conservative: bool,
     },
-    /// Parameter sweep: run eval per combo of the
-    /// axes declared in --grid (values within an axis travel together; axes
-    /// cross), score each combo (default 0.4*ssim + 0.4*edgeF1 -
-    /// 0.2*flicker/2.0) and emit ranked results JSON + a leaderboard HTML.
-    /// Combos share the eval asset cache, so factory-identical combos never
-    /// rebuild assets.
+    #[command(
+        about = "Parameter sweep: run eval per combo of the axes declared in --grid (values \
+                 within an axis travel together; axes cross), score each combo (default 0.4*ssim \
+                 + 0.4*edgeF1 - 0.2*flicker/2.0) and emit ranked results JSON + a leaderboard \
+                 HTML. Combos share the eval asset cache, so factory-identical combos never \
+                 rebuild assets"
+    )]
     Sweep {
-        /// Directory of corpus videos (see `eval --corpus`).
-        #[arg(long)]
+        #[arg(long, help = "Directory of corpus videos (see `eval --corpus`)")]
         corpus: PathBuf,
-        /// Base tunables file every combo starts from (see `build --params`).
-        #[arg(long)]
+        #[arg(long, help = "Base tunables file every combo starts from (see `build --params`)")]
         params: Option<PathBuf>,
-        /// Sweep spec: axes of param overrides + optional [score] weights.
-        #[arg(long)]
+        #[arg(long, help = "Sweep spec: axes of param overrides + optional [score] weights")]
         grid: PathBuf,
-        /// Output directory: combo-NN.json + sweep.json + leaderboard.html.
-        #[arg(long)]
+        #[arg(long, help = "Output directory: combo-NN.json + sweep.json + leaderboard.html")]
         out: PathBuf,
-        /// Asset cache directory shared with `eval`.
-        #[arg(long, default_value = "runs/cache")]
+        #[arg(
+            long,
+            default_value = "runs/cache",
+            help = "Asset cache directory shared with `eval`"
+        )]
         cache_dir: PathBuf,
     },
 }
