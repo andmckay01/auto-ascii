@@ -54,13 +54,12 @@ pub struct ReelClip {
     pub rows: Vec<ReelRow>,
 }
 
-/// Encode grayscale rasters as an infinitely-looping animated GIF with a
-/// 256-gray global palette (raster bytes ARE palette indices — lossless).
-/// All frames must share dimensions; `fps` sets the frame delay (GIF time
-/// base is 10 ms, so fps > 100 clamps to the 10 ms minimum).
-///
-/// # Panics
-/// If `frames` is empty or dimensions are mixed.
+const GIF_CENTISECONDS_PER_SECOND: u32 = 100;
+
+fn gif_delay_centiseconds(fps: u32) -> u16 {
+    (GIF_CENTISECONDS_PER_SECOND / fps.max(1)).max(1) as u16
+}
+
 pub fn encode_gray_gif(frames: &[GrayImage], fps: u32) -> Result<Vec<u8>, BoxErr> {
     assert!(!frames.is_empty(), "encode_gray_gif: no frames");
     let (w, h) = (frames[0].w(), frames[0].h());
@@ -68,7 +67,7 @@ pub fn encode_gray_gif(frames: &[GrayImage], fps: u32) -> Result<Vec<u8>, BoxErr
     for i in 0..=255u8 {
         palette.extend([i, i, i]);
     }
-    let delay = (100 / fps.max(1)).max(1) as u16;
+    let delay = gif_delay_centiseconds(fps);
     let mut out = Vec::new();
     {
         let mut enc = gif::Encoder::new(&mut out, w, h, &palette)
@@ -188,6 +187,14 @@ mod tests {
 
     fn tiny_gray(w: u16, h: u16, v: u8) -> GrayImage {
         GrayImage::from_raw(w, h, vec![v; w as usize * h as usize])
+    }
+
+    #[test]
+    fn gif_delay_is_whole_centiseconds_and_never_zero() {
+        assert_eq!(gif_delay_centiseconds(30), 3);
+        assert_eq!(gif_delay_centiseconds(10), 10);
+        assert_eq!(gif_delay_centiseconds(0), 100);
+        assert_eq!(gif_delay_centiseconds(1000), 1);
     }
 
     #[test]

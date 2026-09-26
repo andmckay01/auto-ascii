@@ -82,9 +82,12 @@ pub struct FeatureExtractor {
 }
 
 impl FeatureExtractor {
-    /// `w`/`h` = base plane dims (even, ≥ 2 — C is stored at half res);
-    /// `params` must be validated.
     pub fn new(w: u16, h: u16, params: &Params) -> FeatureExtractor {
+        debug_assert!(
+            w >= 2 && h >= 2 && w.is_multiple_of(2) && h.is_multiple_of(2),
+            "base dims must be even and >= 2: chroma is stored at half resolution"
+        );
+        debug_assert!(params.validate().is_ok(), "params must be validated");
         let n = w as usize * h as usize;
         let cn = (w as usize / 2) * (h as usize / 2);
         let ay = params.temporal.ema_alpha_y_milli;
@@ -206,6 +209,22 @@ mod tests {
             }
         }
         rgb
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "base dims must be even")]
+    fn odd_base_dims_are_a_precondition_failure() {
+        FeatureExtractor::new(W - 1, H, &Params::default());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "params must be validated")]
+    fn unvalidated_params_are_a_precondition_failure() {
+        let mut params = Params::default();
+        params.temporal.ema_alpha_y_milli = 0;
+        FeatureExtractor::new(W, H, &params);
     }
 
     fn fx() -> FeatureExtractor {

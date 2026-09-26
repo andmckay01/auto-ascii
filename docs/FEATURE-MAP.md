@@ -443,7 +443,7 @@ TOML) and `crates/auto-ascii-cli/src/library.rs` `Sidecar`.
 | `build.base_w` / `base_h` | 480 / 270 | stored plane resolution; both even and ≥ 2 (C is half res) |
 | `build.zstd_level` | 15 | frame compression; zstd is lossless, so only size and build time move. `WriterOptions::default()` stays at 19 |
 | `build.keyframe_ivl` | 60 | keyframe cadence, 1..=255 (stored as u8) |
-| `shots.sad_threshold_milli` | 300 | cut threshold, thousandths of the maximum histogram SAD (hard cuts land ~500–1200, in-shot motion ~20–150) |
+| `shots.sad_threshold_milli` | 300 | cut threshold, thousandths of the maximum histogram SAD (fully disjoint histograms score the 1000 maximum; hard cuts land from ~500 up to it, in-shot motion ~20–150) |
 | `shots.min_shot_frames` | 8 | minimum shot length; debounces flashes |
 | `levels.lo_pct` / `hi_pct` | 2 / 98 | per-shot percentile levels stored in NORM |
 | `edges.scharr_shift` | 4 | right shift on raw Scharr magnitude; at 4, E of a sharp edge ≈ its L\* contrast |

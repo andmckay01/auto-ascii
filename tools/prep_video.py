@@ -221,38 +221,26 @@ def build_boomerang(parts, v: str, a, m: int):
 
 
 def build_mirror_axis(parts, cur: str, axis: str, tile: int, canvas: int,
-                      cross: int, invert: bool):
-    """Fill the gap along one axis with the [...O][M][O][M][O...] pattern.
-
-    An odd-length strip of alternately flipped copies is stacked, centered on
-    the original, then cropped back to the canvas length. Adjacent tiles are
-    mirror images about their shared edge, so every seam is invisible; tiles
-    two apart repeat the original orientation, and the crop at the canvas
-    edge just truncates a reflection mid-tile, which is still seamless.
-
-      tile   size of current image along this axis (even)
-      canvas canvas size along this axis (even)
-      cross  size along the other axis (unchanged by this step)
-    """
+                      cross_axis_size: int, invert: bool):
     gap = canvas - tile
     if gap <= 0:
         return cur
     per_side = gap // 2
-    n = math.ceil(per_side / tile)
-    total = 2 * n + 1
+    tiles_per_side = math.ceil(per_side / tile)
+    tile_count = 2 * tiles_per_side + 1
     flip = "hflip" if axis == "h" else "vflip"
     stack = "hstack" if axis == "h" else "vstack"
 
-    srcs = [f"t{axis}{j}" for j in range(total)]
-    parts.append(f"[{cur}]split={total}" + "".join(f"[{s}]" for s in srcs))
+    srcs = [f"t{axis}{j}" for j in range(tile_count)]
+    parts.append(f"[{cur}]split={tile_count}" + "".join(f"[{s}]" for s in srcs))
 
     outs = []
-    for j in range(total):
-        i = j - n
+    for j in range(tile_count):
+        tile_offset_from_center = j - tiles_per_side
         chain = []
-        if abs(i) % 2 == 1:
+        if abs(tile_offset_from_center) % 2 == 1:
             chain.append(flip)
-        if invert and i != 0:
+        if invert and tile_offset_from_center != 0:
             chain.append("negate")
         if not chain:
             chain.append("null")
@@ -261,14 +249,14 @@ def build_mirror_axis(parts, cur: str, axis: str, tile: int, canvas: int,
         outs.append(out)
 
     stacked = f"s{axis}"
-    parts.append("".join(f"[{o}]" for o in outs) + f"{stack}=inputs={total}[{stacked}]")
+    parts.append("".join(f"[{o}]" for o in outs) + f"{stack}=inputs={tile_count}[{stacked}]")
 
-    off = (total * tile - canvas) // 2
+    center_crop_offset = (tile_count * tile - canvas) // 2
     cropped = f"c{axis}"
     if axis == "h":
-        parts.append(f"[{stacked}]crop={canvas}:{cross}:{off}:0[{cropped}]")
+        parts.append(f"[{stacked}]crop={canvas}:{cross_axis_size}:{center_crop_offset}:0[{cropped}]")
     else:
-        parts.append(f"[{stacked}]crop={cross}:{canvas}:0:{off}[{cropped}]")
+        parts.append(f"[{stacked}]crop={cross_axis_size}:{canvas}:0:{center_crop_offset}[{cropped}]")
     return cropped
 
 EPILOG = """examples:

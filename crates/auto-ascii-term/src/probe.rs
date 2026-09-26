@@ -375,10 +375,10 @@ pub(crate) struct EnvHints {
     pub colorterm: String,
     /// Effective locale charset source (LC_ALL > LC_CTYPE > LANG).
     pub locale: String,
-    /// Consumed only by the unix cache key (no capability ever depends on
-    /// it — pinned by `multiplexer_flag_only_partitions_the_cache`); the
-    /// windows build has no cache, hence the allow.
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg_attr(
+        windows,
+        expect(dead_code, reason = "only the unix probe cache key reads the multiplexer flag")
+    )]
     pub tmux: bool,
 }
 
