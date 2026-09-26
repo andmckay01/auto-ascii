@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Resize-storm soak harness for the auto-ascii player.
+# Resize-storm soak harness and captured terminal-stream validation.
 
 from __future__ import annotations
 
@@ -49,13 +49,6 @@ def _on_signal(signum: int, _frame) -> None:
 
 
 class OutputLog:
-    """First-2MB + last-10MB rotation over an unbounded pty byte stream.
-
-    The head is streamed straight to `head.log` until full. The tail is an
-    in-memory chunk ring (bounded at ~TAIL_CAP) rewritten atomically to
-    `tail.log` every TAIL_FLUSH_IVL_S — bounding *disk writes* too, instead
-    of funneling the player's full multi-GB/h output through the disk.
-    """
 
     def __init__(self, outdir: Path):
         self.head_path = outdir / "head.log"
@@ -110,7 +103,6 @@ def read_rss_kb(pid: int) -> int | None:
 
 
 def child_alive(pid: int) -> tuple[bool, int | None]:
-    """Non-blocking reap. Returns (alive, raw_waitstatus_or_None)."""
     try:
         wpid, status = os.waitpid(pid, os.WNOHANG)
     except ChildProcessError:
@@ -121,7 +113,6 @@ def child_alive(pid: int) -> tuple[bool, int | None]:
 
 
 def drain(master: int, log: OutputLog) -> bool:
-    """Read everything currently buffered. Returns True on EOF/EIO."""
     while True:
         try:
             data = os.read(master, 65536)
@@ -135,7 +126,6 @@ def drain(master: int, log: OutputLog) -> bool:
 
 
 def rss_slope_mb_per_h(samples: list[tuple[float, int]], warmup_s: float) -> float | None:
-    """Least-squares slope of RSS over elapsed time, post-warmup, in MB/h."""
     pts = [(t, kb) for t, kb in samples if t >= warmup_s]
     if len(pts) < 2:
         return None
@@ -160,7 +150,6 @@ SGR_SIMPLE = frozenset(
 
 
 def _sgr_error(body: bytes) -> str | None:
-    """Validate one SGR parameter body; None = well-formed."""
     if not body:
         return "empty SGR (never emitted)"
     parts = body.split(b";")
@@ -192,7 +181,6 @@ def _sgr_error(body: bytes) -> str | None:
 
 
 def _csi_error(final: int, body: bytes) -> str | None:
-    """Validate one complete CSI against the player's vocabulary."""
     f = chr(final)
     if f == "H":
         parts = body.split(b";")
@@ -221,15 +209,6 @@ def _csi_error(final: int, body: bytes) -> str | None:
 
 def check_escape_stream(data: bytes, *, resync_start: bool = False,
                         allow_truncated_end: bool = False) -> dict:
-    """Strict structural parse of captured player output.
-
-    `resync_start`: the capture begins at an arbitrary ring-buffer cut —
-    skip to the first ESC before judging (the skipped prefix may be the
-    printable interior of a cut sequence). `allow_truncated_end`: the
-    capture ends at a byte cap (head.log), so one final incomplete
-    sequence is not an error. Returns a summary dict; `error_count == 0`
-    means the stream is structurally valid.
-    """
     errors: list[str] = []
     n_seq = n_cup = 0
     total_errors = 0
@@ -314,8 +293,6 @@ def check_escape_stream(data: bytes, *, resync_start: bool = False,
 
 
 def check_logs(outdir: Path) -> tuple[dict, list[str]]:
-    """Run the structural check over an outdir's head.log + tail.log.
-    Returns (report, fail_reasons)."""
     report: dict = {}
     reasons: list[str] = []
     head_path, tail_path = outdir / "head.log", outdir / "tail.log"
@@ -339,8 +316,6 @@ def check_logs(outdir: Path) -> tuple[dict, list[str]]:
 
 
 def self_test() -> int:
-    """Validator self-checks: a specified-vocabulary stream passes; each
-    corruption class is caught. Returns a process exit code."""
     volley = b"\x1b[>0q\x1b[?2026$p\x1bP+q524742\x1b\\\x1b[16t\x1b[c"
     enter = b"\x1b[?1049h\x1b[?25l\x1b[?7l"
     frame = (b"\x1b[?2026h\x1b[1;1H\x1b[38;5;120;48;5;16m~~soak~~"
@@ -375,9 +350,6 @@ def self_test() -> int:
 
 
 def spawn_player(player: Path, asset: Path) -> tuple[int, int]:
-    """pty.fork + exec. The child gets the pty as controlling terminal, so
-    TIOCSWINSZ on the master raises SIGWINCH in the player — the whole
-    point of the harness."""
     pid, master = pty.fork()
     if pid == 0:
         try:
@@ -387,7 +359,7 @@ def spawn_player(player: Path, asset: Path) -> tuple[int, int]:
                       "TMUX", "SSH_CONNECTION", "SSH_TTY"):
                 env.pop(k, None)
             os.execve(str(player), [str(player), str(asset), "--loop", "--no-cache"], env)
-        except Exception:  # noqa: BLE001 — child must never unwind into the harness
+        except Exception:
             os._exit(127)
     os.set_blocking(master, False)
     return pid, master

@@ -1,40 +1,4 @@
 #!/usr/bin/env python3
-"""
-prep_video.py — auto-ascii corpus-preparation front door.
-
-Normalizes any source video onto a consistent canvas (default 1920x1080) so the
-offline factory (`auto-ascii-factory build`) always
-receives canvas-normalized input regardless of source aspect. Pure stdlib;
-shells out to ffmpeg/ffprobe. Originals are never modified.
-
-Pipeline — ONE ffmpeg invocation per output, in this filtergraph order:
-
-  1. CUT + CONCAT   Each --clip START-END becomes its own seeked input
-                    (`-ss/-t` before `-i`; frame-accurate because we re-encode),
-                    then video+audio are stitched with the concat filter.
-  2. SCALE          Contain-fit into the canvas (aspect preserved, Lanczos).
-                    Scaled tile dims are forced even so all tiling/crop
-                    arithmetic stays integral and perfectly centered.
-  3. BOOMERANG      Optional --min-duration: append reversed / forward copies
-                    alternately until long enough. CAVEAT: ffmpeg's reverse /
-                    areverse buffer the ENTIRE stream in RAM (roughly
-                    w*h*1.5 bytes per frame at this point in the graph);
-                    intended for short loops, not long features.
-  4. MIRROR FILL    Leftover canvas space is filled with alternately flipped
-                    copies of the scaled tile so every seam is a reflection:
-                    horizontally  [...O][M][O][M][O...]  centered on the
-                    original (M = hflip; adjacent tiles mirror about their
-                    shared edge, so seams are invisible), vertically the same
-                    idea with vflip. The tile count per side is COMPUTED
-                    (ceil(gap_per_side / tile)); a 9:16 source on a 16:9
-                    canvas needs 2+ tiles per side, never assume one.
-                    --fill mirror-invert additionally color-negates the fill
-                    tiles only — the center tile is never touched.
-                    Geometry runs in rgb24 so odd crop offsets can never
-                    shift 4:2:0 chroma; we convert back to yuv420p at the end.
-  5. ENCODE         h264 crf 18, preset medium, yuv420p, +faststart; audio is
-                    re-encoded aac 192k (required anyway for clean concat).
-"""
 
 import argparse
 import json
@@ -70,12 +34,6 @@ def probe(path: str) -> dict:
 
 
 def probe_summary(path: str):
-    """Return (display_w, display_h, duration_s, has_audio).
-
-    display_* account for sample aspect ratio and rotation side-data:
-    ffmpeg autorotates on decode, so the filtergraph sees post-rotation frames
-    and all layout math must use post-rotation dimensions.
-    """
     info = probe(path)
     vstreams = [s for s in info.get("streams", []) if s.get("codec_type") == "video"]
     if not vstreams:
@@ -110,7 +68,6 @@ def probe_summary(path: str):
     return w, h, dur, has_audio
 
 def parse_timestamp(s: str, ctx: str) -> float:
-    """Accept SS, MM:SS, HH:MM:SS, each with optional fractional seconds."""
     parts = s.strip().split(":")
     if not 1 <= len(parts) <= 3:
         die(f"{ctx}: invalid timestamp '{s}' (use SS, MM:SS or HH:MM:SS)")
@@ -160,7 +117,6 @@ def fmt_ts(t: float) -> str:
     return f"{h}:{m:02d}:{s:06.3f}" if h else f"{m}:{s:06.3f}"
 
 def contain_fit(dw: int, dh: int, cw: int, ch: int):
-    """Largest even WxH that fits in the canvas preserving dw:dh aspect."""
     if dw * ch >= dh * cw:
         sw, sh = cw, min(ch, round(dh * cw / dw))
     else:
@@ -170,7 +126,6 @@ def contain_fit(dw: int, dh: int, cw: int, ch: int):
     return max(sw, 2), max(sh, 2)
 
 def build_concat(parts, n_inputs: int, has_audio: bool):
-    """Stitch the N seeked inputs (one per --clip) back to back."""
     pads = ""
     for i in range(n_inputs):
         parts.append(f"[{i}:v]setpts=PTS-STARTPTS[cv{i}]")
@@ -184,8 +139,6 @@ def build_concat(parts, n_inputs: int, has_audio: bool):
 
 
 def build_boomerang(parts, v: str, a, m: int):
-    """Alternate forward/reversed copies of the assembled clip, m segments
-    total (segment 0 forward). reverse/areverse buffer everything in RAM."""
     n_fwd, n_rev = (m + 1) // 2, m // 2
 
     fwd = [f"bfv{k}" for k in range(n_fwd)]
