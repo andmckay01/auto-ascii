@@ -1,69 +1,5 @@
 #!/usr/bin/env python3
-"""tools/soak.py — resize-storm soak harness for the player.
-
-Forks the release `auto-ascii-player` onto a fresh pty via `pty.fork()` — the
-pty becomes the child's *controlling* terminal, so TIOCSWINSZ on the master
-delivers real SIGWINCHes to the player, exactly like a user dragging a
-terminal corner — then plays the asset with `--loop` and storms randomized
-resizes at it for `--duration` seconds (default 3600).
-
-What it does, continuously, from one single-threaded select loop:
-
-  * every 50–200 ms (uniform): TIOCSWINSZ to a random size in
-    20x6..500x140, with an ~8% chance of the sub-minimum 5x3 (below the
-    32x9 floor -> exercises the "enlarge terminal" card path);
-  * drains the master pty into a rotation-capped log: the FIRST 2 MB go to
-    `head.log`, the LAST 10 MB are kept in a ring and flushed to `tail.log`
-    every 30 s and at exit (disk usage stays bounded no matter how many
-    GB the player emits over an hour);
-  * every 10 s: samples the player's VmRSS from /proc/<pid>/status into
-    `rss.csv` (unix_ts,elapsed_s,rss_kb);
-  * logs every resize into `resizes.csv` and a progress line each minute.
-
-At the deadline it writes a literal `q` to the pty (the player's quit
-key), drains until EOF, and records the exit status. Escalation if the
-player ignores `q`: SIGTERM after 15 s, SIGKILL after 20 s — both count
-as failures. `summary.json` records exit status, byte totals, resize
-counts, whether the RESTORE_SEQ bytes (`ESC[0m ESC[?25h ESC[?7h
-ESC[?1049l`, auto-ascii-term/src/restore.rs) appear in the tail, a post-warmup
-least-squares RSS slope in MB/h, a short escaped tail preview, and the
-**structural escape-stream check** (no desync in captured output: the
-final frames must still parse as valid escape streams):
-both `head.log` and the tail ring are run through a strict VT parser
-(`check_escape_stream`) that accepts EXACTLY what the player is specified
-to emit — the probe volley, the session enter/restore CSI modes, CUP
-within the storm's size bounds, well-formed tier SGRs, the ?2026 wrap and
-printable/UTF-8 ground text — and reports anything else (truncated CSI,
-out-of-bounds CUP, stray control bytes) as a structural error. A
-diff-baseline desync that never crashes the player is caught here, not
-just by the exit code.
-
-Harness exit code: 0 = ran the full duration, player exited 0 on `q`, the
-restore bytes were seen, and both captured logs passed the structural
-check; nonzero otherwise (see `fail_reasons` in summary.json). The
-RSS-slope acceptance (< 1 MB/h after warmup) is *reported*,
-not gated here — the hour-long evidence in rss.csv is evaluated by the
-reviewer.
-
-Standalone modes:
-
-    tools/soak.py --check-logs DIR   # re-run the structural check over an
-                                     # existing outdir's head.log/tail.log
-    tools/soak.py --self-test        # validator self-checks (good stream
-                                     # passes; corrupted streams are caught)
-
-Smoke mode (~1 min sanity check of the harness itself):
-
-    tools/soak.py --duration 60 --asset assets/clip.ascii --outdir /tmp/soak-smoke
-
-Full soak, detached:
-
-    setsid nohup tools/soak.py --duration 3600 --asset assets/clip.ascii \
-        --outdir runs/soak-1h > runs/soak-1h/harness.out 2>&1 &
-
-Python 3.8+ stdlib only. The player binary is NOT built here — build it
-first: `cargo build --release -p auto-ascii --features bin`.
-"""
+# Resize-storm soak harness for the auto-ascii player.
 
 from __future__ import annotations
 
@@ -82,6 +18,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+CLI_DESCRIPTION = "tools/soak.py — resize-storm soak harness for the player."
 REPO = Path(__file__).resolve().parent.parent
 
 RESIZE_MIN_S = 0.050
@@ -457,7 +394,7 @@ def spawn_player(player: Path, asset: Path) -> tuple[int, int]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=CLI_DESCRIPTION)
     ap.add_argument("--duration", type=float, default=3600.0,
                     help="soak length in seconds (default 3600; 60 = smoke mode)")
     ap.add_argument("--asset", type=Path, help="the .ascii asset to loop")

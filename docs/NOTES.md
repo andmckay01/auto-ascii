@@ -45,3 +45,14 @@ Adjacent standalone line comments of the same kind form one cluster;
 trailing comments stay separate. Counts use inclusive physical line spans,
 including blank documentation lines, matching the audit. Policy checks
 count only the header's text lines. These are different measurements.
+
+### PTY soak harness
+
+`tools/soak.py` starts the player with `pty.fork()`, which makes the new
+pty the child's controlling terminal. Only then does `TIOCSWINSZ` on the
+master deliver a real `SIGWINCH`, so each storm resize reaches the player
+exactly as a user resizing a terminal window would. RSS samples come from
+`VmRSS` in `/proc/<pid>/status`, which exists on Linux only; on macOS the
+harness still storms and validates escape streams but `rss.csv` holds only
+its header. The RSS slope (< 1 MB/h after warmup, PLAN M5) is reported for a
+reviewer, not gated by the harness exit code.
