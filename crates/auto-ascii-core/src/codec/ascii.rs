@@ -7,8 +7,8 @@
 //! `0x20..=0x7E`. Where letters' tint would light the cell, `ascii` paints a
 //! background **shade** instead, and only ever a shade: on truecolor and
 //! 256-color a cell's background starts as its chroma sample (a gray of the
-//! held tone when there is none) times letters' coverage curve of the held
-//! tone times 0.6; over held tone `PALE_FROM` to `PALE_FULL` a pale color's
+//! current tone when there is none) times letters' coverage curve of the current
+//! tone times 0.6; over current tone `PALE_FROM` to `PALE_FULL` a pale color's
 //! shade runs toward neutral at its own brightest channel, as far as the
 //! color is pale (its least channel over its greatest), hue kept. It is then
 //! held to [`backing_within_cap`] — no channel above [`SHADE_CEIL`] (a glyph
@@ -33,15 +33,18 @@
 //! mid-gray so midtones ink sooner, and each tone takes the step of nearest
 //! ink, so `@` starts at held tone 225, a little below `TONE_TOP`, and stays
 //! for near-white. The glyph's color is the chroma sample, hue kept: over
-//! held tone `LIT_FROM` to `LIT_FULL` its brightness rises from the sample's
+//! current tone `LIT_FROM` to `LIT_FULL` its brightness rises from the sample's
 //! own to full, since a glyph inks at most about a quarter of its cell; from
 //! `HI_FROM` up it runs toward white (all the way at 255), so a highlight
-//! outshines the lit surface around it. Stability follows letters on
-//! untinted tiers: the displayed tone is held within a deadband of
-//! `9/32 × idx_hyst_q8` tone units, a lit cell is held down to half the black
-//! floor, the shade follows the held tone rather than the instantaneous one,
-//! and the top-/bottom-heavy choice reuses letters' dual threshold. Glyph and
-//! glyph color are the same on every tier; the backend quantizes the color.
+//! outshines the lit surface around it. Color and shade follow current tone,
+//! independently of glyph hysteresis, so old contours cannot latch brightness.
+//! Within `9/32 × idx_hyst_q8` tone units the glyph waits for a stable input:
+//! `min(1 + idx_hyst_q8 / 5, 32)` consecutive frames at the same tone, then
+//! adopts it directly. Large changes respond immediately. Black-floor crossings
+//! need at most four consecutive frames on the new side (even if tone varies).
+//! This avoids walking noisy glyphs through intermediate ramp steps while
+//! bounding constant-input settling at 32 frames. Half/edge/orientation gates
+//! retain their own hysteresis. Glyph and glyph color are the same on every tier; the backend quantizes the color.
 //!
 //! **Ramp order.** Coverage was measured on JetBrains Mono 2.304 Regular
 //! (Ghostty's bundled default) as antialiased ink over the advance ×
@@ -51,7 +54,7 @@
 //! glyphs `| / \ - _ = X` stay out of every ramp table, as in letters.
 //!
 //! **Design constants.** The glyph tables, [`ASCII_INK`] and the thresholds
-//! below (`BLACK_FLOOR`, `FLOOR_HOLD`, `TONE_TOP`, `LIT_FROM`, `LIT_FULL`,
+//! below (`BLACK_FLOOR`, `TONE_TOP`, `LIT_FROM`, `LIT_FULL`,
 //! `HI_FROM`, `PALE_FROM`, `PALE_FULL`, `SHADE_Q8`, the shade cap and floor,
 //! the 256-color entries and hue test, the curve in `step_table` and the
 //! deadband factor in `held_tone`)
@@ -90,7 +93,8 @@ pub const ASCII_BOTTOM: &[char] = &[
 
 const BLACK_FLOOR: u8 = 24;
 
-const FLOOR_HOLD: u8 = 12;
+const SETTLE_MAX_FRAMES: u8 = 32;
+const FLOOR_SETTLE_FRAMES: u8 = 4;
 
 const TONE_TOP: u8 = 240;
 
@@ -411,9 +415,21 @@ fn tint(c: Rgb, h: u8) -> Rgb {
 }
 
 #[inline]
-fn held_tone(n: u8, prev: u8, hyst_q8: u8) -> u8 {
+fn held_tone(n: u8, prev: u8, hyst_q8: u8, s: &mut CellState) -> u8 {
     let band = (hyst_q8 as u16 * 9 / 32) as u8;
-    let h = if prev == IDX_UNSET || n.abs_diff(prev) > band { n } else { prev };
+    let floor_crossing = (n < BLACK_FLOOR) != (prev < BLACK_FLOOR);
+    let same_target = s.tone_candidate == n
+        || (floor_crossing && (s.tone_candidate < BLACK_FLOOR) == (n < BLACK_FLOOR));
+    let count = if same_target { s.tone_age } else { 0 };
+    let wait = if floor_crossing {
+        (FLOOR_SETTLE_FRAMES - 1).min(hyst_q8 / 8)
+    } else {
+        (hyst_q8 / 5).min(SETTLE_MAX_FRAMES - 1)
+    };
+    let ready = count >= wait;
+    s.tone_candidate = n;
+    s.tone_age = count.saturating_add(1);
+    let h = if prev == IDX_UNSET || n.abs_diff(prev) > band || ready { n } else { prev };
     h.min(IDX_UNSET - 1)
 }
 
@@ -443,12 +459,9 @@ impl GlyphCodec for Ascii {
         let half = half_variant(lt, lb, params.halfblock_min_delta, &mut s.flags);
         let ink_tone = if half == HALF_NONE { n } else { lt.max(lb) };
         let prev = if half == was_half { s.idx } else { IDX_UNSET };
-        let floor = if prev != IDX_UNSET && prev >= BLACK_FLOOR { FLOOR_HOLD } else { BLACK_FLOOR };
-        let h = if deep_shadow || ink_tone < floor {
-            0
-        } else {
-            held_tone(ink_tone, prev, params.idx_hyst_q8)
-        };
+        let color_tone = if deep_shadow { 0 } else { ink_tone };
+        let target = if color_tone < BLACK_FLOOR { 0 } else { color_tone };
+        let h = held_tone(target, prev, params.idx_hyst_q8, s);
         s.idx = h;
         let i = STEP[h as usize] as usize;
         let len = ASCII_RAMP.len() as u32;
@@ -462,8 +475,8 @@ impl GlyphCodec for Ascii {
         }
 
         let c = inp.chroma.unwrap_or(Rgb::gray(n));
-        let fg = tint(c, h);
-        let base = inp.chroma.unwrap_or(Rgb::gray(h));
+        let fg = tint(c, color_tone);
+        let base = inp.chroma.unwrap_or(Rgb::gray(color_tone));
         let cell = |g: char, fg: Rgb, tone: u8| put(g, fg, backing(base, tone, g, fg, set.color));
         let dx = -debias(inp.ex);
         let dy = -debias(inp.ey);
@@ -479,7 +492,7 @@ impl GlyphCodec for Ascii {
             } else {
                 JUNCTION
             };
-            return (cell(g, fg, h), layer::EDGE);
+            return (cell(g, fg, color_tone), layer::EDGE);
         }
 
         if deep_shadow {
@@ -490,17 +503,17 @@ impl GlyphCodec for Ascii {
         if inp.h & h_flags::HIGHLIGHT != 0 && (i as u32) < hi_cut {
             let hlen = ASCII_HIGHLIGHT.len() as u32;
             let hidx = ((i as u32 * hlen) / hi_cut).min(hlen - 1) as usize;
-            return (cell(ASCII_HIGHLIGHT[hidx], boost(fg), h), layer::HIGHLIGHT);
+            return (cell(ASCII_HIGHLIGHT[hidx], boost(fg), color_tone), layer::HIGHLIGHT);
         }
 
         if half != HALF_NONE && i > 0 {
             let g = if half == HALF_TOP { ASCII_TOP[i] } else { ASCII_BOTTOM[i] };
             let lit = lt.max(lb);
-            let fg = tint(inp.chroma.map_or(Rgb::gray(lit), |c| shade(c, lit, n.max(1))), h);
+            let fg = tint(inp.chroma.map_or(Rgb::gray(lit), |c| shade(c, lit, n.max(1))), color_tone);
             return (cell(g, fg, lt.min(lb)), layer::STRUCTURE);
         }
 
-        (cell(ASCII_RAMP[i], fg, h), layer::BASE)
+        (cell(ASCII_RAMP[i], fg, color_tone), layer::BASE)
     }
 }
 
@@ -753,22 +766,75 @@ mod tests {
     }
 
     #[test]
-    fn tone_deadband_and_floor_hold() {
-        let mut st = HysteresisState::new(1, 1);
-        let start = glyph(&inp(120, 120), &mut st);
-        for wobble in [100u8, 140, 110, 150, 125] {
-            assert_eq!(glyph(&inp(wobble, wobble), &mut st), start, "±30 around 120 is noise");
+    fn glyph_tone_settles_and_floor_crossings_do_not_latch() {
+        for (from, to) in [(0, 40), (40, 12), (120, 150), (150, 120), (200, 170)] {
+            let mut st = HysteresisState::new(1, 1);
+            glyph(&inp(from, from), &mut st);
+            for _ in 0..31 {
+                glyph(&inp(to, to), &mut st);
+            }
+            assert_eq!(step(&inp(to, to), &uni(), &ComposeParams::default(), &mut st), cold(&inp(to, to)));
         }
-        assert_ne!(glyph(&inp(200, 200), &mut st), start, "a real change moves the glyph");
         let mut st = HysteresisState::new(1, 1);
-        assert_ne!(glyph(&inp(40, 40), &mut st), ' ');
-        assert_ne!(glyph(&inp(FLOOR_HOLD, FLOOR_HOLD), &mut st), ' ', "held down to FLOOR_HOLD");
-        assert_eq!(glyph(&inp(FLOOR_HOLD - 1, FLOOR_HOLD - 1), &mut st), ' ');
-        assert_eq!(glyph(&inp(BLACK_FLOOR - 1, BLACK_FLOOR - 1), &mut st), ' ', "no re-arm");
+        assert_eq!(glyph(&inp(0, 0), &mut st), ' ');
+        for n in [24, 25, 26] {
+            glyph(&inp(n, n), &mut st);
+        }
+        assert_ne!(glyph(&inp(27, 27), &mut st), ' ');
+        for n in [23, 22, 21] {
+            glyph(&inp(n, n), &mut st);
+        }
+        assert_eq!(glyph(&inp(20, 20), &mut st), ' ');
         let off = ComposeParams { idx_hyst_q8: 0, ..ComposeParams::default() };
-        let mut st = HysteresisState::new(1, 1);
         step(&inp(120, 120), &uni(), &off, &mut st);
-        assert_eq!(step(&inp(150, 150), &uni(), &off, &mut st).glyph(), cold(&inp(150, 150)).glyph());
+        assert_eq!(step(&inp(150, 150), &uni(), &off, &mut st), cold(&inp(150, 150)));
+    }
+
+    #[test]
+    fn glyph_tone_is_monotone_and_settles_within_32_frames() {
+        for width in [0, 16, 90, 160, 255] {
+            for from in 0..=254u8 {
+                for to in 0..=254u8 {
+                    let mut held = from;
+                    let mut state = CellState::default();
+                    for _ in 0..32 {
+                        let next = held_tone(to, held, width, &mut state);
+                        assert!(next >= held.min(to) && next <= held.max(to));
+                        held = next;
+                    }
+                    assert_eq!(held, to, "{from}->{to}, width {width}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shade_and_foreground_follow_current_tone_while_glyph_waits() {
+        for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
+            let set = select_palettes(GlyphTier::UnicodeBlocks, color, 200);
+            let params = ComposeParams::default();
+            let mut st = HysteresisState::new(1, 1);
+            step(&inp(120, 120), &set, &params, &mut st);
+            for n in [150, 140, 155, 139, 151] {
+                let warm = step(&inp(n, n), &set, &params, &mut st);
+                let cold = step(&inp(n, n), &set, &params, &mut HysteresisState::new(1, 1));
+                assert_ne!(warm.glyph(), cold.glyph());
+                assert_eq!((warm.fg, warm.bg, warm.attrs), (cold.fg, cold.bg, cold.attrs));
+                assert!(cell_within_cap(&warm, color));
+            }
+        }
+    }
+
+    #[test]
+    fn deep_shadow_edges_do_not_gain_a_backing_from_current_tone() {
+        let input = CellInputs { e: 200, ex: 28, h: h_flags::DEEP_SHADOW, ..inp(150, 150) };
+        let (cell, layer) = Ascii::cell(
+            &input, &ident(), &uni(), &ComposeParams::default(), &mut CellState::default(),
+        );
+        assert_eq!(layer, layer::EDGE);
+        assert_ne!(cell.glyph(), ' ');
+        assert_eq!(cell.attrs & attrs::DEFAULT_BG, attrs::DEFAULT_BG);
+        assert_eq!(cell.fg, Rgb::gray(150));
     }
 
     #[test]

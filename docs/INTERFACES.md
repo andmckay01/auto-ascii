@@ -221,7 +221,7 @@ pub fn bin_with_guard(dx, dy: i32, prev: u8) -> u8;  // ±8° θ hysteresis via
                                              // Q14 boundary-vector cross tests
 pub fn coherence_at_least(dx, dy: i32, e: u8, t_q8: u8) -> bool; // squared, no sqrt
 
-// hysteresis.rs (§3.5) — 3 B/cell state; alloc ONLY in new/resize.
+// hysteresis.rs (§3.5) — 5 B/cell state; alloc ONLY in new/resize.
 pub const IDX_UNSET: u8 = 0xFF;
 pub const IDX_HYST_Q8: u32 = 90;             // round(0.35·256) — the spec
                                              // DEFAULT; live width is
@@ -230,7 +230,10 @@ pub const IDX_HYST_Q8: u32 = 90;             // round(0.35·256) — the spec
 pub mod cell_flags { pub const WAS_EDGE: u8 = 1;
                      pub const WAS_QUADRANT: u8 = 2; }  // M4: quadrant
                      // noise-floor memory, independent of the edge gate
-pub struct CellState { pub idx: u8, pub bin: u8, pub flags: u8 }  // + Default
+pub struct CellState {
+    pub idx: u8, pub bin: u8, pub flags: u8,
+    pub tone_candidate: u8, pub tone_age: u8,
+}  // + Default
 pub struct HysteresisState;  // new(cols,rows)/cols/rows/cell/cell_mut +
                              // reset() = scene cut (no realloc) +
                              // resize(cols,rows) = realloc + reset (§3.5)
@@ -2705,6 +2708,30 @@ facade surface + this hidden module.)
     at 320x90) and `every_overlay_on_tiny_and_threshold_grids` (one HUD for
     every codec). The ASCII glyph tier still never draws blocks
     (`overlay_scale_tiers`).
+    (p) **ASCII brightness convergence at every zoom.** Supersedes the
+    held-tone color/shade and permanent floor retention in (k)/(n).
+    `Ascii::cell` uses the current ink tone for foreground and background;
+    glyph history cannot freeze either. `held_tone` now debounces a stable
+    candidate inside the existing deadband, then adopts it directly after
+    `min(1 + idx_hyst_q8 / 5, 32)` frames. Black-floor crossings take at most
+    four consecutive frames on the new side; large changes remain immediate.
+    `CellState` adds two ASCII-only bytes (`tone_candidate`, `tone_age`),
+    reset by existing scene/codec/resize/dial resets. Pixels and letters ignore
+    them and retain their rendering behavior. Letters' indefinite retention
+    remains an open issue outside this change.
+    Shade responds immediately; glyph stability still means a moving frame
+    can differ from cold. The checked 150-frame, 128x72 real-asset excerpt
+    bounds any-cell disagreement at 22% (measured 17.2–20.9%) and shade
+    disagreement at 3% (measured at most 1.83%) after 120 frames over five
+    zoom sizes. The old codec fails with 44.7% at 80x24. Tests live in
+    `ascii_temporal.rs`: startup versus codec cycling, startup/resize versus
+    every dial round trip, playback versus cold, and glyph switches ≤1.2x
+    pixels. Core tests pin 32-frame constant-tone settling, four-frame floor
+    response, and current foreground/shade while glyph history waits.
+    The two ASCII goldens change color hashes only; glyph rows and letters
+    goldens do not change. The candidate's gradual glyph walk was rejected because it
+    exceeded the flicker budget. The pre-existing live dial label difference
+    from main (`shadow lift (floor, default)`) is deliberate and retained.
 28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
     should take a video from anywhere on the desktop, process it, and land
     it in the folder where the user's processed videos live"). The shape of

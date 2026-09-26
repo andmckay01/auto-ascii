@@ -141,18 +141,21 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   holds glyphs longer (a wider tone deadband and a floor hold) since the tint carries the tone.
   On 16-color and mono it keeps a black background and the narrower deadband. `ascii` is
   letters without blocks: printable ASCII on every tier and palette, over a capped background
-  shade on truecolor and 256-color. The shade is letters' tint of the held tone, held to
+  shade on truecolor and 256-color. The shade is letters' tint of the current tone, held to
   `backing_within_cap`: no channel above `SHADE_CEIL` (96), at most `SHADE_CONTRAST_Q8`/256
   (0.375) of the glyph's relative luminance, a space no brighter than `SHADE_BLANK_CEIL` (24);
   scaled down (hue kept) to fit, dropped if its brightest channel ends below `SHADE_FLOOR` (8).
-  Over held tone 128-192 a pale color's shade runs toward neutral at its own top channel.
+  Over current tone 128-192 a pale color's shade runs toward neutral at its own top channel.
   Truecolor sends that shade; 256-color sends the nearest (OKLab, chroma plane weighted 2x) of
   `SHADES_256` (grays 8-95 and the six level-95 cube colors) that passes the cap against the
   quantized glyph color and is `in_hue_family` with it (gray, or within 30° of its hue).
   16-color and mono paint no shade. Unshaded cells are flagged `attrs::DEFAULT_BG`, so the painter emits SGR 49 (the
   terminal's own background); pads, gaps and everything else the player draws while `ascii` is
-  active follow that rule (flow 10). Tone is glyph ink, glyph color and shade, on an 18-step
-  ramp ordered by JetBrains Mono coverage, with `@` from held tone 225. The player's black
+  active follow that rule (flow 10). Glyphs use an 18-step ramp ordered by JetBrains Mono
+  coverage, with `@` from held tone 225. Glyph color and shade follow current tone
+  independently, preventing stale brightness bands. Within the deadband a stable glyph
+  tone settles in at most 32 frames; floor crossings take at most four. The half, edge and
+  orientation gates retain hysteresis. The player's black
   backdrop (flow 7) puts the unshaded cells on black in any terminal theme.
 - **User:** `/` cycles codecs while playing (`pixels` → `letters` → `ascii`), `--codec
   pixels|letters|ascii` picks one at startup, and `s` saves it for this video (flow 9).
@@ -198,10 +201,11 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 
 ### 6. Temporal stability: hysteresis and resets
 - **Does:** stops cells flickering between neighbouring glyphs.
-- **Code:** `crates/auto-ascii-core/src/hysteresis.rs` `HysteresisState` / `CellState` (3 B per
+- **Code:** `crates/auto-ascii-core/src/hysteresis.rs` `HysteresisState` / `CellState` (5 B per
   cell): ramp-index hysteresis (`idx_hyst_q8`, a fraction of a ramp step), a dual-threshold edge
   gate (`edge_t_on` / `edge_t_off`, `WAS_EDGE`), an orientation bin with an 8° guard, and the
-  quadrant flag (`WAS_QUADRANT`, `quad_e_on` / `quad_e_off`).
+  quadrant flag (`WAS_QUADRANT`, `quad_e_on` / `quad_e_off`), plus the ASCII candidate
+  tone and settling age (ignored by the other codecs).
 - **Invariants — every temporal discontinuity resets all per-cell state:**
   - a shot change or shadow-lift change (`crates/auto-ascii/src/pipeline.rs`
     `Player::update_levels`, keyed on `(shot, shadow_lift)`);

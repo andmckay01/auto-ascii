@@ -129,6 +129,9 @@ hue family: a grey, or for bright, saturated shades one of the six dark
 cube colours within 30° of the character's hue. 16-colour and mono
 terminals get no shade (the terminal's own background shows through). Glyph selection is the
 same on every terminal tier; colours follow the terminal's capabilities.
+ASCII colour and shade follow current brightness independently of glyph
+hysteresis, so playback cannot retain old brightness bands. A steady tone
+settles the glyph within 32 frames; black-floor crossings take at most four.
 
 **Black backdrop.** While it plays, the player sets your terminal's default
 background to black (OSC 11). `ascii` needs it: its unshaded cells (shadows,

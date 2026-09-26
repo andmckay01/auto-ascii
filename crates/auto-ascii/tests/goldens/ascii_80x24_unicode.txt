@@ -23,4 +23,4 @@ ascii codec, UnicodeBlocks tier, True, 80x24, frame 5
 |:;;;;;;;;;;;+++++++++++++rrrrrrrrrrrrrrrrrcccccccccccccxxnnnnoooooooooo         |
 |;;;;;;;;;;+++++++++++++rrrrrrrrrrrrrrrrrcccccccccccccxxnnnnoooooooooooo         |
 |                                                                                |
-colors fnv1a64 0a18e7545b420420
+colors fnv1a64 fcac2dade8cb728f
