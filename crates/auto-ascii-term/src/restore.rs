@@ -1,13 +1,13 @@
 //! Process-wide terminal restoration.
 //!
 //! The alt-screen-leave, cursor-show and SGR-reset bytes are emitted on
-//! Ctrl-C, SIGTERM and panic (asserted by a pty test), preceded by
+//! Ctrl-C, SIGTERM, SIGHUP and panic (asserted by a pty test), preceded by
 //! [`BACKDROP_RESET`] when the session set a [`BACKDROP_SET`] backdrop.
 //!
 //! Design: `AnsiBackend::new` *arms* a process-global (tty fd + pre-raw
 //! termios) before touching the terminal; `restore_now` disarms and
 //! restores exactly once, from whichever path fires first — orderly
-//! `shutdown`/`Drop`, the panic hook, SIGINT/SIGTERM, or atexit. Everything
+//! `shutdown`/`Drop`, the panic hook, SIGINT/SIGTERM/SIGHUP, or atexit. Everything
 //! on the signal path is async-signal-safe: atomics, raw `write(2)`,
 //! `tcsetattr` — no locks, no allocation.
 
@@ -32,9 +32,14 @@ pub const RESTORE_SEQ: &[u8] = b"\x1b[0m\x1b[?25h\x1b[?7h\x1b[?1049l";
 /// without OSC 11 ignore it.
 pub const BACKDROP_SET: &[u8] = b"\x1b]11;rgb:0000/0000/0000\x1b\\";
 
-/// OSC 111: reset the default background to the terminal's configured one.
-/// Written just before [`RESTORE_SEQ`], exactly once, on every restore path
-/// of a session that wrote [`BACKDROP_SET`].
+/// OSC 111: reset the default background to the terminal's configured one
+/// (its config or profile), not to a colour an earlier OSC 11 set at
+/// runtime. Written just before [`RESTORE_SEQ`], exactly once, on every
+/// restore path of a session that wrote [`BACKDROP_SET`]: orderly shutdown
+/// and `Drop`, a Rust panic, SIGINT, SIGTERM, SIGHUP and atexit. A process
+/// that dies without running code (SIGKILL, `abort`, a segfault) cannot
+/// write it; `printf '\e]111\e\\'` in that terminal, or a new tab, resets
+/// it by hand.
 pub const BACKDROP_RESET: &[u8] = b"\x1b]111\x1b\\";
 
 static BACKDROP: AtomicBool = AtomicBool::new(false);
@@ -88,7 +93,7 @@ static SAVED_TERMIOS: TermiosStore = TermiosStore(UnsafeCell::new(MaybeUninit::u
 
 static HOOKS: Once = Once::new();
 
-/// Install restoration hooks: a panic hook, SIGINT/SIGTERM handlers, and
+/// Install restoration hooks: a panic hook, SIGINT/SIGTERM/SIGHUP handlers, and
 /// atexit — each runs `restore_now` (async-signal-safe raw `write(2)` of
 /// [`BACKDROP_RESET`] when armed, then [`RESTORE_SEQ`], + `tcsetattr`, no
 /// locks/allocation); the signal handlers
@@ -111,6 +116,7 @@ pub fn install_restore_hooks() {
             let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
             libc::signal(libc::SIGINT, handler);
             libc::signal(libc::SIGTERM, handler);
+            libc::signal(libc::SIGHUP, handler);
             libc::atexit(at_exit);
         }
     });

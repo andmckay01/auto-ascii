@@ -26,6 +26,10 @@ fn spawn_harness(mode: &str) -> (Pty, Child) {
 }
 
 fn spawn_harness_with(mode: &str, backdrop: bool) -> (Pty, Child) {
+    spawn_harness_env(mode, backdrop, false)
+}
+
+fn spawn_harness_env(mode: &str, backdrop: bool, mono: bool) -> (Pty, Child) {
     let mut master: libc::c_int = 0;
     let mut slave: libc::c_int = 0;
     let mut ws = libc::winsize { ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0 };
@@ -49,6 +53,9 @@ fn spawn_harness_with(mode: &str, backdrop: bool) -> (Pty, Child) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_auto-ascii-term-harness"));
     if backdrop {
         cmd.env("ASCII_HARNESS_BACKDROP", "1");
+    }
+    if mono {
+        cmd.env("ASCII_HARNESS_MONO", "1");
     }
     cmd.arg(mode)
         .stdin(dup_stdio(slave))
@@ -276,4 +283,32 @@ fn ctrl_c_key_quits_and_restores() {
     let status = wait_child(&mut child);
     assert!(status.success(), "Ctrl-C key must quit cleanly, got {status:?}");
     assert_restored(&out);
+}
+
+#[test]
+fn sighup_restores_terminal_and_backdrop_exactly_once() {
+    let (pty, mut child) = spawn_harness_with("wait", true);
+    let mut out = Vec::new();
+    wait_until_contains(pty.master, &mut out, BACKDROP_SET);
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGHUP) };
+    drain_to_eof(pty.master, &mut out);
+    let status = wait_child(&mut child);
+    assert_eq!(status.signal(), Some(libc::SIGHUP), "must die by re-raised SIGHUP");
+    assert_restored(&out);
+    assert_eq!(count(&out, RESTORE_SEQ), 1);
+    assert_backdrop_round_trip(&out);
+}
+
+#[test]
+fn mono_sessions_never_set_the_backdrop() {
+    let (pty, mut child) = spawn_harness_env("drop", true, true);
+    let mut out = Vec::new();
+    drain_to_eof(pty.master, &mut out);
+    assert!(wait_child(&mut child).success());
+    assert!(find(&out, ALT_ENTER).is_some(), "session never entered alt screen");
+    assert_restored(&out);
+    assert!(
+        find(&out, b"\x1b]11;").is_none() && find(&out, b"\x1b]111").is_none(),
+        "mono paints no foreground, so a black backdrop could hide the default one"
+    );
 }

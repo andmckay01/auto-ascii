@@ -125,12 +125,18 @@ brightness from mid-gray up, and denser glyphs carry the lighter tones, with
 colours follow the terminal's capabilities.
 
 **Black backdrop.** While it plays, the player sets your terminal's default
-background to black (OSC 11) and puts your own back when it exits, even on
-Ctrl-C or a crash (OSC 111). `ascii` needs it: on a grey or light theme its
+background to black (OSC 11). `ascii` needs it: on a grey or light theme its
 characters would sit on that colour instead of black. `pixels` and `letters`
-paint every cell themselves and look the same either way. `--no-backdrop`
-keeps your terminal's background. Terminals that don't understand OSC 11
-ignore it.
+paint every cell themselves and look the same either way. On exit it sends
+OSC 111, which resets the background to the one in your terminal's config or
+profile (not to a colour something else set at runtime). That reset runs on a
+normal quit, on an error, on a Rust panic, on SIGINT (Ctrl-C), SIGTERM and
+SIGHUP, and at process exit. Nothing can run when the player is killed with
+SIGKILL or dies from an abort or a segfault; if a tab is left black, run
+`printf '\e]111\e\\'` in it or open a new one. `--no-backdrop` keeps your
+terminal's background; the mono tier (`--tier mono`) never sets it, since it
+draws in your terminal's own foreground colour. `auto-ascii play` always uses
+the backdrop. Terminals that don't understand OSC 11 ignore it.
 
 **Dials** retune the renderer while the video plays. Shadow lift opens dark
 scenes. Edge strength sets how many contours get strokes. Hysteresis trades

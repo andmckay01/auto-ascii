@@ -208,10 +208,12 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   terminal) and `crates/auto-ascii-term/src/sim.rs` `SimBackend` (in memory, throttleable) both
   present through it, behind the `crates/auto-ascii-term/src/backend.rs` `Backend` trait.
   `crates/auto-ascii-term/src/restore.rs` `install_restore_hooks` / `arm` / `restore_now` emit
-  `RESTORE_SEQ` exactly once, from `Drop`, the panic hook, SIGINT/SIGTERM or atexit. The player's
-  session also sets a black backdrop: `AnsiBackend::with_backdrop` writes `BACKDROP_SET` (OSC 11)
-  after the alt-screen enter and `restore_now` writes `BACKDROP_RESET` (OSC 111) before
-  `RESTORE_SEQ` on the same paths. `--no-backdrop` / `PlayerBuilder::no_backdrop` turns it off.
+  `RESTORE_SEQ` exactly once, from `Drop`, the panic hook, SIGINT/SIGTERM/SIGHUP or atexit. The
+  player's session also sets a black backdrop: `AnsiBackend::with_backdrop` writes `BACKDROP_SET`
+  (OSC 11) after the alt-screen enter and `restore_now` writes `BACKDROP_RESET` (OSC 111, back to
+  the configured background) before `RESTORE_SEQ` on the same paths. `--no-backdrop` /
+  `PlayerBuilder::no_backdrop` turns it off; the Mono tier never sets it. `auto-ascii play` always
+  sets it.
 - **Invariants:**
   - Quantize before diff, so cells that quantize equal cost zero bytes.
   - Repaint mode `full` (default) invalidates every frame. `diff` rewrites only damaged cells.
@@ -222,7 +224,10 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - The backdrop is session-wide and never part of a frame: `SimBackend` and `--sim-dump`
     streams are the same with or without it, and pixels and letters paint every background
     themselves, so only SGR 49 cells (`ascii`) change on screen. It is reset exactly once
-    (`crates/auto-ascii-term/tests/pty_restore.rs`).
+    (`crates/auto-ascii-term/tests/pty_restore.rs`, SIGHUP included). SIGKILL, `abort` and
+    segfaults run no code, so they leave it set (`printf '\e]111\e\\'` resets it).
+  - Never on the Mono tier: Mono paints no foreground, so the terminal's default (black on a light
+    theme) would vanish on a black backdrop.
 
 ### 8. Interactive player: transport and keys
 - **Does:** plays an asset or composition at its own fps with pause, jump and scrub.

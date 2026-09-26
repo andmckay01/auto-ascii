@@ -12,15 +12,17 @@
 //! Tone therefore lives in two places only: how much of the cell the glyph
 //! inks, and how bright its color is. The glyph comes from the held tone
 //! through an 18-step ramp that tops out in the densest glyphs (`#`, `D`,
-//! `8`, `B`, `@`, `@` from `TONE_TOP` up); the ink target runs linearly in
-//! tone above mid-gray and is bent up below it, so midtones ink sooner. The
-//! color is the cell's chroma sample (gray fallback), hue kept: its
-//! brightness `y` starts lifted to `y·(1 + (1 − y)²)` (at most 4×) and, over
-//! held tone `LIT_FROM` to `LIT_FULL`, rises to full brightness, since a
-//! glyph inks at most about a quarter of its cell and has no background to
-//! carry the picture; from `HI_FROM` up it runs toward white (seven eighths
-//! of the way at 255), so a highlight outshines the lit surface around it.
-//! Tone past mid-gray is carried by ink alone. Stability follows letters on untinted tiers:
+//! `8`, `B`, `@`); the ink target runs linearly in tone from the black floor
+//! to `TONE_TOP`, bent up below mid-gray so midtones ink sooner, and each
+//! tone takes the step of nearest ink, so `@` starts at held tone 225, a
+//! little below `TONE_TOP`, and stays for near-white. The color is the
+//! cell's chroma sample (gray fallback), hue kept: its brightness `y` starts
+//! lifted to `y·(1 + (1 − y)²)` (at most 4×) and, over held tone `LIT_FROM`
+//! to `LIT_FULL`, rises to full brightness, since a glyph inks at most about
+//! a quarter of its cell and has no background to carry the picture; from
+//! `HI_FROM` up it runs toward white (seven eighths of the way at 255), so a
+//! highlight outshines the lit surface around it. Between `LIT_FULL` and
+//! `HI_FROM` tone is carried by ink alone. Stability follows letters on untinted tiers:
 //! the displayed tone is held within a deadband of `9/32 × idx_hyst_q8` tone
 //! units, a lit cell is held down to half the black floor, and the
 //! top-/bottom-heavy choice reuses letters' dual threshold. The output is the
@@ -73,7 +75,7 @@ const BLACK_FLOOR: u8 = 24;
 
 const FLOOR_HOLD: u8 = 12;
 
-const TONE_TOP: u8 = 216;
+const TONE_TOP: u8 = 240;
 
 const GAIN_MAX_Q8: u32 = 1024;
 
@@ -320,7 +322,8 @@ mod tests {
         assert_eq!(cold(&inp(BLACK_FLOOR - 1, BLACK_FLOOR - 1)).glyph(), ' ');
         assert_ne!(cold(&inp(BLACK_FLOOR, BLACK_FLOOR)).glyph(), ' ');
         assert_eq!(cold(&inp(255, 255)).glyph(), '@');
-        assert_eq!(cold(&inp(TONE_TOP, TONE_TOP)).glyph(), '@');
+        assert_eq!(cold(&inp(225, 225)).glyph(), '@', "@ starts at held tone 225");
+        assert_eq!(cold(&inp(224, 224)).glyph(), 'B', "and not a step sooner");
         let mid = cold(&inp(128, 128)).glyph();
         assert!("rcxno".contains(mid), "mid-gray is a lowercase midtone: {mid:?}");
     }

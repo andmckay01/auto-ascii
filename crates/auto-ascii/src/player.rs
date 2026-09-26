@@ -514,10 +514,12 @@ impl PlayerBuilder {
     }
 
     /// Leave the terminal's own default background alone. By default the
-    /// session sets it to black (OSC 11) on entry and resets it (OSC 111) on
-    /// every exit path, so a codec that keeps the terminal background
-    /// ([`Codec::Ascii`]) sits on black under any theme; pixels and letters
-    /// paint every cell and look the same either way.
+    /// session sets it to black (OSC 11) on entry and resets it to the
+    /// terminal's configured one (OSC 111) on normal exit, errors, a Rust
+    /// panic, SIGINT, SIGTERM, SIGHUP and atexit, so a codec that keeps the
+    /// terminal background ([`Codec::Ascii`]) sits on black under any theme;
+    /// pixels and letters paint every cell and look the same either way. The
+    /// mono tier never sets it (see [`AnsiBackend::with_backdrop`]).
     pub fn no_backdrop(mut self, no_backdrop: bool) -> Self {
         self.no_backdrop = no_backdrop;
         self
@@ -634,7 +636,7 @@ impl Player {
     /// set), enter the session (alt screen, raw mode, hidden cursor, black
     /// backdrop unless [`no_backdrop`](PlayerBuilder::no_backdrop)), run
     /// the wall-clock-paced frame loop, and restore the terminal — also on
-    /// panic, SIGINT and SIGTERM (the restore hooks are armed before the
+    /// panic, SIGINT, SIGTERM and SIGHUP (the restore hooks are armed before the
     /// screen is touched).
     ///
     /// Blocks until the asset ends (unless [`looping`](PlayerBuilder::looping)),

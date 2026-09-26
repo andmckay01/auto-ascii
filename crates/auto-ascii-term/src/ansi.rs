@@ -120,7 +120,7 @@ impl AnsiBackend {
     /// Enter the session: arm the process-global restore state (fd + pre-raw
     /// termios), then raw mode, alt screen `?1049h`, hide cursor `?25l`,
     /// autowrap off `?7l` in one write. Installs the restore hooks itself
-    /// (idempotent), so panic, SIGINT, SIGTERM and atexit always restore
+    /// (idempotent), so panic, SIGINT, SIGTERM, SIGHUP and atexit always restore
     /// (pty-tested).
     ///
     /// The passed `caps.cells` is overridden by the real terminal size;
@@ -136,11 +136,15 @@ impl AnsiBackend {
     /// [`new`](AnsiBackend::new), and with `backdrop` also set the terminal's
     /// default background to black for the session: [`crate::BACKDROP_SET`]
     /// right after the alt-screen enter, [`crate::BACKDROP_RESET`] on every
-    /// restore path (orderly, panic, SIGINT, SIGTERM, atexit), exactly once.
-    /// Cells that paint their own background look the same either way; cells
-    /// that keep the terminal's (SGR 49) sit on black instead of the theme.
+    /// restore path (orderly, Rust panic, SIGINT, SIGTERM, SIGHUP, atexit),
+    /// exactly once. Cells that paint their own background look the same
+    /// either way; cells that keep the terminal's (SGR 49) sit on black
+    /// instead of the theme. Never set on [`ColorTier::Mono`]: nothing there
+    /// paints a foreground, so the terminal's default one (black on a light
+    /// theme) would vanish on black.
     #[cfg(unix)]
     pub fn with_backdrop(caps: Caps, backdrop: bool) -> io::Result<AnsiBackend> {
+        let backdrop = backdrop && caps.color != ColorTier::Mono;
         let fd = libc::STDOUT_FILENO;
         if unsafe { libc::isatty(fd) } == 0 {
             return Err(io::Error::other(
@@ -190,6 +194,7 @@ impl AnsiBackend {
     /// stays `None` (aspect falls back to 2.0).
     #[cfg(windows)]
     pub fn with_backdrop(caps: Caps, backdrop: bool) -> io::Result<AnsiBackend> {
+        let backdrop = backdrop && caps.color != ColorTier::Mono;
         use crossterm::tty::IsTty as _;
         if !io::stdout().is_tty() {
             return Err(io::Error::other(
