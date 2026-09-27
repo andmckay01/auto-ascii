@@ -25,7 +25,9 @@ pub const ASCII_BOTTOM: &[char] = &[
     ' ', '.', '.', ',', ',', ',', 'v', 'v', 'u', 'u', 'u', 'a', 'a', 'a', 'w', 'w', 'g', 'g',
 ];
 
-const BLACK_FLOOR: u8 = 24;
+const BLACK_FLOOR: u8 = 32;
+const FLOOR_HOLD: u8 = BLACK_FLOOR / 2;
+const INK_FROM: u8 = 24;
 
 const SETTLE_MAX_FRAMES: u8 = 32;
 const CONVERGE_MAX_FRAMES: u8 = 64;
@@ -121,8 +123,8 @@ const LINEAR: [u16; 256] = [
 const STEP: [u8; 256] = step_table();
 
 const fn unit(n: usize) -> u32 {
-    let span = (TONE_TOP - BLACK_FLOOR) as u32;
-    let x = n as u32 - BLACK_FLOOR as u32;
+    let span = (TONE_TOP - INK_FROM) as u32;
+    let x = (n as u32).saturating_sub(INK_FROM as u32);
     (if x < span { x } else { span }) * 255 / span
 }
 
@@ -198,7 +200,7 @@ fn shade_distance(want: Lab, e: Lab) -> f32 {
 const fn step_table() -> [u8; 256] {
     let mut t = [0u8; 256];
     let lo = ASCII_INK[1] as u32;
-    let mut n = BLACK_FLOOR as usize;
+    let mut n = FLOOR_HOLD as usize;
     while n < 256 {
         let u = unit(n);
         let mut want = if u < 128 { u + (128 - u) * u / 254 } else { u };
@@ -330,11 +332,11 @@ fn held_tone(n: u8, prev: u8, hyst_q8: u8, s: &mut CellState) -> u8 {
     }
     let smooth = if n >= from { from + (n - from).div_ceil(4) } else { from - (from - n).div_ceil(4) };
     s.tone_candidate = smooth;
-    let floor_crossing = (n < BLACK_FLOOR) != (prev < BLACK_FLOOR);
+    let floor_crossing = (n < FLOOR_HOLD) != (prev < FLOOR_HOLD);
     let down = smooth < prev;
     let inside = if down { smooth.saturating_add(CONVERGE_CLEAR) } else { smooth.saturating_sub(CONVERGE_CLEAR) };
     let (side, wait) = if floor_crossing {
-        (if n < BLACK_FLOOR { SETTLE_DOWN } else { 0 }, (FLOOR_SETTLE_FRAMES - 1).min(hyst_q8 / 8))
+        (if n < FLOOR_HOLD { SETTLE_DOWN } else { 0 }, (FLOOR_SETTLE_FRAMES - 1).min(hyst_q8 / 8))
     } else if STEP[smooth as usize] == STEP[prev as usize] {
         s.tone_age = 0;
         return prev;
@@ -381,7 +383,9 @@ impl GlyphCodec for Ascii {
         let ink_tone = if half == HALF_NONE { n } else { lt.max(lb) };
         let prev = if half == was_half { s.idx } else { IDX_UNSET };
         let color_tone = if deep_shadow { 0 } else { ink_tone };
-        let target = if color_tone < BLACK_FLOOR { 0 } else { color_tone };
+        let lit = prev != IDX_UNSET && prev >= FLOOR_HOLD;
+        let floor = if lit { FLOOR_HOLD } else { BLACK_FLOOR };
+        let target = if color_tone < floor { 0 } else { color_tone };
         let h = held_tone(target, prev, params.idx_hyst_q8, s);
         s.idx = h;
         let i = STEP[h as usize] as usize;
@@ -758,17 +762,53 @@ mod tests {
         }
         let mut st = HysteresisState::new(1, 1);
         assert_eq!(glyph(&inp(0, 0), &mut st), ' ');
-        for n in [24, 25, 26] {
+        for _ in 0..8 {
+            assert_eq!(glyph(&inp(BLACK_FLOOR - 1, BLACK_FLOOR - 1), &mut st), ' ', "a cold cell stays blank under the floor");
+        }
+        for n in [32, 33, 34] {
             glyph(&inp(n, n), &mut st);
         }
-        assert_ne!(glyph(&inp(27, 27), &mut st), ' ');
-        for n in [23, 22, 21] {
+        assert_ne!(glyph(&inp(35, 35), &mut st), ' ');
+        for n in [31, 24, 20, FLOOR_HOLD] {
+            assert_eq!(glyph(&inp(n, n), &mut st), '.', "a lit cell holds down to FLOOR_HOLD: {n}");
+        }
+        for n in [15, 14, 13] {
             glyph(&inp(n, n), &mut st);
         }
-        assert_eq!(glyph(&inp(20, 20), &mut st), ' ');
+        assert_eq!(glyph(&inp(12, 12), &mut st), ' ');
+        assert_eq!(glyph(&inp(BLACK_FLOOR - 1, BLACK_FLOOR - 1), &mut st), ' ', "no re-arm under the floor");
         let off = ComposeParams { idx_hyst_q8: 0, ..ComposeParams::default() };
         step(&inp(120, 120), &uni(), &off, &mut st);
         assert_eq!(step(&inp(150, 150), &uni(), &off, &mut st), cold(&inp(150, 150)));
+    }
+
+    #[test]
+    fn near_black_is_blank() {
+        assert_eq!((BLACK_FLOOR, FLOOR_HOLD, INK_FROM), (32, 16, 24));
+        for chroma in [None, Some(Rgb::new(200, 150, 120))] {
+            let f = BLACK_FLOOR;
+            assert_eq!(cold(&CellInputs { chroma, ..inp(f - 1, f - 1) }).glyph(), ' ', "just under the floor");
+            assert_eq!(cold(&CellInputs { chroma, ..inp(f, f) }).glyph(), '.', "the floor draws the lightest ink");
+        }
+        for (n, &i) in STEP.iter().enumerate().take(BLACK_FLOOR as usize + 1) {
+            assert_eq!(i, u8::from(n >= FLOOR_HOLD as usize), "held tones draw '.', lower ones nothing: {n}");
+        }
+    }
+
+    #[test]
+    fn black_floor_holds_a_lit_cell() {
+        for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
+            let set = select_palettes(GlyphTier::Ascii, color, 100);
+            let p = ComposeParams::default();
+            let mut st = HysteresisState::new(1, 1);
+            assert_ne!(step(&inp(40, 40), &set, &p, &mut st).glyph(), ' ');
+            let held = step(&CellInputs { chroma: Some(Rgb::new(200, 150, 120)), ..inp(FLOOR_HOLD, FLOOR_HOLD) }, &set, &p, &mut st);
+            assert_eq!(held.glyph(), '.', "{color:?}: held down to FLOOR_HOLD");
+            assert_eq!(held.fg, Rgb::new(150, 112, 90), "{color:?}: letters' 0.75x ink");
+            assert_eq!(held.attrs & attrs::DEFAULT_BG, attrs::DEFAULT_BG, "{color:?}: no shade under the floor");
+            let mut cold_st = HysteresisState::new(1, 1);
+            assert_eq!(step(&inp(FLOOR_HOLD, FLOOR_HOLD), &set, &p, &mut cold_st).glyph(), ' ', "{color:?}: never armed");
+        }
     }
 
     #[test]

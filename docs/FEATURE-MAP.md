@@ -162,7 +162,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   (narrowing to `idx_hyst_q8 / 4` in busy cells)
   the glyph follows a smoothed tone: a steady change settles within 41 frames past
   `idx_hyst_q8 / 8`, or within 74 when it lies at least 4 units inside another ramp step;
-  floor crossings take at most four. The half, edge and orientation gates retain hysteresis. The player's black
+  letters' floor applies (blank below `BLACK_FLOOR` 32, a lit cell held down to `FLOOR_HOLD`
+  16, on every tier), and floor crossings take at most four. The half, edge and orientation gates retain hysteresis. The player's black
   backdrop (flow 7) puts the unshaded cells on black in any terminal theme.
 - **User:** `/` cycles codecs while playing (`pixels` → `letters` → `ascii`), `--codec
   pixels|letters|ascii` picks one at startup, and `s` saves it for this video (flow 9).
