@@ -3105,7 +3105,9 @@ cell in the same layer; the only differing branch is the highlight cut
 Floor: letters' `BLACK_FLOOR` 32 and `FLOOR_HOLD` 16, tier-independent
 (letters gates its hold on `bg_tint`; ascii must not, glyph and colour are
 the same on every tier). A cell with no lit history needs tone ≥ 32; a lit
-one (`s.idx ≥ 16`) stays lit down to 16; `held_tone`'s crossing predicate
+one (held tone `s.idx ≥ 32`, letters' own predicate) stays lit down to 16,
+and one whose held tone settles below 32 blanks within the four-frame floor
+settle rather than holding `.` indefinitely; `held_tone`'s crossing predicate
 is on `FLOOR_HOLD`, so blanking still settles within four frames and a
 blank cell does not re-arm below 32. The ramp origin is the separate
 `INK_FROM` 24 (`unit()`, saturating; `step_table()` fills from 16, where

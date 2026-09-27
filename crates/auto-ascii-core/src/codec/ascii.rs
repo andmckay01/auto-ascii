@@ -382,7 +382,7 @@ impl GlyphCodec for Ascii {
         let ink_tone = if half == HALF_NONE { n } else { lt.max(lb) };
         let prev = if half == was_half { s.idx } else { IDX_UNSET };
         let color_tone = if deep_shadow { 0 } else { ink_tone };
-        let lit = prev != IDX_UNSET && prev >= FLOOR_HOLD;
+        let lit = prev != IDX_UNSET && prev >= BLACK_FLOOR;
         let floor = if lit { FLOOR_HOLD } else { BLACK_FLOOR };
         let target = if color_tone < floor { 0 } else { color_tone };
         let h = held_tone(target, prev, params.idx_hyst_q8, s);
@@ -807,6 +807,24 @@ mod tests {
             assert_eq!(held.attrs & attrs::DEFAULT_BG, attrs::DEFAULT_BG, "{color:?}: no shade under the floor");
             let mut cold_st = HysteresisState::new(1, 1);
             assert_eq!(step(&inp(FLOOR_HOLD, FLOOR_HOLD), &set, &p, &mut cold_st).glyph(), ' ', "{color:?}: never armed");
+        }
+    }
+
+    #[test]
+    fn a_tone_settled_under_the_floor_blanks_like_letters() {
+        let mut st = HysteresisState::new(1, 1);
+        assert_eq!(glyph(&inp(60, 60), &mut st), ':');
+        let mut shown = Vec::new();
+        for _ in 0..80 {
+            shown.push(glyph(&inp(20, 20), &mut st));
+        }
+        assert_eq!(shown.last(), Some(&' '), "{shown:?}");
+        let blank = shown.iter().position(|&g| g == ' ').unwrap();
+        assert!(shown[blank..].iter().all(|&g| g == ' '), "no re-arm: {shown:?}");
+        let mut held = HysteresisState::new(1, 1);
+        glyph(&inp(40, 40), &mut held);
+        for _ in 0..80 {
+            assert_eq!(glyph(&inp(20, 20), &mut held), '.', "a held glyph at tone 40 keeps its ink");
         }
     }
 
