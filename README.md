@@ -54,7 +54,8 @@ video codecs (it runs ffmpeg too, only to decode an asset's soundtrack).
 
 You need a recent stable Rust toolchain (edition 2024). The factory also needs
 `ffmpeg` on `PATH` (`brew install ffmpeg`, `apt install ffmpeg`); the player
-does not.
+does not. `auto-ascii stream` needs both `yt-dlp` and `ffmpeg` on `PATH`
+(`brew install yt-dlp ffmpeg`).
 
 ```bash
 git clone https://github.com/andmckay01/auto-ascii && cd auto-ascii
@@ -264,6 +265,8 @@ auto-ascii compose add demo clip --at 0:10  # append a clip at 0:10 (black befor
 auto-ascii compose show demo                # the resolved timeline, gaps and overlaps
 auto-ascii compose play demo                # play it without re-encoding anything
 auto-ascii compose export demo              # flatten to exports/demo.ascii
+
+auto-ascii stream "https://youtu.be/jNQXAC9IVRw"  # stream a YouTube video, with sound
 ```
 
 `import` also takes `--name`, `--ss`/`--t` (times as `SS`, `MM:SS` or
@@ -274,11 +277,76 @@ timeline. Each clip is placed with `at` and trimmed with `in`/`out`; gaps are
 black and a later clip draws on top. The file is the source of truth, so you
 can write it by hand; `auto-ascii-player demo.toml` plays one directly.
 
-Every command except interactive `play` and `compose play` accepts `--json`,
-which makes stdout exactly one JSON value.
+Every command except interactive `play`, `compose play` and `stream` accepts
+`--json`, which makes stdout exactly one JSON value (`stream` takes it only
+with `--sim`).
 [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) (also printed by `auto-ascii
 agent-guide`) documents the folder layout, the JSON shapes and the composition
 schema.
+
+## Streaming from YouTube
+
+`auto-ascii stream` plays the first video behind a link as live ASCII with
+sound. It downloads nothing:
+
+```bash
+auto-ascii stream "https://www.youtube.com/watch?v=jNQXAC9IVRw"   # a video (a &list= is ignored)
+auto-ascii stream "https://www.youtube.com/playlist?list=PL…"     # its first video
+auto-ascii stream "https://www.youtube.com/@jawed"                # a channel's newest video
+auto-ascii stream me at the zoo                                    # the first search result
+auto-ascii stream <link> --codec letters --max-height 720 --no-audio
+auto-ascii stream <link> --sim 120x40:25 [--sim-dump frames.txt]  # headless, one JSON line
+auto-ascii stream <link> --cookies-from-browser firefox            # opt in to your browser's cookies
+```
+
+A centred loader fills from 0 to 100% while it resolves and buffers. The bar
+brightens from left to right, with a soft band sweeping across it, and says
+`loading...` underneath. The percentage tracks real stages: yt-dlp running,
+first video found, stream URLs ready, ffmpeg started, first audio and first
+video bytes, then the buffer filling. Playback starts at 100%. `q`, `Esc` or
+`Ctrl-C` quits at any point, even while loading, and `/` cycles the glyph codec.
+The default codec is `ascii`, and `--palette` works as it does for the player.
+
+How it works:
+- **Resolve.** yt-dlp resolves the input. A playlist, channel or search is
+  walked down to its first video (`--flat-playlist -I 1`, at most three
+  levels), then `-J` reads that video's stream URLs, HTTP headers and metadata.
+  Every call passes `--ignore-config --simulate --skip-download`, so a yt-dlp
+  config file can never turn a lookup into a download. Your cookies are used
+  only when you pass `--cookies-from-browser BROWSER`.
+- **Stream.** Two ffmpeg children read those URLs directly. One decodes the
+  video to raw rgb24 frames at the factory's plane size and a constant frame
+  rate. The other decodes the audio to f32 PCM. Each frame goes through the
+  factory's own feature extraction and then the player's own pipeline. Bounded
+  queues (about 2.5 s of video, 4 s of audio) push back on the pipes, so memory
+  stays flat.
+- **Sync.** Sound plays through the default output device via cpal. The picture
+  follows the audio clock: the samples actually played, minus the device's
+  reported latency. A frame is shown only during its own frame period; frames
+  that arrive after it are dropped and counted, never shown late or slowed.
+  If the sound runs dry, the picture freezes with it, and after 0.35 s the
+  loader returns until both buffers refill. If only the picture stalls, the
+  sound plays on and the picture catches up by dropping frames. Only when the
+  picture falls 2 s behind does the stream pause the sound and re-buffer both.
+  At the end, the stream waits until the last samples have actually played.
+- **Clean up.** Every child runs in its own process group, inside a private
+  temp directory. On quit, error, end of video or signal, every child is
+  killed and reaped, and the directory is removed. The first two
+  SIGINT/SIGTERM/SIGHUP signals request this orderly exit. A third forces the
+  exit, still killing the children, removing the directory and restoring the
+  terminal first.
+
+Limitations:
+- YouTube sometimes refuses a DASH URL with HTTP 403. The stream then switches
+  that track to the video's HLS formats and carries on from the same position.
+  Heavy throttling still shows up as re-buffering.
+- Live streams, premieres, and private, members-only, age-gated or geo-blocked
+  videos are refused, with yt-dlp's reason printed as one line.
+- Without a usable audio device (or with `--no-audio`), or when the audio track
+  turns out to be empty, the video plays silently on a wall clock. A video
+  track that ends before its first frame is an error.
+- There is no seeking or pausing in a stream, and nothing is saved to the
+  library. Use `import` on a downloaded file for that.
 
 ## Embedding
 
@@ -370,7 +438,7 @@ overrides and ranks the combinations; the grid format is in the feature map.
 | `crates/auto-ascii-format` | the ASCI container (zstd + temporal delta, fast seek) |
 | `crates/auto-ascii-term` | `Backend` trait, ANSI backend, capability probe, simulator |
 | `crates/auto-ascii-factory` | the offline factory (lib + bin), eval and sweep drivers |
-| `crates/auto-ascii-cli` | the `auto-ascii` CLI |
+| `crates/auto-ascii-cli` | the `auto-ascii` CLI, including `stream` (yt-dlp + ffmpeg + cpal) |
 | `crates/auto-ascii-eval` | metrics, synthetic fixtures, report schema |
 | `scripts/eval.sh` | the gate: tests, clippy, resize fuzz, perf gates, corpus eval |
 | `tools/` | `prep_video.py` (canvas-normalize a source video), `soak.py` (resize-storm soak) |

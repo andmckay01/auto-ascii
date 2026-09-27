@@ -13,11 +13,19 @@ workspace = true
 [dependencies]
 auto-ascii = { path = "../auto-ascii", version = "0.2.0" }
 auto-ascii-factory = { path = "../auto-ascii-factory" }
+auto-ascii-core = { workspace = true }
+auto-ascii-term = { workspace = true }
 auto-ascii-format = { workspace = true }
 clap = { workspace = true }
+cpal = { version = "0.18", optional = true }
+libc = { workspace = true }
 memmap2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[features]
+default = ["audio"]
+audio = ["dep:cpal"]
 
 [dev-dependencies]
 auto-ascii-eval = { workspace = true }

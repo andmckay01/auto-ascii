@@ -123,6 +123,14 @@ impl ShotDetector {
         self.frames += 1;
     }
 
+    pub fn open_levels(&self) -> Option<Levels> {
+        lut::percentile_levels_pct(&self.shot_hist, self.lo_pct, self.hi_pct)
+    }
+
+    pub fn open_shot_start(&self) -> u32 {
+        self.shot_start
+    }
+
     /// Close the trailing shot and return all shots in frame order.
     /// Empty iff no frames were pushed.
     pub fn finish(mut self) -> Vec<Shot> {

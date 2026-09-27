@@ -1118,3 +1118,221 @@ fn an_uppercase_toml_path_is_a_composition() {
     assert!(err.contains("ghost"), "stderr:\n{err}");
     assert!(!err.contains("not a valid ASCI asset"), "stderr:\n{err}");
 }
+
+#[test]
+fn stream_help_lists_its_flags() {
+    let s = Scratch::new("streamhelp");
+    let text = ok(&cli(&s, &["stream", "--help"]));
+    for flag in ["--codec", "--palette", "--max-height", "--no-audio", "--sim", "--sim-dump", "URL|TERMS"] {
+        assert!(text.contains(flag), "{flag} missing from:\n{text}");
+    }
+    assert!(text.contains("yt-dlp"), "{text}");
+}
+
+#[test]
+fn stream_refuses_json_without_sim() {
+    let s = Scratch::new("streamjson");
+    let out = cli(&s, &["--json", "stream", "https://www.youtube.com/watch?v=jNQXAC9IVRw"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stdout_of(&out).is_empty(), "stdout:\n{}", stdout_of(&out));
+    let v: serde_json::Value = serde_json::from_str(stderr_of(&out).trim()).unwrap();
+    assert_eq!(
+        v["error"],
+        "stream is interactive; run it without --json (or add --sim for one JSON stats line)"
+    );
+    assert!(!s.home().exists(), "stream --json touched the home folder");
+    let out = cli(&s, &["stream", "zoo", "--sim-dump", "/tmp/x.txt"]);
+    assert_eq!(out.status.code(), Some(2), "--sim-dump needs --sim");
+}
+
+fn fake_ytdlp(s: &Scratch, body: &str) -> PathBuf {
+    let path = s.0.join("yt-dlp");
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    path
+}
+
+fn stream_cli(s: &Scratch, ytdlp: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
+        .env("AUTO_ASCII_HOME", s.home())
+        .env("AUTO_ASCII_YTDLP", ytdlp)
+        .args(args)
+        .output()
+        .expect("failed to run the auto-ascii binary")
+}
+
+#[test]
+fn stream_sim_plays_a_resolved_video_to_the_end_and_cleans_up() {
+    let s = Scratch::new("streamsim");
+    let video = s.0.join("src").join("long.avi");
+    auto_ascii_eval::fixtures::write_bgr24_avi(&video, FIX_W, FIX_H, FIX_FPS, (0..45).map(fixture_frame)).unwrap();
+    let json = serde_json::json!({
+        "_type": "video", "id": "localfixture", "title": "Local fixture", "duration": 1.5,
+        "fps": 30, "width": FIX_W, "height": FIX_H, "url": video, "format_id": "avi",
+        "protocol": "file", "vcodec": "rawvideo", "acodec": "none",
+    });
+    let ytdlp = fake_ytdlp(&s, &format!("cat <<'JSON'\n{json}\nJSON"));
+    let dump = s.0.join("dump.txt");
+    let out = stream_cli(
+        &s,
+        &ytdlp,
+        &[
+            "stream",
+            "https://www.youtube.com/watch?v=localfixture",
+            "--sim",
+            "60x20:30",
+            "--sim-dump",
+            dump.to_str().unwrap(),
+        ],
+    );
+    let v = json_of(&out);
+    assert_eq!(v["exit_reason"], "eof", "{v}");
+    assert_eq!(v["id"], "localfixture");
+    assert_eq!(v["error"], serde_json::Value::Null);
+    let rendered = v["frames_rendered"].as_u64().unwrap();
+    let dropped = v["frames_dropped"].as_u64().unwrap();
+    assert!(rendered > 30, "{v}");
+    assert_eq!(rendered + dropped, 45, "every decoded frame is shown or counted as dropped: {v}");
+    assert!(v["max_drift_ms"].as_f64().unwrap() < 1000.0 / 30.0 + 15.0, "{v}");
+    assert_eq!(v["children_spawned"], 2, "yt-dlp and one ffmpeg: {v}");
+    assert_eq!(v["children_alive"], 0);
+    assert_eq!(v["temp_dir_removed"], true);
+    assert_eq!(v["temp_files_written"], 0, "nothing is written to disk: {v}");
+    let stages: Vec<(String, u64)> = v["loader"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["stage"].as_str().unwrap().to_string(), s["percent"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(stages.first().map(|s| s.1), Some(5), "{stages:?}");
+    assert!(stages.contains(&("media_ready".to_string(), 30)), "{stages:?}");
+    assert_eq!(stages.last(), Some(&("buffered".to_string(), 100)), "{stages:?}");
+    assert!(stages.windows(2).all(|w| w[0].1 <= w[1].1), "{stages:?}");
+    assert!(v["notes"].to_string().contains("no audio track"), "{v}");
+    let text = std::fs::read_to_string(&dump).unwrap();
+    assert!(text.starts_with("== loader ("), "{text}");
+    assert!(text.contains("loading...") && text.contains("== picture (frame "), "{text}");
+}
+
+#[test]
+fn stream_surfaces_a_yt_dlp_refusal_as_one_clean_line() {
+    let s = Scratch::new("streamerr");
+    let ytdlp = fake_ytdlp(
+        &s,
+        "echo 'ERROR: [youtube] abcDEF12345: Sign in to confirm your age. This video may be inappropriate for some users.' >&2\nexit 1",
+    );
+    let url = "https://www.youtube.com/watch?v=abcDEF12345";
+    let out = stream_cli(&s, &ytdlp, &["--json", "stream", url, "--sim", "40x12:20"]);
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_str(stdout_of(&out).trim()).unwrap();
+    assert_eq!(v["exit_reason"], "error");
+    assert_eq!(v["children_alive"], 0);
+    assert_eq!(v["temp_dir_removed"], true);
+    let reason = "yt-dlp: Sign in to confirm your age. This video may be inappropriate for some users.";
+    let e: serde_json::Value = serde_json::from_str(stderr_of(&out).trim()).unwrap();
+    assert_eq!(e["error"], reason);
+
+    let out = stream_cli(&s, &ytdlp, &["stream", url, "--sim", "40x12:20"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stderr_of(&out), format!("auto-ascii: {reason}\n"));
+
+    let missing = s.0.join("no-such-yt-dlp");
+    let out = stream_cli(&s, &missing, &["stream", url, "--sim", "40x12:20"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr_of(&out).starts_with("auto-ascii: failed to run yt-dlp (is it installed and on PATH?)"),
+        "{}",
+        stderr_of(&out)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn stream_survives_repeated_signals_and_still_cleans_up() {
+    let s = Scratch::new("streamsig");
+    let ytdlp = fake_ytdlp(&s, "exec sleep 30");
+    let child = Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
+        .env("AUTO_ASCII_HOME", s.home())
+        .env("AUTO_ASCII_YTDLP", &ytdlp)
+        .args(["stream", "https://www.youtube.com/watch?v=abcDEF12345", "--sim", "40x12:60"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id() as i32;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let kids = Command::new("pgrep").args(["-P", &pid.to_string()]).output().unwrap();
+        if !kids.stdout.is_empty() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "yt-dlp never started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "killed outright instead of cleaning up: {:?}", out.status);
+    let v: serde_json::Value = serde_json::from_str(stdout_of(&out).trim())
+        .unwrap_or_else(|e| panic!("no stats line ({e}): {}", stdout_of(&out)));
+    assert_eq!(v["exit_reason"], "signal");
+    assert_eq!(v["children_alive"], 0);
+    assert_eq!(v["temp_dir_removed"], true);
+    assert_eq!(stderr_of(&out), "auto-ascii: stopped by signal 15\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_third_signal_forces_an_exit_that_still_leaves_nothing_behind() {
+    use std::os::unix::process::ExitStatusExt;
+    let s = Scratch::new("streamsig3");
+    let ytdlp = fake_ytdlp(&s, "exec sleep 30");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
+        .env("AUTO_ASCII_HOME", s.home())
+        .env("AUTO_ASCII_YTDLP", &ytdlp)
+        .args(["stream", "https://www.youtube.com/watch?v=abcDEF12345", "--sim", "40x12:60"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id() as i32;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let kid: i32 = loop {
+        let kids = Command::new("pgrep").args(["-P", &pid.to_string()]).output().unwrap();
+        if let Some(first) = String::from_utf8_lossy(&kids.stdout).split_whitespace().next() {
+            break first.parse().unwrap();
+        }
+        assert!(std::time::Instant::now() < deadline, "yt-dlp never started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    unsafe {
+        libc::kill(pid, libc::SIGSTOP);
+        libc::kill(pid, libc::SIGHUP);
+        libc::kill(pid, libc::SIGINT);
+        libc::kill(pid, libc::SIGTERM);
+        libc::kill(pid, libc::SIGCONT);
+    }
+    let status = child.wait().unwrap();
+    assert!(status.signal().is_some(), "three signals must force the exit: {status:?}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while unsafe { libc::kill(kid, 0) } == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_ne!(unsafe { libc::kill(kid, 0) }, 0, "the forced exit left yt-dlp running");
+    let prefix = format!("auto-ascii-stream-{pid}-");
+    let left: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .collect();
+    assert!(left.is_empty(), "the forced exit left its scratch dir: {left:?}");
+}

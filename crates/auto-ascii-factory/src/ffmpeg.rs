@@ -17,6 +17,14 @@ use std::thread::JoinHandle;
 
 pub type BoxErr = Box<dyn std::error::Error>;
 
+pub fn missing_tool(tool: &str, e: &std::io::Error) -> String {
+    format!("failed to run {tool} (is it installed and on PATH?): {e}")
+}
+
+pub fn rawvideo_filter(w: u16, h: u16, fps: &str) -> String {
+    format!("scale={w}:{h}:flags=area,fps={fps},format=rgb24")
+}
+
 /// What `ffprobe` told us about the input (just enough to validate and
 /// print an info line).
 #[derive(Clone, Debug)]
@@ -35,7 +43,7 @@ pub fn probe(input: &Path) -> Result<ProbeInfo, BoxErr> {
         .arg(input)
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| format!("failed to run ffprobe (is it installed and on PATH?): {e}"))?;
+        .map_err(|e| missing_tool("ffprobe", &e))?;
     if !out.status.success() {
         return Err(format!(
             "ffprobe failed on {} ({}): {}",
@@ -104,14 +112,11 @@ impl FrameStream {
         }
         cmd.arg("-i").arg(p.input);
         cmd.args(["-map", "0:v:0"]);
-        cmd.arg("-vf")
-            .arg(format!("scale={}:{}:flags=area,fps={},format=rgb24", p.w, p.h, p.fps));
+        cmd.arg("-vf").arg(rawvideo_filter(p.w, p.h, &p.fps.to_string()));
         cmd.args(["-f", "rawvideo", "-"]);
         cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("failed to run ffmpeg (is it installed and on PATH?): {e}"))?;
+        let mut child = cmd.spawn().map_err(|e| missing_tool("ffmpeg", &e))?;
         let stdout = child.stdout.take().expect("stdout was piped");
         let mut stderr = child.stderr.take().expect("stderr was piped");
         let stderr_thread = std::thread::spawn(move || {

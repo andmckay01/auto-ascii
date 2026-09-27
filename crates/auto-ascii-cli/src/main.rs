@@ -1,6 +1,7 @@
 mod composition;
 mod home;
 mod library;
+mod stream;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -48,6 +49,9 @@ macro_rules! out {
 const AGENT_GUIDE: &str = include_str!("../../../docs/AGENT-GUIDE.md");
 
 const PLAY_IS_INTERACTIVE: &str = "play is interactive; run it without --json";
+
+const STREAM_IS_INTERACTIVE: &str =
+    "stream is interactive; run it without --json (or add --sim for one JSON stats line)";
 
 #[derive(Parser)]
 #[command(
@@ -131,6 +135,33 @@ enum Cmd {
         /// A path if one exists, else `library/<target>.ascii`, else
         /// `compositions/<target>.toml`.
         target: String,
+    },
+    #[command(
+        about = "Play the first YouTube video behind a link (or search terms) as live ASCII with sound, streamed, never downloaded. Needs yt-dlp and ffmpeg on PATH",
+        after_help = "Keys: q / Esc / Ctrl-C quit (also while loading), / cycles the glyph codec."
+    )]
+    Stream {
+        #[arg(
+            required = true,
+            num_args = 1..,
+            value_name = "URL|TERMS",
+            help = "A video, playlist, channel or search-results URL, or plain search terms (the first result plays)"
+        )]
+        input: Vec<String>,
+        #[arg(long, value_name = "NAME", value_parser = parse_codec, default_value = "ascii", help = codec_help())]
+        codec: auto_ascii::Codec,
+        #[arg(long, value_enum, default_value_t = PaletteArg::Auto, help = "Charset tier: auto (from the terminal probe), ascii, unicode or braille")]
+        palette: PaletteArg,
+        #[arg(long, value_name = "PX", default_value_t = 480, value_parser = clap::value_parser!(u32).range(144..=4320), help = "Tallest video format to stream")]
+        max_height: u32,
+        #[arg(long, help = "Play the picture only, on a wall clock")]
+        no_audio: bool,
+        #[arg(long, value_name = "COLSxROWS:SECONDS", help = "Headless run against a simulated terminal for at most SECONDS; audio is decoded into a real-time null sink; prints one JSON stats line")]
+        sim: Option<String>,
+        #[arg(long, value_name = "PATH", requires = "sim", help = "With --sim: write one loader frame and one picture frame as text to PATH")]
+        sim_dump: Option<PathBuf>,
+        #[arg(long, value_name = "BROWSER", help = "Let yt-dlp read this browser's YouTube cookies (e.g. for age-gated videos); off by default, and yt-dlp config files are never read")]
+        cookies_from_browser: Option<String>,
     },
     /// Print the embedded agent guide.
     AgentGuide,
@@ -256,6 +287,18 @@ fn run(cli: &Cli) -> Result<(), BoxErr> {
         }
         Cmd::Compose { cmd } => run_compose(cli, cmd),
         Cmd::Play { target } => cmd_play(cli, target),
+        Cmd::Stream { input, codec, palette, max_height, no_audio, sim, sim_dump, cookies_from_browser } => {
+            let opts = StreamOpts {
+                codec: *codec,
+                palette: *palette,
+                max_height: *max_height,
+                no_audio: *no_audio,
+                sim: sim.as_deref(),
+                sim_dump: sim_dump.as_deref(),
+                cookies_from_browser: cookies_from_browser.as_deref(),
+            };
+            cmd_stream(cli, input, &opts)
+        }
         Cmd::AgentGuide => cmd_agent_guide(cli),
         Cmd::Home => cmd_home(cli, &Home::resolve()?),
     }
@@ -725,6 +768,68 @@ fn cmd_play(cli: &Cli, target: &str) -> Result<(), BoxErr> {
         }
         Target::Composition(path) => play_composition(&path),
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum PaletteArg {
+    Auto,
+    Ascii,
+    Unicode,
+    Braille,
+}
+
+impl From<PaletteArg> for auto_ascii::PaletteChoice {
+    fn from(p: PaletteArg) -> auto_ascii::PaletteChoice {
+        match p {
+            PaletteArg::Auto => auto_ascii::PaletteChoice::Auto,
+            PaletteArg::Ascii => auto_ascii::PaletteChoice::Ascii,
+            PaletteArg::Unicode => auto_ascii::PaletteChoice::Unicode,
+            PaletteArg::Braille => auto_ascii::PaletteChoice::Braille,
+        }
+    }
+}
+
+fn parse_codec(name: &str) -> Result<auto_ascii::Codec, String> {
+    auto_ascii::Codec::from_name(name)
+        .ok_or_else(|| format!("unknown codec {name:?} (known: {})", auto_ascii::Codec::names(", ")))
+}
+
+fn codec_help() -> String {
+    format!(
+        "Glyph codec: {} (default ascii); `/` cycles it while playing",
+        auto_ascii::Codec::names(", ")
+    )
+}
+
+struct StreamOpts<'a> {
+    codec: auto_ascii::Codec,
+    palette: PaletteArg,
+    max_height: u32,
+    no_audio: bool,
+    sim: Option<&'a str>,
+    sim_dump: Option<&'a Path>,
+    cookies_from_browser: Option<&'a str>,
+}
+
+fn cmd_stream(cli: &Cli, input: &[String], opts: &StreamOpts<'_>) -> Result<(), BoxErr> {
+    if cli.json && opts.sim.is_none() {
+        return Err(STREAM_IS_INTERACTIVE.into());
+    }
+    let sim = opts.sim.map(stream::parse_sim).transpose()?;
+    let input = input.join(" ");
+    if input.trim().is_empty() {
+        return Err("stream needs a URL or search terms".into());
+    }
+    stream::run(&stream::StreamArgs {
+        input,
+        codec: opts.codec,
+        palette: opts.palette.into(),
+        max_height: opts.max_height,
+        no_audio: opts.no_audio,
+        sim,
+        sim_dump: opts.sim_dump.map(Path::to_path_buf),
+        cookies_from_browser: opts.cookies_from_browser.map(str::to_string),
+    })
 }
 
 fn cmd_agent_guide(cli: &Cli) -> Result<(), BoxErr> {
