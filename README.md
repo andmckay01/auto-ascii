@@ -122,7 +122,8 @@ on a dim tint of its cell's colour, so faces and midtones hold their shape;
 `ascii` is letters with only printable ASCII and no blocks in the picture
 (the controls overlay is the same as in the other codecs). Behind each
 character it paints a dim shade of the character's own colour, the way
-letters does, with its exact current-tone tint curve and colour preserved.
+letters does, with letters' exact current-tone foreground: each channel is
+clipped at 255, so highlights bleach toward white exactly where letters' do.
 “Not a full pixel” means printable ASCII ink, unshaded spaces, background
 channels at most 154/255, and background linear luminance at most 0.375 times
 the foreground as sent. The character stays clearly brighter than its shade.

@@ -3074,3 +3074,21 @@ frames, and converges nearer smoothed tones that sit at least 4 units inside
 another ramp step after `min(h/2, 63) + 1` frames (`CellState::tone_age`:
 bit 7 down, bit 6 slow path, bits 0–5 count). The full rule and its
 measurements are in [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).
+
+ASCII dynamic range (2026-09-27; supersedes the foreground rule of the ASCII
+warmth update above, d5e2066's "no whitening"): McKay asked that ascii glyph
+brightness and darkness match letters. `codec::letters::tint(c, n)` is now
+the one glyph foreground for both codecs: gain `192 + coverage(n)·320/256`
+(Q8), each channel `min(255, v·gain >> 8)`. A colour keeps its hue until
+channels saturate, so only true highlights bleach, as in letters; the old
+common-channel gamut limit is gone. The shade rule and cap are unchanged;
+clipping only raises Y(fg), so it only loosens the 0.375 contrast cap. At
+256 colours a clipped highlight can quantize to white (skin at tone 255 →
+xterm 231), which the hue-family rule then limited to grays; `hue_near` now
+accepts any capped `SHADES_256` entry when the quantized glyph's OKLab chroma
+is below `SHADE_HUE_MIN_CHROMA` (a white glyph has no hue to clash with), so
+the nearest-to-ideal rule keeps letters' warm shade there (skin → 135,95,95)
+and gray sources keep gray. Chromatic glyphs are still hue-checked against
+what is on screen. This 256-colour rule is a McKay decision; the
+conservative alternative is gray shades under white glyphs. Glyph rows do
+not change; the two ascii goldens re-bless colour hashes only.

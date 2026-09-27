@@ -6,6 +6,11 @@ shade uses letters' exact tone-32 curve and 154/256 gain. Foreground uses its
 gain with uniform gamut limiting; current-tone colour and bounded glyph
 settling are preserved.
 
+Superseded 2026-09-27 (foreground only): McKay asked for letters' highlight
+dynamics, so ASCII now uses letters' own per-channel clipped foreground rather
+than the uniform gamut limit measured here. The shade rule and cap below are
+unchanged; see the dated entry at the end of INTERFACES.md.
+
 A picture cell is never a full pixel: it is printable ASCII 0x20–0x7E,
 spaces are unshaded, background channels are <=154 and linear Rec.709
 Y(background)<=0.375*Y(foreground as sent). Truecolor keeps every nonblack

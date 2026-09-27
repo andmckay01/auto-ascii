@@ -2,7 +2,9 @@
 
 use crate::cell::{Cell, Rgb, attrs};
 use crate::codec::GlyphCodec;
-use crate::codec::letters::{EDGE, HALF_MASK, HALF_NONE, HALF_SHIFT, HALF_TOP, JUNCTION, half_variant};
+use crate::codec::letters::{
+    EDGE, HALF_MASK, HALF_NONE, HALF_SHIFT, HALF_TOP, JUNCTION, coverage, half_variant, tint,
+};
 use crate::compose::{CellInputs, ComposeParams, boost, h_flags, layer, shade};
 use crate::hysteresis::{CellState, IDX_UNSET, cell_flags, edge_gate};
 use crate::orient::{bin_with_guard, coherence_at_least, debias};
@@ -176,10 +178,11 @@ fn neutral(c: Rgb) -> bool {
 #[inline]
 fn hue_near(glyph: Lab, shade: Lab) -> bool {
     let c2 = |x: Lab| x.a * x.a + x.b * x.b;
+    if c2(glyph) < SHADE_HUE_MIN_CHROMA * SHADE_HUE_MIN_CHROMA {
+        return true;
+    }
     let dot = glyph.a * shade.a + glyph.b * shade.b;
-    c2(glyph) >= SHADE_HUE_MIN_CHROMA * SHADE_HUE_MIN_CHROMA
-        && dot > 0.0
-        && dot * dot >= SHADE_HUE_COS2 * c2(glyph) * c2(shade)
+    dot > 0.0 && dot * dot >= SHADE_HUE_COS2 * c2(glyph) * c2(shade)
 }
 
 pub fn in_hue_family(glyph: Rgb, shade: Rgb) -> bool {
@@ -303,20 +306,6 @@ fn ideal_backing(c: Rgb, n: u8, glyph: char, seen: Rgb) -> Option<Rgb> {
         scaled(c, lo)
     };
     (bg.r.max(bg.g).max(bg.b) >= SHADE_FLOOR).then_some(bg)
-}
-
-#[inline]
-fn coverage(n: u8) -> u32 {
-    let x = ((n.saturating_sub(32) as u32) << 8) / 223;
-    (x + ((x * x * (768 - 2 * x)) >> 16)) >> 1
-}
-
-#[inline]
-fn tint(c: Rgb, n: u8) -> Rgb {
-    let m = c.r.max(c.g).max(c.b) as u32;
-    let gain = (192 + ((coverage(n) * 320) >> 8)).min((255 << 8) / m.max(1));
-    let scale = |v: u8| ((v as u32 * gain) >> 8) as u8;
-    Rgb::new(scale(c.r), scale(c.g), scale(c.b))
 }
 
 #[inline]
@@ -604,25 +593,46 @@ mod tests {
     }
 
     #[test]
-    fn tint_and_backing_match_letters_curve_without_whitening() {
-        for c in [Rgb::new(255, 212, 160), Rgb::new(40, 20, 10), Rgb::new(255, 40, 0), Rgb::WHITE] {
-            let mut last = 0;
+    fn tint_and_backing_match_letters_curve_with_per_channel_clip() {
+        let colors = [Rgb::new(255, 212, 160), Rgb::new(40, 20, 10), Rgb::new(255, 40, 0), Rgb::new(20, 60, 255), Rgb::WHITE];
+        for c in colors {
+            let mut last = Rgb::BLACK;
             for n in 0..=255 {
                 let x = ((n as u32).saturating_sub(32) << 8) / 223;
                 let cov = (x + ((x*x*(768-2*x)) >> 16)) >> 1;
                 let expected = scaled(c, cov * 154);
                 let bg = backing(c, n, '@', Rgb::WHITE, ColorDepth::True);
                 assert_eq!(bg.unwrap_or(Rgb::BLACK), expected);
+                let gain = 192 + ((cov * 320) >> 8);
+                let clip = |v: u8| ((v as u32 * gain) >> 8).min(255) as u8;
                 let fg = tint(c, n);
-                assert!(fg.r >= last);
-                last = fg.r;
-                for (v, w) in [(c.g, fg.g), (c.b, fg.b)] {
-                    assert!((w as u32 * c.r as u32).abs_diff(v as u32 * fg.r as u32) <= 255);
-                }
+                assert_eq!(fg, Rgb::new(clip(c.r), clip(c.g), clip(c.b)), "{c:?} {n}");
+                assert!(fg.r >= last.r && fg.g >= last.g && fg.b >= last.b, "{c:?} {n}");
+                last = fg;
             }
         }
         assert_eq!(backing(Rgb::new(40, 20, 10), 64, '@', Rgb::WHITE, ColorDepth::True), Some(Rgb::new(2, 1, 0)));
-        assert_eq!(tint(Rgb::new(160, 120, 80), 255), Rgb::new(255, 191, 127));
+        assert_eq!(tint(Rgb::new(160, 120, 80), 255), Rgb::new(255, 240, 160));
+        assert_eq!(tint(Rgb::new(255, 40, 0), 255), Rgb::new(255, 80, 0));
+        assert_eq!(tint(Rgb::new(20, 60, 255), 255), Rgb::new(40, 120, 255));
+        assert_eq!(tint(Rgb::new(40, 20, 10), 255), Rgb::new(80, 40, 20));
+    }
+
+    #[test]
+    fn a_clipped_white_glyph_keeps_a_warm_capped_shade() {
+        let skin = Rgb::new(200, 150, 120);
+        let i = CellInputs { chroma: Some(skin), ..inp(255, 255) };
+        let t = cold(&i);
+        assert_eq!(t.fg, Rgb::new(255, 255, 240));
+        assert_eq!(t.bg, scaled(skin, coverage(255) * SHADE_Q8), "letters' bg: a scaled copy of the chroma");
+        assert!(cell_within_cap(&t, ColorDepth::True), "{t:?}");
+        let set = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::C256, 100);
+        let q = step(&i, &set, &ComposeParams::default(), &mut HysteresisState::new(1, 1));
+        assert_eq!(q.bg, Rgb::new(135, 95, 95), "the warm entry letters quantizes to: {q:?}");
+        assert!(cell_within_cap(&q, ColorDepth::C256), "{q:?}");
+        let gray = CellInputs { chroma: Some(Rgb::gray(200)), ..inp(255, 255) };
+        let g = step(&gray, &set, &ComposeParams::default(), &mut HysteresisState::new(1, 1));
+        assert!(neutral(g.bg), "a gray source keeps a gray shade: {g:?}");
     }
 
     #[test]
@@ -653,8 +663,11 @@ mod tests {
                         if c.attrs & attrs::DEFAULT_BG != 0 || neutral(c.bg) {
                             continue;
                         }
-                        chromatic += 1;
                         let (seen, bg) = (oklab(ansi256_to_rgb(rgb_to_256(c.fg))), oklab(c.bg));
+                        if seen.a * seen.a + seen.b * seen.b < SHADE_HUE_MIN_CHROMA * SHADE_HUE_MIN_CHROMA {
+                            continue;
+                        }
+                        chromatic += 1;
                         let (hs, hb) = (seen.b.atan2(seen.a), bg.b.atan2(bg.a));
                         let d = (hs - hb).abs().min(core::f32::consts::TAU - (hs - hb).abs()).to_degrees();
                         assert!(d <= 30.0 + 1e-3, "{chroma:?} {n}: {c:?} is {d}° off the glyph's hue");

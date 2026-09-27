@@ -78,16 +78,24 @@ fn scaled(c: Rgb, k: u32) -> Rgb {
 }
 
 #[inline]
+pub(super) fn coverage(n: u8) -> u32 {
+    let f = BLACK_FLOOR as u32;
+    let x = ((n as u32).saturating_sub(f) << 8) / (255 - f);
+    (x + ((x * x * (768 - 2 * x)) >> 16)) >> 1
+}
+
+#[inline]
+pub(super) fn tint(c: Rgb, n: u8) -> Rgb {
+    scaled(c, (FG_MIN_Q8 + ((coverage(n) * (FG_Q8 - FG_MIN_Q8)) >> 8)) << 8)
+}
+
+#[inline]
 fn paint(c: Option<Rgb>, n: u8, set: &PaletteSet) -> (Rgb, Rgb) {
     let c = c.unwrap_or(Rgb::gray(n));
     if !set.bg_tint {
         return (ink(c), Rgb::BLACK);
     }
-    let f = BLACK_FLOOR as u32;
-    let x = ((n as u32).saturating_sub(f) << 8) / (255 - f);
-    let cov = (x + ((x * x * (768 - 2 * x)) >> 16)) >> 1;
-    let gain = FG_MIN_Q8 + ((cov * (FG_Q8 - FG_MIN_Q8)) >> 8);
-    (scaled(c, gain << 8), scaled(c, cov * BG_Q8))
+    (tint(c, n), scaled(c, coverage(n) * BG_Q8))
 }
 
 #[inline]

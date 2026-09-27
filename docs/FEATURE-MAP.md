@@ -148,10 +148,12 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   (0.375) of the glyph's relative luminance, spaces unshaded (`SHADE_BLANK_CEIL` 0);
   scaled down (hue kept) to fit, dropped if its brightest channel ends below `SHADE_FLOOR` (1).
   The exact letters curve starts at tone 32 with gain 154/256; no neutralization.
-  Foreground uses letters' gain with uniform gamut limiting, preserving colour.
+  Foreground is letters' own `tint` (192..512 Q8 gain, each channel clipped at 255), so
+  highlights bleach where channels saturate, as in letters.
   Truecolor sends that shade; 256-color sends the nearest (OKLab, chroma plane weighted 2x) of
   `SHADES_256` (grays 8-148 and cube levels 0/95/135) that passes the cap against the
-  quantized glyph color and is `in_hue_family` with it (gray, or within 30° of its hue).
+  quantized glyph color and is `in_hue_family` with it (gray, or within 30° of its hue; any
+  capped entry under a near-neutral glyph, OKLab chroma below 0.03).
   16-color and mono paint no shade. Unshaded cells are flagged `attrs::DEFAULT_BG`, so the painter emits SGR 49 (the
   terminal's own background); pads, gaps and everything else the player draws while `ascii` is
   active follow that rule (flow 10). Glyphs use an 18-step ramp ordered by JetBrains Mono
