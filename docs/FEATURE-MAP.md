@@ -4,7 +4,8 @@ This map traces how a video becomes ASCII art in a terminal. It covers the offli
 (ffmpeg ingest → feature planes → `.ascii` container), the runtime player (probe → letterbox →
 resample → glyph codec → hysteresis → present), the interactive controls (transport, dials,
 codecs, overlays), compositions, the `auto-ascii` CLI and its library folder, the embedding API,
-and the eval/perf gates. It doesn't cover the research digests under `docs/research/`.
+and the eval/perf gates, and streaming a YouTube link live (flow 16). It doesn't cover the research
+digests under `docs/research/`.
 
 Verified against the tree at `6526f3f`. The commit that adds this map only removes comments, so
 behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
@@ -19,7 +20,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **One pipeline, many callers.** `crates/auto-ascii/src/pipeline.rs` `Player` is the only frame
   pipeline. The interactive `Player` (`crates/auto-ascii/src/player.rs`), the terminal-free
   `RenderSession` (`crates/auto-ascii/src/session.rs`), the `--sim` harness, the factory's
-  `eval`, the resize fuzz, the benches and the goldens all drive it.
+  `eval`, `auto-ascii stream` (live planes via `pipeline::Player::live`), the resize fuzz, the
+  benches and the goldens all drive it.
 - **Deterministic by construction.** The factory writes the same bytes for the same input and
   params. The engine (`auto-ascii-core`) is integer-only on the hot path, with no clock and no
   I/O. Tests pin the output byte for byte.
@@ -363,7 +365,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 ### 12. The `auto-ascii` CLI and the library folder
 - **Does:** imports videos into a visible home folder, lists and describes them, cuts and
   stitches them, plays them. Commands other than `play` and `compose play` have a `--json` mode.
-- **User:** `auto-ascii home | import | list | info | cut | compose … | play | agent-guide`.
+- **User:** `auto-ascii home | import | list | info | cut | compose … | play | stream |
+  agent-guide` (`stream` is flow 16).
   The home is `~/auto-ascii` or `$AUTO_ASCII_HOME`, holding `library/`, `compositions/` and
   `exports/`.
 - **Code:** `crates/auto-ascii-cli/src/main.rs` (`Cli`, `Cmd`, `ComposeCmd`, `cmd_import` →
@@ -383,6 +386,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - `import` records the source's SHA-256 (`auto_ascii_factory::sha256_file`, streamed) in the
     `<name>.json` sidecar.
   - `play` is interactive only (no `--json`). For headless checks use `auto-ascii-player --sim`.
+    `stream` refuses `--json` the same way unless `--sim` is given.
 
 ### 13. Embedding: `Player` and `RenderSession`
 - **Does:** the published library API.
@@ -513,6 +517,66 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     is not implemented. No test opens an audio device: tests drive `Output::fill` by hand or use
     the null sink, and the pty tests pass `--no-audio`.
 
+### 17. Stream a YouTube link (`auto-ascii stream`)
+- **Does:** plays the first video behind a YouTube link (video, playlist, channel or tab,
+  search-results URL) or behind plain search terms (`ytsearch1:`). The picture renders as live
+  ASCII and the sound plays through the default output device. Nothing is downloaded or written
+  to disk. A centred 0–100% loader, brightening left to right with a travelling shimmer, shows
+  while it resolves and buffers, and again while it re-buffers.
+- **User:** `auto-ascii stream <URL|TERMS…> [--codec pixels|letters|ascii] [--palette P]
+  [--max-height 480] [--no-audio] [--sim COLSxROWS:SECONDS [--sim-dump PATH]]`. Keys: `q` / `Esc`
+  / `Ctrl-C` quit at any time, `/` cycles the codec. `--sim` runs the whole pipeline (real
+  network, real ffmpeg, audio into a real-time null sink) against `SimBackend` and prints one JSON
+  stats line: id, title, fps, frames rendered and dropped, max drift, samples consumed, loader
+  stages, children alive, temp dir removed, exit reason.
+- **Code:** `crates/auto-ascii-cli/src/main.rs` `Cmd::Stream` → `cmd_stream` →
+  `crates/auto-ascii-cli/src/stream/mod.rs` `run` / `session`:
+  1. **Resolve** (`stream/ytdlp.rs`): `Input::classify` sorts the input by URL route.
+     `YtDlp::resolve` uses `--flat-playlist -I 1 -J` for lists (following nested tab playlists at
+     most `MAX_DEPTH` levels down) and then `--no-playlist -f <selector> -J` for the video.
+     `media_from_json` keeps the requested tracks plus an HLS fallback per track, and
+     `clean_error` makes yt-dlp's `ERROR:` line the message. The program comes from
+     `AUTO_ASCII_YTDLP`, else `yt-dlp`.
+  2. **Decode** (`stream/decode.rs` `input_args` / `run_ffmpeg`, `stream/video.rs`,
+     `stream/audio.rs`): one ffmpeg per track reads the URL with yt-dlp's headers. Video comes out
+     as `rawvideo_filter` rgb24 at `plane_dims` (the factory's area, the source's shape) and
+     `stream_fps`; audio as f32 at the device rate. HTTP 403 restarts that track on the next
+     candidate at the current position (`-ss`).
+  3. **Features:** `crates/auto-ascii-factory/src/live.rs` `LiveExtractor::push` runs the
+     factory's `FeatureExtractor::process` with online `ShotDetector` cuts. Levels come from the
+     open shot's pooled histogram (`ShotDetector::open_levels`).
+  4. **Render:** `crates/auto-ascii/src/pipeline.rs` `Player::live` + `load_live` feed the same
+     resample → NORM → `compose_frame_codec` → present path as an asset, with the same hysteresis,
+     letterbox and `drain_events` reflow.
+  5. **Sync** (`stream/clock.rs`): `AudioClock` is the output's consumed frames over the rate,
+     minus cpal's playback-minus-callback latency, interpolated only inside the last consumed
+     chunk. `MonotonicClock` covers `--no-audio`. `pick_frame` shows the newest frame with
+     pts ≤ now and drops the older ones.
+  6. **Audio out** (`stream/audio.rs`): the bounded `Ring` feeds `Output::fill`, which is shared
+     by the cpal callback (`device`, behind the CLI's default `audio` feature) and the `--sim`
+     `NullSink`.
+  7. **Loader** (`stream/loader.rs`): `percent(LoadState)` is the stage map (resolve 0–30, first
+     bytes 30–50, buffer fill 50–100) and `Progress` keeps it monotonic. `draw_loader` is a pure
+     grid renderer; `LoaderStyle::for_codec` picks the glyphs.
+  8. **Cleanup** (`stream/procs.rs`): `Procs` / `ProcsGuard` own every child in its own process
+     group, and `ScratchDir` is the children's private working directory. The stream's
+     SIGINT/SIGTERM/SIGHUP handlers only set a flag, and the loop exits through the guards.
+- **Invariants:**
+  - No media file is written: children run in a private 0700 temp dir, which `--sim` reports as
+    empty (`temp_files_written`) and removed.
+  - Every child is killed (whole process group) and reaped on every exit path. `--sim` reports
+    `children_alive` from `kill(-pgid, 0)`.
+  - The picture never runs ahead of the sound. Audio time advances only on samples the output
+    consumed, so an underrun freezes the picture, and a stall longer than `STALL_SECS` shows the
+    loader until the buffer refills. When the audio ends first, the clock continues on the wall.
+  - Memory is bounded: about `VIDEO_QUEUE_SECS` of feature frames (recycled buffers) and
+    `AUDIO_RING_SECS` of PCM. Full queues block the pipes and so stop network reads.
+  - Loader progress is real and monotonic: `percent` only reads stage flags and buffer fills.
+    Under `ascii` the loader is printable ASCII on the default background, brightening through
+    the fg colour and a `:-=+*#%@` density ramp.
+  - Build output is unchanged: `LiveExtractor` reuses `FeatureExtractor` verbatim, and the
+    ffmpeg helpers (`missing_tool`, `rawvideo_filter`) produce the same arguments as before.
+
 ## Data & wire
 
 **Feature planes** (`crates/auto-ascii-format/src/header.rs` `plane_id`; producer
@@ -626,7 +690,8 @@ values = [
 | Fuzz / perf | `crates/auto-ascii/tests/resize_fuzz.rs`, `crates/auto-ascii/tests/perf_fps.rs`, `crates/auto-ascii/benches/pipeline.rs` |
 | Factory | `crates/auto-ascii-factory/tests/build_e2e.rs`, `crates/auto-ascii-factory/tests/m2_params_eval.rs` (params plumbing, byte pin, eval/sweep) |
 | Metrics | `crates/auto-ascii-eval/tests/metrics.rs` |
-| CLI | `crates/auto-ascii-cli/tests/cli.rs` |
+| CLI | `crates/auto-ascii-cli/tests/cli.rs` (`stream_*`: help, the `--json` refusal, an offline end-to-end `--sim` run over a fake yt-dlp and a local file, a clean yt-dlp error) |
+| Streaming | unit tests in `crates/auto-ascii-cli/src/stream/` (`loader.rs` snapshots, brightness and shimmer, stage mapping; `ytdlp.rs` fake-yt-dlp resolution; `clock.rs` sync; `procs.rs` cleanup; `audio.rs`, `decode.rs`, `video.rs`) and `crates/auto-ascii-factory/src/live.rs` |
 
 ## Related docs
 

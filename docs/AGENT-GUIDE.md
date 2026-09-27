@@ -1,9 +1,8 @@
 # auto-ascii for agents
 
-`auto-ascii` distills video into `.ascii` assets — feature files that play as
-ASCII art in any terminal — kept in one folder you can list, trim and stitch.
-`--json` makes stdout one JSON value; every error, a mistyped command line
-included, is `{"error": "..."}` on stderr with exit 1.
+`auto-ascii` distills video into `.ascii` assets — feature files that play as ASCII
+art in any terminal — kept in one folder you can list, trim and stitch. `--json`
+makes stdout one JSON value; every error is `{"error": "..."}` on stderr, exit 1.
 
 ## Home folder
 
@@ -29,12 +28,14 @@ with `library/` (the `<name>.ascii` clips, each with a `<name>.json` sidecar),
    `q` quits, `v` controls, `/` codec, `s` saves dials + codec as `<clip>.player.toml`.
    A bare name is the library clip first (a `.toml` path forces a composition);
    `compose export <name> [-o path]` flattens one into `exports/<name>.ascii`.
+6. **stream** — `auto-ascii stream <youtube-url | search terms>` plays the first
+   video live, with sound, saving nothing (needs `yt-dlp` + `ffmpeg`). Interactive
+   like `play`; `--sim COLSxROWS:SECS` runs it headless and prints one JSON line.
 
 ## Composition schema
 
-A TOML file that IS the source of truth — write it yourself if you prefer,
-since `compose add` only appends. File order; gaps black; later clip on top.
-Below: `intro` plays 0:00–0:10, black 0:10–0:15, `apple-1984` 0:15–0:20.
+The TOML file IS the source of truth (`compose add` only appends). File order;
+gaps black; later clip on top. `intro` plays 0:00–0:10, black, then `apple-1984`.
 
 ```toml
 schema = 1
@@ -51,10 +52,9 @@ at = "0:15"             # optional timeline position (default: end of previous c
 
 ## JSON shapes
 
-`import` and `cut` print the sidecar they wrote; `list` prints an array of it,
-with `source`/`created_unix`/`created` null when there is none, and a row with
-`asset` null plus `error` when a clip will not read. A cut's `source` is its
-slice; `compose show` prints the timeline (`overlaps` adds `under`/`over`).
+`import`/`cut` print the sidecar they wrote; `list` an array of it (`source`,
+`created_unix`, `created` null when absent; `asset` null plus `error` if unreadable).
+A cut's `source` is its slice; `compose show` the timeline (`overlaps` adds `under`/`over`).
 
 ```json
 {"name": "clip", "source": {"path": "/abs/clip.mp4", "sha256": "…", "bytes": 91234},

@@ -444,7 +444,10 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
 /// term-sized grid. All buffers are (re)allocated only in `new`/`reflow` —
 /// the hot loop is allocation-free.
 pub struct Player<'a> {
-    reader: AsciiReader<'a>,
+    reader: Option<AsciiReader<'a>>,
+    live_shot: u32,
+    live_levels: Option<PlaneLevels>,
+    live_lut_levels: Option<PlaneLevels>,
     frame_count: u32,
     src_w: u16,
     src_h: u16,
@@ -520,24 +523,73 @@ impl<'a> Player<'a> {
             return Err(Error::Asset("asset has zero frames"));
         }
         let chroma_dims = reader.plane_dims(plane_id::C);
-        let use_chroma = color != ColorDepth::Mono && chroma_dims.is_some();
-        let chroma_len = chroma_dims.map_or(0, |(w, h)| w as usize * h as usize);
         let has_edges = reader.plane_dims(plane_id::E).is_some()
             && reader.plane_dims(plane_id::EX).is_some()
             && reader.plane_dims(plane_id::EY).is_some();
         let has_h = reader.plane_dims(plane_id::H).is_some();
         let header = reader.header();
-        let (aspect_num, aspect_den) = if header.aspect_num == 0 || header.aspect_den == 0 {
-            (16, 9)
-        } else {
-            (header.aspect_num, header.aspect_den)
-        };
-        let src_len = src_w as usize * src_h as usize;
+        let aspect = (header.aspect_num, header.aspect_den);
         let fps = (f64::from(header.fps_num) / f64::from(header.fps_den.max(1))).max(1e-9);
+        let geometry = Geometry {
+            src_w,
+            src_h,
+            frame_count,
+            chroma_dims,
+            has_edges,
+            has_h,
+            aspect,
+            fps,
+        };
+        Ok(Player::with_geometry(Some(reader), &geometry, cell_aspect, repaint_full, color, glyph_tier))
+    }
+
+    pub fn live(
+        spec: &LiveSpec,
+        cell_aspect: f64,
+        repaint_full: bool,
+        color: ColorDepth,
+        glyph_tier: GlyphTier,
+    ) -> Result<Player<'a>> {
+        if spec.w < 2 || spec.h < 2 || !spec.w.is_multiple_of(2) || !spec.h.is_multiple_of(2) {
+            return Err(Error::Config(format!(
+                "live planes must be even and at least 2x2 (got {}x{})",
+                spec.w, spec.h
+            )));
+        }
+        let geometry = Geometry {
+            src_w: spec.w,
+            src_h: spec.h,
+            frame_count: spec.frame_count.max(1),
+            chroma_dims: Some((spec.w / 2, spec.h / 2)),
+            has_edges: true,
+            has_h: true,
+            aspect: (spec.aspect_num, spec.aspect_den),
+            fps: spec.fps.max(1e-9),
+        };
+        Ok(Player::with_geometry(None, &geometry, cell_aspect, repaint_full, color, glyph_tier))
+    }
+
+    fn with_geometry(
+        reader: Option<AsciiReader<'a>>,
+        g: &Geometry,
+        cell_aspect: f64,
+        repaint_full: bool,
+        color: ColorDepth,
+        glyph_tier: GlyphTier,
+    ) -> Player<'a> {
+        let Geometry { src_w, src_h, frame_count, chroma_dims, has_edges, has_h, aspect, fps } = *g;
+        let use_chroma = color != ColorDepth::Mono && chroma_dims.is_some();
+        let chroma_len = chroma_dims.map_or(0, |(w, h)| w as usize * h as usize);
+        let (aspect_num, aspect_den) =
+            if aspect.0 == 0 || aspect.1 == 0 { (16, 9) } else { aspect };
+        let src_len = src_w as usize * src_h as usize;
         let mut levels_lut = [0u8; 256];
         build_levels_lut(&mut levels_lut, None);
-        Ok(Player {
+        Player {
             reader,
+            live_shot: 0,
+            live_levels: None,
+            live_lut_levels: None,
             frame_count,
             src_w,
             src_h,
@@ -595,7 +647,7 @@ impl<'a> Player<'a> {
             paused: false,
             overlay_hide_pending: false,
             fps,
-        })
+        }
     }
 
     /// The compositor tunables currently in force — the starting position for
@@ -806,35 +858,83 @@ impl<'a> Player<'a> {
         if self.loaded == Some(frame_idx) {
             return Ok(());
         }
+        let Some(reader) = self.reader.as_mut() else {
+            return Ok(());
+        };
         let sequential = frame_idx > 0 && self.loaded == Some(frame_idx - 1);
-        Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::Y, &mut self.luma_src)?;
+        Self::load_plane(reader, sequential, frame_idx, plane_id::Y, &mut self.luma_src)?;
         if self.has_edges {
-            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::E, &mut self.e_src)?;
-            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::EX, &mut self.ex_src)?;
-            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::EY, &mut self.ey_src)?;
+            Self::load_plane(reader, sequential, frame_idx, plane_id::E, &mut self.e_src)?;
+            Self::load_plane(reader, sequential, frame_idx, plane_id::EX, &mut self.ex_src)?;
+            Self::load_plane(reader, sequential, frame_idx, plane_id::EY, &mut self.ey_src)?;
         }
         if self.has_h {
-            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::H, &mut self.h_src)?;
+            Self::load_plane(reader, sequential, frame_idx, plane_id::H, &mut self.h_src)?;
         }
         if self.use_chroma {
-            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::C, &mut self.chroma_src)?;
+            Self::load_plane(reader, sequential, frame_idx, plane_id::C, &mut self.chroma_src)?;
         }
         self.loaded = Some(frame_idx);
         Ok(())
     }
 
     fn update_levels(&mut self, frame_idx: u32) {
-        let shot = self.reader.shot_for_frame(frame_idx).map(|s| s.first_frame);
+        let Some(reader) = self.reader.as_ref() else {
+            self.update_live_levels();
+            return;
+        };
+        let shot = reader.shot_for_frame(frame_idx).map(|s| s.first_frame);
         let key = (shot, self.compose_params.shadow_lift);
         if self.lut_key != Some(key) {
             build_levels_lut_lifted(
                 &mut self.levels_lut,
-                self.reader.norm_levels(frame_idx, plane_id::Y),
+                reader.norm_levels(frame_idx, plane_id::Y),
                 key.1,
             );
             self.lut_key = Some(key);
             self.state.reset();
         }
+    }
+
+    fn update_live_levels(&mut self) {
+        let key = (Some(self.live_shot), self.compose_params.shadow_lift);
+        let fresh = self.lut_key != Some(key);
+        if fresh || self.live_lut_levels != self.live_levels {
+            build_levels_lut_lifted(&mut self.levels_lut, self.live_levels, key.1);
+            self.live_lut_levels = self.live_levels;
+            if fresh {
+                self.lut_key = Some(key);
+                self.state.reset();
+            }
+        }
+    }
+
+    pub fn load_live(&mut self, frame_idx: u32, frame: &LiveFrame<'_>) -> Result<()> {
+        if self.reader.is_some() {
+            return Err(Error::Config("load_live needs a live player (Player::live)".into()));
+        }
+        let n = self.luma_src.len();
+        let cn = self.chroma_dims.map_or(0, |(w, h)| w as usize * h as usize);
+        let sized = [frame.y, frame.e, frame.ex, frame.ey, frame.h].iter().all(|p| p.len() == n)
+            && frame.c.len() == cn * 2;
+        if !sized {
+            return Err(Error::Config(format!(
+                "live frame planes do not match the {}x{} geometry",
+                self.src_w, self.src_h
+            )));
+        }
+        self.luma_src.copy_from_slice(frame.y);
+        self.e_src.copy_from_slice(frame.e);
+        self.ex_src.copy_from_slice(frame.ex);
+        self.ey_src.copy_from_slice(frame.ey);
+        self.h_src.copy_from_slice(frame.h);
+        if self.use_chroma {
+            self.chroma_src.copy_from_slice(frame.c);
+        }
+        self.live_shot = frame.shot_start;
+        self.live_levels = frame.levels;
+        self.loaded = Some(frame_idx);
+        Ok(())
     }
 
     /// Show (or clear) the live-dial readout on the bottom row. Same
@@ -1057,6 +1157,40 @@ impl<'a> Player<'a> {
     pub fn set_cell_aspect(&mut self, cell_aspect: f64) {
         self.cell_aspect = cell_aspect;
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Geometry {
+    src_w: u16,
+    src_h: u16,
+    frame_count: u32,
+    chroma_dims: Option<(u16, u16)>,
+    has_edges: bool,
+    has_h: bool,
+    aspect: (u16, u16),
+    fps: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiveSpec {
+    pub w: u16,
+    pub h: u16,
+    pub aspect_num: u16,
+    pub aspect_den: u16,
+    pub fps: f64,
+    pub frame_count: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LiveFrame<'f> {
+    pub y: &'f [u8],
+    pub e: &'f [u8],
+    pub ex: &'f [u8],
+    pub ey: &'f [u8],
+    pub h: &'f [u8],
+    pub c: &'f [u8],
+    pub levels: Option<PlaneLevels>,
+    pub shot_start: u32,
 }
 
 /// Fold per-shot p2/p98 NORM levels into a 256-entry LUT:
