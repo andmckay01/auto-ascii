@@ -5,7 +5,7 @@ use crate::codec::GlyphCodec;
 use crate::codec::letters::{
     EDGE, HALF_MASK, HALF_NONE, HALF_SHIFT, HALF_TOP, JUNCTION, coverage, half_variant, tint,
 };
-use crate::compose::{CellInputs, ComposeParams, boost, h_flags, layer, shade};
+use crate::compose::{CellInputs, ComposeParams, boost, h_flags, layer};
 use crate::hysteresis::{CellState, IDX_UNSET, cell_flags, edge_gate};
 use crate::orient::{bin_with_guard, coherence_at_least, debias};
 use crate::quant::{ansi256_to_rgb, rgb_to_256};
@@ -395,10 +395,10 @@ impl GlyphCodec for Ascii {
             s.flags &= !cell_flags::WAS_EDGE;
         }
 
+        let tone = if deep_shadow { 0 } else { n };
         let c = inp.chroma.unwrap_or(Rgb::gray(n));
-        let fg = tint(c, color_tone);
-        let base = inp.chroma.unwrap_or(Rgb::gray(color_tone));
-        let cell = |g: char, fg: Rgb, tone: u8| put(g, fg, backing(base, tone, g, fg, set.color));
+        let fg = tint(c, tone);
+        let cell = |g: char, fg: Rgb, base: Rgb, tone: u8| put(g, fg, backing(base, tone, g, fg, set.color));
         let dx = -debias(inp.ex);
         let dy = -debias(inp.ey);
         let plain_idx = ((n as u32 * len) >> 8).min(len - 1);
@@ -413,7 +413,7 @@ impl GlyphCodec for Ascii {
             } else {
                 JUNCTION
             };
-            return (cell(g, fg, color_tone), layer::EDGE);
+            return (cell(g, fg, c, tone), layer::EDGE);
         }
 
         if deep_shadow {
@@ -424,17 +424,17 @@ impl GlyphCodec for Ascii {
         if inp.h & h_flags::HIGHLIGHT != 0 && (i as u32) < hi_cut {
             let hlen = ASCII_HIGHLIGHT.len() as u32;
             let hidx = ((i as u32 * hlen) / hi_cut).min(hlen - 1) as usize;
-            return (cell(ASCII_HIGHLIGHT[hidx], boost(fg), color_tone), layer::HIGHLIGHT);
+            return (cell(ASCII_HIGHLIGHT[hidx], boost(fg), c, tone), layer::HIGHLIGHT);
         }
 
         if half != HALF_NONE && i > 0 {
             let g = if half == HALF_TOP { ASCII_TOP[i] } else { ASCII_BOTTOM[i] };
             let lit = lt.max(lb);
-            let fg = tint(inp.chroma.map_or(Rgb::gray(lit), |c| shade(c, lit, n.max(1))), color_tone);
-            return (cell(g, fg, lt.min(lb)), layer::STRUCTURE);
+            let base = inp.chroma.unwrap_or(Rgb::gray(lit));
+            return (cell(g, tint(base, lit), base, lt.min(lb)), layer::STRUCTURE);
         }
 
-        (cell(ASCII_RAMP[i], fg, color_tone), layer::BASE)
+        (cell(ASCII_RAMP[i], fg, c, tone), layer::BASE)
     }
 }
 
@@ -616,6 +616,49 @@ mod tests {
         assert_eq!(tint(Rgb::new(255, 40, 0), 255), Rgb::new(255, 80, 0));
         assert_eq!(tint(Rgb::new(20, 60, 255), 255), Rgb::new(40, 120, 255));
         assert_eq!(tint(Rgb::new(40, 20, 10), 255), Rgb::new(80, 40, 20));
+    }
+
+    #[test]
+    fn glyph_foreground_matches_letters_on_the_ascii_tier() {
+        use crate::codec::letters::Letters;
+        let chromas = [None, Some(Rgb::new(200, 150, 120)), Some(Rgb::WHITE), Some(Rgb::new(255, 40, 0)),
+            Some(Rgb::new(20, 60, 255)), Some(Rgb::new(40, 20, 10)), Some(Rgb::new(90, 120, 60))];
+        let tones = [(20, 20), (40, 40), (64, 64), (100, 100), (128, 128), (170, 170), (200, 200), (240, 240),
+            (255, 255), (250, 60), (60, 250), (220, 30), (30, 220), (140, 90), (90, 140), (180, 110)];
+        let (mut same, mut boosted) = (0, 0);
+        for color in [ColorDepth::True, ColorDepth::C256] {
+            let letters = select_palettes(GlyphTier::Ascii, color, 100);
+            for chroma in chromas {
+                for (t, b) in tones {
+                    for e in [0, 200] {
+                        for h in [0, h_flags::HIGHLIGHT] {
+                            let i = CellInputs { e, ex: 40, ey: 128, h, chroma, ..inp(t, b) };
+                            let p = ComposeParams::default();
+                            let (a, la) = Ascii::cell(&i, &ident(), &letters, &p, &mut CellState::default());
+                            let (l, ll) = Letters::cell(&i, &ident(), &letters, &p, &mut CellState::default());
+                            if a.glyph() == ' ' || l.glyph() == ' ' {
+                                continue;
+                            }
+                            let what = format!("{color:?} {i:?}: ascii {a:?} {la}, letters {l:?} {ll}");
+                            if la == ll {
+                                assert_eq!(a.fg, l.fg, "{what}");
+                                assert_eq!(rgb_to_256(a.fg), rgb_to_256(l.fg), "{what}");
+                                same += 1;
+                            } else {
+                                assert!(la == layer::HIGHLIGHT || ll == layer::HIGHLIGHT, "{what}");
+                                let (hi, lo, other) =
+                                    if la == layer::HIGHLIGHT { (a.fg, l.fg, ll) } else { (l.fg, a.fg, la) };
+                                if other == layer::BASE {
+                                    assert_eq!(hi, boost(lo), "only the highlight boost differs: {what}");
+                                }
+                                boosted += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(same > 500 && boosted * 10 < same, "{same} matched, {boosted} on differing highlight cuts");
     }
 
     #[test]

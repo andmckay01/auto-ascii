@@ -3092,3 +3092,13 @@ and gray sources keep gray. Chromatic glyphs are still hue-checked against
 what is on screen. This 256-colour rule is a McKay decision; the
 conservative alternative is gray shades under white glyphs. Glyph rows do
 not change; the two ascii goldens re-bless colour hashes only.
+Colour tone: edge, highlight and ramp cells take their foreground and
+shade from the cell's current tone `n` (letters' `paint(c, n)`), not the
+bright half's tone; deep shadow keeps tone 0 (0.75× stroke, no shade, as
+pinned in 7943758). Half variants use letters' non-block half rule,
+`tint(chroma or gray(lit), lit)`, with no `shade()` pre-brighten; their
+shade stays at the dim half's tone. `glyph_foreground_matches_letters_on
+_the_ascii_tier` pins exact fg equality (truecolor and 256) with
+`Letters::cell` on `GlyphTier::Ascii` for every non-space, non-deep-shadow
+cell in the same layer; the only differing branch is the highlight cut
+(letters 10 of 16 steps, ascii 11 of 18), where one side adds `boost`.
