@@ -1380,7 +1380,7 @@ mod tests {
         let mut live = LiveSettings::new(None);
         live.front(0, &a);
         let mut info = String::new();
-        for (sound, want) in [(Sound::On, "on"), (Sound::Off, "off"), (Sound::None, "none")] {
+        for (sound, want) in [(Sound::On, "on"), (Sound::Off, "off"), (Sound::Wait, "wait"), (Sound::None, "none")] {
             live.write_info(&mut info, sound);
             assert_eq!(info, format!(" clip-a   codec: letters   settings: saved   sound: {want} "));
         }

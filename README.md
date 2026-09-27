@@ -169,7 +169,8 @@ at the new setting. `s` saves the dials and codec beside the asset as
 
 **The controls overlay** (`v`, and briefly at start-up) lists the keys. Above
 them is the clip name, the active codec, whether the settings are saved, the
-sound (`on`, `off`, or `none` when there is nothing to play) and the grid
+sound (`on`, `off`, `wait` while the audio output is stalled or being
+re-opened, or `none` when there is nothing to play) and the grid
 size (`213x58 cells`), e.g.
 ` Interstellar   codec: ascii   settings: saved   sound: on `.
 
@@ -194,10 +195,20 @@ device, a track that won't decode or one over the 512 MiB memory budget
 23 at 96 kHz, 11 at 192 kHz), it plays silently on the wall clock as
 before (`sound: none`) and notes why on stderr after exit. If the track is
 shorter than the video, the picture keeps its pace in silence after it ends,
-and seeking back plays it again. If the output device goes away mid-play
-(unplugged, its audio host gone), the picture carries on silently from where
-it was; a switch of the system's default output or an audio glitch does not
-stop the sound. `--duration-secs` always counts
+and seeking back plays it again. Outages are never permanent: if the output
+stops calling back for 1.5 s (a Bluetooth device slow to start, a stuck
+driver) the picture carries on silently on the wall clock (`sound: wait`), and
+the moment the output calls back the sound is moved to where the picture is
+and leads again. A pause of the whole process (Mac sleep, Ctrl-Z) is not a
+stall. If the device goes away (unplugged, invalidated across sleep, its audio
+host gone), the player drops the dead stream and re-opens the default output
+every 2 s for the rest of the session; if the new output runs at a different
+sample rate or channel count than the track was decoded for, it stays silent
+with a note and keeps retrying (switching back brings the sound back). Each
+outage is noted once on stderr after exit. `m` during an outage still flips
+mute, and the recovered sound honours it. A switch of the system's default
+output or an audio glitch does not interrupt the sound at all; only a decode
+failure turns it off for good (`sound: none`). `--duration-secs` always counts
 wall time. Limitations: compositions play silently (`sound: none`); the
 `.ascii` format has no embedded audio plane yet, so the sound always comes
 from a file beside the asset (a library clip only has sound if you put one

@@ -4,11 +4,15 @@
 //! and hand the picture its media time from what that output has actually
 //! played ([`clock::AudioClock`]). Seeks move the output's read cursor, pause
 //! stops consumption, a loop wraps the cursor at the video's length, and mute
-//! keeps consuming so the clock never breaks. When the output stops calling
-//! back or the decode fails, the clock hands over to a pausable wall clock
-//! from the current position and the HUD reads `sound: none`. Every fallback
-//! is silent playback, never an error; what happened is reported as notes
-//! after exit. Single assets only: compositions play silently.
+//! keeps consuming so the clock never breaks. Outages are recoverable: when
+//! the output stops calling back (not counting a freeze of the whole process)
+//! the clock hands over to a pausable wall clock from the current position,
+//! the HUD reads `sound: wait`, and the first callback after it re-seeks the
+//! sound to the wall position and makes it master again. A lost device is
+//! dropped and the default output re-opened through a [`Reopener`] every
+//! [`REOPEN_EVERY`]. Only a failed decode is permanent (`sound: none`). Every
+//! fallback is silent playback, never an error; what happened is reported as
+//! notes after exit. Single assets only: compositions play silently.
 
 pub mod clock;
 pub mod output;
@@ -25,6 +29,8 @@ use source::{Decoder, TrackSource};
 
 pub const DEVICE_SILENT: Duration = Duration::from_millis(1500);
 
+pub const REOPEN_EVERY: Duration = Duration::from_secs(2);
+
 pub const SIM_RATE: u32 = 48_000;
 
 pub const SIM_CHANNELS: usize = 2;
@@ -33,6 +39,7 @@ pub const SIM_CHANNELS: usize = 2;
 pub enum Sound {
     On,
     Off,
+    Wait,
     None,
 }
 
@@ -41,6 +48,7 @@ impl Sound {
         match self {
             Sound::On => "on",
             Sound::Off => "off",
+            Sound::Wait => "wait",
             Sound::None => "none",
         }
     }
@@ -97,6 +105,44 @@ fn start_sink(opened: Opened, output: Output) -> Result<Sink, String> {
     }
 }
 
+type ReopenFn = dyn FnMut(&DeviceFormat, Output) -> Result<Sink, String>;
+
+pub struct Reopener(Box<ReopenFn>);
+
+impl std::fmt::Debug for Reopener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Reopener")
+    }
+}
+
+impl Reopener {
+    pub fn new(f: impl FnMut(&DeviceFormat, Output) -> Result<Sink, String> + 'static) -> Reopener {
+        Reopener(Box::new(f))
+    }
+
+    pub fn for_choice(choice: &SinkChoice) -> Reopener {
+        let choice = choice.clone();
+        Reopener::new(move |want, output| {
+            let (opened, got) = open_sink(choice.clone())?;
+            if (got.rate, got.channels) != (want.rate, want.channels) {
+                return Err(format!(
+                    "the default output is now {} Hz x{}, the track was decoded for {} Hz x{}",
+                    got.rate, got.channels, want.rate, want.channels
+                ));
+            }
+            start_sink(opened, output)
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outage {
+    Live,
+    Stalled { callbacks: u64 },
+    Lost { next_try: Instant, noted: bool },
+    Failed,
+}
+
 #[derive(Debug, Default)]
 pub struct Opening {
     pub soundtrack: Option<Soundtrack>,
@@ -134,6 +180,10 @@ pub struct Soundtrack {
     loop_secs: Option<f64>,
     started: Instant,
     notes: Arc<Mutex<Vec<String>>>,
+    outage: Outage,
+    reopen: Option<Reopener>,
+    armed: Instant,
+    last_poll: Option<Instant>,
 }
 
 impl Soundtrack {
@@ -162,6 +212,7 @@ impl Soundtrack {
                  (a different cut?); not played"
             )));
         }
+        let reopen = Reopener::for_choice(&sink);
         let (opened, format) = match open_sink(sink) {
             Ok(o) => o,
             Err(e) => return Opening::silent(Some(format!("no audio output ({e}); played silently"))),
@@ -174,7 +225,11 @@ impl Soundtrack {
                 source::PCM_BUDGET_BYTES >> 20
             )));
         }
-        Soundtrack::start(found, tools.ffmpeg, video_secs, opts, opened, format, capacity)
+        let mut opening = Soundtrack::start(found, tools.ffmpeg, video_secs, opts, opened, format, capacity);
+        if let Some(st) = opening.soundtrack.as_mut() {
+            st.set_reopen(reopen);
+        }
+        opening
     }
 
     fn start(
@@ -224,7 +279,15 @@ impl Soundtrack {
             format,
             started: Instant::now(),
             notes: Arc::new(Mutex::new(Vec::new())),
+            outage: Outage::Live,
+            reopen: None,
+            armed: Instant::now(),
+            last_poll: None,
         }
+    }
+
+    pub fn set_reopen(&mut self, reopen: Reopener) {
+        self.reopen = Some(reopen);
     }
 
     pub fn output(&self) -> Output {
@@ -256,46 +319,95 @@ impl Soundtrack {
     }
 
     pub fn is_live(&self) -> bool {
-        !self.clock.is_ended()
+        self.outage == Outage::Live
     }
 
     pub fn sound(&self) -> Sound {
-        match (self.is_live(), self.shared.muted.load(Ordering::SeqCst)) {
-            (false, _) => Sound::None,
-            (true, true) => Sound::Off,
-            (true, false) => Sound::On,
+        match (self.outage, self.shared.muted.load(Ordering::SeqCst)) {
+            (Outage::Failed, _) => Sound::None,
+            (Outage::Stalled { .. } | Outage::Lost { .. }, _) => Sound::Wait,
+            (Outage::Live, true) => Sound::Off,
+            (Outage::Live, false) => Sound::On,
         }
     }
 
     pub fn toggle_mute(&mut self) -> Sound {
-        if self.is_live() {
+        if self.outage != Outage::Failed {
             self.shared.muted.fetch_xor(true, Ordering::SeqCst);
         }
         self.sound()
     }
 
     pub fn poll(&mut self, at: Instant) -> bool {
-        if !self.is_live() {
+        let frozen = self.last_poll.is_some_and(|p| at.saturating_duration_since(p) > DEVICE_SILENT);
+        self.last_poll = Some(at);
+        if frozen {
+            self.armed = at;
+        }
+        if self.outage == Outage::Failed {
             return false;
         }
-        let heard = self.shared.last_callback().unwrap_or(self.started).max(self.started);
-        let why = if self.track.failed() {
-            "the track could not be decoded"
-        } else if self.shared.lost.load(Ordering::SeqCst) {
-            "the audio output reported an error"
-        } else if at.saturating_duration_since(heard) > DEVICE_SILENT {
-            "the audio output stopped calling back"
-        } else {
-            return false;
-        };
-        self.retire(why, at);
-        true
-    }
-
-    fn retire(&mut self, why: &str, at: Instant) {
-        self.clock.mark_ended(at);
-        self.sink = None;
-        self.note(format!("{}: {why}; continued silently", self.format.name));
+        if self.track.failed() {
+            self.clock.mark_ended(at);
+            self.sink = None;
+            self.outage = Outage::Failed;
+            self.note(format!("{}: the track could not be decoded; continued silently", self.format.name));
+            return true;
+        }
+        if self.shared.lost.swap(false, Ordering::SeqCst) && !matches!(self.outage, Outage::Lost { .. }) {
+            self.clock.mark_ended(at);
+            self.sink = None;
+            self.outage = Outage::Lost { next_try: at + REOPEN_EVERY, noted: false };
+            self.note(format!(
+                "{}: the audio output was lost; continued silently, re-opening it every {} s",
+                self.format.name,
+                REOPEN_EVERY.as_secs()
+            ));
+            return true;
+        }
+        match self.outage {
+            Outage::Live => {
+                let heard = self.shared.last_callback().unwrap_or(self.started).max(self.started).max(self.armed);
+                if at.saturating_duration_since(heard) <= DEVICE_SILENT {
+                    return false;
+                }
+                self.clock.mark_ended(at);
+                self.outage = Outage::Stalled { callbacks: self.shared.callbacks.load(Ordering::SeqCst) };
+                self.note(format!(
+                    "{}: the audio output stopped calling back; continued silently until it resumed",
+                    self.format.name
+                ));
+                true
+            }
+            Outage::Stalled { callbacks } if self.shared.callbacks.load(Ordering::SeqCst) > callbacks => {
+                self.clock.unmark(at);
+                self.outage = Outage::Live;
+                self.armed = at;
+                true
+            }
+            Outage::Lost { next_try, noted } if at >= next_try => {
+                let output = self.output();
+                let result = match self.reopen.as_mut() {
+                    Some(r) => (r.0)(&self.format, output),
+                    None => Err("no way to re-open it".into()),
+                };
+                match result {
+                    Ok(sink) => {
+                        self.sink = Some(sink);
+                        self.outage = Outage::Stalled { callbacks: self.shared.callbacks.load(Ordering::SeqCst) };
+                        self.armed = at;
+                    }
+                    Err(e) => {
+                        if !noted {
+                            self.note(format!("{}: re-opening the audio output failed ({e}); still retrying", self.format.name));
+                        }
+                        self.outage = Outage::Lost { next_try: at + REOPEN_EVERY, noted: true };
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
     }
 
     fn note(&self, msg: String) {
@@ -319,7 +431,7 @@ impl Soundtrack {
             decoded,
             callbacks: self.shared.callbacks.load(Ordering::SeqCst),
             underruns: self.shared.underruns.load(Ordering::SeqCst),
-            clock: if self.is_live() { "audio" } else { "wall" },
+            clock: if self.clock.is_ended() { "wall" } else { "audio" },
         }
     }
 

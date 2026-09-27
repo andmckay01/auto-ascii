@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use super::output::{DeviceFormat, Pcm, Track};
 use super::source::{TrackSource, Tools};
-use super::{SinkChoice, Sound, SoundOptions, Soundtrack};
+use super::{Reopener, SinkChoice, Sound, SoundOptions, Soundtrack, REOPEN_EVERY};
 
 struct Dir(PathBuf);
 
@@ -225,9 +225,11 @@ fn a_lost_or_stalled_device_hands_the_clock_to_the_wall() {
     out.fill(&mut buf, at(t0, 0.1), None);
     assert!(!st.poll(at(t0, 0.15)));
     st.shared().lost.store(true, Ordering::SeqCst);
-    assert!(st.poll(at(t0, 0.2)), "a cpal error callback retires the output");
-    assert_eq!(st.sound(), Sound::None);
+    assert!(st.poll(at(t0, 0.2)), "a cpal error callback drops the stream");
+    assert_eq!(st.sound(), Sound::Wait, "waiting for a device, not gone for good");
     assert!((st.now_secs(at(t0, 1.2)) - 1.1).abs() < 1e-9, "silently on the wall from where it was");
+    assert!(!st.poll(at(t0, 5.0)), "no reopener: it stays silent without a new note");
+    assert_eq!(st.sound(), Sound::Wait);
 
     let mut st = Soundtrack::with_track(Track::with_pcm(ramp(5000)), 5.0, opts(), fmt(1000));
     let out = st.output();
@@ -235,8 +237,15 @@ fn a_lost_or_stalled_device_hands_the_clock_to_the_wall() {
     st.set_running(true, t0);
     out.fill(&mut buf, at(t0, 0.1), None);
     assert!(!st.poll(at(t0, 1.5)));
-    assert!(st.poll(at(t0, 1.7)), "no callback for longer than DEVICE_SILENT: retired, no hang");
-    assert!(st.now_secs(at(t0, 2.7)) > st.now_secs(at(t0, 1.7)) + 0.99);
+    assert!(st.poll(at(t0, 1.61)), "no callback for longer than DEVICE_SILENT: the wall takes over, no hang");
+    assert_eq!((st.sound(), st.stats().clock), (Sound::Wait, "wall"));
+    assert!(st.now_secs(at(t0, 2.5)) > st.now_secs(at(t0, 1.61)) + 0.85);
+    out.fill(&mut buf, at(t0, 2.5), None);
+    assert!(st.poll(at(t0, 2.51)), "and hands back when the output calls again");
+    assert_eq!((st.sound(), st.stats().clock), (Sound::On, "audio"));
+    let notes = st.finish();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("stopped calling back"), "{notes:?}");
 }
 
 #[test]
@@ -262,5 +271,144 @@ fn audio_shorter_than_the_video_keeps_time_and_resyncs_on_a_seek_back() {
 
 #[test]
 fn sound_states_read_on_off_none() {
-    assert_eq!([Sound::On, Sound::Off, Sound::None].map(Sound::label), ["on", "off", "none"]);
+    assert_eq!(
+        [Sound::On, Sound::Off, Sound::Wait, Sound::None].map(Sound::label),
+        ["on", "off", "wait", "none"]
+    );
+}
+
+fn tick(st: &mut Soundtrack, out: &super::output::Output, from: f64, to: f64, calls: bool, high: &mut f64) {
+    let t0 = st.shared().epoch;
+    let mut buf = [0.0f32; 20];
+    let mut t = from;
+    while t <= to + 1e-9 {
+        if calls {
+            out.fill(&mut buf, at(t0, t), None);
+        }
+        st.poll(at(t0, t));
+        let now = st.now_secs(at(t0, t));
+        assert!(now + 1e-9 >= *high, "the clock went backwards at {t:.2}: {high} -> {now}");
+        *high = now;
+        t += 0.01;
+    }
+}
+
+#[test]
+fn a_stalled_output_that_resumes_returns_to_the_audio_clock_in_sync() {
+    let mut st = Soundtrack::with_track(Track::with_pcm(ramp(5000)), 5.0, opts(), fmt(1000));
+    let out = st.output();
+    let t0 = st.shared().epoch;
+    st.set_running(true, t0);
+    let mut high = 0.0;
+    tick(&mut st, &out, 0.01, 0.10, true, &mut high);
+    tick(&mut st, &out, 0.11, 1.80, false, &mut high);
+    assert_eq!(st.stats().clock, "wall", "a stalled output hands the picture to the wall");
+    let stalled_at = high;
+    tick(&mut st, &out, 1.81, 2.00, true, &mut high);
+    assert_eq!(st.stats().clock, "audio", "callbacks came back: the audio clock is master again");
+    assert_ne!(st.sound(), Sound::None, "and the sound is back on");
+    assert!(high > stalled_at + 0.15, "the picture kept moving through the stall and after it");
+    let wall_expected = 0.10 + (2.00 - 1.61);
+    assert!((st.now_secs(at(t0, 2.0)) - wall_expected).abs() < 1.0 / 30.0, "re-seeked to the wall position: {} vs {wall_expected}", st.now_secs(at(t0, 2.0)));
+    let mut buf = [0.0f32; 20];
+    out.fill(&mut buf, at(t0, 2.01), None);
+    let heard = (buf[0] * 32768.0).round() as f64 / 1000.0;
+    assert!((heard - st.now_secs(at(t0, 2.01))).abs() < 1.0 / 30.0, "the sound plays where the picture is: {heard}");
+}
+
+#[test]
+fn a_frozen_process_is_not_a_stalled_device() {
+    let mut st = Soundtrack::with_track(Track::with_pcm(ramp(5000)), 5.0, opts(), fmt(1000));
+    let out = st.output();
+    let t0 = st.shared().epoch;
+    st.set_running(true, t0);
+    let mut high = 0.0;
+    tick(&mut st, &out, 0.01, 0.10, true, &mut high);
+    assert!(!st.poll(at(t0, 3.10)), "the first poll after a 3 s freeze does not stall the output");
+    assert_eq!(st.stats().clock, "audio");
+    tick(&mut st, &out, 3.11, 3.50, true, &mut high);
+    assert_eq!((st.stats().clock, st.sound()), ("audio", Sound::On), "never stalled across the freeze");
+}
+
+#[test]
+fn m_during_an_outage_is_honoured_on_recovery() {
+    let mut st = Soundtrack::with_track(Track::with_pcm(ramp(5000)), 5.0, opts(), fmt(1000));
+    let out = st.output();
+    let t0 = st.shared().epoch;
+    st.set_running(true, t0);
+    let mut high = 0.0;
+    tick(&mut st, &out, 0.01, 0.10, true, &mut high);
+    tick(&mut st, &out, 0.11, 1.80, false, &mut high);
+    st.toggle_mute();
+    tick(&mut st, &out, 1.81, 2.00, true, &mut high);
+    assert_eq!(st.sound(), Sound::Off, "muted during the outage, muted after it");
+    let mut buf = [1.0f32; 20];
+    out.fill(&mut buf, at(t0, 2.01), None);
+    assert!(buf.iter().all(|&s| s == 0.0));
+    st.toggle_mute();
+    assert_eq!(st.sound(), Sound::On);
+}
+
+#[test]
+fn a_lost_device_is_reopened_after_the_retry_interval_and_plays_in_sync() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let mut st = Soundtrack::with_track(Track::with_pcm(ramp(8000)), 8.0, opts(), fmt(1000));
+    let first = st.output();
+    let t0 = st.shared().epoch;
+    st.set_running(true, t0);
+    let handed: Rc<RefCell<Vec<(u32, usize, super::output::Output)>>> = Rc::default();
+    let sink = handed.clone();
+    st.set_reopen(Reopener::new(move |want, out| {
+        sink.borrow_mut().push((want.rate, want.channels, out));
+        Ok(super::output::Sink::detached())
+    }));
+    let mut high = 0.0;
+    tick(&mut st, &first, 0.01, 0.30, true, &mut high);
+    st.shared().lost.store(true, Ordering::SeqCst);
+    assert!(st.poll(at(t0, 0.31)));
+    let retry = 0.31 + REOPEN_EVERY.as_secs_f64();
+    tick(&mut st, &first, 0.32, retry - 0.02, false, &mut high);
+    assert!(handed.borrow().is_empty(), "no retry before the interval");
+    assert_eq!(st.sound(), Sound::Wait);
+    st.poll(at(t0, retry + 0.001));
+    assert_eq!(handed.borrow().len(), 1, "re-opened once the interval passed");
+    let (rate, channels, reopened) = handed.borrow_mut().pop().unwrap();
+    assert_eq!((rate, channels), (1000, 2), "at the track's own rate and layout");
+    assert_eq!(st.sound(), Sound::Wait, "waiting for the new stream's first callback");
+    tick(&mut st, &reopened, retry + 0.01, retry + 0.30, true, &mut high);
+    assert_eq!((st.sound(), st.stats().clock), (Sound::On, "audio"));
+    let expected = 0.30 + (retry + 0.30 - 0.31);
+    let now = st.now_secs(at(t0, retry + 0.30));
+    assert!((now - expected).abs() < 1.0 / 30.0, "in sync after the reopen: {now} vs {expected}");
+    let mut buf = [0.0f32; 20];
+    reopened.fill(&mut buf, at(t0, retry + 0.31), None);
+    let heard = (buf[0] * 32768.0).round() as f64 / 1000.0;
+    assert!((heard - now).abs() < 1.0 / 30.0, "the new stream plays where the picture is: {heard} vs {now}");
+}
+
+#[test]
+fn a_failing_reopen_keeps_the_session_silent_and_retrying_with_one_note() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let mut st = Soundtrack::with_track(Track::with_pcm(ramp(5000)), 30.0, opts(), fmt(1000));
+    let out = st.output();
+    let t0 = st.shared().epoch;
+    st.set_running(true, t0);
+    let tries = Rc::new(Cell::new(0));
+    let counter = tries.clone();
+    st.set_reopen(Reopener::new(move |_, _| {
+        counter.set(counter.get() + 1);
+        Err("no default audio output device".into())
+    }));
+    let mut high = 0.0;
+    tick(&mut st, &out, 0.01, 0.10, true, &mut high);
+    st.shared().lost.store(true, Ordering::SeqCst);
+    tick(&mut st, &out, 0.11, 10.0, false, &mut high);
+    assert!((4..=5).contains(&tries.get()), "retried every {REOPEN_EVERY:?}: {}", tries.get());
+    assert_eq!(st.sound(), Sound::Wait);
+    assert!(high > 9.5, "the picture kept going on the wall: {high}");
+    let notes = st.finish();
+    assert_eq!(notes.len(), 2, "one note for the loss, one for the failing retries: {notes:?}");
+    assert!(notes[1].contains("no default audio output device") && notes[1].contains("still retrying"), "{notes:?}");
 }

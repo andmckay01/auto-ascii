@@ -284,7 +284,7 @@ fn info_row_reads_the_sound_state_on_every_codec() {
     let asset = build_fixture(Fixture::GradientMotion);
     let (cols, rows) = (200u16, 56u16);
     let allowed = ascii_glyphs();
-    for sound in ["on", "off", "none"] {
+    for sound in ["on", "off", "wait", "none"] {
         for codec in Codec::ALL {
             let mut backend = SimBackend::new(cols, rows);
             let mut p = player(&asset, GlyphTier::UnicodeBlocks);

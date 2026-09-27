@@ -449,7 +449,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Does:** plays the asset's soundtrack in sync with the picture, with a live on/off toggle.
 - **User:** sound is on when a track is found. `m` toggles it; `--mute` starts it off;
   `--no-audio` never looks for a track or opens a device (`PlayerBuilder::mute`,
-  `PlayerBuilder::no_audio`). The info row reads `sound: on|off|none`; the hints row lists
+  `PlayerBuilder::no_audio`). The info row reads `sound: on|off|wait|none` (`wait`: the output
+  is stalled or being re-opened; `none`: no track, or it failed to decode); the hints row lists
   `m sound`. Problems (no device, no ffmpeg, a different cut, a failed decode, a lost device)
   print as `auto-ascii-player: sound: …` on stderr after exit.
 - **Code:** `crates/auto-ascii/src/audio/` (`#[doc(hidden)]`, like `pipeline`), adapted from the
@@ -484,11 +485,25 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     over it plays silently with a note). Undecoded audio plays as silence and the clock keeps
     going; past the end of a short track the output plays silence and the picture keeps its
     pace, and a seek back into the track plays it again.
-  - Fallbacks are silent playback, never an error or a changed exit status. A cpal error that
-    means the device is gone (`DeviceNotAvailable`, `HostUnavailable`, `StreamInvalidated`; see
-    `device::on_stream_error` — `Xrun` only counts an underrun, a `DeviceChanged` reroute is
-    ignored), no callback for `DEVICE_SILENT` (1.5 s) or a failed decode retire the output: the clock hands
-    over to a pausable, seekable wall clock (`AudioClock::mark_ended`) from the current position.
+  - Fallbacks are silent playback, never an error or a changed exit status, and only a failed
+    decode is permanent (`Outage::Failed`, `sound: none`). `Soundtrack::poll` runs every frame:
+    - Stall: no callback for `DEVICE_SILENT` (1.5 s) past the later of the last callback, the
+      start and `armed` → the clock hands over to a pausable, seekable wall clock
+      (`AudioClock::mark_ended`) from the current position and the sink is kept
+      (`Outage::Stalled`, `sound: wait`). A gap between two polls longer than `DEVICE_SILENT`
+      means the whole process was frozen (sleep, SIGSTOP): it re-arms instead of stalling.
+    - Recovery: the first callback after a stall (or after a re-open) calls
+      `AudioClock::unmark`, which seeks the read cursor to the wall position (never below the
+      high-water mark) and pins the picture there until that audio plays; mute and pause
+      state carry over (`m` during an outage flips the remembered mute).
+    - Lost device: a cpal error that means the device is gone (`DeviceNotAvailable`,
+      `HostUnavailable`, `StreamInvalidated`; see `device::on_stream_error` — `Xrun` only counts
+      an underrun, a `DeviceChanged` reroute is ignored) drops the stream and re-opens the
+      default output through the injectable `Reopener` every `REOPEN_EVERY` (2 s) for the rest
+      of the session (`Outage::Lost`). The track stays decoded for its rate and layout, so a new
+      output at another rate or channel count is refused with a note and retried (no
+      re-decode). One note per outage kind; the re-open runs on the frame loop and costs one
+      device open (tens of ms) every 2 s while lost.
   - Cleanup on every exit path: `Soundtrack::finish` drops the output stream first, then kills
     and reaps ffmpeg and joins the decode thread, on a quit, the clip end and a mid-play error
     alike, before the notes print. No temp files. SIGINT/SIGTERM/SIGHUP restore the terminal and

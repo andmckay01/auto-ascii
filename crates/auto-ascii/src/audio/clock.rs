@@ -4,7 +4,9 @@
 //! from at the last applied seek, plus the frames consumed since, over the
 //! sample rate, minus the output latency, held monotonic between seeks.
 //! `MonotonicClock` is a pausable wall clock; `AudioClock::mark_ended` hands
-//! over to one when the output stops calling back, from the current position.
+//! over to one when the output stops calling back, from the current position,
+//! and `AudioClock::unmark` hands back: it seeks the output's cursor to the
+//! wall clock's position and pins the picture there until that sound plays.
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -185,6 +187,13 @@ impl AudioClock {
         self.ended.is_some()
     }
 
+    pub fn unmark(&mut self, at: Instant) {
+        if let Some(wall) = self.ended.take() {
+            let secs = wall.now(at).max(self.high.get());
+            self.seek(secs, at);
+        }
+    }
+
     pub fn is_settled(&self) -> bool {
         self.shared.applied.load(Ordering::SeqCst) >= self.pending
     }
@@ -335,6 +344,25 @@ mod tests {
             shared.record(0, at(t0, f64::from(i) * 0.1), None);
             assert_eq!(clock.now(at(t0, f64::from(i) * 0.1 + 0.05)), frozen, "paused: the clock must not move");
         }
+    }
+
+    #[test]
+    fn unmark_reslaves_at_the_wall_position_without_going_back() {
+        let shared = AudioShared::new(1000);
+        let mut clock = AudioClock::new(shared.clone());
+        let t0 = shared.epoch;
+        clock.set_running(true, t0);
+        shared.record(500, at(t0, 0.5), None);
+        clock.mark_ended(at(t0, 1.0));
+        let wall = clock.now(at(t0, 3.0));
+        assert!((wall - 2.5).abs() < 1e-9);
+        clock.unmark(at(t0, 3.0));
+        assert!(!clock.is_ended() && !clock.is_settled());
+        assert_eq!(clock.now(at(t0, 3.1)), wall, "pinned until the output applies the seek");
+        shared.take_seek();
+        assert_eq!(shared.cursor(), 2500, "the cursor moved to the wall position");
+        shared.record(100, at(t0, 3.2), None);
+        assert!((clock.now(at(t0, 3.25)) - 2.55).abs() < 1e-9, "then the sound drives it again");
     }
 
     #[test]

@@ -233,6 +233,14 @@ impl Sink {
         }
     }
 
+    pub fn detached() -> Sink {
+        Sink {
+            _null: None,
+            #[cfg(feature = "audio")]
+            _device: None,
+        }
+    }
+
     #[cfg(feature = "audio")]
     pub fn device(sink: device::DeviceSink) -> Sink {
         Sink { _null: None, _device: Some(sink) }
