@@ -190,6 +190,8 @@ invariants, the existing real-asset <=1.2x flicker gate, cap/purity tests, saved
 clamping and the new maximum/chatter regressions pass. The maximum now
 coincides with default, so dial round-trip tests turn inward at that stop
 and assert that further upward presses do not reset temporal state.
+(Superseded: the dial/params maximum was later reopened to 255, with 128
+staying the recommended default and max; see the top of this file.)
 
 Final `scripts/eval.sh`: ALL GREEN, foreground, 103 seconds: workspace
 60s, clippy 2s, resize fuzz x2000 10s, perf 31s. No scratch jobs ran beside

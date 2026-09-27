@@ -1123,7 +1123,7 @@ fn an_uppercase_toml_path_is_a_composition() {
 fn stream_help_lists_its_flags() {
     let s = Scratch::new("streamhelp");
     let text = ok(&cli(&s, &["stream", "--help"]));
-    for flag in ["--codec", "--palette", "--max-height", "--no-audio", "--sim", "--sim-dump", "URL|TERMS"] {
+    for flag in ["--codec", "--palette", "--max-height", "--no-audio", "--sim", "--sim-dump", "--cookies-from-browser", "URL|TERMS"] {
         assert!(text.contains(flag), "{flag} missing from:\n{text}");
     }
     assert!(text.contains("yt-dlp"), "{text}");
@@ -1163,6 +1163,40 @@ fn stream_cli(s: &Scratch, ytdlp: &Path, args: &[&str]) -> Output {
         .args(args)
         .output()
         .expect("failed to run the auto-ascii binary")
+}
+
+#[test]
+fn stream_passes_browser_cookies_to_ytdlp_only_when_requested() {
+    let s = Scratch::new("streamcookies");
+    let log = s.0.join("argv.log");
+    let ytdlp = fake_ytdlp(
+        &s,
+        &format!(
+            "printf '%s\\n' \"$@\" > '{}'\necho 'ERROR: test refusal' >&2\nexit 1",
+            log.display()
+        ),
+    );
+    for browser in [None, Some("firefox")] {
+        let mut args = vec!["stream", "https://www.youtube.com/watch?v=localfixture", "--sim", "40x12:20"];
+        if let Some(browser) = browser {
+            args.extend(["--cookies-from-browser", browser]);
+        }
+        let out = stream_cli(&s, &ytdlp, &args);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(stderr_of(&out).contains("test refusal"), "{}", stderr_of(&out));
+        let logged = std::fs::read_to_string(&log).unwrap();
+        let call: Vec<_> = logged.lines().collect();
+        assert_eq!(call[0], "--ignore-config");
+        if let Some(browser) = browser {
+            let at = call.iter().position(|arg| *arg == "--cookies-from-browser").unwrap();
+            assert_eq!(call[at + 1], browser);
+            assert_eq!(call.iter().filter(|arg| arg.starts_with("--cookies")).count(), 1);
+            assert!(at > 0 && at + 1 < call.len() - 2);
+        } else {
+            assert!(!call.iter().any(|arg| arg.starts_with("--cookies")), "{call:?}");
+        }
+        assert_eq!(call[call.len() - 2], "--");
+    }
 }
 
 #[test]

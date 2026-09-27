@@ -478,6 +478,6 @@ mod tests {
         let args = ffmpeg_args(&track, Some(2.5), 48000, 2);
         let joined = args.join(" ");
         assert!(joined.ends_with("-i https://a.example/251 -map 0:a:0 -vn -sn -dn -ac 2 -ar 48000 -f f32le -"), "{joined}");
-        assert!(joined.contains("-ss 2.500 -i"), "{joined}");
+        assert!(joined.contains("-ss 2.500 -protocol_whitelist http,https,tcp,tls,crypto,httpproxy -i"), "{joined}");
     }
 }

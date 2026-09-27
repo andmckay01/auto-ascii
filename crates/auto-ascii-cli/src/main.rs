@@ -167,7 +167,7 @@ enum Cmd {
         sim: Option<String>,
         #[arg(long, value_name = "PATH", requires = "sim", help = "With --sim: write one loader frame and one picture frame as text to PATH")]
         sim_dump: Option<PathBuf>,
-        #[arg(long, value_name = "BROWSER", help = "Let yt-dlp read this browser's YouTube cookies (e.g. for age-gated videos); off by default, and yt-dlp config files are never read")]
+        #[arg(long, value_name = "BROWSER", help = "Opt-in: let yt-dlp read cookies from your BROWSER's profile; only cookies matching each request are sent. Off by default; yt-dlp config files are never read")]
         cookies_from_browser: Option<String>,
     },
     #[command(about = "Print the embedded agent guide")]
