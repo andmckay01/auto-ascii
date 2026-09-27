@@ -262,21 +262,24 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Does:** plays an asset or composition at its own fps with pause, jump and scrub.
 - **User:** `auto-ascii-player <asset|comp.toml>` or `auto-ascii play <clip|composition>`.
   `q`/`Esc`/Ctrl-C quit · space pause · `0`–`9` jump to 0–90% · `←`/`→` ±5 s · `d` / `[` `]`
-  dials · `/` codec · `s` save · `v` controls. Flags: `--loop`, `--fps-cap N`, `--seek T`,
-  `--duration-secs S`, `--repaint full|diff`, `--cell-aspect R`, `--no-backdrop`.
+  dials · `/` codec · `s` save · `m` sound · `v` controls. Flags: `--loop`, `--fps-cap N`,
+  `--seek T`, `--duration-secs S`, `--repaint full|diff`, `--cell-aspect R`, `--no-backdrop`,
+  `--mute`, `--no-audio` (feature 16).
 - **Code:** `crates/auto-ascii/src/bin/auto-ascii-player.rs` (clap; argv maps 1:1 onto
   `PlayerBuilder`) → `crates/auto-ascii/src/player.rs` `PlayerBuilder::build` (validates before
   touching the terminal) → `Player::run`, the event loop over `ClipDeck`
   (`crates/auto-ascii/src/deck.rs`). Keys are decoded in
   `crates/auto-ascii/src/pipeline.rs` `drain_backend_events` into a `Drained` record. The clock
-  is `Transport` (`seek_to`, `toggle_pause`), with the free function `freeze_target`. Frame selection uses
-  `Composition::frame_after`. `RepaintGate` paints a frozen frame once until something changes.
+  is `MediaClock` (`frame`, `seek_to`, `toggle_pause`, `toggle_mute`, `poll`): the wall-clock
+  `Transport` (`seek_to`, `toggle_pause`, with the free function `freeze_target`) plus an
+  optional `audio::Soundtrack` (feature 16). Frame selection uses `Composition::frame_after`. `RepaintGate` paints a frozen frame once until something changes.
   Timestamps are parsed by `crates/auto-ascii/src/timecode.rs` `parse` (`SS`, `MM:SS`,
   `HH:MM:SS`, fractions allowed).
 - **Invariants:**
-  - Frames are chosen by wall clock. `--fps-cap` skips asset frames and never slows the video.
+  - Frames are chosen by the audio clock while a soundtrack plays, else by the wall clock.
+    `--fps-cap` skips asset frames and never slows the video.
   - Pause freezes on the frame actually presented, not the clock's frame.
-  - Held keys coalesce: `v`, space and `s` are flags. `/`, `d` and arrows are counted.
+  - Held keys coalesce: `v`, space, `s` and `m` are flags. `/`, `d` and arrows are counted.
   - Quit wins and stops the drain.
 
 ### 9. Live dials and per-video settings
@@ -310,14 +313,15 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Does:** event-driven on-screen chrome. Nothing is always on.
 - **User:** a progress row on seek, resume or pause (a timeline and ` c/N ` clip index in a
   composition). The dial readout. The key-hints row for 3 s at startup and whenever another
-  overlay is up; `v` pins it. The info row above it shows clip name, codec, settings status and
-  grid size (` 213x58 cells `). Below 160 columns a zoom hint appears (`Cmd - to zoom out: more
+  overlay is up; `v` pins it. The info row above it shows clip name, codec, settings status,
+  sound state and grid size (` Interstellar   codec: ascii   settings: saved   sound: on `,
+  then ` 213x58 cells ` right-aligned). Below 160 columns a zoom hint appears (`Cmd - to zoom out: more
   cells, a sharper picture`, `Ctrl` off macOS). From 240×36 on block tiers, overlay text is drawn
   in big 3×5 block letters. The overlay is UI, not picture, so every codec (`ascii` included)
   draws it the same, cell for cell.
 - **Code:** `crates/auto-ascii/src/pipeline.rs` `draw_progress_overlay_clips`,
   `draw_dial_overlay`, `draw_hint_overlay` (`hint_line`, which drops items by `HINT_DROP_ORDER`
-  to fit), `draw_info_overlay` (`zoom_line`, `ZOOM_HINT_MAX_COLS`), `OverlayScale::for_grid`
+  to fit: `s save` first, then `/ codec`, then `m sound`, so 80 columns keep the M6 row), `draw_info_overlay` (`zoom_line`, `ZOOM_HINT_MAX_COLS`), `OverlayScale::for_grid`
   (`BIG_OVERLAY_MIN_COLS`, `BIG_OVERLAY_MIN_ROWS`, `BIG_FONT`, `paint_line`), `UiRows` (the
   rows each painter returns; `Player::ui_rows`, `ClipDeck::ui_rows`), `draw_enlarge_card` (on
   the codec's pad). Visibility policy
@@ -400,7 +404,10 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 ### 14. Headless rendering
 - **Does:** renders without a terminal, for tests, goldens and checks on a box with no TTY.
 - **User:** `auto-ascii-player <asset> --sim COLSxROWS:N [--sim-tier T] [--sim-dump PATH]
-  [--sim-resize WxH]` prints one JSON stats line. `--bench-seek N` reports scrub latency.
+  [--sim-resize WxH] [--sim-audio]` prints one JSON stats line. `--sim-audio` plays the
+  soundtrack into the null sink, paces each frame from the audio clock in real time and adds an
+  `audio` object (`sound`, `clock`, `source`, `device`, `rate`, `channels`, `decoded_secs`,
+  `callbacks`, `underruns`, `clock_secs`, `wall_secs`); without it `--sim` never touches audio. `--bench-seek N` reports scrub latency.
   `cargo run --release -p auto-ascii --example headless-dump -- <asset|comp.toml> [FRAMES]
   [COLSxROWS] [--codec C] [--palette P] [--from F]` prints frames as text.
 - **Code:** `crates/auto-ascii/src/bin/auto-ascii-player.rs` (the `--sim` harness drives
@@ -437,6 +444,74 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     timing gate.
   - Committed tests never depend on the corpus; synthetic fixtures back every golden, fuzz and
     perf check.
+
+### 16. Sound: the soundtrack and the audio clock
+- **Does:** plays the asset's soundtrack in sync with the picture, with a live on/off toggle.
+- **User:** sound is on when a track is found. `m` toggles it; `--mute` starts it off;
+  `--no-audio` never looks for a track or opens a device (`PlayerBuilder::mute`,
+  `PlayerBuilder::no_audio`). The info row reads `sound: on|off|wait|none` (`wait`: the output
+  is stalled or being re-opened; `none`: no track, or it failed to decode); the hints row lists
+  `m sound`. Problems (no device, no ffmpeg, a different cut, a failed decode, a lost device)
+  print as `auto-ascii-player: sound: …` on stderr after exit.
+- **Code:** `crates/auto-ascii/src/audio/` (`#[doc(hidden)]`, like `pipeline`), adapted from the
+  `yt-stream` branch's `crates/auto-ascii-cli/src/stream/{clock,audio}.rs` with the same names so
+  the two can merge. `source.rs`: `discover` (`TrackSource`, `SIDECAR_EXTS`, `FOLDER_SOURCE`),
+  `Tools::find`, `probe`/`parse_probe`, `duration_mismatch`, `PCM_BUDGET_BYTES`, `ffmpeg_args`,
+  `spawn`/`Decoder`. `output.rs`: `Pcm` (lock-free i16 slab), `Track`, `Output::fill`,
+  `NullSink`, `Sink`, and `device` (cpal, only under the `audio` feature, which `bin` turns on).
+  `clock.rs`: `Clock`, `MonotonicClock`, `AudioShared`, `AudioClock`. `mod.rs`: `Soundtrack`
+  (`open`, `now_secs`, `seek`, `set_running`, `toggle_mute`, `poll`, `finish`), `Sound`,
+  `SinkChoice`. The player wires it through `MediaClock` in `crates/auto-ascii/src/player.rs`;
+  `--sim-audio` in `crates/auto-ascii/src/bin/auto-ascii-player.rs` `run_sim`.
+- **Invariants:**
+  - Discovery order: an embedded audio plane would go first (not in the format yet; it would be a
+    new optional plane ID old players skip), then `<stem>.m4a`, `<stem>.mp4`, the other
+    `SIDECAR_EXTS`, then the folder's `source.mp4`. The stem always beats `source.mp4`.
+  - A track more than `max(3 s, 10%)` longer or shorter than the asset is a different cut: not
+    played, reported after exit, `sound: none`.
+  - Audio master: while a track and an output exist, the picture's media time is
+    `AudioClock` — the read cursor at the last applied seek plus the frames the output consumed
+    since, over the rate, minus the device latency, never backwards between seeks. The
+    wall-clock `Transport` path is used unchanged only when there is no soundtrack.
+  - A seek moves the read cursor (the output applies it at its next callback, never blocking on
+    the request lock) and pins the clock at the target until the new audio is heard. Pause stops
+    consumption (the output writes silence, the clock freezes); resume re-seeks the sound to the
+    frozen frame. A loop wraps the read cursor at `round(video_secs × rate)` frames and the
+    picture wraps its clock at the same length, so wraps never drift.
+  - Mute writes zeros but keeps consuming, so the clock and sync never break and unmute is
+    immediate. `m` without a soundtrack does nothing (`sound: none`).
+  - Decode is ffmpeg to interleaved s16 at the output's rate, stored mono or stereo in one
+    pre-sized slab (`capacity = probed length + 1 s`), capped at `PCM_BUDGET_BYTES` (512 MiB;
+    over it plays silently with a note). Undecoded audio plays as silence and the clock keeps
+    going; past the end of a short track the output plays silence and the picture keeps its
+    pace, and a seek back into the track plays it again.
+  - Fallbacks are silent playback, never an error or a changed exit status, and only a failed
+    decode is permanent (`Outage::Failed`, `sound: none`). `Soundtrack::poll` runs every frame:
+    - Stall: no callback for `DEVICE_SILENT` (1.5 s) past the later of the last callback, the
+      start and `armed` → the clock hands over to a pausable, seekable wall clock
+      (`AudioClock::mark_ended`) from the current position and the sink is kept
+      (`Outage::Stalled`, `sound: wait`). A gap between two polls longer than `DEVICE_SILENT`
+      means the whole process was frozen (sleep, SIGSTOP): it re-arms instead of stalling.
+    - Recovery: the first callback after a stall (or after a re-open) calls
+      `AudioClock::unmark`, which seeks the read cursor to the wall position (never below the
+      high-water mark) and pins the picture there until that audio plays; mute and pause
+      state carry over (`m` during an outage flips the remembered mute).
+    - Lost device: a cpal error that means the device is gone (`DeviceNotAvailable`,
+      `HostUnavailable`, `StreamInvalidated`; see `device::on_stream_error` — `Xrun` only counts
+      an underrun, a `DeviceChanged` reroute is ignored) drops the stream and re-opens the
+      default output through the injectable `Reopener` every `REOPEN_EVERY` (2 s) for the rest
+      of the session (`Outage::Lost`). The track stays decoded for its rate and layout, so a new
+      output at another rate or channel count is refused with a note and retried (no
+      re-decode). One note per outage kind; the re-open runs on the frame loop and costs one
+      device open (tens of ms) every 2 s while lost.
+  - Cleanup on every exit path: `Soundtrack::finish` drops the output stream first, then kills
+    and reaps ffmpeg and joins the decode thread, on a quit, the clip end and a mid-play error
+    alike, before the notes print. No temp files. SIGINT/SIGTERM/SIGHUP restore the terminal and
+    re-raise, so no destructor runs: the OS closes the stream and ffmpeg exits on its next write
+    to the closed pipe.
+  - Compositions (`--composition`, a `.toml`) play silently with `sound: none`; per-clip sound
+    is not implemented. No test opens an audio device: tests drive `Output::fill` by hand or use
+    the null sink, and the pty tests pass `--no-audio`.
 
 ## Data & wire
 
@@ -545,6 +620,7 @@ values = [
 | Container | `crates/auto-ascii-format/tests/container.rs` (byte golden), `crates/auto-ascii-format/tests/m1_format.rs` (delta, seek, NORM, hostile input) |
 | Terminal | `crates/auto-ascii-term/tests/m1_tiers.rs`, `crates/auto-ascii-term/tests/tier_goldens.rs`, `crates/auto-ascii-term/tests/sim_diff.rs`, `crates/auto-ascii-term/tests/probe_parser.rs`, `crates/auto-ascii-term/tests/pty_probe.rs`, `crates/auto-ascii-term/tests/pty_restore.rs`, `crates/auto-ascii-term/tests/terminal_identity.rs` |
 | Cell-grid goldens | `crates/auto-ascii-eval/tests/golden_grids.rs` (36 insta snapshots), `crates/auto-ascii/tests/linux_console_golden.rs`, `crates/auto-ascii/tests/pipeline_parity.rs`, `crates/auto-ascii/tests/codecs.rs` (`letters` and `ascii` goldens, the `ascii` escape-stream check) |
+| Sound | `crates/auto-ascii/tests/sound.rs` (`--sim-audio` end to end), unit tests in `crates/auto-ascii/src/audio/` (`tests.rs`, `clock.rs`, `output.rs`, `source.rs`) and the `MediaClock` sync tests in `crates/auto-ascii/src/player.rs`, `crates/auto-ascii/tests/play_with_sound.rs` (the launcher) |
 | Player | `crates/auto-ascii/tests/m1_sim.rs`, `crates/auto-ascii/tests/m3_layers.rs`, `crates/auto-ascii/tests/sim_e2e.rs`, `crates/auto-ascii/tests/scrub_overlay.rs`, `crates/auto-ascii/tests/zoom_overlay.rs`, `crates/auto-ascii/tests/dials.rs`, `crates/auto-ascii/tests/render_session.rs` |
 | Compositions | `crates/auto-ascii/tests/composition.rs`, unit tests in `crates/auto-ascii/src/deck.rs` and `crates/auto-ascii/src/composition.rs` |
 | Fuzz / perf | `crates/auto-ascii/tests/resize_fuzz.rs`, `crates/auto-ascii/tests/perf_fps.rs`, `crates/auto-ascii/benches/pipeline.rs` |
@@ -573,7 +649,8 @@ values = [
   `crates/auto-ascii/src/player.rs` `Player::run` for the interactive loop, and
   `crates/auto-ascii-factory/src/build.rs` `run` for the factory.
 - **"Where does a key do X?"** Keys map in `drain_backend_events` (`crates/auto-ascii/src/pipeline.rs`).
-  The meaning is applied in `Player::run` (`crates/auto-ascii/src/player.rs`). The hint text is
+  The meaning is applied in `Player::run` (`crates/auto-ascii/src/player.rs`). `m` is
+  `Drained::toggle_sound` → `MediaClock::toggle_mute`. The hint text is
   `hint_line`. A new key touches all three, plus `crates/auto-ascii/tests/scrub_overlay.rs`.
 - **Changing the look** is a codec change (`crates/auto-ascii-core/src/codec/`) or a `[compose]`
   tunable, never an asset change. Expect insta snapshots, `.ansi` tier goldens, the console

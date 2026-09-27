@@ -58,6 +58,7 @@
 //! |---|---|---|
 //! | `bin` | **on** | the `auto-ascii-player` CLI binary (implies `terminal`) |
 //! | `terminal` | via `bin` | `Player`/`PlayerBuilder` — the blocking terminal session |
+//! | `audio` | via `bin` | the player's soundtrack output through `cpal` (without it the player is silent: `sound: none`) |
 //! | `compose` | **on** | reading composition `.toml` files (`toml` dep); the [`Composition`] type, its timeline and [`compose::export`] are always there |
 //! | *(none)* | | [`RenderSession`] only: no crossterm, no clap — the pure-embedder build (`default-features = false`) |
 //!
@@ -74,6 +75,9 @@
 
 #[doc(hidden)]
 pub mod pipeline;
+
+#[doc(hidden)]
+pub mod audio;
 
 mod composition;
 mod error;
@@ -109,7 +113,7 @@ pub use error::Error;
 pub use session::RenderSession;
 
 #[cfg(feature = "terminal")]
-pub use player::{Dial, MIN_FPS_CAP, Player, PlayerBuilder, RepaintMode, SCRUB_STEP_SECS};
+pub use player::{Dial, MIN_FPS_CAP, Player, PlayerBuilder, RepaintMode, SCRUB_STEP_SECS, Stopped};
 
 pub use auto_ascii_core::{Cell, Grid, Rgb};
 /// Glyph codecs — how a cell's features become a glyph: `pixels` (the

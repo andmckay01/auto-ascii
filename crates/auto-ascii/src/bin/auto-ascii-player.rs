@@ -1,12 +1,14 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
+use auto_ascii::audio::{SinkChoice, SoundOptions, Soundtrack};
 use auto_ascii::deck::{ClipDeck, DeckConfig};
 use auto_ascii::pipeline::color_depth;
-use auto_ascii::{Codec, Composition, PaletteChoice, RepaintMode};
+use auto_ascii::{Codec, Composition, PaletteChoice, RepaintMode, Stopped};
 use auto_ascii_term::{Backend, Caps, ColorTier, Event, SimBackend};
 
 /// CLI face of [`auto_ascii::RepaintMode`] (one render path — "full" is diff
@@ -52,7 +54,13 @@ impl From<PaletteArg> for PaletteChoice {
 }
 
 #[derive(Parser)]
-#[command(name = "auto-ascii-player", version, about = "Play ASCI assets in the terminal")]
+#[command(
+    name = "auto-ascii-player",
+    version,
+    about = "Play ASCI assets in the terminal",
+    after_help = "Exit status: 0 when playback reaches the end of the asset or --duration-secs, \
+                  3 when the viewer quits (q, Esc, Ctrl-C), 1 on an error."
+)]
 struct Cli {
     /// ASCI asset (mmap'd read-only via memmap2), or a composition `.toml` —
     /// a stitch of clips played virtually, on one timeline. Bare library
@@ -138,6 +146,16 @@ struct Cli {
     #[arg(long, value_name = "NAME", value_parser = parse_codec, help = codec_help())]
     codec: Option<Codec>,
 
+    #[arg(long, conflicts_with = "no_audio", help = "Start with sound off: the soundtrack \
+          still loads and plays silently in sync, and `m` turns it on")]
+    mute: bool,
+
+    #[arg(long, help = "Never look for, decode or play a soundtrack, and never open an audio \
+          device; the picture runs on the wall clock and the controls say `sound: none`. \
+          Without it the player plays the asset's sidecar (<stem>.m4a, <stem>.mp4, other \
+          common containers, then the folder's source.mp4) when its length matches")]
+    no_audio: bool,
+
     /// Headless mode: render NFRAMES frames to SimBackend at COLSxROWS as
     /// fast as possible (no pacing), never touch the tty, print one JSON
     /// stats line (acceptance runs at 213x58:900 and 320x90:900).
@@ -161,6 +179,12 @@ struct Cli {
           num_args = 0..=1, default_missing_value = "100x40")]
     sim_resize: Option<String>,
 
+    #[arg(long, requires = "sim", help = "With --sim: play the soundtrack into a null sink \
+          (no device, no sound) paced in real time, pick every frame from the audio clock at \
+          the asset's fps instead of as fast as possible, and add an `audio` object to the \
+          JSON line; --mute and --no-audio apply")]
+    sim_audio: bool,
+
     /// Headless scrub-latency benchmark: perform N random seeks — each one a
     /// hysteresis reset +
     /// FIDX keyframe seek + delta rolls + resample + compose + present to a
@@ -170,6 +194,8 @@ struct Cli {
     #[arg(long, value_name = "N", conflicts_with = "sim")]
     bench_seek: Option<u32>,
 }
+
+const QUIT_STATUS: u8 = 3;
 
 fn parse_codec(name: &str) -> std::result::Result<Codec, String> {
     Codec::from_name(name)
@@ -257,6 +283,28 @@ fn run_sim(
     deck.enable_layer_mask();
     let mut layer_counts = [0u64; 5];
 
+    let fps = comp.fps();
+    let frame_count = u64::from(comp.frame_count());
+    let start_secs = f64::from(start_frame) / fps;
+    let (mut sound, open_notes) = if cli.sim_audio && !Composition::is_toml_path(&cli.asset) {
+        let opening = Soundtrack::open(
+            &comp.clips()[0].path,
+            comp.duration_secs(),
+            SoundOptions { no_audio: cli.no_audio, muted: cli.mute, looping: true },
+            SinkChoice::null(),
+        );
+        (opening.soundtrack, opening.notes)
+    } else {
+        (None, Vec::new())
+    };
+    let paced_from = Instant::now();
+    if let Some(st) = sound.as_mut() {
+        st.seek(start_secs, paced_from);
+        st.set_running(true, paced_from);
+    }
+    let tick = Duration::from_secs_f64(1.0 / fps);
+    let mut clock_secs = start_secs;
+
     let resize_at = nframes / 2;
     let mut bytes_total: u64 = 0;
     let mut rendered: u64 = 0;
@@ -270,7 +318,19 @@ fn run_sim(
         if deck.drain_events(&mut backend).quit {
             break;
         }
-        let frame_idx = ((u64::from(start_frame) + i) % u64::from(comp.frame_count())) as u32;
+        let frame_idx = if cli.sim_audio {
+            let now = Instant::now();
+            clock_secs = match sound.as_mut() {
+                Some(st) => {
+                    st.poll(now);
+                    st.now_secs(now)
+                }
+                None => start_secs + now.duration_since(paced_from).as_secs_f64(),
+            };
+            (comp.frame_after(0, clock_secs + 1e-6) % frame_count) as u32
+        } else {
+            ((u64::from(start_frame) + i) % frame_count) as u32
+        };
         let stats = deck.present_at(&mut backend, comp.locate_frame(frame_idx))?;
         bytes_total += u64::from(stats.bytes);
         if let Some(mask) = deck.layer_mask() {
@@ -285,8 +345,15 @@ fn run_sim(
             f.write_all(&out)?;
         }
         rendered += 1;
+        if cli.sim_audio {
+            let due = paced_from + tick * (i as u32 + 1);
+            std::thread::sleep(due.saturating_duration_since(Instant::now()));
+        }
     }
     let wall_s = t0.elapsed().as_secs_f64();
+    let audio = cli.sim_audio.then(|| sim_audio_json(sound.as_ref(), clock_secs, wall_s));
+    let notes: Vec<String> =
+        open_notes.into_iter().chain(sound.take().map(Soundtrack::finish).unwrap_or_default()).collect();
 
     let fps = if wall_s > 0.0 { rendered as f64 / wall_s } else { 0.0 };
     let avg = if rendered > 0 { bytes_total as f64 / rendered as f64 } else { 0.0 };
@@ -298,7 +365,7 @@ fn run_sim(
          \"avg_bytes_per_frame\":{avg:.1},\"tier\":\"{}\",\"stage_ms\":{{\"decode\":{:.1},\
          \"resample\":{:.1},\"compose\":{:.1},\"present\":{:.1}}},\
          \"layers\":{{\"base\":{},\"edge\":{},\"highlight\":{},\"shadow\":{},\
-         \"structure\":{}}},\"grid_after\":\"{gc}x{gr}\"}}",
+         \"structure\":{}}},\"grid_after\":\"{gc}x{gr}\"{}}}",
         tier_tag(tier),
         ms(stage.decode),
         ms(stage.resample),
@@ -309,8 +376,51 @@ fn run_sim(
         layer_counts[2],
         layer_counts[3],
         layer_counts[4],
+        audio.map(|a| format!(",\"audio\":{a}")).unwrap_or_default(),
     );
+    for note in &notes {
+        eprintln!("auto-ascii-player: sound: {note}");
+    }
     Ok(())
+}
+
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn sim_audio_json(sound: Option<&Soundtrack>, clock_secs: f64, wall_s: f64) -> String {
+    let Some(st) = sound else {
+        return format!(
+            "{{\"sound\":\"none\",\"clock\":\"wall\",\"clock_secs\":{clock_secs:.3},\"wall_secs\":{wall_s:.3}}}"
+        );
+    };
+    let s = st.stats();
+    format!(
+        "{{\"sound\":\"{}\",\"clock\":\"{}\",\"source\":{},\"device\":{},\"rate\":{},\
+         \"channels\":{},\"decoded_secs\":{:.3},\"decoded\":{},\"callbacks\":{},\"underruns\":{},\
+         \"clock_secs\":{clock_secs:.3},\"wall_secs\":{wall_s:.3}}}",
+        st.sound().label(),
+        s.clock,
+        json_str(&s.source.display().to_string()),
+        json_str(&s.device),
+        s.rate,
+        s.channels,
+        s.decoded_secs,
+        s.decoded,
+        s.callbacks,
+        s.underruns,
+    )
 }
 
 fn run_bench_seek(comp: &Composition, mut deck: ClipDeck, seeks: u32) -> Result<()> {
@@ -351,7 +461,7 @@ fn run_bench_seek(comp: &Composition, mut deck: ClipDeck, seeks: u32) -> Result<
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
 
     let seek_secs = cli
@@ -385,9 +495,9 @@ fn main() -> Result<()> {
         );
         deck.set_codec(cli.codec.unwrap_or_default());
         if let Some(n) = cli.bench_seek {
-            return run_bench_seek(&comp, deck, n);
+            return run_bench_seek(&comp, deck, n).map(|()| ExitCode::SUCCESS);
         }
-        return run_sim(&comp, deck, &cli, tier, start_frame);
+        return run_sim(&comp, deck, &cli, tier, start_frame).map(|()| ExitCode::SUCCESS);
     }
 
     let source = auto_ascii::Player::builder();
@@ -423,8 +533,11 @@ fn main() -> Result<()> {
     if let Some(codec) = cli.codec {
         builder = builder.codec(codec);
     }
-    builder.build()?.run()?;
-    Ok(())
+    builder = builder.mute(cli.mute).no_audio(cli.no_audio);
+    Ok(match builder.build()?.play()? {
+        Stopped::Ended => ExitCode::SUCCESS,
+        Stopped::Quit => ExitCode::from(QUIT_STATUS),
+    })
 }
 
 #[cfg(test)]
@@ -449,6 +562,38 @@ mod tests {
         assert_eq!(parse_sim_spec("213x58:900").unwrap(), ((213, 58), 900));
         assert!(parse_sim_spec("213x58").is_err());
         assert!(parse_sim_spec("213x58:0").is_err());
+    }
+
+    #[test]
+    fn sound_flag_parsing() {
+        let cli = Cli::try_parse_from(["auto-ascii-player", "a.ascii"]).unwrap();
+        assert!(!cli.mute && !cli.no_audio && !cli.sim_audio, "sound on by default");
+        let cli = Cli::try_parse_from(["auto-ascii-player", "a.ascii", "--mute"]).unwrap();
+        assert!(cli.mute && !cli.no_audio);
+        let cli = Cli::try_parse_from(["auto-ascii-player", "a.ascii", "--no-audio"]).unwrap();
+        assert!(cli.no_audio && !cli.mute);
+        let e = Cli::try_parse_from(["auto-ascii-player", "a.ascii", "--mute", "--no-audio"]).err().unwrap();
+        assert_eq!(e.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let e = Cli::try_parse_from(["auto-ascii-player", "a.ascii", "--sim-audio"]).err().unwrap();
+        assert_eq!(e.kind(), clap::error::ErrorKind::MissingRequiredArgument, "--sim-audio needs --sim");
+        let cli = Cli::try_parse_from(["auto-ascii-player", "a.ascii", "--sim", "80x24:3", "--sim-audio", "--mute"]).unwrap();
+        assert!(cli.sim_audio && cli.mute);
+    }
+
+    #[test]
+    fn help_keeps_the_exit_contract_and_names_the_sound_flags() {
+        use clap::CommandFactory;
+        let help = Cli::command().render_long_help().to_string();
+        assert!(help.contains("3 when the viewer quits"), "{help}");
+        for flag in ["--mute", "--no-audio", "--sim-audio", "source.mp4"] {
+            assert!(help.contains(flag), "{flag}: {help}");
+        }
+    }
+
+    #[test]
+    fn sim_json_strings_are_escaped() {
+        assert_eq!(json_str(r#"a "b" \ c"#), r#""a \"b\" \\ c""#);
+        assert_eq!(json_str("tab\there"), "\"tab\\u0009here\"");
     }
 
     #[test]

@@ -48,7 +48,7 @@ The Rust workspace, supported by Python tools, has a library (`auto-ascii`),
 two engine binaries (`auto-ascii-factory` and `auto-ascii-player`), and the `auto-ascii`
 CLI, which files clips in a library folder and stitches them into
 compositions. The factory runs ffmpeg as a subprocess; the player links no
-video codecs.
+video codecs (it runs ffmpeg too, only to decode an asset's soundtrack).
 
 ## Install
 
@@ -108,6 +108,7 @@ container's header and chunks and verifies every CRC.
 | `[` / `]` | turn the selected dial down / up |
 | `/` | cycle the glyph codec (`pixels` → `letters` → `ascii`) |
 | `s` | save this video's dials and codec |
+| `m` | turn the sound on / off |
 | `v` | pin or hide the controls overlay |
 
 **Glyph codecs** decide how a cell becomes a glyph. `pixels` (the default)
@@ -167,8 +168,58 @@ at the new setting. `s` saves the dials and codec beside the asset as
 `<name>.player.toml`, and they load the next time that video plays.
 
 **The controls overlay** (`v`, and briefly at start-up) lists the keys. Above
-them is the clip name, the active codec, whether the settings are saved, and
-the grid size (`213x58 cells`).
+them is the clip name, the active codec, whether the settings are saved, the
+sound (`on`, `off`, `wait` while the audio output is stalled or being
+re-opened, or `none` when there is nothing to play) and the grid
+size (`213x58 cells`), e.g.
+` Interstellar   codec: ascii   settings: saved   sound: on `.
+
+**Sound.** The player plays the asset's soundtrack itself. It looks beside the
+asset for `<name>.m4a`, then `<name>.mp4`, then `<name>` with `.aac`, `.mp3`,
+`.wav`, `.flac`, `.ogg`, `.opus`, `.mov`, `.m4v`, `.mkv` or `.webm`, and last
+the folder's `source.mp4`, so `1.ascii` plays `1.mp4` even when `source.mp4`
+beside it is the 80-minute mix it was cut from. A track whose length is more
+than 3 s and more than 10% off the asset's is a different cut: it is not
+played, and the player says so on stderr after it exits. ffmpeg (on `PATH` or
+in `/opt/homebrew/bin`) decodes the track into memory in the background, so
+the picture starts at once and the sound comes in as it decodes. The picture
+then follows the sound: its clock is the audio the output device has
+actually played, minus the device's latency. Jumps, arrow scrubs, `--seek`,
+pause and `--loop` move the sound with the picture (a loop wraps the sound at
+the video's length, so nothing drifts however long it loops); `/` and the
+dials don't touch time. `m` mutes and unmutes instantly: a muted track keeps
+playing silently, so it stays in sync. `--mute` starts muted; `--no-audio`
+never looks for a track or opens a device. With no track, no ffmpeg, no audio
+device, a track that won't decode or one over the 512 MiB memory budget
+(the track is held at the output's rate: about 46 minutes of 48 kHz stereo,
+23 at 96 kHz, 11 at 192 kHz), it plays silently on the wall clock as
+before (`sound: none`) and notes why on stderr after exit. If the track is
+shorter than the video, the picture keeps its pace in silence after it ends,
+and seeking back plays it again. Outages are never permanent: if the output
+stops calling back for 1.5 s (a Bluetooth device slow to start, a stuck
+driver) the picture carries on silently on the wall clock (`sound: wait`), and
+the moment the output calls back the sound is moved to where the picture is
+and leads again. A pause of the whole process (Mac sleep, Ctrl-Z) is not a
+stall. If the device goes away (unplugged, invalidated across sleep, its audio
+host gone), the player drops the dead stream and re-opens the default output
+every 2 s for the rest of the session; if the new output runs at a different
+sample rate or channel count than the track was decoded for, it stays silent
+with a note and keeps retrying (switching back brings the sound back). Each
+outage is noted once on stderr after exit. `m` during an outage still flips
+mute, and the recovered sound honours it. A switch of the system's default
+output or an audio glitch does not interrupt the sound at all; only a decode
+failure turns it off for good (`sound: none`). `--duration-secs` always counts
+wall time. Limitations: compositions play silently (`sound: none`); the
+`.ascii` format has no embedded audio plane yet, so the sound always comes
+from a file beside the asset (a library clip only has sound if you put one
+beside it); and `--sim` stays silent unless `--sim-audio` is given, which
+plays into a null sink and never opens a device.
+
+`scripts/play-with-sound.command PLAYER ASSET [PLAYER_ARGS...]` no longer
+starts `afplay`: it is a launcher that restarts the player at each clip end,
+stops on quit, and logs every exit to
+`~/Library/Logs/auto-ascii/play-with-sound.log` (use `--loop` instead if you
+don't need the log). An old third `AUDIO` argument is ignored.
 
 **Zoom out for detail.** The asset is resolution-independent, so a smaller
 terminal font means more cells and a sharper picture. Use your terminal's
@@ -187,6 +238,7 @@ pixels/letters.
 Useful flags:
 - `--loop`, `--seek 1:30`, `--fps-cap 30`
 - `--codec pixels|letters|ascii`
+- `--mute` (start with the sound off), `--no-audio` (no sound at all)
 - `--palette ascii|unicode|braille`, `--tier truecolor|256|16|mono`
 - `--no-query` (skip capability queries)
 - `--no-backdrop` (keep the terminal's own background)

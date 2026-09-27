@@ -255,7 +255,7 @@ fn hints_row_names_the_new_keys_where_there_is_room() {
     let hints = row(p.grid(), rows - 2);
     assert_eq!(
         hints.trim_end(),
-        " q quit   space pause   0-9 jump   <- -> 5s   d dial   [ ] adjust   / codec   s save   v controls"
+        " q quit   space pause   0-9 jump   <- -> 5s   d dial   [ ] adjust   / codec   m sound   s save   v controls"
     );
     let mut backend = SimBackend::new(80, 24);
     let mut p = player(&asset, GlyphTier::Ascii);
@@ -263,6 +263,49 @@ fn hints_row_names_the_new_keys_where_there_is_room() {
     p.set_hint_overlay(true);
     p.render_present(&mut backend, 0).unwrap();
     assert!(!row(p.grid(), 22).contains("codec"), "80 columns keep the M6 row");
+    for (cols, sound, codec, save) in [(89u16, true, false, false), (99, true, true, false), (108, true, true, true), (88, false, false, false)] {
+        let mut backend = SimBackend::new(cols, 24);
+        let mut p = player(&asset, GlyphTier::Ascii);
+        p.reflow(&mut backend, cols, 24);
+        p.set_hint_overlay(true);
+        p.render_present(&mut backend, 0).unwrap();
+        let hints = row(p.grid(), 22);
+        assert_eq!(
+            (hints.contains("m sound"), hints.contains("/ codec"), hints.contains("s save")),
+            (sound, codec, save),
+            "{cols} columns: m sound outlasts / codec, s save goes first: {hints:?}"
+        );
+        assert!(hints.contains("v controls"));
+    }
+}
+
+#[test]
+fn info_row_reads_the_sound_state_on_every_codec() {
+    let asset = build_fixture(Fixture::GradientMotion);
+    let (cols, rows) = (200u16, 56u16);
+    let allowed = ascii_glyphs();
+    for sound in ["on", "off", "wait", "none"] {
+        for codec in Codec::ALL {
+            let mut backend = SimBackend::new(cols, rows);
+            let mut p = player(&asset, GlyphTier::UnicodeBlocks);
+            p.set_codec(codec);
+            p.reflow(&mut backend, cols, rows);
+            let text = format!(" Interstellar   codec: {}   settings: saved   sound: {sound} ", codec.name());
+            p.set_info_overlay(Some(&text));
+            p.set_hint_overlay(true);
+            p.render_present(&mut backend, 0).unwrap();
+            let info = row(p.grid(), rows - 3);
+            let pad = " ".repeat(cols as usize - text.len() - " 200x56 cells ".len());
+            assert_eq!(info, format!("{text}{pad} 200x56 cells "), "{codec:?} sound {sound}");
+            assert!(row(p.grid(), rows - 2).contains("m sound"), "the hint names the key");
+            if codec == Codec::Ascii {
+                let ui = p.ui_rows();
+                for r in (0..rows).filter(|&r| !ui.contains(r)) {
+                    assert!(p.grid().row(r).iter().all(|c| allowed.contains(&c.glyph())), "row {r} stays picture");
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -558,7 +601,7 @@ fn deck_stream(codec: Codec, tier: GlyphTier, color: ColorTier, overlays: bool) 
     backend.set_caps(Caps { color, ..Caps::default() });
     if overlays {
         deck.set_hint_overlay(true);
-        deck.set_info_overlay(Some(" Caf\u{e9} clip   codec: ascii   settings: saved "));
+        deck.set_info_overlay(Some(" Caf\u{e9} clip   codec: ascii   settings: saved   sound: on "));
         let ctx = ProgressContext { frame: 90, frame_count: 600, fps_num: 30, fps_den: 1, clip: Some((1, 2)) };
         deck.set_progress_context(Some(ctx));
     }
@@ -635,7 +678,7 @@ fn ascii_picture_cells_are_printable_ascii_over_a_capped_shade() {
                 assert!(ui_cells > 0, "{what}: the overlay is UI");
                 assert_eq!(ui_blocks > 0, tier != GlyphTier::Ascii, "{what}: big block text only on block tiers");
                 assert_eq!(ui_backed > 0, color != ColorTier::Mono, "{what}: the overlay keeps its own background");
-                for want in ["v controls", "shadow lift", "PAUSED", "Caf? clip", "213x58 cells", "zoom out"] {
+                for want in ["v controls", "shadow lift", "PAUSED", "Caf? clip", "sound: on", "213x58 cells", "zoom out"] {
                     assert!(text.contains(want), "{what}: overlay {want:?} drawn");
                 }
             }
@@ -649,7 +692,7 @@ fn hud(asset: &[u8], codec: Codec, tier: GlyphTier, (cols, rows): (u16, u16), on
     p.reflow_grid(cols, rows);
     p.set_progress_overlay(on.contains(&"progress"));
     p.set_hint_overlay(on.contains(&"hints") || on.contains(&"info"));
-    p.set_info_overlay(on.contains(&"info").then_some(" The Architect   codec: ascii   settings: default "));
+    p.set_info_overlay(on.contains(&"info").then_some(" The Architect   codec: ascii   settings: default   sound: off "));
     p.set_dial_overlay(on.contains(&"dial").then_some(("edge on", 32, 255)));
     p.set_paused(true);
     p.render_grid(3).unwrap();

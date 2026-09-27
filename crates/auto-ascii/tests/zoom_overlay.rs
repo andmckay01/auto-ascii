@@ -13,7 +13,7 @@ fn row(grid: &Grid<Cell>, r: u16) -> String {
     grid.row(r).iter().map(|c| c.glyph()).collect()
 }
 
-const INFO: &str = " The Architect   codec: letters   settings: default ";
+const INFO: &str = " The Architect   codec: letters   settings: default   sound: on ";
 
 fn reference(bytes: &[u8], tier: GlyphTier, cols: u16, rows: u16, frame: u32) -> Vec<Cell> {
     let mut b = SimBackend::new(cols, rows);
