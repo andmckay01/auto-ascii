@@ -50,7 +50,7 @@ const PROGRESS_HINT_MIN_COLS: u16 = 64;
 
 const HINT_SEP: &str = "   ";
 
-const HINT_DROP_ORDER: [usize; 8] = [7, 6, 5, 4, 1, 3, 2, 0];
+const HINT_DROP_ORDER: [usize; 9] = [8, 6, 7, 5, 4, 1, 3, 2, 0];
 
 /// Narrowest grid whose info row carries NO zoom hint.
 /// Below it the picture is being drawn with few cells, and the terminal's
@@ -346,6 +346,7 @@ pub struct Drained {
     /// `s` pressed this drain — the caller saves the current dials and codec
     /// as this video's settings. Collapsed to a flag: a held key is one save.
     pub save: bool,
+    pub toggle_sound: bool,
 }
 
 /// What the progress overlay prints instead of this clip's own numbers
@@ -391,6 +392,7 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
     let mut toggle_pause = false;
     let mut codec_cycle: u32 = 0;
     let mut save = false;
+    let mut toggle_sound = false;
     while let Some(ev) = backend.events().pop() {
         match ev {
             Event::Quit => {
@@ -404,6 +406,7 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
                     toggle_pause: false,
                     codec_cycle: 0,
                     save: false,
+                    toggle_sound: false,
                 };
                 return (quit, None);
             }
@@ -418,6 +421,7 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
             Event::Key(Key::Char(' ')) => toggle_pause = true,
             Event::Key(Key::Char('/')) => codec_cycle = codec_cycle.saturating_add(1),
             Event::Key(Key::Char('s')) => save = true,
+            Event::Key(Key::Char('m')) => toggle_sound = true,
             Event::Key(_) => {}
         }
     }
@@ -431,6 +435,7 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
         toggle_pause,
         codec_cycle,
         save,
+        toggle_sound,
     };
     (drained, resize)
 }
@@ -1299,7 +1304,7 @@ fn scrub_step_label() -> String {
 
 fn hint_line(cols: u16) -> String {
     let arrows = format!("<- -> {}", scrub_step_label());
-    let items: [&str; 9] = [
+    let items: [&str; 10] = [
         "q quit",
         "space pause",
         "0-9 jump",
@@ -1307,16 +1312,17 @@ fn hint_line(cols: u16) -> String {
         "d dial",
         "[ ] adjust",
         "/ codec",
+        "m sound",
         "s save",
         "v controls",
     ];
-    let width = |keep: &[bool; 9]| -> usize {
+    let width = |keep: &[bool; 10]| -> usize {
         let kept = items.iter().zip(keep).filter(|(_, k)| **k);
         let (n, len) = kept.fold((0, 0), |(n, len), (it, _)| (n + 1, len + it.len()));
         if n == 0 { 0 } else { len + (n - 1) * HINT_SEP.len() + 2 }
     };
 
-    let mut keep = [true; 9];
+    let mut keep = [true; 10];
     for i in HINT_DROP_ORDER {
         if width(&keep) <= cols as usize {
             break;
@@ -1771,5 +1777,31 @@ mod tests {
         let mut g = Grid::new(240, 8);
         draw_info_overlay(&mut g, " clip ", OverlayScale::Big);
         assert!(g.as_slice().iter().all(|c| *c == Cell::BLANK), "slot 2 needs 9 rows");
+    }
+
+    #[test]
+    fn m_toggles_sound_once_per_drain_and_quit_still_wins() {
+        let mut backend = auto_ascii_term::SimBackend::new(80, 24);
+        let (drained, _) = drain_backend_events(&mut backend);
+        assert!(!drained.toggle_sound, "no key, no toggle");
+        for _ in 0..3 {
+            backend.push_event(Event::Key(Key::Char('m')));
+        }
+        let (drained, _) = drain_backend_events(&mut backend);
+        assert!(drained.toggle_sound, "a held m is one toggle, like space");
+        assert!(!drained.save && !drained.toggle_pause && drained.codec_cycle == 0, "m is its own key");
+        backend.push_event(Event::Key(Key::Char('m')));
+        backend.push_event(Event::Quit);
+        let (drained, _) = drain_backend_events(&mut backend);
+        assert!(drained.quit && !drained.toggle_sound);
+    }
+
+    #[test]
+    fn hint_line_fits_m_sound_between_codec_and_save() {
+        assert!(hint_line(108).contains("/ codec   m sound   s save   v controls"), "{:?}", hint_line(108));
+        assert_eq!(hint_line(108).len(), 108, "the full row is exactly 108 columns");
+        assert!(hint_line(89).ends_with("[ ] adjust   m sound   v controls "), "{:?}", hint_line(89));
+        assert!(!hint_line(88).contains("m sound"));
+        assert_eq!(hint_line(80), hint_line(88), "80 columns keep the M6 row");
     }
 }

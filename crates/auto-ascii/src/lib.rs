@@ -58,6 +58,7 @@
 //! |---|---|---|
 //! | `bin` | **on** | the `auto-ascii-player` CLI binary (implies `terminal`) |
 //! | `terminal` | via `bin` | `Player`/`PlayerBuilder` — the blocking terminal session |
+//! | `audio` | via `bin` | the player's soundtrack output through `cpal` (without it the player is silent: `sound: none`) |
 //! | `compose` | **on** | reading composition `.toml` files (`toml` dep); the [`Composition`] type, its timeline and [`compose::export`] are always there |
 //! | *(none)* | | [`RenderSession`] only: no crossterm, no clap — the pure-embedder build (`default-features = false`) |
 //!
@@ -74,6 +75,9 @@
 
 #[doc(hidden)]
 pub mod pipeline;
+
+#[doc(hidden)]
+pub mod audio;
 
 mod composition;
 mod error;

@@ -69,7 +69,7 @@ impl Session {
         let stdio = |fd: RawFd| unsafe { Stdio::from_raw_fd(libc::dup(fd)) };
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_auto-ascii-player"));
         cmd.arg(asset)
-            .args(["--tier", "truecolor", "--no-cache", "--fps-cap", "10"])
+            .args(["--tier", "truecolor", "--no-cache", "--fps-cap", "10", "--no-audio"])
             .stdin(stdio(slave))
             .stdout(stdio(slave))
             .stderr(stdio(slave));

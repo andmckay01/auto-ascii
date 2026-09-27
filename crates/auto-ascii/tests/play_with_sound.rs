@@ -21,8 +21,6 @@ impl Stage {
                 "if [ \"$1\" = --help ]; then exec \"{real}\" --help; fi\n\
                  d=\"{dir}\"\n\
                  echo \"$*\" >> \"$d/runs\"\n\
-                 i=0\n\
-                 while [ \"$(cat \"$d/audio\" 2>/dev/null | wc -l)\" -lt \"$(wc -l < \"$d/runs\")\" ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i + 1)); done\n\
                  code=$(head -n 1 \"$d/codes\")\n\
                  tail -n +2 \"$d/codes\" > \"$d/codes.next\" && mv \"$d/codes.next\" \"$d/codes\"\n\
                  if [ \"$code\" = 101 ]; then echo \"thread 'main' panicked at player.rs\" >&2; fi\n\
@@ -31,19 +29,19 @@ impl Stage {
                 dir = dir.display(),
             ),
         );
-        script(
-            &dir.join("afplay"),
-            &format!("echo \"$1\" >> \"{}/audio\"\nexec sleep 30\n", dir.display()),
-        );
         Stage(dir)
     }
 
     fn launch(&self) -> Output {
+        self.launch_with(&[])
+    }
+
+    fn launch_with(&self, before_flags: &[&str]) -> Output {
         Command::new("bash")
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/play-with-sound.command"))
-            .args([self.0.join("player"), "clip.ascii".into(), "clip.m4a".into()])
+            .arg(launcher())
+            .args([self.0.join("player"), "clip.ascii".into()])
+            .args(before_flags)
             .args(["--codec", "ascii"])
-            .env("AFPLAY", self.0.join("afplay"))
             .env("LOG", self.0.join("launcher.log"))
             .stdin(Stdio::null())
             .output()
@@ -61,6 +59,10 @@ impl Drop for Stage {
     }
 }
 
+fn launcher() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/play-with-sound.command")
+}
+
 fn script(path: &Path, body: &str) {
     fs::write(path, format!("#!/bin/sh\n{body}")).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -76,8 +78,18 @@ fn reaching_the_end_restarts_and_only_a_quit_stops() {
     let out = stage.launch();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(stage.read("runs").lines().collect::<Vec<_>>(), ["clip.ascii --codec ascii"; 3]);
-    assert_eq!(stage.read("audio").lines().count(), 3, "audio restarts with every run");
     assert_eq!(exits(&stage.read("launcher.log")), ["exit=0", "exit=0", "exit=3"]);
+}
+
+#[test]
+fn the_launcher_starts_no_audio_player_and_drops_the_old_audio_argument() {
+    let text = fs::read_to_string(launcher()).unwrap();
+    assert!(!text.contains("afplay") && !text.contains("AFPLAY"), "the player plays its own sound");
+    let stage = Stage::new("legacy", &[3]);
+    let out = stage.launch_with(&["clip.m4a"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(stage.read("runs").lines().collect::<Vec<_>>(), ["clip.ascii --codec ascii"]);
+    assert!(stage.read("launcher.log").contains("ignoring audio argument clip.m4a"), "{}", stage.read("launcher.log"));
 }
 
 #[test]

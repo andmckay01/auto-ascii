@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 use auto_ascii_core::{Codec, ComposeParams};
 use auto_ascii_term::{AnsiBackend, Backend, ColorTier, ProbeOptions, probe_caps};
 
+use crate::audio::{SinkChoice, Sound, SoundOptions, Soundtrack};
 use crate::composition::Composition;
 use crate::deck::{ClipDeck, DeckConfig};
 use crate::error::Error;
@@ -271,14 +272,15 @@ impl LiveSettings {
         })
     }
 
-    fn write_info(&self, out: &mut String) {
+    fn write_info(&self, out: &mut String, sound: Sound) {
         out.clear();
         let _ = write!(
             out,
-            " {}   codec: {}   settings: {} ",
+            " {}   codec: {}   settings: {}   sound: {} ",
             self.clip_name,
             self.codec.name(),
-            self.status()
+            self.status(),
+            sound.label()
         );
     }
 }
@@ -326,6 +328,71 @@ impl Transport {
 
 fn freeze_target(presented: Option<u64>, clock_frame: u64) -> u64 {
     presented.unwrap_or(clock_frame)
+}
+
+const AUDIO_FRAME_EPS: f64 = 1e-6;
+
+#[derive(Debug)]
+struct MediaClock {
+    transport: Transport,
+    sound: Option<Soundtrack>,
+    fps: f64,
+}
+
+impl MediaClock {
+    fn new(base_frame: u64, now: Instant, sound: Option<Soundtrack>, fps: f64) -> MediaClock {
+        let mut clock = MediaClock { transport: Transport::new(base_frame, now), sound, fps };
+        if let Some(s) = &mut clock.sound {
+            s.seek(base_frame as f64 / fps, now);
+            s.set_running(true, now);
+        }
+        clock
+    }
+
+    fn paused(&self) -> bool {
+        self.transport.paused
+    }
+
+    fn frame(&self, comp: &Composition, now: Instant) -> u64 {
+        match &self.sound {
+            Some(s) if !self.transport.paused => comp.frame_after(0, s.now_secs(now) + AUDIO_FRAME_EPS),
+            _ => comp.frame_after(self.transport.base_frame, self.transport.elapsed_secs(now)),
+        }
+    }
+
+    fn seek_to(&mut self, frame: u64, now: Instant) {
+        self.transport.seek_to(frame, now);
+        if let Some(s) = &mut self.sound {
+            s.seek(frame as f64 / self.fps, now);
+        }
+    }
+
+    fn toggle_pause(&mut self, frozen: u64, now: Instant) {
+        self.transport.toggle_pause(frozen, now);
+        let (paused, base) = (self.transport.paused, self.transport.base_frame);
+        if let Some(s) = &mut self.sound {
+            if !paused {
+                s.seek(base as f64 / self.fps, now);
+            }
+            s.set_running(!paused, now);
+        }
+    }
+
+    fn sound(&self) -> Sound {
+        self.sound.as_ref().map_or(Sound::None, Soundtrack::sound)
+    }
+
+    fn toggle_mute(&mut self) -> Sound {
+        self.sound.as_mut().map_or(Sound::None, Soundtrack::toggle_mute)
+    }
+
+    fn poll(&mut self, now: Instant) -> bool {
+        self.sound.as_mut().is_some_and(|s| s.poll(now))
+    }
+
+    fn finish(&mut self) -> Vec<String> {
+        self.sound.take().map(Soundtrack::finish).unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -413,6 +480,8 @@ pub struct PlayerBuilder {
     no_backdrop: bool,
     font_table: Option<String>,
     codec: Option<Codec>,
+    mute: bool,
+    no_audio: bool,
 }
 
 impl PlayerBuilder {
@@ -556,6 +625,18 @@ impl PlayerBuilder {
         self
     }
 
+    #[allow(missing_docs)]
+    pub fn mute(mut self, mute: bool) -> Self {
+        self.mute = mute;
+        self
+    }
+
+    #[allow(missing_docs)]
+    pub fn no_audio(mut self, no_audio: bool) -> Self {
+        self.no_audio = no_audio;
+        self
+    }
+
     /// Check the configuration and open every asset that will play — one
     /// for [`asset`](PlayerBuilder::asset), all of a
     /// [`composition`](PlayerBuilder::composition)'s clips — as a
@@ -645,7 +726,8 @@ impl Player {
     /// unless a tier is forced or [`no_query`](PlayerBuilder::no_query) is
     /// set), enter the session (alt screen, raw mode, hidden cursor, black
     /// backdrop unless [`no_backdrop`](PlayerBuilder::no_backdrop)), run
-    /// the wall-clock-paced frame loop, and restore the terminal — also on
+    /// the frame loop — paced by the soundtrack's audio clock when one plays,
+    /// else by the wall clock — and restore the terminal — also on
     /// panic, SIGINT, SIGTERM and SIGHUP (the restore hooks are armed before the
     /// screen is touched).
     ///
@@ -656,8 +738,9 @@ impl Player {
     /// cycles the live [`Dial`]s and `[`/`]` turn the selected one; `/`
     /// cycles the glyph [`Codec`]; `s` saves the dials and codec as this
     /// video's settings (`<asset>.player.toml`, loaded whenever the video
-    /// fronts); space freezes the picture and resumes it from the frozen
-    /// frame (jumps and scrubs still work while frozen, and stay frozen).
+    /// fronts); `m` turns the soundtrack on and off; space freezes the
+    /// picture and resumes it from the frozen frame (jumps and scrubs still
+    /// work while frozen, and stay frozen).
     /// Saved dials load per clip until the first dial turn. That turn keeps
     /// the full current compose settings for this session across cuts and
     /// wraps, overriding later clips' saved dials, just as `/` keeps its
@@ -719,8 +802,17 @@ impl Player {
         let frame_count = u64::from(self.comp.frame_count());
         let clip_count = self.comp.clips().len();
         let (fps_num, fps_den) = self.comp.fps_ratio();
+        let opening = match &self.cfg.composition {
+            None => Soundtrack::open(
+                &self.comp.clips()[0].path,
+                self.comp.duration_secs(),
+                SoundOptions { no_audio: self.cfg.no_audio, muted: self.cfg.mute, looping: self.cfg.looping },
+                SinkChoice::Device,
+            ),
+            Some(_) => Default::default(),
+        };
         let t0 = Instant::now();
-        let mut transport = Transport::new(u64::from(self.start_frame), t0);
+        let mut clock = MediaClock::new(u64::from(self.start_frame), t0, opening.soundtrack, asset_fps);
         let mut next_tick = t0;
         let mut progress = ProgressTimer::default();
         let mut dial_idx: usize = 0;
@@ -739,34 +831,37 @@ impl Player {
         let stopped = loop {
             let drained = deck.drain_events(&mut backend);
             if drained.quit {
-                break Stopped::Quit;
+                break Ok(Stopped::Quit);
             }
             let mut sought = false;
             let mut resumed = false;
             if drained.toggle_pause {
                 let now = Instant::now();
-                let elapsed = transport.elapsed_secs(now);
-                let clock_frame = self.comp.frame_after(transport.base_frame, elapsed);
+                let clock_frame = clock.frame(&self.comp, now);
                 let clock_frame =
                     if self.cfg.looping { clock_frame % frame_count } else { clock_frame };
-                transport.toggle_pause(freeze_target(presented, clock_frame), now);
-                resumed = !transport.paused;
-                deck.set_paused(transport.paused);
+                clock.toggle_pause(freeze_target(presented, clock_frame), now);
+                resumed = !clock.paused();
+                deck.set_paused(clock.paused());
             }
             if let Some(d) = drained.jump_digit {
-                transport.seek_to(frame_count * u64::from(d) / 10, Instant::now());
+                clock.seek_to(frame_count * u64::from(d) / 10, Instant::now());
                 sought = true;
             }
             if drained.seek_steps != 0 {
                 let now = Instant::now();
-                let pos = self.comp.frame_after(transport.base_frame, transport.elapsed_secs(now));
+                let pos = clock.frame(&self.comp, now);
                 let pos = if self.cfg.looping { pos % frame_count } else { pos };
                 let delta = (f64::from(drained.seek_steps) * SCRUB_STEP_SECS * asset_fps) as i64;
                 let landing = (pos.min(frame_count - 1) as i64 + delta)
                     .clamp(0, frame_count as i64 - 1) as u64;
-                transport.seek_to(landing, now);
+                clock.seek_to(landing, now);
                 sought = true;
             }
+            if drained.toggle_sound {
+                clock.toggle_mute();
+            }
+            let sound_lost = clock.poll(Instant::now());
             if drained.dial_cycle > 0 || drained.dial_delta != 0 {
                 if drained.dial_cycle > 0 {
                     dial_idx = dial_after_cycle(dial_idx, drained.dial_cycle, dial_until.is_some());
@@ -792,13 +887,13 @@ impl Player {
                 live.save(&self.comp.clips()[idx].path);
             }
             let resized = deck.size() != was_size;
-            if drained.codec_cycle > 0 || drained.save || resized {
+            if drained.codec_cycle > 0 || drained.save || drained.toggle_sound || resized {
                 note_until = Some(Instant::now() + DIAL_OVERLAY_HIDE_AFTER);
             } else if note_until.is_some_and(|t| Instant::now() >= t) {
                 note_until = None;
             }
             let show_progress =
-                progress.visible(Instant::now(), sought || resumed, transport.paused);
+                progress.visible(Instant::now(), sought || resumed, clock.paused());
             deck.set_progress_overlay(show_progress);
             let overlays_up = show_progress || dial_until.is_some() || note_until.is_some();
             let show_hints = hints.visible(Instant::now(), drained.toggle_hints, overlays_up);
@@ -806,16 +901,14 @@ impl Player {
             if let Some(dur) = self.cfg.duration_secs
                 && t0.elapsed().as_secs_f64() >= dur
             {
-                break Stopped::Ended;
+                break Ok(Stopped::Ended);
             }
-            let mut target = self
-                .comp
-                .frame_after(transport.base_frame, transport.elapsed_secs(Instant::now()));
+            let mut target = clock.frame(&self.comp, Instant::now());
             if target >= frame_count {
                 if self.cfg.looping {
                     target %= frame_count;
                 } else {
-                    break Stopped::Ended;
+                    break Ok(Stopped::Ended);
                 }
             }
             let located = self.comp.locate_frame(target as u32);
@@ -829,7 +922,7 @@ impl Player {
                     deck.set_dial_overlay(Some((dial.readout(&live.compose), dial.get(&live.compose), dial.max())));
                 }
             }
-            live.write_info(&mut info);
+            live.write_info(&mut info, clock.sound());
             deck.set_info_overlay(Some(&info));
             if self.comp.is_stitch() {
                 deck.set_progress_context(Some(ProgressContext {
@@ -847,6 +940,8 @@ impl Player {
                 || drained.dial_delta != 0
                 || drained.codec_cycle > 0
                 || drained.save
+                || drained.toggle_sound
+                || sound_lost
                 || drained.toggle_hints
                 || show_progress != was_progress
                 || show_hints != was_hints
@@ -855,8 +950,10 @@ impl Player {
             (was_progress, was_hints, was_dial, was_size) =
                 (show_progress, show_hints, dial_up, deck.size());
 
-            if gate.should_paint(transport.paused, dirty) {
-                deck.present_at(&mut backend, located)?;
+            if gate.should_paint(clock.paused(), dirty) {
+                if let Err(e) = deck.present_at(&mut backend, located) {
+                    break Err(e);
+                }
                 presented = Some(target);
             }
 
@@ -868,11 +965,15 @@ impl Player {
                 next_tick = now;
             }
         };
+        let sound_notes = clock.finish();
         backend.shutdown();
         for problem in &live.problems {
             eprintln!("auto-ascii-player: settings: {problem}");
         }
-        Ok(stopped)
+        for note in opening.notes.iter().chain(&sound_notes) {
+            eprintln!("auto-ascii-player: sound: {note}");
+        }
+        stopped
     }
 }
 
@@ -1166,8 +1267,8 @@ mod tests {
         assert!(live.front(1, &b));
         assert_eq!((live.codec, live.compose, live.status()), (Codec::Pixels, ComposeParams::default(), "default"));
         let mut info = String::new();
-        live.write_info(&mut info);
-        assert_eq!(info, " clip-b   codec: pixels   settings: default ");
+        live.write_info(&mut info, Sound::None);
+        assert_eq!(info, " clip-b   codec: pixels   settings: default   sound: none ");
 
         live.cycle(1);
         assert_eq!((live.codec, live.status()), (Codec::Letters, "s to save"));
@@ -1249,6 +1350,208 @@ mod tests {
         assert_eq!(Dial::Hysteresis.readout(&p), "hysteresis (max)");
         Dial::Hysteresis.turn(&mut p, -99);
         assert_eq!(Dial::Hysteresis.readout(&p), "hysteresis (floor)");
+    }
+
+    fn fixture_comp(tag: &str) -> (Composition, PathBuf) {
+        let path = std::env::temp_dir().join(format!("auto-ascii-sound-sync-{}-{tag}.ascii", std::process::id()));
+        std::fs::write(
+            &path,
+            auto_ascii_eval::fixtures::build_fixture(auto_ascii_eval::fixtures::Fixture::GradientMotion),
+        )
+        .unwrap();
+        let mut comp = Composition::single(&path);
+        comp.resolve().unwrap();
+        (comp, path)
+    }
+
+    const SYNC_RATE: u32 = 8000;
+
+    fn sync_track(comp: &Composition, looping: bool) -> Soundtrack {
+        let frames = (comp.duration_secs() * f64::from(SYNC_RATE)).round() as usize;
+        let samples: Vec<i16> = (0..frames).flat_map(|i| [i as i16 + 1, 0]).collect();
+        let track = crate::audio::output::Track::with_pcm(crate::audio::output::Pcm::from_samples(SYNC_RATE, 2, &samples));
+        let format = crate::audio::output::DeviceFormat { rate: SYNC_RATE, channels: 2, name: "fake".into() };
+        Soundtrack::with_track(track, comp.duration_secs(), SoundOptions { looping, ..SoundOptions::default() }, format)
+    }
+
+    #[test]
+    fn info_row_names_the_sound_state() {
+        let (dir, a, _) = two_clip_dir("sound-info");
+        let mut live = LiveSettings::new(None);
+        live.front(0, &a);
+        let mut info = String::new();
+        for (sound, want) in [(Sound::On, "on"), (Sound::Off, "off"), (Sound::None, "none")] {
+            live.write_info(&mut info, sound);
+            assert_eq!(info, format!(" clip-a   codec: letters   settings: saved   sound: {want} "));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builder_carries_the_sound_flags() {
+        let b = Player::builder().mute(true);
+        assert!(b.mute && !b.no_audio);
+        let b = Player::builder().no_audio(true);
+        assert!(b.no_audio && !b.mute);
+        let b = Player::builder();
+        assert!(!b.mute && !b.no_audio, "sound is on by default");
+    }
+
+    #[test]
+    fn without_a_soundtrack_the_media_clock_is_the_wall_transport() {
+        let (comp, path) = fixture_comp("wall");
+        let t0 = Instant::now();
+        let mut clock = MediaClock::new(5, t0, None, comp.fps());
+        let tr = Transport::new(5, t0);
+        for ms in [0u64, 10, 333, 1000, 2400] {
+            let at = t0 + Duration::from_millis(ms);
+            assert_eq!(clock.frame(&comp, at), comp.frame_after(tr.base_frame, tr.elapsed_secs(at)));
+        }
+        assert_eq!((clock.sound(), clock.toggle_mute()), (Sound::None, Sound::None), "m does nothing");
+        clock.seek_to(40, t0 + Duration::from_secs(3));
+        assert_eq!(clock.frame(&comp, t0 + Duration::from_secs(4)), 70);
+        assert!(!clock.poll(t0) && clock.finish().is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn m_mutes_through_the_media_clock_and_the_picture_keeps_moving() {
+        let (comp, path) = fixture_comp("mute");
+        let st = sync_track(&comp, false);
+        let (out, shared) = (st.output(), st.shared().clone());
+        let t0 = shared.epoch;
+        let mut clock = MediaClock::new(0, t0, Some(st), comp.fps());
+        assert_eq!(clock.sound(), Sound::On);
+        let mut buf = [0.0f32; 160];
+        let mut frames = Vec::new();
+        for i in 1..=90 {
+            let at = t0 + Duration::from_millis(i * 10);
+            if i == 30 || i == 60 {
+                clock.toggle_mute();
+            }
+            out.fill(&mut buf, at, None);
+            assert_eq!(buf.iter().all(|&s| s == 0.0), (30..60).contains(&i), "callback {i}");
+            frames.push(clock.frame(&comp, at));
+        }
+        assert_eq!(clock.sound(), Sound::On);
+        assert!(frames.windows(2).all(|w| w[1] >= w[0]), "the picture never stalls or rewinds on m");
+        assert_eq!(frames[89], 26, "0.89 s at 30 fps, mute or not");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn audio_and_picture_stay_within_a_frame_across_seeks_pauses_and_many_wraps() {
+        let (comp, path) = fixture_comp("sync");
+        let (fps, count) = (comp.fps(), u64::from(comp.frame_count()));
+        let st = sync_track(&comp, true);
+        let (out, shared) = (st.output(), st.shared().clone());
+        let t0 = shared.epoch;
+        let rate = f64::from(SYNC_RATE);
+        let (period, latency) = (0.010, 0.020);
+        let mut clock = MediaClock::new(0, t0, Some(st), fps);
+        let mut buf = vec![0.0f32; (period * rate) as usize * 2];
+        let mut chunks: Vec<(f64, Option<u64>)> = Vec::new();
+        let heard = |t: f64, chunks: &[(f64, Option<u64>)]| -> Option<f64> {
+            let &(cb, start) = chunks.iter().rev().find(|(cb, _)| cb + latency <= t + 1e-12)?;
+            let pos = start? as f64 + ((t - cb - latency) * rate).min(period * rate);
+            Some(pos % (count as f64 / fps * rate) / rate)
+        };
+        let mut quiet_until = 0.0f64;
+        let mut paused_at: Option<u64> = None;
+        let mut presented = 0u64;
+        let (mut worst, mut checked, mut worst_tail) = (0u64, 0u64, 0u64);
+        let mut next_cb = period;
+        let mut rng: u64 = 0x5EED;
+        let end = 150.0;
+        for ms in 1..=(end * 1000.0) as u64 {
+            let t = ms as f64 / 1000.0;
+            let at = t0 + Duration::from_secs_f64(t);
+            if ms % 7300 == 0 && t < 90.0 {
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let landing = (rng >> 33) % count;
+                clock.seek_to(landing, at);
+                paused_at = paused_at.map(|_| landing);
+                quiet_until = t + latency + 2.0 * period;
+            }
+            if ms % 11_100 == 0 && t < 90.0 {
+                let landing = (clock.frame(&comp, at) % count + 150) % count;
+                clock.seek_to(landing, at);
+                paused_at = paused_at.map(|_| landing);
+                quiet_until = t + latency + 2.0 * period;
+            }
+            if ms == 33_000 || ms == 61_000 {
+                clock.toggle_pause(freeze_target(Some(presented), 0), at);
+                paused_at = Some(presented);
+            }
+            if ms == 35_500 || ms == 64_000 {
+                presented = paused_at.unwrap_or(presented);
+                clock.toggle_pause(presented, at);
+                paused_at = None;
+                quiet_until = t + latency + 2.0 * period;
+            }
+            if t + 1e-9 >= next_cb {
+                out.fill(&mut buf, at, Some(Duration::from_secs_f64(latency)));
+                let first = (buf[0] * 32768.0).round() as i64;
+                chunks.push((t, (first > 0).then(|| first as u64 - 1)));
+                next_cb += period;
+            }
+            let frame = clock.frame(&comp, at) % count;
+            if let Some(frozen) = paused_at {
+                assert_eq!(frame, frozen, "paused at {t:.3}: the picture holds");
+                assert!(buf.iter().all(|&s| s == 0.0), "paused at {t:.3}: the output is silent");
+                continue;
+            }
+            presented = frame;
+            if t < quiet_until {
+                continue;
+            }
+            let Some(h) = heard(t, &chunks) else { continue };
+            let heard_frame = ((h + 1e-9) * fps) as u64 % count;
+            let d = frame.abs_diff(heard_frame).min(count - frame.abs_diff(heard_frame));
+            worst = worst.max(d);
+            if t > 90.0 {
+                worst_tail = worst_tail.max(d);
+            }
+            checked += 1;
+        }
+        let wraps = (end - 90.0) / (count as f64 / fps);
+        assert!(wraps > 20.0, "{wraps} undisturbed wraps at the end");
+        assert!(checked > 100_000, "{checked}");
+        assert!(worst <= 1, "the picture drifted {worst} frames from the sound");
+        assert!(worst_tail <= 1, "and {worst_tail} frames after {wraps:.0} wraps with no seek");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn pause_freezes_the_audio_clock_and_resume_starts_the_sound_at_the_frozen_frame() {
+        let (comp, path) = fixture_comp("pause");
+        let st = sync_track(&comp, false);
+        let (out, shared) = (st.output(), st.shared().clone());
+        let t0 = shared.epoch;
+        let mut clock = MediaClock::new(0, t0, Some(st), comp.fps());
+        let mut buf = [0.0f32; 160];
+        let at = |s: f64| t0 + Duration::from_secs_f64(s);
+        for i in 1..=50 {
+            out.fill(&mut buf, at(f64::from(i) * 0.01), None);
+        }
+        let frozen = clock.frame(&comp, at(0.5));
+        clock.toggle_pause(frozen, at(0.5));
+        let consumed = shared.consumed();
+        for i in 51..=300 {
+            out.fill(&mut buf, at(f64::from(i) * 0.01), None);
+            assert_eq!(clock.frame(&comp, at(f64::from(i) * 0.01)), frozen);
+        }
+        assert!(shared.consumed() <= consumed + 80, "pause stops consumption (one chunk may be in flight)");
+        clock.toggle_pause(frozen, at(3.0));
+        out.fill(&mut buf, at(3.01), None);
+        let first = (buf[0] * 32768.0).round() as u64 - 1;
+        assert_eq!(first, (frozen as f64 / comp.fps() * f64::from(SYNC_RATE)).round() as u64, "the sound resumes at the frozen frame");
+        assert_eq!(clock.frame(&comp, at(3.015)), frozen, "and the picture with it");
+        for i in 302..=320 {
+            out.fill(&mut buf, at(f64::from(i) * 0.01), None);
+        }
+        assert_eq!(clock.frame(&comp, at(3.2)), frozen + 5, "0.19 s of sound played since the resume");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
