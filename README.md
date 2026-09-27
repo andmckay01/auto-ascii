@@ -117,15 +117,52 @@ on edges, and blocks only where the picture is lit (`█` for near-white, `▀�
 for a bright half). On truecolor and 256-color terminals each character sits
 on a dim tint of its cell's colour, so faces and midtones hold their shape;
 16-color and mono terminals keep a black background.
-`ascii` is letters with only printable ASCII: no blocks, no tint and no
-background color at all (the terminal's own shows through), every glyph in
-its cell's color brightened to make up for the ink a character leaves
-unfilled. Glyph selection is the same on every terminal tier; colours
-follow the terminal's capabilities.
+`ascii` is letters with only printable ASCII and no blocks in the picture
+(the controls overlay is the same as in the other codecs). Behind each
+character it paints a dim shade of the character's own colour, the way
+letters does, with its exact current-tone tint curve and colour preserved.
+“Not a full pixel” means printable ASCII ink, unshaded spaces, background
+channels at most 154/255, and background linear luminance at most 0.375 times
+the foreground as sent. The character stays clearly brighter than its shade.
+Truecolor retains every nonblack shade, including dark colours below 8/255.
+On 256-colour terminals, safe gray and 0/95/135 cube entries must pass the
+same contrast cap and stay within the glyph's hue family. 16-colour and mono
+terminals get no shade (the terminal's own background shows through). Glyph selection is the
+same on every terminal tier; colours follow the terminal's capabilities.
+ASCII colour and shade follow current brightness independently of glyph
+hysteresis, so playback cannot retain old brightness bands. Big changes
+switch the glyph at once (sooner in busy, fast-changing areas); otherwise it
+follows a smoothed tone. A steady change of more than 16 tone units settles
+within 41 frames; a smaller one within 74, unless the tone sits within 4
+units of the boundary to the neighbouring glyph, which may then stay.
+Black-floor crossings take at most four frames.
+
+**Black backdrop.** While it plays, the player sets your terminal's default
+background to black (OSC 11). `ascii` needs it: its unshaded cells (shadows,
+blank cells, and everything on 16-colour terminals) use the terminal's
+background, and on a grey or light theme they would sit on that colour, next
+to shades designed for black. `pixels` and `letters`
+paint every cell themselves and look the same either way. On exit it sends
+OSC 111, which resets the background to the one in your terminal's config or
+profile (not to a colour something else set at runtime). That reset runs on a
+normal quit, on an error, on a Rust panic, on SIGINT (Ctrl-C), SIGTERM and
+SIGHUP, and at process exit. Nothing can run when the player is killed with
+SIGKILL or dies from an abort or a segfault; if a tab is left black, run
+`printf '\e]111\e\\'` in it or open a new one. `--no-backdrop` keeps your
+terminal's background; the mono tier (`--tier mono`) never sets it, since it
+draws in your terminal's own foreground colour. `auto-ascii play` always uses
+the backdrop. Terminals that don't understand OSC 11 ignore it.
 
 **Dials** retune the renderer while the video plays. Shadow lift opens dark
 scenes. Edge strength sets how many contours get strokes. Hysteresis trades
-flicker against responsiveness. Nothing is rebuilt: the same asset re-renders
+flicker against responsiveness: 0..255 in steps of 16, recommended default
+128 (the default was 160 before, so pixels and letters hold glyphs a little
+less at default, and are unchanged at any equal value). Values above 128
+are allowed for fast-paced videos or video types that benefit from high
+hysteresis, but can visibly drift or smear. Every codec keeps it, since switching it off
+raises glyph changes markedly; see
+[hysteresis measurements](docs/HYSTERESIS-DECISION.md). The readout says
+when a dial is at its floor, its default or its top. Nothing is rebuilt: the same asset re-renders
 at the new setting. `s` saves the dials and codec beside the asset as
 `<name>.player.toml`, and they load the next time that video plays.
 
@@ -139,15 +176,20 @@ zoom-out shortcut (often Cmd - on macOS; bindings vary by terminal). The
 player can't change the font itself
 ([docs/research/zoom.md](docs/research/zoom.md)), so below 160 columns the
 overlay says so. At 240 or more columns and 36 or more rows, on a non-ASCII
-tier, the overlay text is drawn in big block letters so it stays readable,
-except under the `ascii` codec, where overlays stay plain one-character-per-cell
-ASCII on the terminal's default background.
+tier, the overlay text is drawn in big block letters so it stays readable.
+Every codec draws the same overlay, `ascii` included.
+
+**The `ascii` rule.** Picture cells are printable ASCII 0x20-0x7E, background
+default or a shade within the cap; block glyphs and full-strength backgrounds
+are allowed only in UI overlay cells (HUD text), which use the same big text as
+pixels/letters.
 
 Useful flags:
 - `--loop`, `--seek 1:30`, `--fps-cap 30`
 - `--codec pixels|letters|ascii`
 - `--palette ascii|unicode|braille`, `--tier truecolor|256|16|mono`
 - `--no-query` (skip capability queries)
+- `--no-backdrop` (keep the terminal's own background)
 - `--font-table NAME|PATH` (tell the player which font your terminal uses)
 
 `auto-ascii-player --help` lists everything.

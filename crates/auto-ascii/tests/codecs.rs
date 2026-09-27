@@ -2,16 +2,17 @@ use std::io::Cursor;
 use std::path::PathBuf;
 
 use auto_ascii::deck::{ClipDeck, DeckConfig};
-use auto_ascii::pipeline::{Player, ProgressContext, color_depth};
+use auto_ascii::pipeline::{OverlayScale, Player, ProgressContext, UiRows, color_depth};
 use auto_ascii::{Codec, Located, RenderSession};
-use auto_ascii_core::cell::attrs;
-use auto_ascii_core::codec::ascii::ascii_glyphs;
+use auto_ascii_core::codec::ascii::{
+    SHADE_FLOOR, SHADES_256, ascii_glyphs, backing_within_cap, cell_within_cap, in_hue_family,
+};
 use auto_ascii_core::codec::letters::letters_glyphs;
 use auto_ascii_core::{Cell, ColorDepth, GlyphTier, Grid, Rgb};
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
 use auto_ascii_format::header::plane_id;
 use auto_ascii_format::{AsciiReader, AsciiWriter, Meta, PlaneRef, WriterOptions};
-use auto_ascii_term::{Backend, Caps, ColorTier, Event, Key, SimBackend};
+use auto_ascii_term::{Backend, Caps, ColorTier, Event, Key, SimBackend, quant};
 
 const W: usize = 192;
 const H: usize = 108;
@@ -402,7 +403,7 @@ fn background_sgrs(bytes: &[u8]) -> Result<Vec<String>, String> {
             continue;
         }
         if bytes.get(i + 1) != Some(&b'[') {
-            return Err(format!("non-CSI escape at {i}"));
+            return Err(format!("escape at {i} is not a CSI: {:?}", bytes.get(i + 1).map(|&b| b as char)));
         }
         let start = i + 2;
         let end = (start..bytes.len())
@@ -433,10 +434,112 @@ fn background_sgrs(bytes: &[u8]) -> Result<Vec<String>, String> {
     Ok(found)
 }
 
-const SIZES: [(u16, u16); 10] =
-    [(80, 24), (1, 1), (8, 3), (5, 2), (400, 120), (213, 58), (31, 8), (240, 36), (120, 40), (100, 60)];
+struct Printed {
+    row: u16,
+    col: u16,
+    ch: char,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
+}
 
-fn deck_stream(codec: Codec, tier: GlyphTier, color: ColorTier, overlays: bool) -> Vec<u8> {
+fn sgr_color(ps: &[&str]) -> Option<Rgb> {
+    let n = |k: usize| ps.get(k).and_then(|v| v.parse::<u8>().ok());
+    match ps.get(1) {
+        Some(&"2") => Some(Rgb::new(n(2)?, n(3)?, n(4)?)),
+        Some(&"5") => Some(quant::ansi256_to_rgb(n(2)?)),
+        _ => None,
+    }
+}
+
+struct Screen {
+    row: u16,
+    col: u16,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
+}
+
+impl Screen {
+    fn new() -> Screen {
+        Screen { row: 0, col: 0, fg: None, bg: None }
+    }
+
+    fn print(&mut self, bytes: &[u8]) -> Result<Vec<Printed>, String> {
+        let mut out = Vec::new();
+        let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+        let mut chars = text.char_indices().peekable();
+        while let Some((i, ch)) = chars.next() {
+            if ch != '\x1b' {
+                if ch.is_control() {
+                    return Err(format!("control {ch:?} at {i} outside an escape sequence"));
+                }
+                out.push(Printed { row: self.row, col: self.col, ch, fg: self.fg, bg: self.bg });
+                self.col += 1;
+                continue;
+            }
+            if chars.next().map(|(_, c)| c) != Some('[') {
+                return Err(format!("escape at {i} is not a CSI"));
+            }
+            let mut params = String::new();
+            let fin = loop {
+                match chars.next() {
+                    Some((_, c @ '\x40'..='\x7e')) => break c,
+                    Some((_, c)) => params.push(c),
+                    None => return Err(format!("unterminated CSI at {i}")),
+                }
+            };
+            let ps: Vec<&str> = params.split(';').collect();
+            match fin {
+                'H' => {
+                    let n = |k: usize| ps.get(k).and_then(|v| v.parse::<u16>().ok()).unwrap_or(1).max(1) - 1;
+                    (self.row, self.col) = (n(0), n(1));
+                }
+                'm' if !params.starts_with('?') => {
+                    let mut k = 0;
+                    while k < ps.len() {
+                        match ps[k].parse::<u32>().unwrap_or(0) {
+                            v @ (38 | 48) => {
+                                let n = if ps.get(k + 1) == Some(&"2") { 5 } else { 3 };
+                                let c = sgr_color(&ps[k..(k + n).min(ps.len())]);
+                                if v == 38 { self.fg = c } else { self.bg = c }
+                                k += n;
+                                continue;
+                            }
+                            0 => (self.fg, self.bg) = (None, None),
+                            39 => self.fg = None,
+                            49 => self.bg = None,
+                            v @ (30..=37 | 90..=97) => self.fg = Some(quant::ansi16_to_rgb(ansi16(v, 30, 90))),
+                            v @ (40..=47 | 100..=107) => self.bg = Some(quant::ansi16_to_rgb(ansi16(v, 40, 100))),
+                            _ => {}
+                        }
+                        k += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+}
+
+fn ansi16(v: u32, dim: u32, bright: u32) -> u8 {
+    if v >= bright { (v - bright + 8) as u8 } else { (v - dim) as u8 }
+}
+
+const SIZES: [(u16, u16); 14] = [
+    (80, 24), (1, 1), (8, 3), (5, 2), (400, 120), (213, 58), (31, 8), (240, 36), (120, 40), (100, 60),
+    (200, 56), (239, 36), (320, 90), (1000, 300),
+];
+
+struct Frame {
+    bytes: Vec<u8>,
+    ui: UiRows,
+}
+
+fn joined(frames: &[Frame]) -> Vec<u8> {
+    frames.iter().flat_map(|f| f.bytes.iter().copied()).collect()
+}
+
+fn deck_stream(codec: Codec, tier: GlyphTier, color: ColorTier, overlays: bool) -> Vec<Frame> {
     let tag = format!("{}-{tier:?}-{color:?}-{codec:?}-{overlays}", std::process::id());
     let dir = std::env::temp_dir().join(format!("auto-ascii-codecs-stream-{tag}"));
     std::fs::create_dir_all(&dir).unwrap();
@@ -473,7 +576,7 @@ fn deck_stream(codec: Codec, tier: GlyphTier, color: ColorTier, overlays: bool) 
             }
             let at = located.map(|(clip_idx, local_frame)| Located { clip_idx, local_frame });
             deck.present_at(&mut backend, at).unwrap();
-            out.extend(backend.take_output());
+            out.push(Frame { bytes: backend.take_output(), ui: deck.ui_rows() });
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -481,24 +584,130 @@ fn deck_stream(codec: Codec, tier: GlyphTier, color: ColorTier, overlays: bool) 
 }
 
 #[test]
-fn ascii_draws_nothing_but_printable_ascii_on_the_terminal_background() {
+fn ascii_picture_cells_are_printable_ascii_over_a_capped_shade() {
     for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
         for color in [ColorTier::True, ColorTier::C256, ColorTier::C16, ColorTier::Mono] {
             for overlays in [false, true] {
                 let what = format!("{tier:?} {color:?} overlays {overlays}");
-                let out = deck_stream(Codec::Ascii, tier, color, overlays);
-                let bg = background_sgrs(&out).unwrap_or_else(|e| panic!("{what}: {e}"));
-                assert!(bg.is_empty(), "{what}: background SGR {bg:?}");
-                let text = String::from_utf8_lossy(&out);
-                assert!(text.contains('@') && text.contains('/'), "{what}: a real picture");
-                assert!(text.contains("AUTO-ASCII"), "{what}: the enlarge card was drawn");
-                if overlays {
-                    for want in ["v controls", "shadow lift", "PAUSED", "Caf? clip", "400x120 cells", "zoom out"] {
-                        assert!(text.contains(want), "{what}: overlay {want:?} drawn");
+                let frames = deck_stream(Codec::Ascii, tier, color, overlays);
+                let mut screen = Screen::new();
+                let (mut shaded, mut ui_cells, mut ui_blocks, mut ui_backed) = (0, 0, 0, 0);
+                for (n, frame) in frames.iter().enumerate() {
+                    assert_eq!(frame.ui.is_empty(), !overlays, "{what} frame {n}");
+                    let cells = screen.print(&frame.bytes).unwrap_or_else(|e| panic!("{what} frame {n}: {e}"));
+                    for Printed { row, col, ch, fg, bg } in cells {
+                        let at = format!("{what} frame {n} ({col},{row}) {ch:?}");
+                        if frame.ui.contains(row) {
+                            ui_cells += 1;
+                            ui_blocks += usize::from(!ch.is_ascii());
+                            ui_backed += usize::from(bg.is_some());
+                            continue;
+                        }
+                        assert!(ch == ' ' || ch.is_ascii_graphic(), "{at}: a picture cell outside printable ASCII");
+                        let Some(back) = bg else { continue };
+                        assert!(
+                            matches!(color, ColorTier::True | ColorTier::C256),
+                            "{at}: a background on a picture cell at {color:?}: {back:?}"
+                        );
+                        shaded += 1;
+                        let fg = fg.unwrap_or_else(|| panic!("{at}: a shade needs its own color"));
+                        assert!(backing_within_cap(ch, fg, back), "{at}: {fg:?} on {back:?}");
+                        assert!(back.r.max(back.g).max(back.b) >= SHADE_FLOOR, "{at}: {back:?} reads as black");
+                        if color == ColorTier::C256 {
+                            assert!(SHADES_256.contains(&back), "{at}: {back:?} is not a 256-color shade");
+                            assert!(in_hue_family(fg, back), "{at}: {back:?} leaves {fg:?}'s hue family");
+                        }
                     }
                 }
+                if matches!(color, ColorTier::True | ColorTier::C256) {
+                    assert!(shaded > 0, "{what}: the picture is shaded");
+                }
+                let text = String::from_utf8_lossy(&joined(&frames)).into_owned();
+                assert!(text.contains('@') && text.contains('/'), "{what}: a real picture");
+                assert!(text.contains("AUTO-ASCII"), "{what}: the enlarge card was drawn");
                 if color != ColorTier::Mono {
-                    assert!(text.contains("49m"), "{what}: the default background is set");
+                    assert!(text.contains("49m"), "{what}: pads, gaps and unshaded cells keep the default background");
+                }
+                if !overlays {
+                    assert_eq!(ui_cells, 0, "{what}: no overlay, no UI");
+                    continue;
+                }
+                assert!(ui_cells > 0, "{what}: the overlay is UI");
+                assert_eq!(ui_blocks > 0, tier != GlyphTier::Ascii, "{what}: big block text only on block tiers");
+                assert_eq!(ui_backed > 0, color != ColorTier::Mono, "{what}: the overlay keeps its own background");
+                for want in ["v controls", "shadow lift", "PAUSED", "Caf? clip", "213x58 cells", "zoom out"] {
+                    assert!(text.contains(want), "{what}: overlay {want:?} drawn");
+                }
+            }
+        }
+    }
+}
+
+fn hud(asset: &[u8], codec: Codec, tier: GlyphTier, (cols, rows): (u16, u16), on: &[&str]) -> (Grid<Cell>, UiRows) {
+    let mut p = player(asset, tier);
+    p.set_codec(codec);
+    p.reflow_grid(cols, rows);
+    p.set_progress_overlay(on.contains(&"progress"));
+    p.set_hint_overlay(on.contains(&"hints") || on.contains(&"info"));
+    p.set_info_overlay(on.contains(&"info").then_some(" The Architect   codec: ascii   settings: default "));
+    p.set_dial_overlay(on.contains(&"dial").then_some(("edge on", 32, 255)));
+    p.set_paused(true);
+    p.render_grid(3).unwrap();
+    (p.grid().clone(), p.ui_rows())
+}
+
+#[test]
+fn ascii_draws_the_same_hud_as_pixels_and_letters() {
+    let asset = full_asset();
+    let sets: [&[&str]; 6] =
+        [&["progress"], &["hints"], &["info"], &["dial"], &["progress", "dial", "info"], &["progress", "hints", "info"]];
+    let sizes = [(80, 24), (200, 56), (239, 36), (240, 35), (240, 36), (320, 90), (400, 120), (1000, 300)];
+    let allowed = ascii_glyphs();
+    for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
+        for size in sizes {
+            let big = OverlayScale::for_grid(size.0, size.1, tier) == OverlayScale::Big;
+            assert_eq!(big, tier != GlyphTier::Ascii && size.0 >= 240 && size.1 >= 36);
+            for on in sets {
+                let what = format!("{tier:?} {}x{} {on:?}", size.0, size.1);
+                let (ascii, ui) = hud(&asset, Codec::Ascii, tier, size, on);
+                assert!(!ui.is_empty(), "{what}");
+                for codec in [Codec::Pixels, Codec::Letters] {
+                    let (other, other_ui) = hud(&asset, codec, tier, size, on);
+                    assert_eq!(other_ui, ui, "{what}: {codec:?} draws the same rows");
+                    for r in (0..size.1).filter(|&r| ui.contains(r)) {
+                        assert_eq!(ascii.row(r), other.row(r), "{what}: row {r} differs from {codec:?}");
+                    }
+                }
+                let hud_text: String =
+                    (0..size.1).filter(|&r| ui.contains(r)).flat_map(|r| row(&ascii, r).chars().collect::<Vec<_>>()).collect();
+                assert_eq!(hud_text.contains(['▀', '▄', '█']), big, "{what}: big text exactly where pixels draws it");
+                for r in (0..size.1).filter(|&r| !ui.contains(r)) {
+                    for c in ascii.row(r) {
+                        assert!(allowed.contains(&c.glyph()) && cell_within_cap(c, ColorDepth::True), "{what}: row {r} {c:?}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn ascii_without_overlays_is_all_picture_on_big_grids() {
+    let asset = full_asset();
+    let allowed = ascii_glyphs();
+    for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
+        for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
+            for (cols, rows) in [(200, 56), (239, 36), (240, 36), (320, 90), (400, 120), (1000, 300)] {
+                let mut p = Player::new(AsciiReader::open(&asset).unwrap(), 2.0, false, color, tier).unwrap();
+                p.set_codec(Codec::Ascii);
+                p.reflow_grid(cols, rows);
+                for f in 0..FRAMES {
+                    p.render_grid(f).unwrap();
+                }
+                assert!(p.ui_rows().is_empty());
+                for c in p.grid().as_slice() {
+                    assert!(allowed.contains(&c.glyph()), "{tier:?} {color:?} {cols}x{rows}: {c:?}");
+                    assert!(cell_within_cap(c, color), "{tier:?} {color:?} {cols}x{rows}: {c:?}");
                 }
             }
         }
@@ -507,10 +716,10 @@ fn ascii_draws_nothing_but_printable_ascii_on_the_terminal_background() {
 
 #[test]
 fn other_codecs_keep_their_backgrounds_and_big_overlay_text() {
-    let pixels = deck_stream(Codec::Pixels, GlyphTier::Ascii, ColorTier::True, true);
+    let pixels = joined(&deck_stream(Codec::Pixels, GlyphTier::Ascii, ColorTier::True, true));
     let bg = background_sgrs(&pixels).unwrap();
     assert!(bg.contains(&"48;2;0;0;0".to_string()) && bg.contains(&"48;2;24;24;40".to_string()), "{bg:?}");
-    let letters = deck_stream(Codec::Letters, GlyphTier::UnicodeBlocks, ColorTier::C16, true);
+    let letters = joined(&deck_stream(Codec::Letters, GlyphTier::UnicodeBlocks, ColorTier::C16, true));
     assert!(background_sgrs(&letters).is_err(), "letters keeps blocks and big overlay text");
     assert!(String::from_utf8_lossy(&letters).contains('\u{2580}'), "big text at 400x120");
 }
@@ -528,7 +737,7 @@ fn ascii_goldens() {
         p.reflow(&mut backend, 80, 24);
         let grid = render(&mut p, &mut backend, FRAMES - 1);
         let allowed = ascii_glyphs();
-        assert!(grid.as_slice().iter().all(|c| allowed.contains(&c.glyph()) && c.attrs == attrs::DEFAULT_BG));
+        assert!(grid.as_slice().iter().all(|c| allowed.contains(&c.glyph()) && cell_within_cap(c, color)));
         let text: String = grid.as_slice().iter().map(|c| c.glyph()).collect();
         assert!(text.contains(['|', '/', '\\']), "{name}: edge strokes");
         assert!(text.contains('@'), "{name}: the disc core is the densest glyph");

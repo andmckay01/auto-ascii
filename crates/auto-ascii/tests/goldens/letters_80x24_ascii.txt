@@ -7,15 +7,15 @@ letters codec, Ascii tier, truecolor, 80x24, frame 5
 |            ...............:::::::::::::::;;;;;;;;;;;;;++++++++++++cccccccccccxx|
 |          ...............;::::::;:::-/-______-\;;;;;;++++++++++++cccccccccccxxxx|
 |        .............:.:;::::;:;:////eGSGSeGSG-\\\;++++++++++++cccccccccccxxxxxx|
-|      .............:.::::::::;:://GGGSGGoGSGGoGSGG\\+++++++++cccccccccccxxxxxxxx|
-|    ..............;::::;::::+://DDDDGGG8GSGGeGSGGeGS\++++++cccccccccccxxxxxxxxxx|
-|  ...............;::::;::::+::|888DDDGGGeGGGGeGGGGSGG|+++cccccccccccxxxxxxxxxxxx|
-|...............::::+::::+::::|BBB88DDDGGGGGSGGGGSGGGG||ccccccccccccxxxxxxxxxxxnn|
-|.............:::::::::::::::;|MBBB88DDDGGDGGGGDGGGGoGG|ccccccccccxxxxxxxxxxxnnnn|
-|...........:::::::::::::::;;;|MBB888DDGGGDGSGGDGSGGoGS|ccccccccxxxxxxxxxxxnnnnnn|
-|.........::::::::::+::::+;;;;|BB888DDDGGGGGBGGGGSGGGG|cccccccxxxxxxxxxxxnnnnnnnn|
-|.......::::::::::;::::;;;;;+;;\888DDDGGG8GSGGeGSGGeGS/cccccxxxxxxxxxxxnnnnnnnnnn|
-|.....:::::::::::::;:;;;;;;;;+;;\DDDGGGGDGSGGDGSGGGG//ccccxxxxxxxxxxxnnnnnnnnnnnn|
+|      .............:.::::::::;:://GGGSGGGGSGGoGSGG\\+++++++++cccccccccccxxxxxxxx|
+|    ..............;::::;::::+://DDDDGGGDGSGGDGSGGeGS\++++++cccccccccccxxxxxxxxxx|
+|  ...............;::::;::::+::|888DDDGGG8GGGG8GGGGSGG|+++cccccccccccxxxxxxxxxxxx|
+|...............::::+::::+::::|GBB88DDDGGBGG8GGGGSGGGG||ccccccccccccxxxxxxxxxxxnn|
+|.............:::::::::::::::;|GBBB88DDDMMMMMGGGGGGGoGG|ccccccccccxxxxxxxxxxxnnnn|
+|...........:::::::::::::::;;;|GBB888DDGMMGMBGGGGSGGoGS|ccccccccxxxxxxxxxxxnnnnnn|
+|.........::::::::::+::::+;;;;|BB888DDDGGGGG8GGGGSGGGG|cccccccxxxxxxxxxxxnnnnnnnn|
+|.......::::::::::;::::;;;;;+;;\888DDDGGGDGSGGDGSGGeGS/cccccxxxxxxxxxxxnnnnnnnnnn|
+|.....:::::::::::::;:;;;;;;;;+;;\DDDGGGGGGSGGGGSGGGG//ccccxxxxxxxxxxxnnnnnnnnnnnn|
 |...:::::::::::::::;;;;+;;;;+;;;+\\GGSeGSGSeGSGSeGS/ccccxxxxxxxxxxxnnnnnnnnnnnnnn|
 |..::::::::::::::;;;;;;+;;;;c;+++c+\\\\SeSeoSe--//ccccxxxxxxxxxxxnnnnnnnnnnnnnnnn|
 |::::::::::::::;;;;;;;;;;;;++cccc++++++---ccc-ccccccxxxxxxxxxxxnnnnnnnnnn        |

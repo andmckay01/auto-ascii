@@ -25,7 +25,6 @@
 
 use std::time::Instant;
 
-use auto_ascii_core::cell::attrs;
 use auto_ascii_core::{
     Cell, Codec, ColorDepth, ComposeParams, FramePlanes, GlyphTier, Grid, HysteresisState,
     PaletteSet, Resampler, Rgb, Viewport, compose_frame_codec, compute_viewport_for,
@@ -75,24 +74,21 @@ pub const BIG_OVERLAY_MIN_ROWS: u16 = 36;
 
 /// How large the overlay rows draw their text, picked from the grid so the
 /// overlay stays about the same size on screen however far the terminal is
-/// zoomed out.
+/// zoomed out. The same on every codec: the overlay is UI, not picture (see
+/// [`UiRows`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverlayScale {
     /// One character per cell, one row per line.
     Normal,
     /// A 3x5 pixel font in half-blocks: 4 cells wide and 3 rows tall per
     /// character (upper case only). Uses `▀ ▄ █`, so only block tiers get
-    /// it. The ASCII tier keeps the printable-ASCII overlay at every size.
+    /// it. The ASCII tier keeps one-cell text at every size.
     Big,
-    /// [`Normal`](OverlayScale::Normal) on the terminal's own background:
-    /// printable ASCII only, every cell flagged
-    /// [`attrs::DEFAULT_BG`](auto_ascii_core::cell::attrs::DEFAULT_BG), for a
-    /// codec whose pads leave the background alone (`ascii`).
-    Plain,
 }
 
 impl OverlayScale {
-    /// The scale for a `cols x rows` grid on this glyph tier.
+    /// The scale for a `cols x rows` grid on this glyph tier, under every
+    /// codec.
     pub fn for_grid(cols: u16, rows: u16, glyph_tier: GlyphTier) -> OverlayScale {
         if glyph_tier != GlyphTier::Ascii
             && cols >= BIG_OVERLAY_MIN_COLS
@@ -104,23 +100,11 @@ impl OverlayScale {
         }
     }
 
-    /// [`for_grid`](OverlayScale::for_grid) under `codec`: a codec whose
-    /// pad keeps the terminal's background gets
-    /// [`Plain`](OverlayScale::Plain) at every size, so its overlays stay
-    /// printable ASCII with no background either.
-    pub fn for_codec(cols: u16, rows: u16, glyph_tier: GlyphTier, codec: Codec) -> OverlayScale {
-        if codec.pad().attrs & attrs::DEFAULT_BG != 0 {
-            OverlayScale::Plain
-        } else {
-            OverlayScale::for_grid(cols, rows, glyph_tier)
-        }
-    }
-
     /// Characters per overlay line on a `cols`-wide grid — the width every
     /// row lays its text out for.
     pub fn line_chars(self, cols: u16) -> u16 {
         match self {
-            OverlayScale::Normal | OverlayScale::Plain => cols,
+            OverlayScale::Normal => cols,
             OverlayScale::Big => cols / BIG_CHAR_COLS,
         }
     }
@@ -128,9 +112,69 @@ impl OverlayScale {
     /// Grid rows one overlay line occupies.
     pub fn line_rows(self) -> u16 {
         match self {
-            OverlayScale::Normal | OverlayScale::Plain => 1,
+            OverlayScale::Normal => 1,
             OverlayScale::Big => BIG_LINE_ROWS,
         }
+    }
+}
+
+/// The UI cells of a frame: the rows the overlay painters drew, each a
+/// full-width band of [`OverlayScale::line_rows`] rows counted up from the
+/// bottom of the grid, one band per overlay line. Every other cell is
+/// picture (or letterbox pad, gap or enlarge card).
+///
+/// This is the boundary of the `ascii` codec's rule: picture cells are
+/// printable ASCII `0x20..=0x7E` on the terminal's own background or a
+/// shade within
+/// [`cell_within_cap`](auto_ascii_core::codec::ascii::cell_within_cap);
+/// block glyphs and full-strength backgrounds appear only in UI cells,
+/// which draw the same overlay as `pixels` and `letters`. Every `draw_*`
+/// overlay painter returns the rows it drew;
+/// [`Player::ui_rows`] and
+/// [`ClipDeck::ui_rows`](crate::deck::ClipDeck::ui_rows) report the
+/// last frame's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UiRows {
+    rows: u16,
+    line_rows: u16,
+    lines: u8,
+}
+
+impl UiRows {
+    /// No UI cells: the whole grid is picture.
+    pub const NONE: UiRows = UiRows { rows: 0, line_rows: 0, lines: 0 };
+
+    /// Whether grid row `row` is UI.
+    pub fn contains(self, row: u16) -> bool {
+        if row >= self.rows || self.line_rows == 0 {
+            return false;
+        }
+        let line = (self.rows - 1 - row) / self.line_rows;
+        line < 8 && self.lines >> line & 1 == 1
+    }
+
+    /// Whether no row is UI.
+    pub fn is_empty(self) -> bool {
+        self.lines == 0
+    }
+}
+
+impl std::ops::BitOr for UiRows {
+    type Output = UiRows;
+
+    /// Both painters' rows, on one grid at one scale.
+    fn bitor(self, other: UiRows) -> UiRows {
+        if self.is_empty() {
+            return other;
+        }
+        debug_assert!(other.is_empty() || (self.rows, self.line_rows) == (other.rows, other.line_rows));
+        UiRows { lines: self.lines | other.lines, ..self }
+    }
+}
+
+impl std::ops::BitOrAssign for UiRows {
+    fn bitor_assign(&mut self, other: UiRows) {
+        *self = *self | other;
     }
 }
 
@@ -175,14 +219,14 @@ fn big_glyph(c: char) -> u16 {
     }
 }
 
-fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, scale: OverlayScale) {
+fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, scale: OverlayScale) -> UiRows {
     let (cols, rows) = (grid.cols(), grid.rows());
     let h = scale.line_rows();
     let Some(top) = rows.checked_sub(h * (slot + 1)) else {
-        return;
+        return UiRows::NONE;
     };
     if cols == 0 {
-        return;
+        return UiRows::NONE;
     }
     match scale {
         OverlayScale::Normal => {
@@ -190,13 +234,6 @@ fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, sc
             for col in 0..cols {
                 let ch = chars.next().unwrap_or(' ');
                 grid.set(col, top, Cell::new(ch, fg, bg));
-            }
-        }
-        OverlayScale::Plain => {
-            let mut chars = line.chars();
-            for col in 0..cols {
-                let ch = chars.next().map_or(' ', |c| if c == ' ' || c.is_ascii_graphic() { c } else { '?' });
-                grid.set(col, top, Cell { ch: ch as u32, fg, bg: Rgb::BLACK, attrs: attrs::DEFAULT_BG });
             }
         }
         OverlayScale::Big => {
@@ -229,6 +266,7 @@ fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, sc
             }
         }
     }
+    UiRows { rows, line_rows: h, lines: 1 << slot }
 }
 
 /// Map the probed terminal capabilities to the palette-selection charset
@@ -450,6 +488,7 @@ pub struct Player<'a> {
     loaded: Option<u32>,
     grid: Grid<Cell>,
     layer_mask: Option<Grid<u8>>,
+    ui_rows: UiRows,
     stage: StageNs,
     overlay_visible: bool,
     progress_ctx: Option<ProgressContext>,
@@ -542,6 +581,7 @@ impl<'a> Player<'a> {
             loaded: None,
             grid: Grid::new(0, 0),
             layer_mask: None,
+            ui_rows: UiRows::NONE,
             stage: StageNs::default(),
             overlay_visible: false,
             progress_ctx: None,
@@ -620,6 +660,12 @@ impl<'a> Player<'a> {
         &self.grid
     }
 
+    /// The overlay rows drawn over [`grid`](Player::grid) on the last
+    /// frame: its UI cells. Every other cell is picture or pad.
+    pub fn ui_rows(&self) -> UiRows {
+        self.ui_rows
+    }
+
     /// Current viewport (`None` below the 32×9 minimum).
     pub fn viewport(&self) -> Option<Viewport> {
         self.vp
@@ -673,6 +719,7 @@ impl<'a> Player<'a> {
     /// terminal-free [`crate::RenderSession`] resize path.
     pub fn reflow_grid(&mut self, cols: u16, rows: u16) {
         self.grid.resize(cols, rows);
+        self.ui_rows = UiRows::NONE;
         if let Some(mask) = &mut self.layer_mask {
             mask.resize(cols, rows);
         }
@@ -947,9 +994,10 @@ impl<'a> Player<'a> {
                 mask.fill(auto_ascii_core::layer::BASE);
             }
         }
-        let scale = OverlayScale::for_codec(self.grid.cols(), self.grid.rows(), self.glyph_tier, self.codec);
+        let scale = OverlayScale::for_grid(self.grid.cols(), self.grid.rows(), self.glyph_tier);
+        let mut ui = UiRows::NONE;
         if self.overlay_visible {
-            match self.progress_ctx {
+            ui |= match self.progress_ctx {
                 Some(ctx) => draw_progress_overlay_clips(
                     &mut self.grid,
                     ctx.frame,
@@ -968,17 +1016,18 @@ impl<'a> Player<'a> {
                     self.paused,
                     scale,
                 ),
-            }
+            };
         }
         if let Some((label, value, max)) = self.dial_overlay {
-            draw_dial_overlay(&mut self.grid, label, value, max, scale);
+            ui |= draw_dial_overlay(&mut self.grid, label, value, max, scale);
         }
         if self.hint_visible && self.vp.is_some() {
-            draw_hint_overlay(&mut self.grid, scale);
+            ui |= draw_hint_overlay(&mut self.grid, scale);
             if let Some(info) = &self.info {
-                draw_info_overlay(&mut self.grid, info, scale);
+                ui |= draw_info_overlay(&mut self.grid, info, scale);
             }
         }
+        self.ui_rows = ui;
         Ok(())
     }
 
@@ -1113,8 +1162,8 @@ pub fn draw_enlarge_card(grid: &mut Grid<Cell>, pad: Cell) {
 /// mono quantizes the colors away and the glyphs still carry everything).
 /// Pure function of `(frame, frame_count, fps, cols)` — byte-deterministic,
 /// so diff-mode presents of an unchanged overlay row cost zero damage.
-pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32, frame_count: u32, fps: f64) {
-    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, false, OverlayScale::Normal);
+pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32, frame_count: u32, fps: f64) -> UiRows {
+    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, false, OverlayScale::Normal)
 }
 
 /// [`draw_progress_overlay`] with the pause reading: `paused` swaps the
@@ -1126,8 +1175,8 @@ pub fn draw_progress_overlay_paused(
     frame_count: u32,
     fps: f64,
     paused: bool,
-) {
-    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, paused, OverlayScale::Normal);
+) -> UiRows {
+    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, paused, OverlayScale::Normal)
 }
 
 /// [`draw_progress_overlay`] with the clip block: `clip = Some((c, n))`
@@ -1135,7 +1184,8 @@ pub fn draw_progress_overlay_paused(
 /// block is dropped below [`PROGRESS_HINT_MIN_COLS`] and for single-clip
 /// compositions, so `None` — every single-asset path — prints no block at
 /// all. `scale` sizes the text ([`OverlayScale::Big`] lays the row out for
-/// a quarter of the columns).
+/// a quarter of the columns). Returns the rows drawn, like every overlay
+/// painter.
 pub fn draw_progress_overlay_clips(
     grid: &mut Grid<Cell>,
     frame: u32,
@@ -1144,9 +1194,9 @@ pub fn draw_progress_overlay_clips(
     clip: Option<(usize, usize)>,
     paused: bool,
     scale: OverlayScale,
-) {
+) -> UiRows {
     if grid.cols() == 0 || grid.rows() == 0 {
-        return;
+        return UiRows::NONE;
     }
     let cols = scale.line_chars(grid.cols());
     let fg = Rgb::gray(235);
@@ -1199,7 +1249,7 @@ pub fn draw_progress_overlay_clips(
         line.push(']');
     }
     line.push_str(&right);
-    paint_line(grid, 0, &line, fg, bg, scale);
+    paint_line(grid, 0, &line, fg, bg, scale)
 }
 
 /// The transient 1-line live-dial readout: bottom terminal row,
@@ -1213,9 +1263,9 @@ pub fn draw_dial_overlay(
     value: u8,
     max: u8,
     scale: OverlayScale,
-) {
+) -> UiRows {
     if grid.cols() == 0 || grid.rows() == 0 {
-        return;
+        return UiRows::NONE;
     }
     let cols = scale.line_chars(grid.cols());
     let fg = Rgb::gray(245);
@@ -1240,7 +1290,7 @@ pub fn draw_dial_overlay(
         line.push(']');
     }
     line.push_str(&right);
-    paint_line(grid, 0, &line, fg, bg, scale);
+    paint_line(grid, 0, &line, fg, bg, scale)
 }
 
 fn scrub_step_label() -> String {
@@ -1287,11 +1337,11 @@ fn hint_line(cols: u16) -> String {
 /// is up, for a short window at start-up and whenever `v` pins it (all
 /// run-loop policy — see `Player::set_hint_overlay`). Pure function of
 /// `(cols, rows, scale)`, so an unchanged row costs zero damage in diff mode.
-pub fn draw_hint_overlay(grid: &mut Grid<Cell>, scale: OverlayScale) {
+pub fn draw_hint_overlay(grid: &mut Grid<Cell>, scale: OverlayScale) -> UiRows {
     let fg = Rgb::gray(235);
     let bg = Rgb::new(24, 24, 40);
     let line = hint_line(scale.line_chars(grid.cols()));
-    paint_line(grid, 1, &line, fg, bg, scale);
+    paint_line(grid, 1, &line, fg, bg, scale)
 }
 
 fn zoom_line(cols: u16) -> String {
@@ -1316,7 +1366,7 @@ fn zoom_line(cols: u16) -> String {
 /// macOS); it is dropped when no wording fits. Pure function of
 /// `(text, cols, rows, scale)`, so an unchanged row costs zero damage in
 /// diff mode.
-pub fn draw_info_overlay(grid: &mut Grid<Cell>, text: &str, scale: OverlayScale) {
+pub fn draw_info_overlay(grid: &mut Grid<Cell>, text: &str, scale: OverlayScale) -> UiRows {
     let (cols, rows) = (grid.cols(), grid.rows());
     let fg = Rgb::gray(235);
     let bg = Rgb::new(24, 24, 40);
@@ -1329,18 +1379,20 @@ pub fn draw_info_overlay(grid: &mut Grid<Cell>, text: &str, scale: OverlayScale)
         line.extend(std::iter::repeat_n(' ', width - used - size.len()));
         line.push_str(&size);
     }
-    paint_line(grid, 2, &line, fg, bg, scale);
+    let mut ui = paint_line(grid, 2, &line, fg, bg, scale);
     if cols < ZOOM_HINT_MAX_COLS {
         let zoom = zoom_line(width as u16);
         if !zoom.is_empty() {
-            paint_line(grid, 3, &zoom, fg, bg, scale);
+            ui |= paint_line(grid, 3, &zoom, fg, bg, scale);
         }
     }
+    ui
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use auto_ascii_core::cell::attrs;
 
     #[test]
     fn shadow_lift_opens_shadows_monotonically() {
@@ -1552,31 +1604,46 @@ mod tests {
     }
 
     #[test]
-    fn plain_overlays_keep_the_terminal_background_at_every_size() {
-        for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
-            for (cols, rows) in [(1, 1), (80, 24), (400, 120), (1000, 1000)] {
-                assert_eq!(OverlayScale::for_codec(cols, rows, tier, Codec::Ascii), OverlayScale::Plain);
-                for codec in [Codec::Pixels, Codec::Letters] {
-                    let want = OverlayScale::for_grid(cols, rows, tier);
-                    assert_eq!(OverlayScale::for_codec(cols, rows, tier, codec), want);
+    fn ui_rows_are_exactly_the_rows_the_overlays_draw() {
+        type Draw = fn(&mut Grid<Cell>, OverlayScale) -> UiRows;
+        let pad = Codec::Ascii.pad();
+        for (cols, rows) in [(80u16, 24u16), (159, 45), (239, 36), (240, 36), (400, 120), (1000, 300)] {
+            for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks] {
+                let scale = OverlayScale::for_grid(cols, rows, tier);
+                let h = scale.line_rows();
+                let band = |line: u16| rows - h * (line + 1)..rows - h * line;
+                let draws: [(&str, Draw, &[u16]); 4] = [
+                    ("progress", |g, s| draw_progress_overlay_clips(g, 900, 5400, 30.0, None, true, s), &[0]),
+                    ("dial", |g, s| draw_dial_overlay(g, "edge", 7, 255, s), &[0]),
+                    ("hints", draw_hint_overlay, &[1]),
+                    ("info", |g, s| draw_info_overlay(g, " clip ", s), &[2, 3]),
+                ];
+                for (what, draw, lines) in draws {
+                    let mut g: Grid<Cell> = Grid::new(cols, rows);
+                    g.fill(pad);
+                    let ui = draw(&mut g, scale);
+                    let zoom = what == "info" && cols < ZOOM_HINT_MAX_COLS;
+                    let lines = if what == "info" && !zoom { &lines[..1] } else { lines };
+                    for r in 0..rows {
+                        let want = lines.iter().any(|&l| band(l).contains(&r));
+                        assert_eq!(ui.contains(r), want, "{what} {cols}x{rows} {tier:?} row {r}");
+                        let painted = (0..cols).any(|c| g.get(c, r) != pad);
+                        assert_eq!(painted, want, "{what} {cols}x{rows} {tier:?} row {r} painted");
+                    }
                 }
+                let mut g: Grid<Cell> = Grid::new(cols, rows);
+                let ui = draw_hint_overlay(&mut g, scale) | draw_info_overlay(&mut g, " clip ", scale);
+                assert!(!ui.contains(rows - 1), "hints alone leave the bottom line to the picture");
+                assert!(ui.contains(rows - h - 1) && ui.contains(rows - 2 * h - 1));
             }
         }
-        let (cols, rows) = (400, 120);
-        let mut g: Grid<Cell> = Grid::new(cols, rows);
-        g.fill(Codec::Ascii.pad());
-        draw_progress_overlay_clips(&mut g, 900, 5400, 30.0, Some((1, 2)), true, OverlayScale::Plain);
-        draw_hint_overlay(&mut g, OverlayScale::Plain);
-        draw_info_overlay(&mut g, " Caf\u{e9} ", OverlayScale::Plain);
-        assert!(row_text(&g, rows - 1).contains("PAUSED"));
-        assert!(row_text(&g, rows - 2).contains("v controls"));
-        assert!(row_text(&g, rows - 3).starts_with(" Caf? "));
-        for c in g.as_slice() {
-            assert!(c.glyph() == ' ' || c.glyph().is_ascii_graphic(), "{:?}", c.glyph());
-            assert_eq!((c.bg, c.attrs), (Rgb::BLACK, attrs::DEFAULT_BG));
-        }
+        assert!(UiRows::NONE.is_empty() && (0..100).all(|r| !UiRows::NONE.contains(r)));
+        let mut g: Grid<Cell> = Grid::new(0, 5);
+        assert!(draw_hint_overlay(&mut g, OverlayScale::Normal).is_empty(), "nothing drawn, no UI");
+        let mut g: Grid<Cell> = Grid::new(400, 2);
+        assert!(draw_hint_overlay(&mut g, OverlayScale::Big).is_empty(), "a band that does not fit");
         let mut card: Grid<Cell> = Grid::new(8, 3);
-        draw_enlarge_card(&mut card, Codec::Ascii.pad());
+        draw_enlarge_card(&mut card, pad);
         assert!(card.as_slice().iter().all(|c| c.attrs == attrs::DEFAULT_BG));
         assert!(card.as_slice().iter().any(|c| c.glyph() == 'A'), "the card still reads");
     }

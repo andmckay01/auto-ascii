@@ -17,6 +17,7 @@ pub mod grid;
 pub mod hysteresis;
 pub mod orient;
 pub mod palette;
+pub mod quant;
 pub mod ramp;
 pub mod resample;
 pub mod viewport;

@@ -1,10 +1,9 @@
-use auto_ascii_core::cell::attrs;
-use auto_ascii_core::codec::ascii::ascii_glyphs;
+use auto_ascii_core::codec::ascii::{ascii_glyphs, cell_within_cap};
 use auto_ascii_core::codec::letters::letters_glyphs;
 use auto_ascii_core::compose::{ComposeParams, FramePlanes, compose_frame, compose_frame_masked};
 use auto_ascii_core::hysteresis::HysteresisState;
 use auto_ascii_core::palette::{ColorDepth, GlyphTier, select_palettes};
-use auto_ascii_core::{Cell, Codec, Grid, Rgb, compose_frame_codec, compute_viewport};
+use auto_ascii_core::{Cell, Codec, Grid, compose_frame_codec, compute_viewport};
 use proptest::prelude::*;
 
 fn tier(i: u8) -> GlyphTier {
@@ -83,7 +82,7 @@ proptest! {
     }
 
     #[test]
-    fn ascii_is_printable_ascii_on_the_terminal_background(
+    fn ascii_is_printable_ascii_over_a_capped_shade(
         seed in any::<u64>(),
         t in 0u8..3,
         c in 0u8..4,
@@ -119,7 +118,7 @@ proptest! {
                 let g = cell.glyph();
                 prop_assert!(allowed.contains(&g), "{g:?} (U+{:04X}) not allowed on {:?}", g as u32, tier(t));
                 prop_assert!((' '..='~').contains(&g), "non-ASCII {g:?}");
-                prop_assert_eq!((cell.bg, cell.attrs), (Rgb::BLACK, attrs::DEFAULT_BG));
+                prop_assert!(cell_within_cap(cell, color(c)), "{:?} on {:?}", cell, color(c));
             }
         }
     }

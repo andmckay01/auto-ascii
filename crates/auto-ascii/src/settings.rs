@@ -12,7 +12,7 @@
 //! codec = "letters"
 //! shadow_lift = 64
 //! edge_t_on = 32
-//! idx_hyst_q8 = 160
+//! idx_hyst_q8 = 128
 //! ```
 //!
 //! Every key is optional and a missing one keeps its default, which is the
@@ -160,6 +160,12 @@ mod tests {
         Dial::EdgeStrength.turn(&mut compose, -3);
         Dial::Hysteresis.turn(&mut compose, 2);
         VideoSettings { compose, codec: Codec::Letters }
+    }
+
+    #[test]
+    fn hysteresis_settings_up_to_255_no_longer_clamp() {
+        let s = VideoSettings::parse("idx_hyst_q8 = 255\n").unwrap();
+        assert_eq!(s.compose.idx_hyst_q8, 255);
     }
 
     #[test]

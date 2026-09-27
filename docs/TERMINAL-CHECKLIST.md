@@ -209,7 +209,7 @@ skips even that.
 | Per-terminal `Caps` from canned reply streams (7 identities) | `crates/auto-ascii-term/tests/terminal_identity.rs` |
 | Reply-byte parsing incl. the `RGB` *value* rule and DECRPM 3/4 | `crates/auto-ascii-term/tests/probe_parser.rs`, `src/probe.rs` unit tests |
 | Probe never hangs, never leaks reply bytes into the app | `crates/auto-ascii-term/tests/pty_probe.rs` |
-| Terminal always restored (drop / panic / SIGINT / SIGTERM) | `crates/auto-ascii-term/tests/pty_restore.rs` |
+| Terminal always restored, backdrop reset included (drop / panic / SIGINT / SIGTERM / SIGHUP) | `crates/auto-ascii-term/tests/pty_restore.rs` |
 | Per-tier escape streams (truecolor / 256 / 16 / mono) | `crates/auto-ascii-term/tests/tier_goldens.rs` |
 | `TERM=linux` render golden + legibility floor | `crates/auto-ascii/tests/linux_console_golden.rs` |
 

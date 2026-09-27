@@ -140,12 +140,26 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   (`PaletteSet::bg_tint`), so midtones and faces keep their shape at pixels' brightness, and
   holds glyphs longer (a wider tone deadband and a floor hold) since the tint carries the tone.
   On 16-color and mono it keeps a black background and the narrower deadband. `ascii` is
-  letters without blocks, tint or any background: printable ASCII on every tier and palette, each
-  cell flagged `attrs::DEFAULT_BG` so the painter emits SGR 49 (the terminal's own background)
-  instead of a color. Everything else the player draws while `ascii` is active follows the same
-  rule (flow 10). Tone is glyph ink plus the foreground, on an 18-step ramp ordered by
-  JetBrains Mono coverage: dim colors get a gentle lift, lit cells rise to full brightness and
-  highlights run toward white, hue kept.
+  letters without blocks: printable ASCII on every tier and palette, over a capped background
+  shade on truecolor and 256-color. The shade is letters' tint of the current tone, held to
+  `backing_within_cap`: no channel above `SHADE_CEIL` (154), at most `SHADE_CONTRAST_Q8`/256
+  (0.375) of the glyph's relative luminance, spaces unshaded (`SHADE_BLANK_CEIL` 0);
+  scaled down (hue kept) to fit, dropped if its brightest channel ends below `SHADE_FLOOR` (1).
+  The exact letters curve starts at tone 32 with gain 154/256; no neutralization.
+  Foreground uses letters' gain with uniform gamut limiting, preserving colour.
+  Truecolor sends that shade; 256-color sends the nearest (OKLab, chroma plane weighted 2x) of
+  `SHADES_256` (grays 8-148 and cube levels 0/95/135) that passes the cap against the
+  quantized glyph color and is `in_hue_family` with it (gray, or within 30° of its hue).
+  16-color and mono paint no shade. Unshaded cells are flagged `attrs::DEFAULT_BG`, so the painter emits SGR 49 (the
+  terminal's own background); pads, gaps and everything else the player draws while `ascii` is
+  active follow that rule (flow 10). Glyphs use an 18-step ramp ordered by JetBrains Mono
+  coverage, with `@` from held tone 225. Glyph color and shade follow current tone
+  independently, preventing stale brightness bands. Within the `5/8 × idx_hyst_q8` band
+  (narrowing to `idx_hyst_q8 / 4` in busy cells)
+  the glyph follows a smoothed tone: a steady change settles within 41 frames past
+  `idx_hyst_q8 / 8`, or within 74 when it lies at least 4 units inside another ramp step;
+  floor crossings take at most four. The half, edge and orientation gates retain hysteresis. The player's black
+  backdrop (flow 7) puts the unshaded cells on black in any terminal theme.
 - **User:** `/` cycles codecs while playing (`pixels` → `letters` → `ascii`), `--codec
   pixels|letters|ascii` picks one at startup, and `s` saves it for this video (flow 9).
 - **Code:** `crates/auto-ascii-core/src/codec/mod.rs` `GlyphCodec` (trait: `NAME`, `cell`),
@@ -168,11 +182,19 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - Every ASCII-tier glyph is printable ASCII `0x20..=0x7E` (CP437-safe).
     `crates/auto-ascii-core/tests/codec_props.rs` holds `letters` to its repertoire on every
     tier.
-  - While `ascii` is active the player emits no non-ASCII byte and no background SGR, on any
-    tier or palette: the picture, letterbox pads and gap frames (`Codec::pad`), every overlay
-    row (`OverlayScale::Plain`), the enlarge card, and every resize in between.
-    `crates/auto-ascii/tests/codecs.rs` parses the real escape stream through the deck, with
-    every overlay on, from 1x1 to 400x120, to check this.
+  - **The `ascii` rule:** ascii codec: picture cells are printable ASCII 0x20-0x7E, background
+    default or a shade within the cap; block glyphs and full-strength backgrounds are allowed
+    only in UI overlay cells (HUD text), which use the same big text as pixels/letters. The
+    boundary is `pipeline::UiRows`: every overlay painter returns the rows it drew, and
+    `Player::ui_rows` / `ClipDeck::ui_rows` report the last frame's. Every cell outside them
+    is picture: on any tier or palette it obeys `backing_within_cap` on the colors actually
+    sent, reaches `SHADE_FLOOR`, and on 256-color is one of `SHADES_256` in the glyph's hue
+    family; 16-color and mono picture cells carry no background SGR, and letterbox pads and
+    gap frames (`Codec::pad`), the enlarge card and every resize in between keep SGR 49.
+    `crates/auto-ascii/tests/codecs.rs` replays the real escape stream through the deck, with
+    overlays off and on, from 1x1 to 1000x300, tracking each printed cell's row against
+    `ClipDeck::ui_rows`, and checks that ascii's UI rows equal pixels' and letters' cell for
+    cell; `codec_props.rs` checks `cell_within_cap` on random planes.
   - Cells without `attrs::DEFAULT_BG` paint byte for byte as before, so `pixels` and `letters`
     streams are unchanged.
   - Adding a codec means one module plus one `registry!` line. The line generates the `Codec`
@@ -182,10 +204,11 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 
 ### 6. Temporal stability: hysteresis and resets
 - **Does:** stops cells flickering between neighbouring glyphs.
-- **Code:** `crates/auto-ascii-core/src/hysteresis.rs` `HysteresisState` / `CellState` (3 B per
+- **Code:** `crates/auto-ascii-core/src/hysteresis.rs` `HysteresisState` / `CellState` (5 B per
   cell): ramp-index hysteresis (`idx_hyst_q8`, a fraction of a ramp step), a dual-threshold edge
   gate (`edge_t_on` / `edge_t_off`, `WAS_EDGE`), an orientation bin with an 8° guard, and the
-  quadrant flag (`WAS_QUADRANT`, `quad_e_on` / `quad_e_off`).
+  quadrant flag (`WAS_QUADRANT`, `quad_e_on` / `quad_e_off`), plus the ASCII candidate
+  tone and settling age (ignored by the other codecs).
 - **Invariants — every temporal discontinuity resets all per-cell state:**
   - a shot change or shadow-lift change (`crates/auto-ascii/src/pipeline.rs`
     `Player::update_levels`, keyed on `(shot, shadow_lift)`);
@@ -197,6 +220,13 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - a backward jump in `RenderSession::render` (`Player::reset_temporal_state`).
   After a reset the next frame is a cold start, identical to seeking straight to that frame.
 
+- **Dial:** 0..255 in steps of 16 (`IDX_HYST_MAX_Q8`), recommended default 128
+  (`IDX_HYST_DEFAULT_Q8`). Saved player settings and factory params clamp/reject only
+  above 255. Values above 128 are allowed for fast-paced videos or video types that
+  benefit from high hysteresis, but can visibly drift or smear. The range, the 160 → 128
+  default change and ASCII's glyph-hold calibration are measured in
+  [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).
+
 ### 7. Present: quantize, diff, restore
 - **Does:** writes the grid to the terminal with minimal bytes, then always puts the terminal
   back.
@@ -207,7 +237,12 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   terminal) and `crates/auto-ascii-term/src/sim.rs` `SimBackend` (in memory, throttleable) both
   present through it, behind the `crates/auto-ascii-term/src/backend.rs` `Backend` trait.
   `crates/auto-ascii-term/src/restore.rs` `install_restore_hooks` / `arm` / `restore_now` emit
-  `RESTORE_SEQ` exactly once, from `Drop`, the panic hook, SIGINT/SIGTERM or atexit.
+  `RESTORE_SEQ` exactly once, from `Drop`, the panic hook, SIGINT/SIGTERM/SIGHUP or atexit. The
+  player's session also sets a black backdrop: `AnsiBackend::with_backdrop` writes `BACKDROP_SET`
+  (OSC 11) after the alt-screen enter and `restore_now` writes `BACKDROP_RESET` (OSC 111, back to
+  the configured background) before `RESTORE_SEQ` on the same paths. `--no-backdrop` /
+  `PlayerBuilder::no_backdrop` turns it off; the Mono tier never sets it. `auto-ascii play` always
+  sets it.
 - **Invariants:**
   - Quantize before diff, so cells that quantize equal cost zero bytes.
   - Repaint mode `full` (default) invalidates every frame. `diff` rewrites only damaged cells.
@@ -215,13 +250,20 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     overlay cells.
   - crossterm is used for raw mode, alt screen and events only, never per-cell output. The
     player links no video codecs and no rayon.
+  - The backdrop is session-wide and never part of a frame: `SimBackend` and `--sim-dump`
+    streams are the same with or without it, and pixels and letters paint every background
+    themselves, so only SGR 49 cells (`ascii`'s unshaded ones) change on screen. It is reset exactly once
+    (`crates/auto-ascii-term/tests/pty_restore.rs`, SIGHUP included). SIGKILL, `abort` and
+    segfaults run no code, so they leave it set (`printf '\e]111\e\\'` resets it).
+  - Never on the Mono tier: Mono paints no foreground, so the terminal's default (black on a light
+    theme) would vanish on a black backdrop.
 
 ### 8. Interactive player: transport and keys
 - **Does:** plays an asset or composition at its own fps with pause, jump and scrub.
 - **User:** `auto-ascii-player <asset|comp.toml>` or `auto-ascii play <clip|composition>`.
   `q`/`Esc`/Ctrl-C quit · space pause · `0`–`9` jump to 0–90% · `←`/`→` ±5 s · `d` / `[` `]`
   dials · `/` codec · `s` save · `v` controls. Flags: `--loop`, `--fps-cap N`, `--seek T`,
-  `--duration-secs S`, `--repaint full|diff`, `--cell-aspect R`.
+  `--duration-secs S`, `--repaint full|diff`, `--cell-aspect R`, `--no-backdrop`.
 - **Code:** `crates/auto-ascii/src/bin/auto-ascii-player.rs` (clap; argv maps 1:1 onto
   `PlayerBuilder`) → `crates/auto-ascii/src/player.rs` `PlayerBuilder::build` (validates before
   touching the terminal) → `Player::run`, the event loop over `ClipDeck`
@@ -242,8 +284,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **User:** `d` shows the dial readout and then cycles **shadow lift → edge strength →
   hysteresis**. `[`/`]` turn the selected dial. `s` writes `<name>.player.toml` beside the
   asset, and the next time that video comes to the front its dials and codec load.
-- **Code:** `crates/auto-ascii/src/player.rs` `Dial` (`ALL`, `label`, `step`, `max`, `get`,
-  `turn`, `param_key`, `set_param`) and `dial_after_cycle` (the first `d` only reveals the
+- **Code:** `crates/auto-ascii/src/player.rs` `Dial` (`ALL`, `label`, `readout`, `step`, `max`,
+  `get`, `turn`, `param_key`, `set_param`) and `dial_after_cycle` (the first `d` only reveals the
   readout). `LiveSettings` (`front`, `turn`, `cycle`, `save`, `status`, `write_info`) tracks the fronted
   clip, a `--codec` override and the session's `/` and dial choices. `crates/auto-ascii/src/settings.rs`
   `VideoSettings` (`path_for`, `to_toml`, `parse`, `load`, `save`). Shadow lift bends the NORM
@@ -251,6 +293,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Invariants:**
   - Dials map to `[compose]` fields (`shadow_lift`, `edge_t_on` shown inverted as "edge
     strength", `idx_hyst_q8`). No asset is touched.
+  - The readout marks a dial at its floor, its default or its top (`Dial::readout`); shadow lift
+    starts at `(floor, default)`.
   - A dial walk retraces its own steps: the top of the scale is a stop, and a press away from it
     counts from the detent above `max()` (`Dial::turn`; `crates/auto-ascii/tests/dials.rs`).
   - Codec precedence: a `/` press this session beats `--codec`, which beats the saved file,
@@ -269,22 +313,23 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   overlay is up; `v` pins it. The info row above it shows clip name, codec, settings status and
   grid size (` 213x58 cells `). Below 160 columns a zoom hint appears (`Cmd - to zoom out: more
   cells, a sharper picture`, `Ctrl` off macOS). From 240×36 on block tiers, overlay text is drawn
-  in big 3×5 block letters, except under the `ascii` codec, where every row stays one-cell ASCII
-  text in a bright neutral color on the terminal's own background (the row is cleared with
-  default-background spaces, so it reads over the picture).
+  in big 3×5 block letters. The overlay is UI, not picture, so every codec (`ascii` included)
+  draws it the same, cell for cell.
 - **Code:** `crates/auto-ascii/src/pipeline.rs` `draw_progress_overlay_clips`,
   `draw_dial_overlay`, `draw_hint_overlay` (`hint_line`, which drops items by `HINT_DROP_ORDER`
-  to fit), `draw_info_overlay` (`zoom_line`, `ZOOM_HINT_MAX_COLS`), `OverlayScale::for_codec` /
-  `for_grid` (`BIG_OVERLAY_MIN_COLS`, `BIG_OVERLAY_MIN_ROWS`, `BIG_FONT`, `paint_line`;
-  `Plain` for a codec whose pad keeps the terminal background), `draw_enlarge_card` (on the
-  codec's pad). Visibility policy
+  to fit), `draw_info_overlay` (`zoom_line`, `ZOOM_HINT_MAX_COLS`), `OverlayScale::for_grid`
+  (`BIG_OVERLAY_MIN_COLS`, `BIG_OVERLAY_MIN_ROWS`, `BIG_FONT`, `paint_line`), `UiRows` (the
+  rows each painter returns; `Player::ui_rows`, `ClipDeck::ui_rows`), `draw_enlarge_card` (on
+  the codec's pad). Visibility policy
   is `crates/auto-ascii/src/player.rs` `ProgressTimer`, `HintState`, `DIAL_OVERLAY_HIDE_AFTER`
   (2.5 s) and `OVERLAY_HIDE_AFTER` (1 s).
 - **Invariants:**
   - Overlays are drawn over the composed grid and never touch temporal state or the layer mask.
     The parity and console goldens render the bare grid unblessed.
   - Overlay text is printable ASCII (other characters print as `?`). Big text needs `▀▄█`, so
-    the ASCII tier and the `ascii` codec keep one-cell text at every size.
+    the ASCII glyph tier keeps one-cell text at every size, under every codec.
+  - The overlay's scale, layout, colors and glyphs depend on the grid and glyph tier only, never
+    the codec, and its rows are exactly `UiRows`.
   - Under `pixels` and `letters` the overlays paint byte for byte as before `ascii` existed.
   - The player cannot change the terminal font. The zoom hint is the whole feature
     (`docs/research/zoom.md`).
@@ -422,7 +467,7 @@ cut), then eight `(p2, p98)` pairs indexed by plane position (`crates/auto-ascii
 codec = "letters"
 shadow_lift = 64
 edge_t_on = 32
-idx_hyst_q8 = 160
+idx_hyst_q8 = 128
 ```
 
 **Library sidecar and composition schema:** `docs/AGENT-GUIDE.md` (JSON shapes, `schema = 1`
@@ -460,7 +505,7 @@ TOML) and `crates/auto-ascii-cli/src/library.rs` `Sidecar`.
 | `compose.halfblock_min_delta` | 64 | top/bottom luma delta that counts as "large" (half-block, quadrant, subposition) |
 | `compose.edge_strong` | 96 | ASCII junction `+` upgrades to `#` at this magnitude |
 | `compose.quad_e_on` / `quad_e_off` | 2 / 1 | quadrant-refinement noise floor (arm/hold), Unicode tiers only |
-| `compose.idx_hyst_q8` | 160 | ramp-index hysteresis width as a Q8 fraction of one step (< 1 step) |
+| `compose.idx_hyst_q8` | 128 | ramp-index hysteresis width as a Q8 fraction of one step (< 1 step) |
 | `compose.shadow_lift` | 0 | bends the NORM LUT toward the shadows (0 off, 255 a full sqrt curve); endpoints fixed |
 | `eval.grid_cols` / `grid_rows` | 300 / 80 | eval render grid |
 | `eval.max_frames` | 900 | frames per clip per tier (0 = all) |

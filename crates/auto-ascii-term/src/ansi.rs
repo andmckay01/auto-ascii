@@ -120,7 +120,7 @@ impl AnsiBackend {
     /// Enter the session: arm the process-global restore state (fd + pre-raw
     /// termios), then raw mode, alt screen `?1049h`, hide cursor `?25l`,
     /// autowrap off `?7l` in one write. Installs the restore hooks itself
-    /// (idempotent), so panic, SIGINT, SIGTERM and atexit always restore
+    /// (idempotent), so panic, SIGINT, SIGTERM, SIGHUP and atexit always restore
     /// (pty-tested).
     ///
     /// The passed `caps.cells` is overridden by the real terminal size;
@@ -129,8 +129,22 @@ impl AnsiBackend {
     ///
     /// Errors if stdout is not a TTY. All four color tiers are supported; the
     /// tier lives in `caps.color`, normally from [`crate::probe_caps`].
-    #[cfg(unix)]
     pub fn new(caps: Caps) -> io::Result<AnsiBackend> {
+        Self::with_backdrop(caps, false)
+    }
+
+    /// [`new`](AnsiBackend::new), and with `backdrop` also set the terminal's
+    /// default background to black for the session: [`crate::BACKDROP_SET`]
+    /// right after the alt-screen enter, [`crate::BACKDROP_RESET`] on every
+    /// restore path (orderly, Rust panic, SIGINT, SIGTERM, SIGHUP, atexit),
+    /// exactly once. Cells that paint their own background look the same
+    /// either way; cells that keep the terminal's (SGR 49) sit on black
+    /// instead of the theme. Never set on [`ColorTier::Mono`]: nothing there
+    /// paints a foreground, so the terminal's default one (black on a light
+    /// theme) would vanish on black.
+    #[cfg(unix)]
+    pub fn with_backdrop(caps: Caps, backdrop: bool) -> io::Result<AnsiBackend> {
+        let backdrop = backdrop && caps.color != ColorTier::Mono;
         let fd = libc::STDOUT_FILENO;
         if unsafe { libc::isatty(fd) } == 0 {
             return Err(io::Error::other(
@@ -143,9 +157,9 @@ impl AnsiBackend {
         if unsafe { libc::tcgetattr(fd, saved.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        restore::arm(fd, unsafe { saved.assume_init() });
+        restore::arm(fd, unsafe { saved.assume_init() }, backdrop);
 
-        if let Err(err) = Self::enter(fd) {
+        if let Err(err) = Self::enter(fd, backdrop) {
             restore::restore_now();
             let _ = terminal::disable_raw_mode();
             return Err(err);
@@ -179,7 +193,8 @@ impl AnsiBackend {
     /// ([`crate::probe_caps`] writes no volley on Windows), so `cell_px`
     /// stays `None` (aspect falls back to 2.0).
     #[cfg(windows)]
-    pub fn new(caps: Caps) -> io::Result<AnsiBackend> {
+    pub fn with_backdrop(caps: Caps, backdrop: bool) -> io::Result<AnsiBackend> {
+        let backdrop = backdrop && caps.color != ColorTier::Mono;
         use crossterm::tty::IsTty as _;
         if !io::stdout().is_tty() {
             return Err(io::Error::other(
@@ -188,13 +203,21 @@ impl AnsiBackend {
         }
         restore::install_restore_hooks();
         terminal::enable_raw_mode()?;
-        restore::arm();
+        restore::arm(backdrop);
         if let Err(err) = crossterm::execute!(
             io::stdout(),
             terminal::EnterAlternateScreen,
             cursor::Hide,
             terminal::DisableLineWrap
-        ) {
+        )
+        .and_then(|()| {
+            use std::io::Write as _;
+            let mut out = io::stdout();
+            if backdrop {
+                out.write_all(restore::BACKDROP_SET)?;
+            }
+            out.flush()
+        }) {
             restore::restore_now();
             return Err(err);
         }
@@ -213,15 +236,18 @@ impl AnsiBackend {
     }
 
     #[cfg(unix)]
-    fn enter(fd: libc::c_int) -> io::Result<()> {
+    fn enter(fd: libc::c_int, backdrop: bool) -> io::Result<()> {
         terminal::enable_raw_mode()?;
-        let mut seq: Vec<u8> = Vec::with_capacity(32);
+        let mut seq: Vec<u8> = Vec::with_capacity(64);
         crossterm::queue!(
             seq,
             terminal::EnterAlternateScreen,
             cursor::Hide,
             terminal::DisableLineWrap
         )?;
+        if backdrop {
+            seq.extend_from_slice(restore::BACKDROP_SET);
+        }
         write_all_fd(fd, &seq)
     }
 }

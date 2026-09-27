@@ -168,7 +168,10 @@ pub struct RampView;  // &'static glyphs + effective len (per-tier cap, §1b:
 pub struct PaletteSet { pub base: RampView, pub highlight: RampView,
                         pub edge: &'static EdgeLut, pub halfblock: bool,
                         pub quadrant: bool, pub braille: bool, pub subpos: bool,
-                        pub bg_tint: bool }  // True/C256: a dim bg tint survives
+                        pub bg_tint: bool,   // True/C256: a dim bg tint survives
+                        pub color: ColorDepth }  // note 27(m): the depth it was
+                            // selected for (ascii holds its shade cap after
+                            // quantization)
 pub fn select_palettes(GlyphTier, ColorDepth, viewport_cols: u16) -> PaletteSet;
 // Key (§1b): C16/Mono → palette 8 base uncapped ("mono longest"); True caps
 // ramps to 8, C256 to 12; Ascii → coarse/fine by density + subpos; unicode
@@ -218,7 +221,7 @@ pub fn bin_with_guard(dx, dy: i32, prev: u8) -> u8;  // ±8° θ hysteresis via
                                              // Q14 boundary-vector cross tests
 pub fn coherence_at_least(dx, dy: i32, e: u8, t_q8: u8) -> bool; // squared, no sqrt
 
-// hysteresis.rs (§3.5) — 3 B/cell state; alloc ONLY in new/resize.
+// hysteresis.rs (§3.5) — 5 B/cell state; alloc ONLY in new/resize.
 pub const IDX_UNSET: u8 = 0xFF;
 pub const IDX_HYST_Q8: u32 = 90;             // round(0.35·256) — the spec
                                              // DEFAULT; live width is
@@ -227,7 +230,10 @@ pub const IDX_HYST_Q8: u32 = 90;             // round(0.35·256) — the spec
 pub mod cell_flags { pub const WAS_EDGE: u8 = 1;
                      pub const WAS_QUADRANT: u8 = 2; }  // M4: quadrant
                      // noise-floor memory, independent of the edge gate
-pub struct CellState { pub idx: u8, pub bin: u8, pub flags: u8 }  // + Default
+pub struct CellState {
+    pub idx: u8, pub bin: u8, pub flags: u8,
+    pub tone_candidate: u8, pub tone_age: u8,
+}  // + Default
 pub struct HysteresisState;  // new(cols,rows)/cols/rows/cell/cell_mut +
                              // reset() = scene cut (no realloc) +
                              // resize(cols,rows) = realloc + reset (§3.5)
@@ -269,9 +275,9 @@ pub struct ComposeParams { pub edge_t_on/edge_t_off: u8,        // 32/16 (M3
                                      // real fine diagonal to a half-block
   pub idx_hyst_q8: u8 }              // §3.5 idx hysteresis width in Q8 steps
                                      // (promoted at M3 Tune, note 21);
-                                     // default 160 since the Tune finish
-                                     // (corpus-swept, note 22; spec nominal
-                                     // 0.35·step = IDX_HYST_Q8 = 90)
+                                     // default 128 = IDX_HYST_MAX_Q8 (was
+                                     // 160 from the Tune finish, note 22;
+                                     // spec nominal 0.35·step = 90)
   // + Default (the M3 baseline; all params.toml candidates)
 pub fn compose_cell(&CellInputs, lut: &[u8;256], &PaletteSet, &ComposeParams,
                     &mut HysteresisState, col: u16, row: u16) -> Cell;
@@ -453,7 +459,8 @@ pub const QUIRKS: &[Quirk];   // kitty-rgbless-xtgettcap, xterm-no-direct-color
 pub fn apply_quirks(caps: &mut Caps, &ProbeReplies) -> Vec<&'static str>;
     // returns the names applied (probe logging/tests)
 
-// quant.rs — NEW at M1 (PLAN §3.1 quantize-before-diff; pure math)
+// quant.rs — NEW at M1 (PLAN §3.1 quantize-before-diff; pure math). Note
+// 27(m): the math moved to auto_ascii_core::quant; this module re-exports it.
 pub fn rgb_to_256(Rgb) -> u8;     // xterm 6×6×6 cube (16–231) + gray ramp (232–255)
 pub fn rgb_to_16(Rgb) -> u8;      // nearest of the standard 16 (xterm defaults)
 pub fn ansi256_to_rgb(u8) -> Rgb; // canonical inverse (roundtrip-exact 16..=255)
@@ -485,6 +492,8 @@ pub trait Backend {
 // ansi.rs — M1: accepts ALL color tiers (the M0 truecolor-only guard is gone)
 pub struct AnsiBackend;
 impl AnsiBackend { pub fn new(caps: Caps) -> std::io::Result<AnsiBackend> } // enters session
+impl AnsiBackend { pub fn with_backdrop(caps: Caps, backdrop: bool) -> std::io::Result<AnsiBackend> }
+    // note 27(l): backdrop = OSC 11 black on entry, OSC 111 on every restore
 // sim.rs — all headless M0/M1 verification runs here (no GUI on this box)
 pub struct SimBackend;
 impl SimBackend {
@@ -497,7 +506,9 @@ impl SimBackend {
 
 // restore.rs (§3.1 session hygiene; M0 acceptance 3 pty test)
 pub const RESTORE_SEQ: &[u8] = b"\x1b[0m\x1b[?25h\x1b[?7h\x1b[?1049l";
-pub fn install_restore_hooks();   // panic hook + SIGINT/SIGTERM + atexit
+pub const BACKDROP_SET: &[u8] = b"\x1b]11;rgb:0000/0000/0000\x1b\\";  // note 27(l)
+pub const BACKDROP_RESET: &[u8] = b"\x1b]111\x1b\\";                  // before RESTORE_SEQ
+pub fn install_restore_hooks();   // panic hook + SIGINT/SIGTERM/SIGHUP + atexit
 ```
 
 ## auto-ascii-format (PLAN §4; container only, no I/O policy) — M1: full ASCI v1
@@ -1020,6 +1031,8 @@ impl PlayerBuilder {        // the spec'd builder (§7 M4) + escape hatches
   pub fn no_cache(self, bool) -> Self;            //   (PLAN §3.1)
   pub fn no_quirks(self, bool) -> Self;           // M5 item C: skip the
       // identity-keyed quirk table (auto-ascii-term quirks.rs) post-probe
+  pub fn no_backdrop(self, bool) -> Self;         // note 27(l): keep the
+      // terminal's default background (default: black for the session)
   pub fn font_table(self, impl Into<String>) -> Self;  // M5 item B (§3.4):
       // builtin NAME | PATH; parsed+validated at build(); run() applies the
       // repertoire veto AFTER resolve_for_caps (user-asserted font truth
@@ -1178,23 +1191,28 @@ pub fn Player::set_progress_context(&mut self, Option<ProgressContext>);
     // frame counter; None (every single-asset path) is the M6 row verbatim
 pub fn draw_progress_overlay_clips(grid, frame, frame_count, fps,
                                    clip: Option<(usize, usize)>,
-                                   paused: bool, scale: OverlayScale);
+                                   paused: bool, scale: OverlayScale) -> UiRows;
     // draw_progress_overlay + " c/N " right after the time block, dropped
     // below PROGRESS_HINT_MIN_COLS (64) and for single-clip compositions —
     // so `draw_progress_overlay` is literally this with clip = None
     // (and paused = false, scale = Normal)
 // Zoom discoverability (note 27 (i)) — every overlay row takes a scale:
-pub enum OverlayScale { Normal, Big, Plain }
+pub enum OverlayScale { Normal, Big }
     // Big = 3x5 half-block font, 4 cols x 3 rows per char, upper case;
     // for_grid(cols, rows, GlyphTier) is Big iff tier != Ascii and
     // cols >= BIG_OVERLAY_MIN_COLS (240) and rows >= BIG_OVERLAY_MIN_ROWS
     // (36); line_chars(cols) (cols or cols/4), line_rows() (1 or 3).
-    // Plain (27k) = Normal on DEFAULT_BG cells, printable ASCII only;
-    // for_codec(cols, rows, GlyphTier, Codec) is Plain for a codec whose
-    // pad carries DEFAULT_BG (ascii), else for_grid
-pub fn draw_dial_overlay(grid, label, value, max, scale: OverlayScale);
-pub fn draw_hint_overlay(grid, scale: OverlayScale);
-pub fn draw_info_overlay(grid, text: &str, scale: OverlayScale);
+    // The same on every codec (27o; 27k's Plain and for_codec are gone)
+pub struct UiRows;                          // Copy, Eq, Default (27o)
+    // the rows the overlay painters drew: one line_rows() band per overlay
+    // line, counted up from the bottom. UiRows::NONE; contains(row);
+    // is_empty(); `|` / `|=` join two painters' rows on one grid
+pub fn Player::ui_rows(&self) -> UiRows;    // the last frame's
+pub fn ClipDeck::ui_rows(&self) -> UiRows;  // the showing grid's
+pub fn draw_dial_overlay(grid, label, value, max, scale: OverlayScale) -> UiRows;
+pub fn draw_hint_overlay(grid, scale: OverlayScale) -> UiRows;
+pub fn draw_info_overlay(grid, text: &str, scale: OverlayScale) -> UiRows;
+    // every draw_*_overlay* returns the rows it drew (27o)
     // + right-aligned " WxH cells " when it fits after the text, and below
     // ZOOM_HINT_MAX_COLS (160) a zoom hint on the line above it
 pub const ZOOM_HINT_MAX_COLS: u16;          // 160
@@ -1324,7 +1342,7 @@ facade surface + this hidden module.)
   notes 9, 11 and 20):
   `<asset> [--repaint full|diff] [--loop] [--fps-cap FPS] [--cell-aspect F]
   [--duration-secs N] [--seek TIMESTAMP] [--tier TIER] [--no-query]
-  [--no-cache] [--no-quirks] [--palette auto|ascii|unicode|braille]
+  [--no-cache] [--no-quirks] [--no-backdrop] [--palette auto|ascii|unicode|braille]
   [--bench-seek N]
   [--font-table NAME|PATH] [--sim COLSxROWS:NFRAMES] [--sim-tier TIER]
   [--sim-dump PATH] [--sim-resize [COLSxROWS]] [--codec pixels|letters|ascii]`.
@@ -2445,7 +2463,8 @@ facade surface + this hidden module.)
     and `auto-ascii/tests/codecs.rs` `letters_goldens_untinted_tiers`
     (`letters_80x24_unicode_16color.txt`, `letters_80x24_ascii_mono.txt`,
     blessed from the pre-change build).
-    (k) **The `ascii` codec** (after the letters pass). Letters swaps to
+    (k) **The `ascii` codec** (after the letters pass; its background is
+    superseded by (m): ascii now paints a capped shade). Letters swaps to
     solid colour too readily for a viewer who wants type only, so a third
     codec, `ascii`, is letters with the pixels taken out: every glyph is
     printable ASCII on every tier and palette, and there is no block, no
@@ -2457,7 +2476,8 @@ facade surface + this hidden module.)
     `GlyphCodec::PAD` (default `Cell::BLANK`; generated `Codec::pad`) lets
     a codec choose its letterbox cell; the frame loop fills with it,
     `ClipDeck` fills composition gaps with it and `draw_enlarge_card` now
-    takes it. Everything the player draws follows the codec: a codec whose
+    takes it. Everything the player draws follows the codec (overlays:
+    superseded by (o)): a codec whose
     pad carries `DEFAULT_BG` gets `OverlayScale::Plain` from
     `OverlayScale::for_codec` at every size — the progress, dial, hint,
     info and zoom rows stay one-cell printable ASCII (never the big
@@ -2515,6 +2535,207 @@ facade surface + this hidden module.)
     `other_codecs_keep_their_backgrounds_and_big_overlay_text`, and the
     goldens `ascii_80x24_unicode.txt` / `ascii_80x24_ascii_mono.txt`,
     `settings::tests` (`codec = "ascii"` round trip).
+    (l) **ascii brightness: a black backdrop and a brighter curve.** In
+    Ghostty (default background `#282c34`) ascii's SGR 49 cells sat on
+    slate, which halved the face's contrast above the black level, and
+    letters' brightness came mostly from its tinted backgrounds, which
+    ascii does not have. Two changes, neither touching pixels or letters.
+    (1) The player sets the terminal's default background to black for
+    the session: `AnsiBackend::with_backdrop(caps, true)` writes
+    `BACKDROP_SET` (OSC 11 `rgb:0000/0000/0000`) right after the
+    alt-screen enter, and `restore_now` writes `BACKDROP_RESET` (OSC 111)
+    just before `RESTORE_SEQ` on every restore path, exactly once: orderly
+    shutdown and `Drop` (normal exit and error returns), a Rust panic,
+    SIGINT, SIGTERM, SIGHUP (added to the hook set for this) and atexit.
+    SIGKILL, `abort` and segfaults run no code and leave it set; `printf
+    '\e]111\e\\'` or a new tab recovers. OSC 111 restores the terminal's
+    configured background, not a colour an earlier OSC 11 set at runtime
+    (restoring that exactly would need an `OSC 11 ; ?` query and reply
+    parse). Never on `ColorTier::Mono`: Mono paints no foreground, so a
+    light theme's black default foreground would vanish on black.
+    `AnsiBackend::new(caps)` is `with_backdrop(caps, false)`. It is on for
+    the whole session, not only while ascii is active: pixels and letters
+    paint every cell's background explicitly, so they look the same, and
+    `/` needs no re-emit. `PlayerBuilder::no_backdrop(true)` /
+    `--no-backdrop` opts out; it is a terminal setting, so it is not saved
+    per video, and `auto-ascii play` (no player flags) always sets it.
+    Terminals without OSC 11 ignore both sequences; one that
+    honours OSC 11 but not OSC 111 would keep black after exit.
+    `SimBackend`, `--sim` and `--sim-dump` never write it, so frame
+    streams are unchanged. (2) ascii codec data: colour rises to full
+    brightness over held tone 24–128 (was 128–224), highlights run toward
+    white from 160 (was 200) to 7/8 at 255 (was 3/4), and the ink target
+    is bent up below mid-gray instead of down above it, with `TONE_TOP`
+    kept at 240. Nearest-ink step selection puts the first `@` at held
+    tone 225 (was 229 on main; a first pass with `TONE_TOP` 216 put it at
+    203 and turned lit foreheads and Interstellar's core into `@` slabs).
+    Measured with a Ghostty-approximating renderer on black, the face's
+    contrast above black is 0.94× letters on the Architect (was 0.38× on
+    slate), 1.7× on Terminator, 1.2× on Dune and 0.63× on Interstellar;
+    mean luminance stays 0.39–0.89× letters on faces and 0.38–0.72× on
+    frames, because a glyph inks at most 0.28 of its cell. Glyph switches
+    1.00× pixels. The dial readout marks `(floor)`, `(default)` and `(max)`
+    (`Dial::readout`), since shadow lift's floor is already its default.
+    Tests: `pty_restore.rs` (`backdrop_is_set_on_entry_and_reset_on_drop`,
+    `backdrop_is_reset_on_sigterm_and_panic`,
+    `sighup_restores_terminal_and_backdrop_exactly_once`,
+    `mono_sessions_never_set_the_backdrop`, and no OSC 11/111 without it),
+    `codec::ascii::tests` colour bands rewritten for the new curve and the
+    `@` onset pinned at 225,
+    `player::tests::readout_marks_the_floor_the_default_and_the_top`, and
+    the two ascii goldens re-blessed. (m) later retunes the glyph color
+    (full brightness over 48–176) now that a shade carries tone.
+    (m) **ascii paints a capped background shade** (McKay: keep the shade
+    that makes letters look best, "but only allow it to be a shade … no
+    full pixels ever or shades that clash with the ascii letters"). On
+    truecolor and 256-color every ascii cell but deep shadow gets a
+    background built like letters' tint: chroma × the coverage curve of the
+    HELD tone (the glyph's, so the shade steps when the glyph does) × 0.6
+    (`SHADE_Q8` 154); half variants use the dim half's tone. It is then held
+    to the cap, `codec::ascii::backing_within_cap(glyph, fg, bg)`, on the
+    colors the terminal is sent. With Y = relative luminance (sRGB decoded,
+    Rec. 709 weights, `codec::ascii::luminance`, Q16): a glyph cell's shade
+    has no channel above `SHADE_CEIL` 96 (38%) and Y(bg) ≤ 96/256 ·
+    Y(fg) (`SHADE_CONTRAST_Q8`); a space's has no channel above
+    `SHADE_BLANK_CEIL` 24 (the black floor). A shade over the cap is scaled
+    down, hue kept (ceiling: exactly; ratio: bisection on the scale), and
+    one that ends black is dropped to `attrs::DEFAULT_BG`. Hue: truecolor
+    shades are the chroma sample scaled (same hue, darker); 256-color
+    shades are the largest xterm gray-ramp level (232–255, emitted
+    unchanged by the painter) under both limits, checked against the fg as
+    `rgb_to_256` will send it, so the cap holds after quantization and no
+    cube color can land on another hue. 16-color and mono paint no shade.
+    `codec::ascii::cell_within_cap(cell, depth)` states the whole per-depth
+    contract. To let the codec see the quantized fg, the quantizer moved
+    to `auto_ascii_core::quant` (`auto_ascii_term::quant` re-exports the
+    same four functions, byte-for-byte the same math) and `PaletteSet`
+    gained `color: ColorDepth`. Glyph repertoire unchanged: printable ASCII
+    only, no blocks, half-blocks or shade glyphs. Pads, gaps, overlays and
+    the enlarge card keep SGR 49; the session backdrop (l) stays, because
+    unshaded cells still show the terminal's own background and the shade
+    is designed against black. With the shade carrying tone, the glyph
+    color eases back: full brightness over held tone 48–176 (was 24–128).
+    Measured (Ghostty-approximating renderer, black backdrop, 200x56 and
+    128x45): face mean 1.12× letters on the Architect, 1.31× Terminator,
+    1.22× Dune, 0.84× Interstellar (its core is solid white blocks in
+    letters; the shade stops at 96). The ratio cap never bound on real
+    assets (max Y(bg)/Y(fg) 0.12 over 523k shaded cells), the ceiling does.
+    Glyph switches 0.997× pixels; background changes 8.30 /cell/s against
+    letters' 9.21. Pixels and letters streams stay byte-identical to main.
+    Tests: `codec::ascii::tests::every_backing_is_a_capped_shade_of_the_glyph_color`
+    (every tier × depth, same-hue check on truecolor),
+    `the_cap_holds_where_it_binds` (ceiling, blank ceiling, ratio
+    bisection, 256 gray, 16/mono none),
+    `glyph_and_color_are_the_same_on_every_tier`, `codec_props.rs`
+    `ascii_is_printable_ascii_over_a_capped_shade`, and
+    `auto-ascii/tests/codecs.rs` `ascii_draws_printable_ascii_over_a_capped_shade`
+    (replays the deck's escape stream, every tier × palette, overlays on and
+    off, 1x1..400x120, resizes, gaps, and checks the cap on every shaded
+    character as sent). Both ascii goldens are re-blessed, colors only
+    (the shade and the eased glyph color); every glyph row is unchanged.
+    (n) **Review fixes to the shade** (two independent reviews of (m)). The
+    cap is unchanged. **256-color hue family:** (m)'s neutral gray lost the
+    glyph's hue. The shade is now the nearest, by OKLab distance with the
+    chroma plane counted double (`ΔL² + 2(Δa² + Δb²)`), of
+    `codec::ascii::SHADES_256` (gray ramp 8–88, cube gray 95, and the six
+    cube colors with every level 0 or 95, the only chromatic entries under
+    the 96 ceiling; each quantizes to itself) among those that pass the cap
+    against the glyph's quantized color and are `in_hue_family` with it: a
+    gray, or a chromatic entry within 30° of OKLab hue of a glyph color with
+    chroma ≥ 0.03. OKLab is computed in `f32` with a Newton cube root, so
+    the choice is the same on every platform. Preferring any in-family
+    chromatic entry was prototyped and rejected: it put saturated level-95
+    backings under 35–47% of shaded cells, 2–4× brighter than the shade
+    they replace, and pale glyphs over saturated red or green read as a
+    clash. The nearest entry keeps the hue where the shade is bright and
+    saturated (Interstellar's cyan window gets (0,95,95)); dim shades land
+    on grays. **Floor:** a shade whose brightest channel ends below
+    `SHADE_FLOOR` 8 is not sent (it reads as black): ascii bytes per frame
+    −8.5%, background changes 8.30 → 7.45 /cell/s. **Held-tone gray:**
+    with no chroma the shade's gray comes from the held tone, not the
+    instantaneous one. **Brightness:** the dark glyph lift is gone (below
+    held tone 48 a glyph takes its sample's color), the highlight run
+    reaches white at 255, and over held tone 128–192 a pale color's shade
+    runs toward neutral at its own top channel, as far as the color is pale
+    (least channel over greatest). Face means vs letters: Architect 1.13,
+    Terminator 1.26, Dune 1.17, Interstellar 0.86 (from 1.12 / 1.31 / 1.22
+    / 0.84). Interstellar's box is 8% letters' solid white; under the cap
+    the brightest ascii cell is a white `@` (the densest printable ASCII
+    glyph) on a 96 shade, and every lever that lifts the sphere further
+    (earlier `@`, stronger shade) lifted the faces as much and flattened
+    highlights, so ~0.86 is kept. Glyph switches stay 0.997× pixels.
+    `--no-backdrop` help now describes ascii's unshaded cells. Tests:
+    `a_256_color_shade_is_a_gray_or_in_the_glyphs_hue_family`,
+    `shades_256_quantize_to_themselves_and_lab_is_sane`,
+    `a_pale_shade_runs_toward_neutral_a_saturated_one_keeps_its_color`,
+    the floor in `the_cap_holds_where_it_binds`; `codecs.rs` checks the
+    floor and the hue family on the real stream and fails on any escape
+    that is not a CSI. Both ascii goldens re-blessed, colors only.
+    (o) **One HUD for every codec; the picture/UI boundary** (McKay: under
+    `ascii` "our text for our terminal instructions … is much too small" on
+    a zoomed-out terminal, and "we can use those pixels for the 2D only, as
+    long as we draft a rule and a clear way to ensure that this happens").
+    The rule: ascii codec: picture cells are printable ASCII 0x20-0x7E,
+    background default or a shade within the cap; block glyphs and
+    full-strength backgrounds are allowed only in UI overlay cells (HUD
+    text), which use the same big text as pixels/letters. (k)'s
+    `OverlayScale::Plain` and `for_codec` are removed: the player and the
+    deck call `for_grid` under every codec, so the progress, dial, hint,
+    info and zoom rows draw with the same scale, layout, colors and big
+    half-block font as pixels/letters (Big from 240x36 on block tiers,
+    Normal on the ASCII glyph tier). The boundary is `pipeline::UiRows`:
+    `paint_line` and every `draw_*_overlay*` return the bands they drew,
+    `Player::ui_rows` / `ClipDeck::ui_rows` report the last frame's (reset
+    on reflow), and every other cell is picture, pad, gap or the enlarge
+    card, all still held to (m)/(n). The card is unchanged (one-cell text on
+    the codec's pad, which is SGR 49 under ascii). Pixels and letters
+    streams stay byte-identical: they already used `for_grid`. Tests:
+    `pipeline::tests::ui_rows_are_exactly_the_rows_the_overlays_draw`
+    (every painter, both tiers, 80x24..1000x300 and the 239/240 boundary,
+    UI rows = painted rows); `codecs.rs`
+    `ascii_picture_cells_are_printable_ascii_over_a_capped_shade` (the
+    deck's escape stream replayed with cursor tracking, sizes 1x1..1000x300
+    with resizes and gaps, every tier × palette, overlays off and on: every
+    printed cell outside `ClipDeck::ui_rows` is printable ASCII within the
+    cap; with overlays on the UI rows carry block text exactly on block
+    tiers), `ascii_draws_the_same_hud_as_pixels_and_letters` (progress,
+    hints, info, dial, each and combined, 80x24..1000x300 and the Big
+    boundary: ascii's UI rows equal pixels' and letters' cell for cell, its
+    picture rows stay within the rule),
+    `ascii_without_overlays_is_all_picture_on_big_grids` (no UI rows, every
+    cell ASCII and `cell_within_cap` at every depth); `zoom_overlay.rs`
+    `big_text_on_wide_grids_and_a_clean_hide` (ascii draws the big bands
+    at 320x90) and `every_overlay_on_tiny_and_threshold_grids` (one HUD for
+    every codec). The ASCII glyph tier still never draws blocks
+    (`overlay_scale_tiers`).
+    (p) **ASCII brightness convergence at every zoom.** Supersedes the
+    held-tone color/shade and permanent floor retention in (k)/(n).
+    `Ascii::cell` uses the current ink tone for foreground and background;
+    glyph history cannot freeze either. (The glyph rule written here, an
+    exact-repeat candidate adopted after `min(1 + idx_hyst_q8 / 5, 32)`
+    frames, is superseded: see "Hysteresis range and ASCII glyph hold" at the
+    end of this file and the `ascii` module docs.) Black-floor crossings take
+    at most four consecutive frames on the new side; large changes remain
+    immediate.
+    `CellState` adds two ASCII-only bytes (`tone_candidate`, `tone_age`),
+    reset by existing scene/codec/resize/dial resets. Pixels and letters ignore
+    them and retain their rendering behavior. Letters' indefinite retention
+    remains an open issue outside this change.
+    Shade responds immediately; glyph stability still means a moving frame
+    can differ from cold. The checked 150-frame, 128x72 real-asset excerpt
+    bounds any-cell disagreement at 22% (measured 17.2–20.9%) and shade
+    disagreement at 3% (measured at most 1.83%) after 120 frames over five
+    zoom sizes. The old codec fails with 44.7% at 80x24. Tests live in
+    `ascii_temporal.rs`. Startup versus codec cycling and startup/resize
+    versus every dial round trip are reset invariants: both sides start cold,
+    so they also pass on 3cef5ec. Playback versus cold, glyphs two steps from
+    cold, repeated-frame convergence and glyph switches ≤1.2x pixels are the
+    regressions. Core tests pin constant-tone settling, four-frame floor
+    response, and current foreground/shade while glyph history waits.
+    The two ASCII goldens change color hashes only; glyph rows and letters
+    goldens do not change. The candidate's gradual glyph walk was rejected because it
+    exceeded the flicker budget. The pre-existing live dial label difference
+    from main (`shadow lift (floor, default)`) is deliberate and retained.
 28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
     should take a video from anywhere on the desktop, process it, and land
     it in the folder where the user's processed videos live"). The shape of
@@ -2791,3 +3012,28 @@ facade surface + this hidden module.)
     no cached fps/aspect/frame_count, one 16:9 degenerate-aspect fallback
     (in `resolve`); single-asset output is unchanged (goldens, parity and
     the render-session suite unblessed).
+
+
+ASCII warmth update (supersedes the historical shade constants above):
+`SHADE_CEIL=154`, `SHADE_BLANK_CEIL=0`, `SHADE_FLOOR=1`,
+`SHADE_CONTRAST_Q8=96`. “Not a full pixel” means printable ASCII 0x20–0x7E,
+no shaded spaces, bg channels <=154 and linear Rec.709 Y(bg)<=0.375*Y(fg)
+as sent. Truecolor scales the cell colour without neutralization, using
+letters' exact tone-32 curve and 154/256 gain. Foreground uses its 192..512
+Q8 gain with common-channel gamut limiting. Colours follow current tone;
+the bounded glyph settling fix remains. The 41 safe xterm candidates are
+15 ramp grays through 148 and 26 nonblack cube entries at levels 0/95/135;
+all must pass the existing quantized hue-family and luminance checks.
+16/mono remain unshaded. Floor 1 sends every nonblack scaled shade, as
+letters does, for dark colour continuity; a shade that scales to exact black
+uses the terminal's own background.
+
+Hysteresis range and ASCII glyph hold: `IDX_HYST_MAX_Q8` = default = 128
+(`hysteresis.rs`). `held_tone` jumps beyond `5/8 × idx_hyst_q8` (down to
+`idx_hyst_q8 / 4` as a per-cell activity level in ascii's flag bits 4–7
+rises above 9; `jump_band`), settles a
+smoothed tone more than `idx_hyst_q8 / 8` away after `min(1 + h/4, 32)`
+frames, and converges nearer smoothed tones that sit at least 4 units inside
+another ramp step after `min(h/2, 63) + 1` frames (`CellState::tone_age`:
+bit 7 down, bit 6 slow path, bits 0–5 count). The rule is in the `ascii`
+module docs and the measurements in [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).
