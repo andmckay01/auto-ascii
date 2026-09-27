@@ -202,8 +202,7 @@ const fn step_table() -> [u8; 256] {
     let lo = ASCII_INK[1] as u32;
     let mut n = FLOOR_HOLD as usize;
     while n < 256 {
-        let u = unit(n);
-        let mut want = if u < 128 { u + (128 - u) * u / 254 } else { u };
+        let mut want = unit(n);
         if want < lo {
             want = lo;
         }

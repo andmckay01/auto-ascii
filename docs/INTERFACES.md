@@ -3116,3 +3116,12 @@ with no shade. Goldens: only the floor band's blank/`.` cells change.
 architect-motion at 200x56 after 40 warm frames against letters on the
 ascii tier: non-space fg luma p5/p50/p95 within max(5%, 2), spread95 within
 5%, ≥240 fraction within 0.02.
+Shadow ramp: `step_table()` drops e55fdde's lift below mid-gray
+(`want = u`); it was added when ascii had no shade to carry tone, and the
+shade (8143b4e) and 6a82056's removal of the matching colour lift left it
+without a reason. Ascii's shadow glyphs now sit on letters' positions
+(about 48 `.`, 64 `:`, 80 `;`, 96 `+`); tones ≥ 128 and `@` at 225 are
+unchanged. Foreground percentiles cannot see this (it changes ink, not
+colour); it was judged by the toggle gates (all pass, real asset 1.08×
+pixels), the settle tests and side-by-side crops for McKay under
+`compare/ascii-range/`. Goldens: shadow-band glyph rows re-blessed.
