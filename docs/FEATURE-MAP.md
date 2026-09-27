@@ -4,7 +4,7 @@ This map traces how a video becomes ASCII art in a terminal. It covers the offli
 (ffmpeg ingest → feature planes → `.ascii` container), the runtime player (probe → letterbox →
 resample → glyph codec → hysteresis → present), the interactive controls (transport, dials,
 codecs, overlays), compositions, the `auto-ascii` CLI and its library folder, the embedding API,
-and the eval/perf gates, and streaming a YouTube link live (flow 16). It doesn't cover the research
+and the eval/perf gates, and streaming a YouTube link live (flow 17). It doesn't cover the research
 digests under `docs/research/`.
 
 Verified against the tree at `6526f3f`. The commit that adds this map only removes comments, so
@@ -366,7 +366,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Does:** imports videos into a visible home folder, lists and describes them, cuts and
   stitches them, plays them. Commands other than `play` and `compose play` have a `--json` mode.
 - **User:** `auto-ascii home | import | list | info | cut | compose … | play | stream |
-  agent-guide` (`stream` is flow 16).
+  agent-guide` (`stream` is flow 17).
   The home is `~/auto-ascii` or `$AUTO_ASCII_HOME`, holding `library/`, `compositions/` and
   `exports/`.
 - **Code:** `crates/auto-ascii-cli/src/main.rs` (`Cli`, `Cmd`, `ComposeCmd`, `cmd_import` →
