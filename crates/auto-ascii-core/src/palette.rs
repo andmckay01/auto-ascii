@@ -243,8 +243,6 @@ pub struct PaletteSet {
     pub braille: bool,
     pub subpos: bool,
     pub bg_tint: bool,
-    /// The color depth this set was selected for, for codecs whose colors
-    /// must hold a rule after the backend quantizes them.
     pub color: ColorDepth,
 }
 

@@ -1,10 +1,4 @@
-//! Color quantization for the non-truecolor tiers. Pure math, no I/O: RGB →
-//! xterm 6×6×6 cube + grayscale ramp (256 tier) or nearest of the
-//! standard 16 (16 tier), plus the inverse canonical-RGB tables. The painter
-//! quantizes cells to *canonical* tier RGB before diffing, so cells that
-//! quantize equal are byte-equal PODs and produce zero damage; emission
-//! re-derives the palette index from the canonical RGB (exact-match
-//! roundtrip, asserted in tests).
+//! xterm-256 and standard-16 color quantization and canonical palette RGB.
 
 use crate::cell::Rgb;
 
@@ -48,9 +42,6 @@ fn cube_component(c: u8) -> u8 {
     }
 }
 
-/// Map RGB to the nearest xterm-256 index, considering both the 6×6×6 cube
-/// (16–231) and the 24-step grayscale ramp (232–255, values 8–238). Never
-/// returns 0–15 (those vary per user theme; the cube+ramp are stable).
 pub fn rgb_to_256(c: Rgb) -> u8 {
     let (ri, gi, bi) = (cube_component(c.r), cube_component(c.g), cube_component(c.b));
     let cube_idx = 16 + 36 * ri + 6 * gi + bi;
@@ -68,8 +59,6 @@ pub fn rgb_to_256(c: Rgb) -> u8 {
     if dist2(c, gray_rgb) < dist2(c, cube_rgb) { gray_idx } else { cube_idx }
 }
 
-/// Map RGB to the nearest of the standard 16 ANSI colors (squared-distance,
-/// lowest index wins ties).
 pub fn rgb_to_16(c: Rgb) -> u8 {
     let mut best = 0u8;
     let mut best_d = u32::MAX;
@@ -83,7 +72,6 @@ pub fn rgb_to_16(c: Rgb) -> u8 {
     best
 }
 
-/// Canonical RGB for an xterm-256 index (0–15 use the standard-16 table).
 pub fn ansi256_to_rgb(n: u8) -> Rgb {
     match n {
         0..=15 => ANSI16[n as usize],
@@ -99,7 +87,6 @@ pub fn ansi256_to_rgb(n: u8) -> Rgb {
     }
 }
 
-/// Canonical RGB for a standard-16 index (panics if `n > 15`).
 pub fn ansi16_to_rgb(n: u8) -> Rgb {
     ANSI16[n as usize]
 }

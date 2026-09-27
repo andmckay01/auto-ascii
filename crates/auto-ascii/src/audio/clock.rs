@@ -1,12 +1,7 @@
-//! Media time for the picture, ported from the `yt-stream` branch's
-//! `stream/clock.rs` and extended with seeks and loop wraps. `AudioClock` is
-//! the track position the output has actually played: the cursor it restarted
-//! from at the last applied seek, plus the frames consumed since, over the
-//! sample rate, minus the output latency, held monotonic between seeks.
-//! `MonotonicClock` is a pausable wall clock; `AudioClock::mark_ended` hands
-//! over to one when the output stops calling back, from the current position,
-//! and `AudioClock::unmark` hands back: it seeks the output's cursor to the
-//! wall clock's position and pins the picture there until that sound plays.
+//! Media time for the picture: `AudioClock` is the track position the output
+//! has actually played, net of output latency and monotonic between seeks;
+//! `MonotonicClock` is the pausable wall clock it hands over to while the
+//! output is silent and takes back from once sound plays again.
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

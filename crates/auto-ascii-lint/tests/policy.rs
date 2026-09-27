@@ -553,6 +553,7 @@ fn scope_excludes_dependency_data_and_sensitive_paths() {
         assert!(language(path).is_none(), "{path}");
     }
     assert!(language("src/main.rs").is_some());
+    assert!(matches!(language("scripts/play.command"), Some(Language::Shell)));
     assert!(in_scope("crates/foo/src/lib.rs", &["crates/foo".into()]));
     assert!(!in_scope(
         "crates/foobar/src/lib.rs",

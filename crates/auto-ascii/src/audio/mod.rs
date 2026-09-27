@@ -1,18 +1,7 @@
-//! The player's soundtrack: find the asset's sound ([`source::discover`]),
-//! decode it to memory in the background, play it through an output (cpal
-//! under the `audio` feature, or a real-time null sink for `--sim` and tests)
-//! and hand the picture its media time from what that output has actually
-//! played ([`clock::AudioClock`]). Seeks move the output's read cursor, pause
-//! stops consumption, a loop wraps the cursor at the video's length, and mute
-//! keeps consuming so the clock never breaks. Outages are recoverable: when
-//! the output stops calling back (not counting a freeze of the whole process)
-//! the clock hands over to a pausable wall clock from the current position,
-//! the HUD reads `sound: wait`, and the first callback after it re-seeks the
-//! sound to the wall position and makes it master again. A lost device is
-//! dropped and the default output re-opened through a [`Reopener`] every
-//! [`REOPEN_EVERY`]. Only a failed decode is permanent (`sound: none`). Every
-//! fallback is silent playback, never an error; what happened is reported as
-//! notes after exit. Single assets only: compositions play silently.
+//! The player's soundtrack: discover the asset's sound, decode it in the
+//! background, play it through cpal or a real-time null sink, and give the
+//! picture its media time from what the output actually played. Every
+//! fallback is silent playback, never an error; compositions play silently.
 
 pub mod clock;
 pub mod output;

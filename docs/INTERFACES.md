@@ -2748,7 +2748,7 @@ facade surface + this hidden module.)
     glyph history cannot freeze either. (The glyph rule written here, an
     exact-repeat candidate adopted after `min(1 + idx_hyst_q8 / 5, 32)`
     frames, is superseded: see "Hysteresis range and ASCII glyph hold" at the
-    end of this file and the `ascii` module docs.) Black-floor crossings take
+    end of this file and [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).) Black-floor crossings take
     at most four consecutive frames on the new side; large changes remain
     immediate.
     `CellState` adds two ASCII-only bytes (`tone_candidate`, `tone_age`),
@@ -3069,5 +3069,5 @@ rises above 9; `jump_band`), settles a
 smoothed tone more than `idx_hyst_q8 / 8` away after `min(1 + h/4, 32)`
 frames, and converges nearer smoothed tones that sit at least 4 units inside
 another ramp step after `min(h/2, 63) + 1` frames (`CellState::tone_age`:
-bit 7 down, bit 6 slow path, bits 0–5 count). The rule is in the `ascii`
-module docs and the measurements in [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).
+bit 7 down, bit 6 slow path, bits 0–5 count). The full rule and its
+measurements are in [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).

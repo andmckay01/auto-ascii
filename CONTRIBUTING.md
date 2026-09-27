@@ -97,7 +97,7 @@ cargo run --quiet --release -p auto-ascii-lint --bin check-comments -- --paths c
 cargo run --quiet --release -p auto-ascii-lint --bin check-comments -- --count
 ```
 
-Scope is tracked plus untracked, nonignored `.rs`, `.sh`, `.py`, `.toml`,
+Scope is tracked plus untracked, nonignored `.rs`, `.sh`, `.command`, `.py`, `.toml`,
 Makefiles and `.gitignore` files. Cargo.lock is generated dependency data
 and excluded, as are Markdown, JSON, goldens, snapshots, LICENSE and other
 extensions. Credential-like paths are never read; scoped source symlinks

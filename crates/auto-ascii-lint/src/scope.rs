@@ -32,7 +32,7 @@ pub fn language(path: &str) -> Option<Language> {
     }
     match path.extension()?.to_str()? {
         "rs" => Some(Language::Rust),
-        "sh" => Some(Language::Shell),
+        "sh" | "command" => Some(Language::Shell),
         "py" => Some(Language::Python),
         "toml" => Some(Language::Toml),
         _ => None,

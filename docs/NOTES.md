@@ -123,8 +123,9 @@ passive hints could not establish it. The passive-only contract remains in
 ### Unix signal-safe restoration
 
 On Unix, the process-wide restore path writes the alt-screen-leave,
-cursor-show and SGR-reset bytes and restores termios from SIGINT/SIGTERM,
-panic, atexit or normal shutdown. The signal path uses atomics, raw `write(2)` and
+cursor-show and SGR-reset bytes and restores termios from SIGINT/SIGTERM/SIGHUP,
+panic, atexit or normal shutdown, preceded by the OSC 111 backdrop reset when
+the session set one. The signal path uses atomics, raw `write(2)` and
 `tcsetattr`, with no allocation or locks.
 
 ### Subprocess pipes and media geometry
