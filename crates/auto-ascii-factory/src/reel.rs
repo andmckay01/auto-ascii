@@ -1,66 +1,47 @@
-//! Review reel — the human sign-off artifact.
-//!
-//! `auto-ascii-factory eval --reel out.html` emits one self-contained HTML page:
-//! per corpus clip, an animated GIF of the rasterized render
-//! ([`GIF_SECS`] s @ [`GIF_FPS`] fps) plus [`REEL_ROWS`] timestamp rows of
-//! source PNG | rasterized-render PNG | per-frame metric strip (SSIM,
-//! edge F1 with precision/recall, flicker-to-date). Everything is embedded
-//! base64 (`data:` URIs) — no external requests, same rule as the contact
-//! sheet; the page is the artifact a human signs off, so it must open
-//! anywhere, forever.
-//!
-//! The data is collected by the eval driver (`eval.rs`) during its truecolor
-//! pass; this module owns the GIF encoding and the (pure, unit-testable)
-//! HTML rendering.
+//! Review-reel GIF encoding and HTML generation.
 
 use auto_ascii_eval::{EdgeScore, GrayImage};
 
 use crate::eval::{base64, html_escape};
 use crate::ffmpeg::BoxErr;
 
-/// Timestamp rows per clip (sign-off needs at least 4).
+const MIN_SIGN_OFF_ROWS: u32 = 4;
 pub const REEL_ROWS: u32 = 6;
-/// Animated-GIF sampling: ~10 s of clip time at 10 fps.
+const _: () = assert!(REEL_ROWS >= MIN_SIGN_OFF_ROWS);
 pub const GIF_SECS: u32 = 10;
 pub const GIF_FPS: u32 = 10;
 
-/// One timestamp row (truecolor tier).
 pub struct ReelRow {
     pub frame: u32,
     pub secs: f64,
     pub ssim: Option<f64>,
     pub edge: Option<EdgeScore>,
-    /// Cumulative flicker (switches/cell/s) over frames rendered so far.
     pub flicker_to_date: Option<f64>,
     pub src_png: Vec<u8>,
     pub render_png: Vec<u8>,
 }
 
-/// One clip's reel material.
 pub struct ReelClip {
     pub name: String,
     pub fps: f64,
     pub grid_cols: u16,
     pub grid_rows: u16,
     pub frames: u32,
-    /// Clip-level means (the report numbers, for the header line).
     pub ssim_mean: Option<f64>,
     pub edge_f1_mean: Option<f64>,
     pub flicker: Option<f64>,
-    /// Encoded animated GIF (empty = no GIF, e.g. sub-minimum grid).
     pub gif: Vec<u8>,
     pub gif_w: u16,
     pub gif_h: u16,
     pub rows: Vec<ReelRow>,
 }
 
-/// Encode grayscale rasters as an infinitely-looping animated GIF with a
-/// 256-gray global palette (raster bytes ARE palette indices — lossless).
-/// All frames must share dimensions; `fps` sets the frame delay (GIF time
-/// base is 10 ms, so fps > 100 clamps to the 10 ms minimum).
-///
-/// # Panics
-/// If `frames` is empty or dimensions are mixed.
+const GIF_CENTISECONDS_PER_SECOND: u32 = 100;
+
+fn gif_delay_centiseconds(fps: u32) -> u16 {
+    (GIF_CENTISECONDS_PER_SECOND / fps.max(1)).max(1) as u16
+}
+
 pub fn encode_gray_gif(frames: &[GrayImage], fps: u32) -> Result<Vec<u8>, BoxErr> {
     assert!(!frames.is_empty(), "encode_gray_gif: no frames");
     let (w, h) = (frames[0].w(), frames[0].h());
@@ -68,7 +49,7 @@ pub fn encode_gray_gif(frames: &[GrayImage], fps: u32) -> Result<Vec<u8>, BoxErr
     for i in 0..=255u8 {
         palette.extend([i, i, i]);
     }
-    let delay = (100 / fps.max(1)).max(1) as u16;
+    let delay = gif_delay_centiseconds(fps);
     let mut out = Vec::new();
     {
         let mut enc = gif::Encoder::new(&mut out, w, h, &palette)
@@ -93,8 +74,6 @@ fn fmt_opt(v: Option<f64>, digits: usize) -> String {
     v.map_or("n/a".into(), |v| format!("{v:.digits$}"))
 }
 
-/// Render the reel page. Pure (no I/O): unit tests feed synthetic bytes and
-/// assert self-containment.
 pub fn render_reel_html(clips: &[ReelClip], generator: &str) -> String {
     let mut h = String::with_capacity(1 << 22);
     h.push_str(
@@ -188,6 +167,14 @@ mod tests {
 
     fn tiny_gray(w: u16, h: u16, v: u8) -> GrayImage {
         GrayImage::from_raw(w, h, vec![v; w as usize * h as usize])
+    }
+
+    #[test]
+    fn gif_delay_is_whole_centiseconds_and_never_zero() {
+        assert_eq!(gif_delay_centiseconds(30), 3);
+        assert_eq!(gif_delay_centiseconds(10), 10);
+        assert_eq!(gif_delay_centiseconds(0), 100);
+        assert_eq!(gif_delay_centiseconds(1000), 1);
     }
 
     #[test]

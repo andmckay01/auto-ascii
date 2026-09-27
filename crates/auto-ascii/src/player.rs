@@ -14,56 +14,29 @@ use crate::pipeline::ProgressContext;
 use crate::settings::VideoSettings;
 use crate::{PaletteChoice, pipeline};
 
-/// Repaint mode. There is one render path: [`Full`](RepaintMode::Full) is
-/// the diff renderer with `invalidate()` every frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RepaintMode {
-    /// Repaint every cell every frame (the default; right for local
-    /// GPU-accelerated terminals).
     #[default]
     Full,
-    /// Pure diff: only damaged cells are rewritten; full repaint on resize
-    /// only. Fewer output bytes, right for slower terminals.
     Diff,
 }
 
-/// Floor for [`fps_cap`](PlayerBuilder::fps_cap): caps below 1 fps are
-/// rejected at [`build`](PlayerBuilder::build) with [`Error::Config`]. The
-/// pacing loop sleeps `1/cap` seconds between presents, so a tiny positive
-/// cap (e.g. `1e-9`) would freeze input handling for years, and small
-/// enough values would overflow `Duration::from_secs_f64` mid-session.
 pub const MIN_FPS_CAP: f64 = 1.0;
 
 pub use crate::pipeline::SCRUB_STEP_SECS;
 
 const DIAL_OVERLAY_HIDE_AFTER: Duration = Duration::from_millis(2500);
 
-/// A renderer knob adjustable during playback: `d` selects, `[`/`]` turns it.
-///
-/// Every dial is a [`ComposeParams`] field — a render-time setting, not part
-/// of the asset — so turning one re-renders the asset already in memory
-/// instead of rebuilding it. One asset serves every setting; nothing is baked
-/// in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dial {
-    /// Open the shadows so a dark subject clears the first ramp steps instead
-    /// of sharing a glyph with black. First in the cycle: it is the one that
-    /// rescues detail that is otherwise simply absent.
     ShadowLift,
-    /// Edge gate on-threshold. LOWER draws more edges — the dial is inverted
-    /// on screen so that turning it up means "more edges", which is what a
-    /// person turning a dial expects.
     EdgeStrength,
-    /// Ramp-index hysteresis width: wider = stickier cells = less flicker,
-    /// narrower = more responsive.
     Hysteresis,
 }
 
 impl Dial {
-    /// Cycle order. Shadow lift leads deliberately (see the variant docs).
     pub const ALL: [Dial; 3] = [Dial::ShadowLift, Dial::EdgeStrength, Dial::Hysteresis];
 
-    /// Short label for the on-screen readout.
     pub fn label(self) -> &'static str {
         match self {
             Dial::ShadowLift => "shadow lift",
@@ -72,12 +45,9 @@ impl Dial {
         }
     }
 
-    /// The readout label for the dial's current value: [`label`](Dial::label),
-    /// marked when the dial sits at its floor, its default or its top, so a
-    /// turn that cannot go further says so.
     pub fn readout(self, p: &ComposeParams) -> &'static str {
-        let v = self.get(p);
-        let (floor, default) = (v == 0, v == self.get(&ComposeParams::default()));
+        let v = self.display_value(p);
+        let (floor, default) = (v == 0, v == self.display_value(&ComposeParams::default()));
         match (self, floor, default, v == self.max()) {
             (Dial::ShadowLift, true, true, _) => "shadow lift (floor, default)",
             (Dial::ShadowLift, true, false, _) => "shadow lift (floor)",
@@ -94,8 +64,6 @@ impl Dial {
         }
     }
 
-    /// How far one `[`/`]` press moves it. Sized so a dial crosses its useful
-    /// range in roughly a dozen presses rather than a hundred.
     pub fn step(self) -> i32 {
         match self {
             Dial::ShadowLift => 16,
@@ -104,7 +72,6 @@ impl Dial {
         }
     }
 
-    /// Upper bound of the on-screen scale.
     pub fn max(self) -> u8 {
         match self {
             Dial::ShadowLift => 255,
@@ -113,9 +80,11 @@ impl Dial {
         }
     }
 
-    /// Current on-screen value (already un-inverted where the underlying
-    /// field runs the other way).
     pub fn get(self, p: &ComposeParams) -> u8 {
+        self.display_value(p)
+    }
+
+    pub(crate) fn display_value(self, p: &ComposeParams) -> u8 {
         match self {
             Dial::ShadowLift => p.shadow_lift,
             Dial::EdgeStrength => self.max().saturating_sub(p.edge_t_on),
@@ -123,8 +92,6 @@ impl Dial {
         }
     }
 
-    /// The `params.toml` `[compose]` key of the field this dial turns — also
-    /// its key in a video's saved settings file (`<asset>.player.toml`).
     pub fn param_key(self) -> &'static str {
         match self {
             Dial::ShadowLift => "shadow_lift",
@@ -133,9 +100,11 @@ impl Dial {
         }
     }
 
-    /// The raw field value (not inverted — [`get`](Dial::get) is the
-    /// on-screen reading).
     pub fn param(self, p: &ComposeParams) -> u8 {
+        self.raw_param_value(p)
+    }
+
+    pub(crate) fn raw_param_value(self, p: &ComposeParams) -> u8 {
         match self {
             Dial::ShadowLift => p.shadow_lift,
             Dial::EdgeStrength => p.edge_t_on,
@@ -143,9 +112,6 @@ impl Dial {
         }
     }
 
-    /// Set the raw field, clamped to what the dial can reach — a saved or
-    /// hand-edited value outside the scale would leave the readout pinned
-    /// at an end while the picture sat somewhere the dial cannot return to.
     pub fn set_param(self, p: &mut ComposeParams, v: u8) {
         match self {
             Dial::ShadowLift => p.shadow_lift = v,
@@ -154,17 +120,10 @@ impl Dial {
         }
     }
 
-    /// Apply a signed number of steps, saturating at the dial's ends.
-    ///
-    /// The top is a stop, not a detent. Where `max()` is no multiple of
-    /// `step()` (shadow lift's 255 against 16), counting down from it would
-    /// leave the grid the dial climbed on, and up N / down N would miss the
-    /// start by one (255 → 239, not 240). A press away from the top counts
-    /// from the detent just above `max()` instead, so every walk retraces its
-    /// own steps.
     pub fn turn(self, p: &mut ComposeParams, steps: i32) {
-        let (cur, step, max) = (i32::from(self.get(p)), self.step(), i32::from(self.max()));
-        let from = if cur == max { (max + step - 1) / step * step } else { cur };
+        let (cur, step, max) =
+            (i32::from(self.display_value(p)), self.step(), i32::from(self.max()));
+        let from = turn_origin_treating_the_top_as_a_stop(cur, step, max);
         let next = (from + steps * step).clamp(0, max) as u8;
         match self {
             Dial::ShadowLift => p.shadow_lift = next,
@@ -172,6 +131,14 @@ impl Dial {
             Dial::Hysteresis => p.idx_hyst_q8 = next,
         }
     }
+}
+
+fn turn_origin_treating_the_top_as_a_stop(cur: i32, step: i32, max: i32) -> i32 {
+    if cur == max { first_detent_at_or_above(max, step) } else { cur }
+}
+
+fn first_detent_at_or_above(value: i32, step: i32) -> i32 {
+    (value + step - 1) / step * step
 }
 
 fn dial_after_cycle(idx: usize, presses: u32, readout_up: bool) -> usize {
@@ -264,8 +231,8 @@ impl LiveSettings {
     }
 
     fn status(&self) -> &'static str {
-        let current = self.current();
-        self.note.unwrap_or(match self.saved {
+        let current = self.current().persisted();
+        self.note.unwrap_or(match self.saved.map(|s| s.persisted()) {
             Some(s) if s == current => "saved",
             None if current == VideoSettings::default() => "default",
             _ => "s to save",
@@ -287,7 +254,6 @@ impl LiveSettings {
 
 const OVERLAY_HIDE_AFTER: Duration = Duration::from_millis(1000);
 
-#[allow(missing_docs)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stopped {
     Ended,
@@ -459,8 +425,6 @@ impl HintState {
     }
 }
 
-/// Builder for [`Player`] — see [`Player::builder`]. Every option has a
-/// sensible default; only [`asset`](PlayerBuilder::asset) is required.
 #[derive(Debug, Default)]
 #[must_use = "call .build() to open the asset"]
 pub struct PlayerBuilder {
@@ -485,168 +449,96 @@ pub struct PlayerBuilder {
 }
 
 impl PlayerBuilder {
-    /// Path of the ASCI asset to play. Required, unless
-    /// [`composition`](PlayerBuilder::composition) is set instead.
     pub fn asset(mut self, path: impl Into<PathBuf>) -> Self {
         self.asset = Some(path.into());
         self
     }
 
-    /// Path of a composition `.toml` to play instead of one asset. The
-    /// timeline is the composition's: `--seek`, the digits, the arrows,
-    /// `--loop` and the progress row all count its frames, clips switch
-    /// decoders at their boundaries and a gap plays black. Bare library
-    /// names inside the file resolve through
-    /// [`Composition::default_library_dir`].
-    ///
-    /// Mutually exclusive with [`asset`](PlayerBuilder::asset).
     pub fn composition(mut self, path: impl Into<PathBuf>) -> Self {
         self.composition = Some(path.into());
         self
     }
 
-    /// Glyph repertoire (default [`PaletteChoice::Auto`]: derived from the
-    /// probed terminal capabilities).
     pub fn palette(mut self, palette: PaletteChoice) -> Self {
         self.palette = palette;
         self
     }
 
-    /// Force the color tier instead of probing (`Some(..)` also skips the
-    /// probe volley entirely). `None` (the default) probes.
     pub fn tier(mut self, tier: Option<ColorTier>) -> Self {
         self.tier = tier;
         self
     }
 
-    /// Repaint mode (default [`RepaintMode::Full`]).
     pub fn repaint(mut self, repaint: RepaintMode) -> Self {
         self.repaint = repaint;
         self
     }
 
-    /// Cap the presentation rate below the asset fps. Frames are still
-    /// selected by wall clock, so capping skips asset frames — it never
-    /// slows the video down. Must be at least [`MIN_FPS_CAP`] (1 fps),
-    /// checked at [`build`](PlayerBuilder::build): the pacing loop sleeps
-    /// `1/cap` seconds between presents, so sub-1 caps would leave quit keys
-    /// and resizes unserviced for arbitrarily long (and tiny values would
-    /// overflow `Duration`).
     pub fn fps_cap(mut self, fps: f64) -> Self {
         self.fps_cap = Some(fps);
         self
     }
 
-    /// Loop playback instead of returning at the last frame (default off).
     pub fn looping(mut self, looping: bool) -> Self {
         self.looping = looping;
         self
     }
 
-    /// Override the cell aspect `cell_h_px / cell_w_px` used by the
-    /// letterbox math. Default: the terminal's reported cell pixel size,
-    /// else 2.0.
     pub fn cell_aspect(mut self, cell_aspect: f64) -> Self {
         self.cell_aspect = Some(cell_aspect);
         self
     }
 
-    /// Start playback this many seconds in (FIDX keyframe seek).
-    /// Must land inside the asset (checked at [`build`](PlayerBuilder::build)).
     pub fn seek_secs(mut self, secs: f64) -> Self {
         self.seek_secs = Some(secs);
         self
     }
 
-    /// Stop after this many seconds of WALL clock (default: play to end).
-    /// Wall clock, not asset time: time spent paused (space) counts against
-    /// the budget exactly as playing time does.
     pub fn duration_secs(mut self, secs: f64) -> Self {
         self.duration_secs = Some(secs);
         self
     }
 
-    /// Never write the capability-probe volley; rely on passive env hints
-    /// only (an escape hatch for hostile PTYs).
     pub fn no_query(mut self, no_query: bool) -> Self {
         self.no_query = no_query;
         self
     }
 
-    /// Bypass the capability-probe cache (no read, no write).
     pub fn no_cache(mut self, no_cache: bool) -> Self {
         self.no_cache = no_cache;
         self
     }
 
-    /// Skip the identity-keyed quirk table: the probe normally corrects
-    /// known reply gaps after the volley — e.g. kitty's missing XTGETTCAP
-    /// `RGB` entry, or plain xterm's "no direct color" answer overriding a
-    /// stale `COLORTERM` — keyed on the terminal's own XTVERSION reply, never
-    /// on `TERM`. This escape hatch takes the replies at face value: the
-    /// probe cache is bypassed in both directions (cached entries hold
-    /// quirk-adjusted results, so none is read, and a no-quirks result is
-    /// never stored) and the volley always runs fresh.
     pub fn no_quirks(mut self, no_quirks: bool) -> Self {
         self.no_quirks = no_quirks;
         self
     }
 
-    /// Leave the terminal's own default background alone. By default the
-    /// session sets it to black (OSC 11) on entry and resets it to the
-    /// terminal's configured one (OSC 111) on normal exit, errors, a Rust
-    /// panic, SIGINT, SIGTERM, SIGHUP and atexit, so a codec that keeps the
-    /// terminal background ([`Codec::Ascii`]) sits on black under any theme;
-    /// pixels and letters paint every cell and look the same either way. The
-    /// mono tier never sets it (see [`AnsiBackend::with_backdrop`]).
     pub fn no_backdrop(mut self, no_backdrop: bool) -> Self {
         self.no_backdrop = no_backdrop;
         self
     }
 
-    /// Assert which font the terminal renders with, by ink-coverage table: a
-    /// built-in name — `conservative`, `dejavu-sans-mono`, `liberation-mono`,
-    /// `ubuntu-mono`, `noto-sans-mono` — or a path to a `auto-ascii-factory
-    /// font-table` TOML. Terminals cannot be queried for their font, so this
-    /// is user-asserted truth: the table's recorded repertoire vetoes the
-    /// palette selection (a tier whose glyphs the font is missing degrades
-    /// braille → unicode → ascii instead of drawing missing-glyph boxes).
-    /// Resolved and validated at [`build`](PlayerBuilder::build).
     pub fn font_table(mut self, name_or_path: impl Into<String>) -> Self {
         self.font_table = Some(name_or_path.into());
         self
     }
 
-    /// Start in this glyph [`Codec`] for every clip, overriding any codec
-    /// saved in a video's settings (default: the saved one, else
-    /// [`Codec::Pixels`]). `/` still cycles it during playback.
     pub fn codec(mut self, codec: Codec) -> Self {
         self.codec = Some(codec);
         self
     }
 
-    #[allow(missing_docs)]
     pub fn mute(mut self, mute: bool) -> Self {
         self.mute = mute;
         self
     }
 
-    #[allow(missing_docs)]
     pub fn no_audio(mut self, no_audio: bool) -> Self {
         self.no_audio = no_audio;
         self
     }
 
-    /// Check the configuration and open every asset that will play — one
-    /// for [`asset`](PlayerBuilder::asset), all of a
-    /// [`composition`](PlayerBuilder::composition)'s clips — as a
-    /// container, through a read-only mapping.
-    ///
-    /// Does NOT touch the terminal: that happens in [`Player::run`], so a
-    /// bad path, a corrupt or truncated file, a clip with no picture in it,
-    /// an impossible trim or a seek past the end all fail cleanly here,
-    /// before any screen state changes. The decoders themselves are built
-    /// in `run`, per clip, as the timeline reaches them.
     pub fn build(self) -> Result<Player, Error> {
         let path = match (&self.asset, &self.composition) {
             (Some(_), Some(_)) => {
@@ -695,9 +587,6 @@ impl PlayerBuilder {
     }
 }
 
-/// A ready-to-run terminal player: every clip validated and its timeline
-/// resolved, terminal not yet touched. Created by [`Player::builder`];
-/// consumed by [`Player::run`].
 #[derive(Debug)]
 pub struct Player {
     comp: Composition,
@@ -717,50 +606,14 @@ fn resolve_cell_aspect(flag: Option<f64>, cell_px: Option<(u16, u16)>) -> f64 {
 }
 
 impl Player {
-    /// Start building a player.
     pub fn builder() -> PlayerBuilder {
         PlayerBuilder::default()
     }
 
-    /// Play the asset: probe the terminal (a DA1-sentinel query volley,
-    /// unless a tier is forced or [`no_query`](PlayerBuilder::no_query) is
-    /// set), enter the session (alt screen, raw mode, hidden cursor, black
-    /// backdrop unless [`no_backdrop`](PlayerBuilder::no_backdrop)), run
-    /// the frame loop — paced by the soundtrack's audio clock when one plays,
-    /// else by the wall clock — and restore the terminal — also on
-    /// panic, SIGINT, SIGTERM and SIGHUP (the restore hooks are armed before the
-    /// screen is touched).
-    ///
-    /// Blocks until the asset ends (unless [`looping`](PlayerBuilder::looping)),
-    /// the configured [`duration`](PlayerBuilder::duration_secs) elapses, or
-    /// the user quits (`q` / `Esc` / `Ctrl-C`). Keys `0`–`9` jump to that
-    /// ×10% of the asset; `←`/`→` scrub ±[`SCRUB_STEP_SECS`] (5 s); `d`
-    /// cycles the live [`Dial`]s and `[`/`]` turn the selected one; `/`
-    /// cycles the glyph [`Codec`]; `s` saves the dials and codec as this
-    /// video's settings (`<asset>.player.toml`, loaded whenever the video
-    /// fronts); `m` turns the soundtrack on and off; space freezes the
-    /// picture and resumes it from the frozen frame (jumps and scrubs still
-    /// work while frozen, and stay frozen).
-    /// Saved dials load per clip until the first dial turn. That turn keeps
-    /// the full current compose settings for this session across cuts and
-    /// wraps, overriding later clips' saved dials, just as `/` keeps its
-    /// codec choice. Saving writes only the current clip's settings.
-    /// Every seek flashes a bottom-row progress overlay that auto-hides
-    /// after ~1 s. A key-hints row sits above it whenever an overlay is up,
-    /// for the first few seconds of playback, and for as long as `v` pins it
-    /// open. Above it the info row names the clip, the codec and the grid
-    /// size, with a zoom-out hint on narrow terminals; a resize raises both
-    /// for a moment, so zooming the terminal reads out the new size.
-    ///
-    /// # Errors
-    /// [`Error::Terminal`] when stdout is not a TTY (headless callers want
-    /// [`crate::RenderSession`]); [`Error::Decode`] on mid-playback asset
-    /// corruption.
     pub fn run(self) -> Result<(), Error> {
         self.play().map(|_| ())
     }
 
-    #[allow(missing_docs)]
     pub fn play(self) -> Result<Stopped, Error> {
         let probe_opts = ProbeOptions {
             forced_tier: self.cfg.tier,
@@ -871,7 +724,7 @@ impl Player {
                     live.turn(dial, drained.dial_delta);
                     deck.set_compose_params(live.compose);
                 }
-                deck.set_dial_overlay(Some((dial.readout(&live.compose), dial.get(&live.compose), dial.max())));
+                deck.set_dial_overlay(Some((dial.readout(&live.compose), dial.display_value(&live.compose), dial.max())));
                 dial_until = Some(Instant::now() + DIAL_OVERLAY_HIDE_AFTER);
             } else if dial_until.is_some_and(|t| Instant::now() >= t) {
                 deck.set_dial_overlay(None);
@@ -919,7 +772,7 @@ impl Player {
                 deck.set_codec(live.codec);
                 if dial_until.is_some() {
                     let dial = Dial::ALL[dial_idx];
-                    deck.set_dial_overlay(Some((dial.readout(&live.compose), dial.get(&live.compose), dial.max())));
+                    deck.set_dial_overlay(Some((dial.readout(&live.compose), dial.display_value(&live.compose), dial.max())));
                 }
             }
             live.write_info(&mut info, clock.sound());
@@ -1304,6 +1157,10 @@ mod tests {
         }
         live.save(&b);
         assert_eq!(VideoSettings::load(&b).unwrap().unwrap().compose, turned);
+        assert_eq!(live.status(), "saved");
+        live.compose.edge_t_off = live.compose.edge_t_off.wrapping_add(1);
+        assert_eq!(live.status(), "saved", "fields no dial persists never read as unsaved");
+        live.compose = turned;
         assert_eq!(VideoSettings::load(&a).unwrap().unwrap().compose.shadow_lift, 64);
         live.front(0, &a);
         assert_eq!(live.compose, turned, "saving does not clear the session override");

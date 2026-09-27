@@ -1,31 +1,11 @@
-//! Windowed SSIM (downscale-SSIM, step 2).
-//!
-//! Implements mean SSIM exactly as specified in the reference paper:
-//! Wang, Bovik, Sheikh & Simoncelli, *"Image Quality Assessment: From Error
-//! Visibility to Structural Similarity"*, IEEE Trans. Image Processing 13(4),
-//! 2004 — **11×11 Gaussian window, σ = 1.5**, K1 = 0.01, K2 = 0.03, L = 255.
-//! The Gaussian window is chosen over the 8×8 uniform window for the reason
-//! the paper gives (§III.B): uniform windows produce blocking artifacts in
-//! the quality map; the Gaussian is the de-facto standard every reference
-//! implementation uses, so our scores stay comparable to other tooling.
-//!
-//! Windows are "valid"-mode (no padding, like the reference MATLAB
-//! implementation's `filter2(..., 'valid')`). Images smaller than 11 px in
-//! either dimension fall back to a single uniform window over the whole
-//! image — grids that small are below MIN_COLS×MIN_ROWS anyway, the fallback
-//! just keeps the metric total on degenerate fuzz-sized inputs.
+//! Gaussian-window SSIM and source-downscale quality measurement.
 
 use crate::raster::GrayImage;
 
-/// Window side (Wang et al. 2004).
 pub const SSIM_WINDOW: usize = 11;
-/// Gaussian σ (Wang et al. 2004).
 pub const SSIM_SIGMA: f64 = 1.5;
-/// Stabilizer K1 (paper default).
 pub const SSIM_K1: f64 = 0.01;
-/// Stabilizer K2 (paper default).
 pub const SSIM_K2: f64 = 0.03;
-/// Dynamic range for 8-bit images.
 pub const SSIM_L: f64 = 255.0;
 
 fn c1() -> f64 {
@@ -98,10 +78,6 @@ fn global_ssim(a: &[u8], b: &[u8]) -> f64 {
         / ((mx * mx + my * my + c1()) * (vx + vy + c2()))
 }
 
-/// Mean SSIM between two equal-sized grayscale images.
-///
-/// # Panics
-/// On dimension mismatch or empty images.
 pub fn ssim(a: &GrayImage, b: &GrayImage) -> f64 {
     assert_eq!((a.w(), a.h()), (b.w(), b.h()), "ssim: image dims mismatch");
     assert!(a.w() > 0 && a.h() > 0, "ssim: empty image");
@@ -146,15 +122,6 @@ pub fn ssim(a: &GrayImage, b: &GrayImage) -> f64 {
     sum / mx.len() as f64
 }
 
-/// The downscale-SSIM entry point: resample the source luma plane to the
-/// rendered raster's dimensions through the engine's own separable resampler
-/// (same box-average semantics the player uses), then SSIM.
-///
-/// `rendered` should already be cropped to the viewport region
-/// ([`GrayImage::crop`]) so letterbox pads don't enter the comparison.
-///
-/// # Panics
-/// If `src_luma.len() != src_w · src_h`, or `rendered` is empty.
 pub fn downscale_ssim(rendered: &GrayImage, src_luma: &[u8], src_w: u16, src_h: u16) -> f64 {
     assert!(rendered.w() > 0 && rendered.h() > 0, "downscale_ssim: empty render");
     let mut rs = auto_ascii_core::Resampler::build(src_w, src_h, rendered.w(), rendered.h());

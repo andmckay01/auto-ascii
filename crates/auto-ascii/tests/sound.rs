@@ -1,9 +1,7 @@
-//! The soundtrack end to end through the real binary: `--sim --sim-audio`
-//! finds a synthetic sidecar, decodes it with ffmpeg, plays it into the null
-//! sink (never an audio device) and paces every frame from the audio clock.
-//! Covers discovery order, the duration-mismatch rejection, `--mute`,
-//! `--no-audio`, the silent fallback and that no ffmpeg child outlives the
-//! run. Skipped when ffmpeg is missing.
+//! The soundtrack end to end through the real binary under `--sim --sim-audio`:
+//! discovery order, duration-mismatch rejection, `--mute`, `--no-audio`, the
+//! silent fallback, audio-clock pacing, and no ffmpeg child outliving the run.
+//! Skipped when ffmpeg is missing.
 #![cfg(all(unix, feature = "bin"))]
 
 use std::path::{Path, PathBuf};

@@ -62,9 +62,12 @@ const STREAM_IS_INTERACTIVE: &str =
                   shapes and the composition schema."
 )]
 struct Cli {
-    /// Print one JSON value on stdout instead of human text; errors become
-    /// `{"error": "..."}` on stderr with exit 1.
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        help = "Print one JSON value on stdout instead of human text; errors become `{\"error\": \
+                \"...\"}` on stderr with exit 1"
+    )]
     json: bool,
     #[command(subcommand)]
     cmd: Cmd,
@@ -72,68 +75,72 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Ingest a video into `library/<name>.ascii` + a `<name>.json`
-    /// provenance sidecar. Needs ffmpeg on PATH.
+    #[command(
+        about = "Ingest a video into `library/<name>.ascii` + a `<name>.json` provenance sidecar. \
+                 Needs ffmpeg on PATH"
+    )]
     Import {
-        /// Source video (any ffmpeg-readable container).
+        #[arg(help = "Source video (any ffmpeg-readable container)")]
         video: PathBuf,
-        /// Library name (kebab-cased). Default: the file stem, kebab-cased.
-        #[arg(long)]
+        #[arg(long, help = "Library name (kebab-cased). Default: the file stem, kebab-cased")]
         name: Option<String>,
-        /// Start offset into the source: SS[.f], MM:SS[.f] or HH:MM:SS[.f].
-        #[arg(long)]
+        #[arg(long, help = "Start offset into the source: SS[.f], MM:SS[.f] or HH:MM:SS[.f]")]
         ss: Option<String>,
-        /// Duration to take from the source, same formats as --ss.
-        #[arg(long = "t")]
+        #[arg(long = "t", help = "Duration to take from the source, same formats as --ss")]
         t: Option<String>,
-        /// Output frame rate (default: the factory's params.toml).
-        #[arg(long)]
+        #[arg(long, help = "Output frame rate (default: the factory's params.toml)")]
         fps: Option<u16>,
-        /// Stored plane resolution as WxH, even dimensions (default:
-        /// the factory's params.toml).
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Stored plane resolution as WxH, even dimensions (default: the factory's \
+                    params.toml)"
+        )]
         res: Option<String>,
-        /// Replace an existing clip of the same name.
-        #[arg(long)]
+        #[arg(long, help = "Replace an existing clip of the same name")]
         force: bool,
     },
-    /// List the library: name, duration, fps, frames, bytes, source.
+    #[command(about = "List the library: name, duration, fps, frames, bytes, source")]
     List,
-    /// Header + sidecar for one clip.
+    #[command(about = "Header + sidecar for one clip")]
     Info {
-        /// A path if one exists, else `library/<clip>.ascii`.
+        #[arg(help = "A path if one exists, else `library/<clip>.ascii`")]
         clip: String,
     },
-    /// Slice one clip into a new library clip (an export of a one-clip
-    /// composition).
+    #[command(
+        about = "Slice one clip into a new library clip (an export of a one-clip composition)"
+    )]
     Cut {
-        /// A path if one exists, else `library/<clip>.ascii`.
+        #[arg(help = "A path if one exists, else `library/<clip>.ascii`")]
         clip: String,
-        /// Start of the slice inside the clip: SS[.f], MM:SS[.f] or
-        /// HH:MM:SS[.f].
-        #[arg(long = "in")]
+        #[arg(
+            long = "in",
+            help = "Start of the slice inside the clip: SS[.f], MM:SS[.f] or HH:MM:SS[.f]"
+        )]
         in_spec: String,
-        /// End of the slice inside the clip, same formats as --in.
-        #[arg(long = "out")]
+        #[arg(long = "out", help = "End of the slice inside the clip, same formats as --in")]
         out_spec: String,
-        /// Library name for the slice (kebab-cased). Default:
-        /// `<clip>-<in>-<out>`, e.g. `apple-1984-0m05s-0m20s`.
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Library name for the slice (kebab-cased). Default: `<clip>-<in>-<out>`, e.g. \
+                    `apple-1984-0m05s-0m20s`"
+        )]
         name: Option<String>,
-        /// Replace an existing clip of the same name.
-        #[arg(long)]
+        #[arg(long, help = "Replace an existing clip of the same name")]
         force: bool,
     },
-    /// Compositions: the `schema = 1` TOML timelines in `compositions/`.
+    #[command(about = "Compositions: the `schema = 1` TOML timelines in `compositions/`")]
     Compose {
         #[command(subcommand)]
         cmd: ComposeCmd,
     },
-    /// Play a clip or a composition interactively (same keys as
-    /// `auto-ascii-player`).
+    #[command(
+        about = "Play a clip or a composition interactively (same keys as `auto-ascii-player`)"
+    )]
     Play {
-        /// A path if one exists, else `library/<target>.ascii`, else
-        /// `compositions/<target>.toml`.
+        #[arg(
+            help = "A path if one exists, else `library/<target>.ascii`, else \
+                    `compositions/<target>.toml`"
+        )]
         target: String,
     },
     #[command(
@@ -163,59 +170,55 @@ enum Cmd {
         #[arg(long, value_name = "BROWSER", help = "Let yt-dlp read this browser's YouTube cookies (e.g. for age-gated videos); off by default, and yt-dlp config files are never read")]
         cookies_from_browser: Option<String>,
     },
-    /// Print the embedded agent guide.
+    #[command(about = "Print the embedded agent guide")]
     AgentGuide,
-    /// Print the resolved home folder, creating it and its subfolders.
+    #[command(about = "Print the resolved home folder, creating it and its subfolders")]
     Home,
 }
 
-/// `compose …`. `<name>` is a path to a `.toml` if one exists, else
-/// `compositions/<name>.toml` — the file is the source of truth, and these
-/// subcommands only ever edit the same bytes an agent would have written by
-/// hand.
 #[derive(Subcommand)]
 enum ComposeCmd {
-    /// Start `compositions/<name>.toml` (fails if it is already there).
+    #[command(about = "Start `compositions/<name>.toml` (fails if it is already there)")]
     New {
-        /// Composition name (kebab-cased), which is also the file stem.
+        #[arg(help = "Composition name (kebab-cased), which is also the file stem")]
         name: String,
     },
-    /// Append one `[[clip]]` table, leaving the rest of the file alone.
+    #[command(about = "Append one `[[clip]]` table, leaving the rest of the file alone")]
     Add {
-        /// The composition to append to.
+        #[arg(help = "The composition to append to")]
         name: String,
-        /// A path if one exists, else `library/<clip>.ascii`.
+        #[arg(help = "A path if one exists, else `library/<clip>.ascii`")]
         clip: String,
-        /// Trim start inside the asset (default: its start).
-        #[arg(long = "in")]
+        #[arg(long = "in", help = "Trim start inside the asset (default: its start)")]
         in_spec: Option<String>,
-        /// Trim end inside the asset (default: its end).
-        #[arg(long = "out")]
+        #[arg(long = "out", help = "Trim end inside the asset (default: its end)")]
         out_spec: Option<String>,
-        /// Timeline position (default: the end of the previous clip).
-        #[arg(long = "at")]
+        #[arg(long = "at", help = "Timeline position (default: the end of the previous clip)")]
         at_spec: Option<String>,
     },
-    /// The resolved timeline: each clip's place on it, plus the gaps and
-    /// the overlaps.
+    #[command(
+        about = "The resolved timeline: each clip's place on it, plus the gaps and the overlaps"
+    )]
     Show {
-        /// The composition to describe.
+        #[arg(help = "The composition to describe")]
         name: String,
     },
-    /// Play a composition interactively.
+    #[command(about = "Play a composition interactively")]
     Play {
-        /// The composition to play.
+        #[arg(help = "The composition to play")]
         name: String,
     },
-    /// Flatten a composition into one `.ascii` file.
+    #[command(about = "Flatten a composition into one `.ascii` file")]
     Export {
-        /// The composition to flatten.
+        #[arg(help = "The composition to flatten")]
         name: String,
-        /// Where to write it (default: `exports/<name>.ascii`).
-        #[arg(short = 'o', long = "out")]
+        #[arg(
+            short = 'o',
+            long = "out",
+            help = "Where to write it (default: `exports/<name>.ascii`)"
+        )]
         out: Option<PathBuf>,
-        /// Replace an existing file at that path.
-        #[arg(long)]
+        #[arg(long, help = "Replace an existing file at that path")]
         force: bool,
     },
 }
@@ -990,6 +993,11 @@ mod tests {
         let params = auto_ascii_factory::effective_params(None, None, None).unwrap();
         assert_eq!(u32::from(opts.keyframe_ivl), params.build.keyframe_ivl);
         assert_eq!(opts.zstd_level, params.build.zstd_level);
+    }
+
+    #[test]
+    fn facade_export_defaults_match_the_committed_factory_params() {
+        assert_eq!(ExportOptions::default(), export_options().unwrap());
     }
 
     #[test]

@@ -1,25 +1,14 @@
-//! Base ASCII ramps — palettes 1 and 2 of the 8 shipped palettes, embedded as
-//! data (the full set lives in [`crate::palette`]).
-//!
-//! Ramps map normalized luma (0..=255 after p2/p98 levels) to a glyph. Density
-//! selects ramp length *within* a config — it never multiplies the palette set.
+//! Base ASCII glyph ramps and viewport-density selection.
 
-/// Palette 1 — `ascii/base/coarse`, used below [`FINE_MIN_COLS`] viewport
-/// columns: `" .:-=+*#%@"`.
 pub const ASCII_BASE_COARSE: &[char] =
     &[' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'];
 
-/// Palette 2 — `ascii/base/fine`, used at ≥ [`FINE_MIN_COLS`] viewport columns:
-/// `" .,:;i1tfLCG08@"` (15 steps).
 pub const ASCII_BASE_FINE: &[char] = &[
     ' ', '.', ',', ':', ';', 'i', '1', 't', 'f', 'L', 'C', 'G', '0', '8', '@',
 ];
 
-/// Density boundary between coarse and fine base ramps, in viewport columns.
 pub const FINE_MIN_COLS: u16 = 70;
 
-/// Select the base ramp for a viewport width (coarse < 70 cols, fine ≥ 70).
-/// `viewport_cols` is the video area width, not the terminal width.
 #[inline]
 pub fn base_ramp_for_cols(viewport_cols: u16) -> &'static [char] {
     if viewport_cols < FINE_MIN_COLS {
@@ -29,8 +18,6 @@ pub fn base_ramp_for_cols(viewport_cols: u16) -> &'static [char] {
     }
 }
 
-/// Map normalized luma `n` (0..=255) to a ramp glyph: `ramp[(n·len) >> 8]`.
-/// Pure index mapping — hysteresis on the index is the caller's job.
 #[inline]
 pub fn ramp_glyph(ramp: &[char], n: u8) -> char {
     debug_assert!(!ramp.is_empty());

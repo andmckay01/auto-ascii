@@ -1,48 +1,4 @@
-//! `letters` — printable characters for texture and edges.
-//!
-//! Where [`pixels`](super::pixels) paints a low-resolution picture out of
-//! shade and half-block cells, `letters` draws with type: a luminance ramp of
-//! letters, digits and punctuation ordered by measured ink, directional ASCII
-//! strokes on edges, and a top-/bottom-heavy glyph variant where a cell's two
-//! halves disagree (the character-set stand-in for a half-block). Solid shapes
-//! are kept for light only — `█` for near-white cells, `▀`/`▄` where a lit
-//! half meets a dark one — and only on tiers that can draw them; on the
-//! ASCII tier every glyph is printable ASCII.
-//!
-//! Color starts from the same chroma sample as pixels (gray fallback). A
-//! glyph inks only a fifth of its cell, so where the palette allows a tinted
-//! background (`PaletteSet::bg_tint`: truecolor and 256-color) the cell's
-//! tone rides the background too: fg and bg are the chroma scaled by a
-//! coverage curve of the tone — bg at 0.6×, the glyph brighter, solid blocks
-//! at pixels' own colors — so a cell averages to what pixels draws there and
-//! a dark-but-lit face keeps its shape. Temporal stability is pixels' too:
-//! the ramp index, edge gate and orientation bin ride the same
-//! [`CellState`] hysteresis, and the half-variant choice gets its own dual
-//! threshold in the codec-private flag bits. Because the tint carries tone
-//! continuously, tinted tiers also hold the glyph longer (a `5/2` deadband
-//! instead of `13/8`) and hold a lit cell down to half the black floor. On
-//! 16-color and mono, where the glyph is the only tone signal, none of that
-//! applies: black background, a ≤1.5× value gain, the `13/8` deadband and
-//! a hard floor.
-//!
-//! **Ramp order.** Coverage was measured the way `auto-ascii-factory
-//! font-table` does (antialiased ink over the advance-scaled cell) on Menlo
-//! and SF Mono, and each ramp below is monotonic in both. Glyphs are picked
-//! for *even* top/bottom mass so the base ramp reads as tone, not shape; the
-//! stroke glyphs `| / \ - _ = X` are kept out of every ramp table so an edge
-//! never looks like texture and texture never looks like an edge.
-//!
-//! **Design constants.** The glyph tables and the handful of thresholds
-//! below (`LETTERS_FILL_MIN`, `FILL_HOLD`, `HALF_BLOCK_MIN_IDX`,
-//! `HALF_HOLD_Q8`, `INK_GAIN_Q8`, `FG_MIN_Q8`, `FG_Q8`, `BG_Q8`,
-//! `TONE_STEPS`, `BLACK_FLOOR`, `FLOOR_HOLD`, the coverage curve in `paint`
-//! and the deadband factor in `held_tone`) are
-//! this codec's DATA, in the same sense as the palettes in `palette.rs`: they
-//! define what `letters` looks like and are pinned by its unit tests and
-//! goldens. What a viewer or the eval sweep tunes stays in `ComposeParams`
-//! (`params.toml [compose]`), which every codec reads — the hysteresis dial
-//! scales the deadband here, the edge dials gate the strokes, shadow lift
-//! bends the LUT — so no letters threshold is a second home for a tunable.
+//! Letters glyph codec, ink ramps and half-cell selection.
 
 use crate::cell::{Cell, Rgb};
 use crate::codec::GlyphCodec;
@@ -51,33 +7,20 @@ use crate::hysteresis::{CellState, IDX_UNSET, cell_flags, edge_gate};
 use crate::orient::{bin_with_guard, coherence_at_least, debias};
 use crate::palette::{GlyphClass, PaletteSet, subpos};
 
-/// Base ramp, darkest first — 16 steps of printable ASCII, monotonic in
-/// measured ink (Menlo coverage 0 → 0.196).
 pub const LETTERS_RAMP: &[char] = &[
     ' ', '.', ':', ';', '+', 'c', 'x', 'n', 'o', 'e', 'S', 'G', 'D', '8', 'B', 'M',
 ];
 
-/// Ink-in-the-top-half variant of each [`LETTERS_RAMP`] step (same index,
-/// similar total ink), used when the top tap is decisively brighter.
 pub const LETTERS_TOP: &[char] = &[
     ' ', '\'', '\'', '"', '"', '7', 'T', 'Y', 'F', 'P', 'P', 'P', 'M', 'M', 'M', 'M',
 ];
 
-/// Ink-in-the-bottom-half variant of each [`LETTERS_RAMP`] step.
 pub const LETTERS_BOTTOM: &[char] = &[
     ' ', '.', '.', ',', ',', 'u', 'u', 'a', 'a', 'w', 'g', 'g', 'g', 'g', 'g', 'g',
 ];
 
-/// Dense fill for near-white cells on tiers that can draw blocks — where no
-/// printable glyph carries enough ink (the densest letter inks about a fifth
-/// of the cell, `█` all of it).
 pub const LETTERS_FILL: char = '█';
 
-/// Tone at/above which a cell fills instead of lettering. Decided on the
-/// plain tone, not the ramp's contrast curve, so it is a brightness
-/// threshold in the picture's own terms: 236 keeps fill to true highlights
-/// (a lit window, a white core) and off ordinary lit skin, where isolated
-/// blocks read as speckle rather than light.
 pub const LETTERS_FILL_MIN: u8 = 236;
 
 const FILL_HOLD: u8 = 208;
@@ -101,6 +44,9 @@ pub(super) const HALF_NONE: u8 = 0;
 pub(super) const HALF_TOP: u8 = 1;
 const HALF_BOTTOM: u8 = 2;
 const WAS_FILL: u8 = 1 << 4;
+const _: () = assert!(HALF_MASK & !cell_flags::CODEC_PRIVATE_MASK == 0);
+const _: () = assert!(WAS_FILL & !cell_flags::CODEC_PRIVATE_MASK == 0);
+const _: () = assert!(WAS_FILL & HALF_MASK == 0);
 
 const HALF_HOLD_Q8: u16 = 160;
 
@@ -110,8 +56,6 @@ const FG_MIN_Q8: u32 = 192;
 const FG_Q8: u32 = 512;
 const BG_Q8: u32 = 154;
 
-// Fixed tone scale: preserve the eight-step ASCII look on every tier.
-// The pixels palette must not change letters' black floor or deadband.
 const TONE_STEPS: u16 = 8;
 const BLACK_FLOOR: u8 = (256 / TONE_STEPS) as u8;
 const FLOOR_HOLD: u8 = BLACK_FLOOR / 2;
@@ -159,7 +103,6 @@ fn tone(n: u8) -> u8 {
     ((n as u32 * (256 + n as u32)) >> 9) as u8
 }
 
-/// The `letters` codec. See the module docs.
 pub struct Letters;
 
 #[inline]
@@ -176,8 +119,6 @@ pub(super) fn half_variant(lt: u8, lb: u8, arm: u8, flags: &mut u8) -> u8 {
 impl GlyphCodec for Letters {
     const NAME: &'static str = "letters";
 
-    /// Layer priority mirrors pixels: edge → deep shadow → highlight → half
-    /// variant (STRUCTURE) → base ramp.
     #[inline]
     fn cell(
         inp: &CellInputs,
@@ -289,8 +230,6 @@ impl GlyphCodec for Letters {
     }
 }
 
-/// Every glyph `letters` can emit on a tier with (`blocks`) or without
-/// block drawing — the repertoire the allowed-glyph tests pin.
 pub fn letters_glyphs(blocks: bool) -> Vec<char> {
     let mut out: Vec<char> = LETTERS_RAMP
         .iter()

@@ -1,33 +1,14 @@
-//! H plane: top-hat highlight + percentile deep-shadow
-//! flags, detected offline (far stabler than runtime thresholding) from the
-//! stored (EMA'd) Y plane — the flags inherit the EMA's temporal stability
-//! without ever EMA-ing bits.
-//!
-//! Wire contract: `bit0` = highlight, `bit1` = deep shadow.
-//!
-//! - **Highlight:** white top-hat `y − opening(y)` with a box structuring
-//!   element of radius `tophat_radius`, flagged at `≥ tophat_thresh`. The
-//!   opening erases every feature narrower than the SE, so the response
-//!   isolates small bright accents (glints, eyes, speculars) and ignores
-//!   large bright areas — those belong to the base ramp, not the highlight
-//!   layer.
-//! - **Deep shadow:** the darkest `shadow_pct`% of the frame, capped by the
-//!   absolute ceiling `shadow_max_l` so bright scenes never flag midtones:
-//!   `y ≤ min(percentile(shadow_pct), shadow_max_l)`.
+//! H-plane highlight and deep-shadow extraction.
 
 use crate::edges::{dilate_box, erode_box};
 use crate::lut::percentile_levels_pct;
 use crate::shots::luma_histogram;
 
-/// H plane flag bits (wire contract).
 pub mod h_flags {
-    /// bit0: small bright accent (top-hat).
     pub const HIGHLIGHT: u8 = 1;
-    /// bit1: deep shadow (percentile + ceiling).
     pub const DEEP_SHADOW: u8 = 1 << 1;
 }
 
-/// Effective `[highlights]` config (validated params, native types).
 #[derive(Clone, Copy, Debug)]
 pub struct HighlightConfig {
     pub tophat_radius: usize,
@@ -47,7 +28,6 @@ impl HighlightConfig {
     }
 }
 
-/// Reusable per-frame extractor (two scratch planes, allocated once).
 pub struct HighlightExtractor {
     w: usize,
     h: usize,
@@ -61,7 +41,6 @@ impl HighlightExtractor {
         HighlightExtractor { w: w as usize, h: h as usize, a: vec![0; n], b: vec![0; n] }
     }
 
-    /// Fill `out` with H flags for one (EMA'd) luma plane.
     pub fn run(&mut self, luma: &[u8], cfg: &HighlightConfig, out: &mut [u8]) {
         assert_eq!(luma.len(), self.w * self.h);
         assert_eq!(out.len(), luma.len());

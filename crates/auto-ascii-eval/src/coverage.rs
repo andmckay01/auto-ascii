@@ -1,41 +1,5 @@
-//! Glyph ink-coverage table — the bridge from `Grid<Cell>` back to grayscale.
-//!
-//! A coverage value is the fraction of the terminal cell's area covered by
-//! the glyph's ink, in `0.0..=1.0`. The eval rasterizer models a rendered
-//! cell as `coverage · luma(fg) + (1 − coverage) · luma(bg)` — the average
-//! luminance a camera pointed at the screen would measure before blur.
-//!
-//! # Derivation of the built-in conservative table
-//!
-//! `CONSERVATIVE_COVERAGE` was derived by `tools/derive_coverage.py`
-//! (committed next to this crate):
-//!
-//! - Every printable ASCII glyph (U+0020..=U+007E — a superset of the ASCII
-//!   palettes: `ascii/base/coarse` `" .:-=+*#%@"`, `ascii/base/fine`
-//!   `" .,:;i1tfLCG08@"`, and the palette-8 mono ramp `" .:coO8@"`) is
-//!   rendered white-on-black into a 64×128 px cell with ffmpeg's libfreetype
-//!   `drawtext`.
-//! - Font: **DejaVu Sans Mono Book** — the de-facto default Linux monospace
-//!   and a mid-pack "conservative" choice for ink coverage (fonts vary ±15%;
-//!   `--font-table` swaps in a per-font table).
-//! - Font size 106 px: DejaVu Sans Mono's advance is 1233/2048 em ≈ 0.602 em
-//!   → ~64 px advance (= cell width), and its line box is
-//!   (1901+483)/2048 em ≈ 1.164 em → ~123 px ≈ cell height, i.e. the 1:2
-//!   cell aspect the engine assumes by default.
-//! - `coverage = Σ gray / (255 · 64 · 128)` — the mean pixel value
-//!   integrates fractional (antialiased) ink exactly instead of
-//!   thresholding. Glyph position inside the cell does not affect the
-//!   integral (no glyph clips at this size).
-//!
-//! The constants are the committed artifact; the script is the reproducible
-//! reference (needs only ffmpeg + the system DejaVu font — no corpus).
+//! Glyph ink-coverage lookup and the conservative table.
 
-/// One glyph's fraction-of-cell ink coverage plus lookup machinery.
-///
-/// Entries are raw physical coverage (DejaVu tops out at ~0.263 for `M`/`@` —
-/// real fonts never blacken a whole cell with text glyphs). The rasterizer
-/// optionally normalizes by [`CoverageTable::max_coverage`] so the densest
-/// glyph reaches full scale (see `RasterOptions::normalize_ink`).
 #[derive(Clone, Debug)]
 pub struct CoverageTable {
     entries: Vec<(char, f32)>,
@@ -43,19 +7,12 @@ pub struct CoverageTable {
 }
 
 impl CoverageTable {
-    /// The built-in conservative table (see module docs for derivation).
     pub fn conservative() -> &'static CoverageTable {
         static TABLE: std::sync::LazyLock<CoverageTable> =
             std::sync::LazyLock::new(|| CoverageTable::from_entries(CONSERVATIVE_COVERAGE.to_vec()));
         &TABLE
     }
 
-    /// Build a table from `(glyph, coverage)` pairs (e.g. a per-font
-    /// `--font-table` override). Sorts by char.
-    ///
-    /// # Panics
-    /// On an empty list, duplicate glyphs, or coverage outside `0.0..=1.0`
-    /// (programmer/table-data error, same posture as `compose_luma`).
     pub fn from_entries(mut entries: Vec<(char, f32)>) -> CoverageTable {
         assert!(!entries.is_empty(), "coverage table must not be empty");
         entries.sort_unstable_by_key(|&(ch, _)| ch);
@@ -73,20 +30,10 @@ impl CoverageTable {
         CoverageTable { entries, max }
     }
 
-    /// Build from a parsed per-font table (`--font-table`):
-    /// entries carry the generator's measured coverage; glyphs the font
-    /// lacks are listed at coverage 0 — the missing-glyph policy — so they
-    /// rasterize as blank ink instead of the unknown-glyph mid-gray guess.
-    ///
-    /// Note the normalization anchor ([`max_coverage`](Self::max_coverage))
-    /// moves with the table: per-font tables include `█` (≈0.9+) while the
-    /// conservative table tops out at `@` (≈0.26), so absolute SSIM values
-    /// are only comparable *within* one table choice.
     pub fn from_font_table(table: &auto_ascii_core::FontTable) -> CoverageTable {
         CoverageTable::from_entries(table.entries().to_vec())
     }
 
-    /// Ink coverage for `ch`, or `None` if the glyph is not in the table.
     #[inline]
     pub fn coverage(&self, ch: char) -> Option<f32> {
         self.entries
@@ -95,23 +42,16 @@ impl CoverageTable {
             .map(|i| self.entries[i].1)
     }
 
-    /// Coverage with a conservative fallback for unknown glyphs: half the
-    /// table maximum (a mid-gray guess — better than 0, which would score
-    /// unknown ink as blank). Every ASCII palette glyph is in the built-in
-    /// table; the fallback fires only for glyphs a table lacks (e.g.
-    /// Unicode blocks under the conservative table).
     #[inline]
     pub fn coverage_or_fallback(&self, ch: char) -> f32 {
         self.coverage(ch).unwrap_or(self.max * 0.5)
     }
 
-    /// Largest coverage in the table (the normalization anchor).
     #[inline]
     pub fn max_coverage(&self) -> f32 {
         self.max
     }
 
-    /// Number of glyphs in the table.
     #[inline]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -123,7 +63,6 @@ impl CoverageTable {
     }
 }
 
-/// Derived constants — see module docs. Printable ASCII, sorted by codepoint.
 pub const CONSERVATIVE_COVERAGE: &[(char, f32)] = &[
     (' ', 0.0000),
     ('!', 0.0810),

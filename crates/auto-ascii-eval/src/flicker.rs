@@ -1,21 +1,7 @@
-//! Flicker score — mean glyph switches per cell per second.
-//!
-//! The flicker gate is ≤ 2 switches/cell/s on static shots. Segment selection
-//! (which frames count as "static") is the eval driver's job — it has the
-//! NORM shot table; this accumulator just counts over the frames it is fed.
+//! Streaming glyph-switch measurements.
 
 use auto_ascii_core::{Cell, Grid};
 
-/// Streaming glyph-switch counter. Feed successive rendered grids with
-/// [`FlickerAccum::push`]; read the rate with [`FlickerAccum::score`].
-///
-/// Only the glyph (`Cell::ch`) is compared — color-only changes are not
-/// flicker (they don't strobe glyph shapes).
-///
-/// A grid-dimension change resets the comparison state (a resize invalidates
-/// the whole frame and legitimately reglyphs every cell — the player resets
-/// hysteresis the same way); the first frame after a reset contributes no
-/// pairs.
 #[derive(Clone, Debug, Default)]
 pub struct FlickerAccum {
     prev: Vec<u32>,
@@ -31,7 +17,6 @@ impl FlickerAccum {
         FlickerAccum::default()
     }
 
-    /// Consume one rendered frame.
     pub fn push(&mut self, grid: &Grid<Cell>) {
         let cells = grid.as_slice();
         if self.have_prev && self.cols == grid.cols() && self.rows == grid.rows() {
@@ -53,26 +38,20 @@ impl FlickerAccum {
         }
     }
 
-    /// Total glyph switches counted so far.
     #[inline]
     pub fn switches(&self) -> u64 {
         self.switches
     }
 
-    /// Total cell·frame-pair comparisons made so far.
     #[inline]
     pub fn cell_pairs(&self) -> u64 {
         self.cell_pairs
     }
 
-    /// Mean switches per cell per frame-pair, or `None` before two
-    /// comparable frames have been pushed.
     pub fn switches_per_cell_frame(&self) -> Option<f64> {
         (self.cell_pairs > 0).then(|| self.switches as f64 / self.cell_pairs as f64)
     }
 
-    /// The flicker score: mean glyph switches per cell per **second** at
-    /// the given playback rate.
     pub fn score(&self, fps: f64) -> Option<f64> {
         self.switches_per_cell_frame().map(|s| s * fps)
     }

@@ -1,27 +1,4 @@
-//! Per-video player settings: the live dials and the glyph codec a viewer
-//! saved for one video with `s` during playback, restored the next time that
-//! video fronts.
-//!
-//! The file sits beside the asset, the same way `auto-ascii import` keeps a
-//! clip's `.json` sidecar: `clip.ascii` → `clip.player.toml`, so the settings
-//! travel with the video and work for library clips and loose paths alike.
-//! It is a small TOML file in `params.toml`'s own `[compose]` vocabulary —
-//! one `key = value` line per [`Dial`] plus `codec`:
-//!
-//! ```toml
-//! codec = "letters"
-//! shadow_lift = 64
-//! edge_t_on = 32
-//! idx_hyst_q8 = 128
-//! ```
-//!
-//! Every key is optional and a missing one keeps its default, which is the
-//! whole backward-compatibility story: a file saved before a setting existed
-//! (one with no `codec` line, say) loads with that setting at its default
-//! (`pixels`). Unknown keys — and a codec name this build does not know —
-//! are ignored, so a newer player's file still loads in an older one.
-//! Hand-parsed (the same line-based subset `FontTable` reads) so the facade
-//! takes no TOML dependency for it.
+//! Per-video dial and codec sidecar I/O.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -31,11 +8,8 @@ use auto_ascii_core::{Codec, ComposeParams};
 use crate::error::Error;
 use crate::player::Dial;
 
-/// Suffix that replaces the asset's extension: `clip.ascii` → `clip.player.toml`.
 pub const EXTENSION: &str = "player.toml";
 
-// This line-based subset accepts both TOML string quote styles. A hash
-// inside a string (including after an escaped quote) is part of its value.
 fn without_comment(line: &str) -> &str {
     let mut quote = None;
     let mut escaped = false;
@@ -57,9 +31,6 @@ fn without_comment(line: &str) -> &str {
     line
 }
 
-/// What one video's settings file holds. `compose` carries the dial fields
-/// (see [`Dial::param_key`]); its other fields are always the defaults — they
-/// are not viewer-adjustable, so they are neither written nor read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VideoSettings {
     pub compose: ComposeParams,
@@ -67,13 +38,18 @@ pub struct VideoSettings {
 }
 
 impl VideoSettings {
-    /// Where the settings for `asset` live.
     pub fn path_for(asset: &Path) -> PathBuf {
         asset.with_extension(EXTENSION)
     }
 
-    /// Serialize — every dial and the codec, one line each, after a header
-    /// comment saying what the file is.
+    pub fn persisted(&self) -> VideoSettings {
+        let mut compose = ComposeParams::default();
+        for dial in Dial::ALL {
+            dial.set_param(&mut compose, dial.raw_param_value(&self.compose));
+        }
+        VideoSettings { compose, codec: self.codec }
+    }
+
     pub fn to_toml(&self) -> String {
         let mut out = String::from(
             "# auto-ascii player settings for this video, saved with `s` during\n\
@@ -82,17 +58,11 @@ impl VideoSettings {
         );
         let _ = writeln!(out, "codec = \"{}\"", self.codec.name());
         for dial in Dial::ALL {
-            let _ = writeln!(out, "{} = {}", dial.param_key(), dial.param(&self.compose));
+            let _ = writeln!(out, "{} = {}", dial.param_key(), dial.raw_param_value(&self.compose));
         }
         out
     }
 
-    /// Parse a settings file. Missing keys keep their defaults; unknown keys
-    /// and unknown codec names are ignored (see the module docs).
-    ///
-    /// # Errors
-    /// A message naming the line for malformed syntax or an out-of-range
-    /// dial value.
     pub fn parse(text: &str) -> Result<VideoSettings, String> {
         let mut out = VideoSettings::default();
         for (ln, raw) in text.lines().enumerate() {
@@ -118,11 +88,6 @@ impl VideoSettings {
         Ok(out)
     }
 
-    /// The settings saved for `asset`, or `None` when it has none.
-    ///
-    /// # Errors
-    /// [`Error::Io`] when the file exists but cannot be read,
-    /// [`Error::Config`] when it does not parse.
     pub fn load(asset: &Path) -> Result<Option<VideoSettings>, Error> {
         let path = VideoSettings::path_for(asset);
         let text = match std::fs::read_to_string(&path) {
@@ -135,11 +100,6 @@ impl VideoSettings {
             .map_err(|m| Error::Config(format!("{}: {m}", path.display())))
     }
 
-    /// Write these settings for `asset` (through a temporary file renamed
-    /// into place, so a crash never leaves half a file) and return the path.
-    ///
-    /// # Errors
-    /// [`Error::Io`] when the folder is not writable.
     pub fn save(&self, asset: &Path) -> Result<PathBuf, Error> {
         let path = VideoSettings::path_for(asset);
         let tmp = path.with_extension("toml.tmp");
@@ -175,6 +135,20 @@ mod tests {
         assert_eq!(VideoSettings::parse(&s.to_toml()), Ok(s));
         let d = VideoSettings::default();
         assert_eq!(VideoSettings::parse(&d.to_toml()), Ok(d));
+    }
+
+    #[test]
+    fn a_round_trip_keeps_exactly_the_persisted_projection() {
+        let mut s = turned();
+        s.compose.edge_t_off = s.compose.edge_t_off.wrapping_add(1);
+        s.compose.coh_min_q8 = s.compose.coh_min_q8.wrapping_add(7);
+        let persisted = s.persisted();
+        assert_eq!(s.to_toml(), persisted.to_toml(), "non-dial fields are not written");
+        assert_eq!(VideoSettings::parse(&s.to_toml()), Ok(persisted));
+        let dials = |v: &VideoSettings| Dial::ALL.map(|d| d.param(&v.compose));
+        assert_eq!(dials(&persisted), dials(&s));
+        assert_eq!(persisted, turned().persisted(), "only non-dial fields differed");
+        assert_eq!(turned().persisted(), turned(), "dial-only settings are their own projection");
     }
 
     #[test]

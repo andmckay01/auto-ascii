@@ -1,30 +1,14 @@
-//! Shot detection + per-shot levels.
-//!
-//! Boundary test: sum-of-absolute-differences between consecutive frames'
-//! 256-bin L\* histograms, normalized against the maximum possible SAD
-//! (2·npx, fully disjoint histograms), thresholded, debounced by a minimum
-//! shot length. Every honored boundary is a hard cut (histogram delta
-//! finds cuts, not fades) and is flagged as such for the player's hysteresis
-//! reset.
-//!
-//! Levels: each shot pools its frames' histograms and takes p2/p98 once —
-//! one constant level pair per shot is the "temporally stable within shot"
-//! 80/20 (per-frame levels pump, global levels waste range).
+//! Shot-boundary detection and per-shot level pooling.
 
 use crate::lut::{self, Levels};
 
-/// Cut threshold in thousandths of the maximum possible histogram SAD.
-/// 300 = 0.30: real hard cuts land ~0.5–1.2, in-shot motion ~0.02–0.15.
-/// The effective value comes from params.toml (`shots.sad_threshold_milli`);
-/// this constant is the embedded default and the unit-test anchor.
 pub const SHOT_SAD_THRESHOLD_MILLI: u64 = 300;
 
-/// Minimum shot length in frames: a boundary is honored only once the
-/// current shot is at least this long (debounces flashes/strobes).
-/// params.toml `shots.min_shot_frames` overrides.
+const MILLI: u64 = 1000;
+const DISJOINT_HISTOGRAM_SAD_PER_PIXEL: u64 = 2;
+
 pub const MIN_SHOT_FRAMES: u32 = 8;
 
-/// 256-bin histogram of one luma plane.
 pub fn luma_histogram(luma: &[u8]) -> [u64; 256] {
     let mut hist = [0u64; 256];
     for &v in luma {
@@ -33,18 +17,13 @@ pub fn luma_histogram(luma: &[u8]) -> [u64; 256] {
     hist
 }
 
-/// One detected shot, ready to become a NORM record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Shot {
     pub first_frame: u32,
-    /// True when the shot begins at a detected hard cut (never on shot 0).
     pub cut: bool,
-    /// Pooled p2/p98 of the shot's stored L\* luma.
     pub levels: Levels,
 }
 
-/// Online single-pass detector: feed per-frame histograms in order, then
-/// [`finish`](ShotDetector::finish). Pure integer math — deterministic.
 pub struct ShotDetector {
     npx: u64,
     threshold_milli: u64,
@@ -57,13 +36,10 @@ pub struct ShotDetector {
     shot_cut: bool,
     shot_hist: [u64; 256],
     done: Vec<Shot>,
+    frame_pending: bool,
 }
 
 impl ShotDetector {
-    /// All tunables explicit — the values come from params.toml `[shots]` +
-    /// `[levels]` (the module constants are the embedded defaults,
-    /// re-exported through `params::Params::default`). `npx` = pixels per
-    /// luma plane (normalizes the SAD).
     pub fn with_params(
         npx: u64,
         threshold_milli: u64,
@@ -85,22 +61,18 @@ impl ShotDetector {
             shot_cut: false,
             shot_hist: [0; 256],
             done: Vec::new(),
+            frame_pending: false,
         }
     }
 
-    /// Boundary half of a frame push: SAD against the previous frame's RAW
-    /// histogram; closes the running shot when a cut is honored and
-    /// returns true for that frame. The push is split in two because build
-    /// pass 1 detects on raw luma but pools levels on the EMA'd (= stored)
-    /// luma, and needs the cut decision in between to reset its EMA exactly
-    /// like pass 2 does. Call `boundary` then [`pool`](ShotDetector::pool)
-    /// exactly once per frame, in that order.
     pub fn boundary(&mut self, hist: &[u64; 256]) -> bool {
+        debug_assert!(!self.frame_pending, "boundary twice without pool");
+        self.frame_pending = true;
         let mut cut = false;
         if self.frames > 0 {
             let sad: u64 = hist.iter().zip(&self.prev_hist).map(|(a, b)| a.abs_diff(*b)).sum();
             let shot_len = self.frames - self.shot_start;
-            if 1000 * sad >= 2 * self.npx * self.threshold_milli
+            if MILLI * sad >= DISJOINT_HISTOGRAM_SAD_PER_PIXEL * self.npx * self.threshold_milli
                 && shot_len >= self.min_shot_frames
             {
                 self.close_shot();
@@ -113,10 +85,9 @@ impl ShotDetector {
         cut
     }
 
-    /// Levels half of a frame push: pool this frame's histogram into the
-    /// running shot's levels (may legitimately differ from the `boundary`
-    /// histogram — see there).
     pub fn pool(&mut self, hist: &[u64; 256]) {
+        debug_assert!(self.frame_pending, "pool without boundary");
+        self.frame_pending = false;
         for (pooled, &count) in self.shot_hist.iter_mut().zip(hist) {
             *pooled += count;
         }
@@ -131,8 +102,6 @@ impl ShotDetector {
         self.shot_start
     }
 
-    /// Close the trailing shot and return all shots in frame order.
-    /// Empty iff no frames were pushed.
     pub fn finish(mut self) -> Vec<Shot> {
         if self.frames > 0 {
             self.close_shot();
@@ -248,6 +217,35 @@ mod tests {
         assert_eq!(shots.len(), 2);
         assert_eq!(shots[0].levels, Levels { lo: 77, hi: 77 }, "levels follow the pooled hist");
         assert_eq!(shots[1].levels, Levels { lo: 77, hi: 77 });
+    }
+
+    #[test]
+    fn disjoint_histograms_reach_exactly_the_normalized_maximum() {
+        let cuts_at = |threshold_milli| {
+            let mut det = ShotDetector::with_params(NPX, threshold_milli, 1, 2, 98);
+            det.push(&solid(10));
+            det.push(&solid(200))
+        };
+        assert!(cuts_at(MILLI), "fully disjoint histograms score 1.0");
+        assert!(!cuts_at(MILLI + 1), "nothing scores above 1.0");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "boundary twice without pool")]
+    fn boundary_twice_without_pool_is_a_protocol_error() {
+        let mut det = default_detector();
+        det.boundary(&solid(10));
+        det.boundary(&solid(10));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "pool without boundary")]
+    fn pool_without_boundary_is_a_protocol_error() {
+        let mut det = default_detector();
+        det.push(&solid(10));
+        det.pool(&solid(10));
     }
 
     #[test]

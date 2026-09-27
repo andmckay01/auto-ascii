@@ -8,6 +8,7 @@ members = [
     "crates/auto-ascii-factory",
     "crates/auto-ascii",
     "crates/auto-ascii-cli",
+    "crates/auto-ascii-lint",
 ]
 
 [workspace.package]
@@ -45,6 +46,10 @@ image = { version = "0.25", default-features = false }
 imageproc = { version = "0.25", default-features = false }
 gif = "0.13"
 ab_glyph = "0.2"
+ra-ap-rustc_lexer = "0.174"
+tree-sitter = "0.25"
+tree-sitter-bash = "0.25"
+tree-sitter-toml-ng = "0.7"
 
 [profile.release]
 opt-level = 3

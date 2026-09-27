@@ -1,33 +1,14 @@
-//! The 8 shipped palettes as data, plus `PaletteSet` selection.
-//!
-//! Selection is keyed **charset tier × layer role**: density (cell count)
-//! selects ramp *length within* a config — the coarse/fine ASCII split — and
-//! color depth selects an *effective ramp-length cap* (truecolor shorter, mono
-//! longest) instead of duplicating ramp data.
-//!
-//! `auto-ascii-core` stays terminal-free: [`GlyphTier`] and [`ColorDepth`] are
-//! Caps-shaped input enums the player derives from `auto-ascii-term`'s probe result
-//! (`Caps.glyphs`/`Caps.glyph_support` → `GlyphTier`, `Caps.color` →
-//! `ColorDepth`).
+//! Glyph palettes, repertoire enumeration and tier selection.
 
 use crate::ramp::{ASCII_BASE_COARSE, ASCII_BASE_FINE, FINE_MIN_COLS};
 
-/// Charset tier — the glyph repertoire the terminal's font is trusted to
-/// render (derived from `Caps` by the caller).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GlyphTier {
-    /// ASCII repertoire only, `0x20..=0x7E` — including the `" - _`
-    /// subposition triplet, so the whole tier is CP437-safe.
     Ascii,
-    /// Unicode blocks/box-drawing trusted (half-blocks, quadrants, `╱╲`).
     UnicodeBlocks,
-    /// Braille U+2800–28FF *verified* present (gates palette 7).
     BrailleVerified,
 }
 
-/// Color depth — mirrors `auto-ascii-term::ColorTier` variants without the
-/// dependency. Drives the per-tier ramp-length caps (truecolor gets shorter
-/// effective ramps because color carries luminance; mono the longest).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ColorDepth {
     True,
@@ -36,7 +17,6 @@ pub enum ColorDepth {
     Mono,
 }
 
-/// Density band (coarse below 70 viewport cols).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DensityBand {
     Coarse,
@@ -44,7 +24,6 @@ pub enum DensityBand {
 }
 
 impl DensityBand {
-    /// Band for a viewport width (video area cols, not terminal cols).
     #[inline]
     pub fn from_cols(viewport_cols: u16) -> DensityBand {
         if viewport_cols < FINE_MIN_COLS {
@@ -55,8 +34,6 @@ impl DensityBand {
     }
 }
 
-/// Layer role — the second axis of the palette selection key. `PaletteSet`
-/// holds one choice per role; the enum names them for docs/tests.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LayerRole {
     Base,
@@ -65,26 +42,15 @@ pub enum LayerRole {
     Detail,
 }
 
-/// Screen-space orientation class an 8-bin edge orientation collapses to.
-///
-/// Bins are 22.5° of edge-tangent angle θ in **image coordinates (y down)**;
-/// θ ∈ (0°, 90°) descends to the right on screen, so bins 1–2 render as `\`
-/// and bins 5–6 as `/` (see `orient.rs`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GlyphClass {
-    /// θ near 0°/180° — horizontal stroke (bins 0, 7).
     H = 0,
-    /// θ near 45° image-space — `\` on screen (bins 1, 2).
     DiagDown = 1,
-    /// θ near 90° — vertical stroke (bins 3, 4).
     V = 2,
-    /// θ near 135° image-space — `/` on screen (bins 5, 6).
     DiagUp = 3,
 }
 
 impl GlyphClass {
-    /// Collapse an 8-bin orientation (see [`crate::orient::octant_bin`]) to
-    /// its glyph class.
     #[inline]
     pub fn from_bin(bin: u8) -> GlyphClass {
         match bin {
@@ -96,7 +62,6 @@ impl GlyphClass {
     }
 }
 
-/// Vertical sub-cell position from the Vc×2Vr luma pair.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SubPos {
     Top = 0,
@@ -104,8 +69,6 @@ pub enum SubPos {
     Bottom = 2,
 }
 
-/// Classify the (top, bottom) luma pair: decisive when the halves differ by at
-/// least `delta`, else `Mid`.
 #[inline]
 pub fn subpos(luma_top: u8, luma_bottom: u8, delta: u8) -> SubPos {
     let delta = delta.max(1);
@@ -118,23 +81,13 @@ pub fn subpos(luma_top: u8, luma_bottom: u8, delta: u8) -> SubPos {
     }
 }
 
-/// Orientation LUT for one edge palette: glyph per `[GlyphClass][SubPos]`,
-/// plus junction glyphs for conflicting bins (palettes 3 and 6).
 #[derive(Debug, PartialEq, Eq)]
 pub struct EdgeLut {
     pub by_class: [[char; 3]; 4],
-    /// Emitted when orientation bins conflict inside the cell (coherence in
-    /// the junction band).
     pub junction: char,
-    /// Junction at strong edge magnitude (≥ `ComposeParams::edge_strong`).
     pub junction_strong: char,
 }
 
-/// Palette 3 — `ascii/edge`: `- / | \` + `_ = + #` (junction).
-///
-/// ASCII has no overline glyph, so the horizontal top-subposition slot uses
-/// `=` (the closest raised-ink horizontal in the palette's glyph set); `+` is
-/// the junction, `#` the strong junction.
 pub const ASCII_EDGE: EdgeLut = EdgeLut {
     by_class: [
         ['=', '-', '_'],
@@ -146,8 +99,6 @@ pub const ASCII_EDGE: EdgeLut = EdgeLut {
     junction_strong: '#',
 };
 
-/// Palette 6 — `unicode/edge`: `─ │ ╱ ╲ ‾ _ ┼` (8-dir + junction).
-/// `‾`/`_` are the horizontal top/bottom subposition variants.
 pub const UNICODE_EDGE: EdgeLut = EdgeLut {
     by_class: [
         ['‾', '─', '_'],
@@ -159,49 +110,22 @@ pub const UNICODE_EDGE: EdgeLut = EdgeLut {
     junction_strong: '┼',
 };
 
-/// Palette 4 — `ascii/highlight`: `" .+*"`. Shared by all tiers — there is no
-/// separate unicode highlight ramp.
 pub const ASCII_HIGHLIGHT: &[char] = &[' ', '.', '+', '*'];
 
-/// Palette 5 (base half) — `unicode/base`: `" ·░▒▓█"`.
 pub const UNICODE_BASE: &[char] = &[' ', '·', '░', '▒', '▓', '█'];
 
-/// Palette 5 (quadrant half) — `▖▘▝▗▀▄▌▐` from the 2×2 pattern.
-///
-/// The runtime samples luma at Vc×2Vr only, so the 2×2 pattern is
-/// *reconstructed* from the vertical pair plus the dominant orientation —
-/// diagonal orientations pick corner quadrants via [`quadrant_for`]; `▀▄` are
-/// the half-block path; `▌▐` are unreachable (a left–right split needs
-/// 2Vc×2Vr sampling) and are listed for palette completeness.
 pub const UNICODE_QUADRANTS: &[char] = &['▖', '▘', '▝', '▗', '▀', '▄', '▌', '▐'];
 
-/// Palette 8 — `mono-fallback/base` for 16-color / no-color / Linux console:
-/// `" .:coO8@"`, CP437-safe.
 pub const MONO_FALLBACK_BASE: &[char] = &[' ', '.', ':', 'c', 'o', 'O', '8', '@'];
 
-/// Subposition glyph triplet `" - _` for ASCII tiers, indexed by [`SubPos`].
-/// `-` (mid) is never decisive in the base path.
-///
-/// ASCII has no overline (the same gap [`ASCII_EDGE`] works around), and
-/// U+203E OVERLINE is not in CP437, so the Linux console cannot draw it. The
-/// top slot uses `"` instead: the closest raised-ink ASCII glyph, and a match
-/// for `_` by ink weight.
 pub const SUBPOS_GLYPHS: [char; 3] = ['"', '-', '_'];
 
-/// Braille orientation LUT — palette 7, `unicode/detail`: dot masks per
-/// `[GlyphClass][SubPos]` + junction, rendered via [`braille_glyph`].
-///
-/// Dot bit layout (U+2800 offset): 0x01 r1c1, 0x02 r2c1, 0x04 r3c1, 0x08 r1c2,
-/// 0x10 r2c2, 0x20 r3c2, 0x40 r4c1, 0x80 r4c2. Braille is **edge/texture
-/// only, never solid fills** — every mask keeps ≤ 5 of 8 dots (unit-tested)
-/// and the compositor only reaches it on edge-gated cells.
 #[derive(Debug, PartialEq, Eq)]
 pub struct BrailleLut {
     pub by_class: [[u8; 3]; 4],
     pub junction: u8,
 }
 
-/// See [`BrailleLut`].
 pub const BRAILLE_EDGE: BrailleLut = BrailleLut {
     by_class: [
         [0x09, 0x36, 0xC0],
@@ -212,20 +136,11 @@ pub const BRAILLE_EDGE: BrailleLut = BrailleLut {
     junction: 0x57,
 };
 
-/// Braille char for a dot mask: U+2800 + mask (always a valid scalar).
 #[inline]
 pub fn braille_glyph(mask: u8) -> char {
     char::from_u32(0x2800 + mask as u32).unwrap_or(' ')
 }
 
-/// Corner quadrant for a diagonal edge through the cell (palette 5).
-///
-/// Image-space reasoning (y down): a `\` stroke (DiagDown) separates the
-/// screen upper-right from the lower-left — bright top half ⇒ upper-right
-/// bright ⇒ `▝`; bright bottom ⇒ `▖`. A `/` stroke (DiagUp) separates
-/// upper-left from lower-right ⇒ `▘` / `▗`. Horizontal/vertical classes
-/// return `None` (the half-block / base paths handle them; left–right splits
-/// need 2Vc sampling — see [`UNICODE_QUADRANTS`]).
 #[inline]
 pub fn quadrant_for(class: GlyphClass, top_bright: bool) -> Option<char> {
     match (class, top_bright) {
@@ -237,16 +152,6 @@ pub fn quadrant_for(class: GlyphClass, top_bright: bool) -> Option<char> {
     }
 }
 
-/// Every distinct glyph the compositor can emit at charset tier `tier`,
-/// enumerated **from the palette data itself** (never hardcoded lists):
-/// [`select_palettes`] is walked over all four color depths × both density
-/// bands, collecting the full backing ramps, the edge LUT (both junctions),
-/// the subposition triplet, the quadrant/half-block set and the reachable
-/// braille masks. Sorted by codepoint, deduplicated.
-///
-/// This is the repertoire a font must cover for the tier to render without
-/// missing-glyph boxes — the font-coverage-table generator and the
-/// `--font-table` repertoire veto both consume it.
 pub fn tier_glyphs(tier: GlyphTier) -> Vec<char> {
     let mut out: Vec<char> = Vec::new();
     for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
@@ -275,8 +180,6 @@ pub fn tier_glyphs(tier: GlyphTier) -> Vec<char> {
     out
 }
 
-/// Union of [`tier_glyphs`] over every charset tier — every glyph any of the
-/// 8 shipped palettes can put on screen. Sorted, deduplicated.
 pub fn all_palette_glyphs() -> Vec<char> {
     let mut out: Vec<char> = Vec::new();
     for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
@@ -287,16 +190,9 @@ pub fn all_palette_glyphs() -> Vec<char> {
     out
 }
 
-/// Effective ramp-length cap on truecolor tiers (color carries luminance, so
-/// ramps stay short and smooth).
 pub const RAMP_CAP_TRUE: u8 = 8;
-/// Effective ramp-length cap on 256-color tiers.
 pub const RAMP_CAP_256: u8 = 12;
 
-/// A ramp with a per-tier *effective length*: the same `&'static` glyph data
-/// serves every color tier, `len` just quantizes coarser. Indices 0..len
-/// spread over the full glyph range with exact endpoints (0 → first,
-/// len−1 → last).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RampView {
     glyphs: &'static [char],
@@ -304,32 +200,27 @@ pub struct RampView {
 }
 
 impl RampView {
-    /// View over `glyphs` capped to `cap` steps (min 1; empty ramps are a bug).
     pub fn new(glyphs: &'static [char], cap: u8) -> RampView {
         assert!(!glyphs.is_empty(), "empty ramp");
         let full = glyphs.len().min(u8::MAX as usize) as u8;
         RampView { glyphs, len: full.min(cap).max(1) }
     }
 
-    /// Effective step count (hysteresis indices run 0..len).
     #[inline]
     pub fn len(&self) -> u8 {
         self.len
     }
 
-    /// Never true — kept for clippy's `len`-without-`is_empty` convention.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// Backing glyph data (full, uncapped).
     #[inline]
     pub fn glyphs(&self) -> &'static [char] {
         self.glyphs
     }
 
-    /// Glyph for effective index `idx` (clamped to len−1).
     #[inline]
     pub fn glyph(&self, idx: u8) -> char {
         let idx = idx.min(self.len - 1) as usize;
@@ -342,36 +233,19 @@ impl RampView {
     }
 }
 
-/// The per-role palette choices for one (charset tier × color depth × density)
-/// configuration — the compositor's lookup surface.
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteSet {
-    /// L0 base ramp (role [`LayerRole::Base`]).
     pub base: RampView,
-    /// L2 highlight ramp (role [`LayerRole::Highlight`], palette 4).
     pub highlight: RampView,
-    /// L1 edge orientation LUT (role [`LayerRole::Edge`], palette 3 or 6).
     pub edge: &'static EdgeLut,
-    /// Half-block `▀▄` (fg,bg) pairs available (unicode tiers).
     pub halfblock: bool,
-    /// Quadrant refinement of half-blocks available (palette 5).
     pub quadrant: bool,
-    /// Braille detail replaces edge glyphs (role [`LayerRole::Detail`],
-    /// palette 7 — BrailleVerified tier at fine density only).
     pub braille: bool,
-    /// ASCII `" - _` subposition glyphs active (ascii tiers).
     pub subpos: bool,
-    /// A dim cell background survives quantization as a tint of the cell's
-    /// own color (truecolor and 256-color; 16-color would snap it to a
-    /// palette hue and mono drops it).
     pub bg_tint: bool,
-    /// The color depth this set was selected for, for codecs whose colors
-    /// must hold a rule after the backend quantizes them.
     pub color: ColorDepth,
 }
 
-/// Select the palette configuration (keyed by charset tier × layer role;
-/// density picks ramp length within the config; color depth caps ramp length).
 pub fn select_palettes(tier: GlyphTier, color: ColorDepth, viewport_cols: u16) -> PaletteSet {
     let density = DensityBand::from_cols(viewport_cols);
     let cap = match color {

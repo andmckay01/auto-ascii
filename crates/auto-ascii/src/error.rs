@@ -3,50 +3,24 @@ use std::path::PathBuf;
 
 use auto_ascii_format::AsciiError;
 
-/// Everything a `Player` or [`crate::RenderSession`] can fail with.
-///
-/// Layering: container-level failures carry the underlying [`AsciiError`]
-/// (reachable through [`std::error::Error::source`] for `anyhow`-style chain
-/// printing); OS failures carry the `std::io::Error`.
-///
-/// `Display` states only this layer's failure; the cause is exposed through
-/// `source()` alone, so chain printers (`anyhow`, `{:#}`) render each layer
-/// exactly once instead of repeating the cause.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// Opening or memory-mapping the asset file failed.
     Io {
-        /// The asset path as given.
         path: PathBuf,
-        /// The underlying OS error.
         source: std::io::Error,
     },
-    /// The file is not a valid ASCI container (bad magic, truncation,
-    /// unsupported version, CRC mismatch, ...).
     Format {
-        /// The asset path as given.
         path: PathBuf,
-        /// The container-level failure.
         source: AsciiError,
     },
-    /// The container parsed but cannot be played (no luma plane, zero
-    /// frames, corrupt fps).
     Asset(&'static str),
-    /// Decoding one plane of one frame failed mid-playback.
     Decode {
-        /// The asset frame index being decoded.
         frame: u32,
-        /// The ASCI plane id being decoded.
         plane: u8,
-        /// The container-level failure.
         source: AsciiError,
     },
-    /// Invalid builder/session configuration (e.g. an fps cap ≤ 0, a seek
-    /// past the end of the asset, a frame index out of range).
     Config(String),
-    /// Entering or driving the terminal session failed (stdout is not a
-    /// TTY, raw mode rejected, write error).
     Terminal(std::io::Error),
 }
 

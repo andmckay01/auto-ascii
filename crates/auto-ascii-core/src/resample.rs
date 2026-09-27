@@ -1,38 +1,12 @@
-//! Separable box resampler with precomputed Q8 tap tables.
-//!
-//! Planes live at 480×270 u8 (chroma 240×135). Per output cell we box-average
-//! a fractional source rect, done as two 1-D passes: H-pass into a shared
-//! `u16` buffer, V-pass with `u32` accumulator, `>> 16` out. No floats in the
-//! hot loop; fixed trip counts autovectorize under `-O3`.
-//!
-//! Tables are rebuilt on resize only (~50 µs, < 4 KB). Upscale degrades
-//! naturally to 1–2 linear taps (bilinear); same code, no branch.
-//!
-//! Table construction is pure integer rational arithmetic (no floats anywhere
-//! in this module), so tap tables and output are byte-deterministic across
-//! platforms — a golden-test requirement.
-//!
-//! Luma is resampled at `Vc × 2·Vr` (half-block fills / subposition glyphs)
-//! through this same code path.
+//! Separable box resampling with precomputed Q8 tap tables.
 
-/// Tap table entry for one output coordinate along one axis.
-///
-/// Q8 fixed point: the `ntaps` weights sum to 256. Weights live in a shared
-/// pool inside [`Resampler`] and `w_off` indexes it, so `Tap1D` stays a
-/// fixed-size POD while still covering extreme downscales: 480 source columns
-/// onto a 1-col viewport needs 480 taps in one run, hence `ntaps: u16`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tap1D {
-    /// First source index covered by this output sample.
     pub src_start: u16,
-    /// Number of consecutive source samples (≥ 1).
     pub ntaps: u16,
-    /// Offset of this entry's `ntaps` Q8 weights in the resampler's weight pool.
     pub w_off: u32,
 }
 
-/// Precomputed separable resampler for one (src, dst) dimension pair.
-/// Build once per resize per plane geometry; `apply` per frame.
 #[derive(Clone, Debug)]
 pub struct Resampler {
     taps_x: Vec<Tap1D>,
@@ -44,6 +18,16 @@ pub struct Resampler {
     dst_w: u16,
     dst_h: u16,
 }
+
+const Q8_WEIGHT_ONE: u64 = 256;
+const Q16_SHIFT: u32 = 16;
+const Q16_ROUND_HALF: u32 = 1 << (Q16_SHIFT - 1);
+const MAX_HPASS_SUM: u64 = Q8_WEIGHT_ONE * u8::MAX as u64;
+const MAX_VPASS_SUM: u64 = Q8_WEIGHT_ONE * MAX_HPASS_SUM + Q16_ROUND_HALF as u64;
+const _: () = assert!(Q8_WEIGHT_ONE * Q8_WEIGHT_ONE == 1 << Q16_SHIFT);
+const _: () = assert!(MAX_HPASS_SUM <= u16::MAX as u64);
+const _: () = assert!(MAX_VPASS_SUM <= u32::MAX as u64);
+const _: () = assert!(MAX_VPASS_SUM >> Q16_SHIFT <= u8::MAX as u64);
 
 fn build_axis(src: u16, dst: u16, taps: &mut Vec<Tap1D>, weights: &mut Vec<u16>) {
     let src = src.max(1) as u64;
@@ -63,11 +47,11 @@ fn build_axis(src: u16, dst: u16, taps: &mut Vec<Tap1D>, weights: &mut Vec<u16>)
             let lo = left.max(s * dst);
             let hi = right.min((s + 1) * dst);
             cum += hi - lo;
-            let q = cum * 256 / span;
+            let q = cum * Q8_WEIGHT_ONE / span;
             weights.push((q - prev_q) as u16);
             prev_q = q;
         }
-        debug_assert_eq!(prev_q, 256);
+        debug_assert_eq!(prev_q, Q8_WEIGHT_ONE);
         taps.push(Tap1D {
             src_start: s0 as u16,
             ntaps: (s1 - s0) as u16,
@@ -77,11 +61,6 @@ fn build_axis(src: u16, dst: u16, taps: &mut Vec<Tap1D>, weights: &mut Vec<u16>)
 }
 
 impl Resampler {
-    /// Build tap tables mapping a `src_w × src_h` u8 plane onto `dst_w × dst_h`.
-    ///
-    /// Called on resize only; ~50 µs, < 4 KB. All dims are clamped ≥ 1. Box
-    /// weights are exact Q8 (each axis run sums to 256), so output is
-    /// deterministic across platforms — a golden-test requirement.
     pub fn build(src_w: u16, src_h: u16, dst_w: u16, dst_h: u16) -> Resampler {
         let (src_w, src_h) = (src_w.max(1), src_h.max(1));
         let (dst_w, dst_h) = (dst_w.max(1), dst_h.max(1));
@@ -102,15 +81,6 @@ impl Resampler {
         }
     }
 
-    /// Resample one u8 plane. `src.len()` must be `src_w × src_h`,
-    /// `dst.len()` at least `dst_w × dst_h`. Zero allocation; H-pass into the
-    /// internal shared `u16` buffer, V-pass accumulates in `u32`, rounds and
-    /// shifts out (`(acc + 0x8000) >> 16`). No floats.
-    ///
-    /// Range safety: each Q8 run sums to exactly 256, so H-pass values fit
-    /// `u16` (≤ 256·255 = 65 280) and the V-pass accumulator fits `u32`
-    /// (≤ 256·65 280 + 0x8000), and the shifted result is always ≤ 255 —
-    /// no clamp needed.
     pub fn apply(&mut self, src: &[u8], dst: &mut [u8]) {
         let sw = self.src_w as usize;
         let sh = self.src_h as usize;
@@ -147,7 +117,7 @@ impl Resampler {
                     let sy = t.src_start as usize + j;
                     acc += w as u32 * hbuf[sy * dw + x] as u32;
                 }
-                drow[x] = ((acc + 0x8000) >> 16) as u8;
+                drow[x] = ((acc + Q16_ROUND_HALF) >> Q16_SHIFT) as u8;
             }
         }
     }

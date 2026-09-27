@@ -1,5 +1,4 @@
-//! Dump cell glyphs from an asset or composition without opening a terminal.
-//! Accepts a frame count, grid size, codec, palette and starting frame.
+//! Headless glyph-grid dump example.
 
 use std::io::Write;
 

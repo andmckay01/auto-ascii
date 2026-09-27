@@ -1,8 +1,4 @@
-//! Chunk framing, FIDX entries and FRAM flags.
-//!
-//! Chunk wire format: `tag FourCC u32 | flags u8 (bit0=required) | pad u24 |
-//! size u64 | payload | [crc32 u32 when header CRCS_PRESENT]`. The CRC32
-//! (IEEE, via `crc32fast`) covers the payload bytes only.
+//! ASCI chunk framing, frame-index entries and frame flags.
 
 pub const TAG_META: [u8; 4] = *b"META";
 pub const TAG_NORM: [u8; 4] = *b"NORM";
@@ -10,23 +6,16 @@ pub const TAG_FRAM: [u8; 4] = *b"FRAM";
 pub const TAG_FIDX: [u8; 4] = *b"FIDX";
 pub const TAG_TRLR: [u8; 4] = *b"TRLR";
 
-/// TRLR payload — the end-of-file marker; its absence means the file is
-/// truncated.
 pub const TRLR_PAYLOAD: &[u8] = b"ASCI_END";
 
-/// Chunk flag bits: unknown non-required chunks are skipped by size; unknown
-/// *required* chunks are a hard error.
 pub mod chunk_flags {
     pub const REQUIRED: u8 = 1;
 }
 
-/// FRAM per-frame flag bits. Under `filter = intra` every frame carries
-/// KEYFRAME.
 pub mod frame_flags {
     pub const KEYFRAME: u8 = 1;
 }
 
-/// Encoded size of a chunk header on the wire.
 pub const CHUNK_HEADER_SIZE: usize = 16;
 
 #[inline]
@@ -34,8 +23,6 @@ pub(crate) fn align64(n: u64) -> u64 {
     (n + 63) & !63
 }
 
-/// Parsed chunk header. `size` counts payload bytes only — the trailing CRC32
-/// (if the file has CRCs) is not included.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChunkHeader {
     pub tag: [u8; 4],
@@ -66,13 +53,8 @@ impl ChunkHeader {
     }
 }
 
-/// Encoded size of one FIDX entry; the FIDX payload is `frame_count × 16` B.
 pub const FIDX_ENTRY_SIZE: usize = 16;
 
-/// One FIDX row: `{offset u64, comp_size u32, flags u8, pad u24}`.
-/// `offset` is the absolute file offset of the frame's FRAM chunk header;
-/// `flags` mirrors the FRAM flags (bit0 = keyframe) so seek can binary-search
-/// backward to a keyframe without touching FRAM data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameIndexEntry {
     pub offset: u64,

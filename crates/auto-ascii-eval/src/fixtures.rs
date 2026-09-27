@@ -1,36 +1,4 @@
-//! Deterministic synthetic fixtures + golden render support.
-//!
-//! Everything committed to the repo (insta cell-grid snapshots, per-tier
-//! escape-stream goldens, fuzz drivers) must be reproducible WITHOUT the
-//! corpus mp4s. This module is that guarantee: pure integer-math plane
-//! generators feed [`auto_ascii_format::AsciiWriter`] in memory — no ffmpeg, no
-//! files, no floats, byte-identical on every box.
-//!
-//! Three fixtures:
-//! - [`Fixture::GradientMotion`] — smooth diagonal luma gradient drifting
-//!   over time (exercises ramps + box-average downscale on smooth content).
-//! - [`Fixture::HardCut`] — two visually distinct scenes with a NORM shot
-//!   boundary + CUT flag at [`HARD_CUT_FRAME`] and distinct per-shot levels
-//!   (exercises runtime NORM and the cut path).
-//! - [`Fixture::CheckerDrift`] — 2-px checkerboard drifting 1 px/frame
-//!   (high-frequency content: the resampler's box average must gray it out
-//!   rather than alias).
-//!
-//! [`FixtureRenderer`] replays the player's frame pipeline (decode →
-//! resample at Vc×2Vr → per-shot NORM LUT → the three-layer
-//! `compose_frame`) against these assets using only public
-//! auto-ascii-core/auto-ascii-format APIs. It is pinned cell-for-cell
-//! to the REAL `auto_ascii::pipeline::Player` by
-//! `auto-ascii/tests/pipeline_parity.rs`, so the committed goldens
-//! transitively cover the shipping renderer: a divergence fails the parity
-//! test, not silently the replica alone.
-//! [`snapshot`] is the compact text serialization the
-//! insta goldens store: the glyph grid verbatim plus one FNV-1a 64 hash of
-//! the fg bytes per row (compact, and a mismatch pinpoints the row).
-//!
-//! [`write_bgr24_avi`] is the mirror image of all of the above: an
-//! INPUT fixture — uncompressed video the factory's ffmpeg ingest can read
-//! — rather than an asset. See its docs for why it is written from Rust.
+//! Synthetic ASCI fixtures, fixture rendering, snapshots and BGR24 AVI input fixtures.
 
 use std::io::Cursor;
 
@@ -44,21 +12,19 @@ use auto_ascii_format::{
     Meta, PlaneLevels, PlaneRef, ShotRecord, AsciiReader, AsciiWriter, WriterOptions, norm_flags,
 };
 
-/// Fixture base plane width (16:9 like production 480×270, small enough that
-/// three fixtures build in well under a second at zstd-19).
 pub const FIXTURE_BASE_W: u16 = 192;
-/// See [`FIXTURE_BASE_W`].
 pub const FIXTURE_BASE_H: u16 = 108;
-/// Frames per fixture (2.4 s @ 30 fps — spans three keyframe groups).
 pub const FIXTURE_FRAMES: u32 = 72;
-/// Keyframe cadence (smaller than the production 60 so seeks cross
-/// keyframe boundaries within 72 frames).
 pub const FIXTURE_KEYFRAME_IVL: u8 = 24;
-/// First frame of scene B in [`Fixture::HardCut`] (mid-GOP: frame 36 is not
-/// a keyframe, so the cut also exercises delta decode across a shot change).
 pub const HARD_CUT_FRAME: u32 = 36;
+const _: () = assert!(FIXTURE_KEYFRAME_IVL > 0);
+const _: () = assert!(FIXTURE_FRAMES >= 3 * FIXTURE_KEYFRAME_IVL as u32, "three keyframe groups");
+const _: () = assert!(HARD_CUT_FRAME > 0 && HARD_CUT_FRAME < FIXTURE_FRAMES);
+const _: () = assert!(
+    !HARD_CUT_FRAME.is_multiple_of(FIXTURE_KEYFRAME_IVL as u32),
+    "the cut lands mid-GOP so delta decode crosses a shot change"
+);
 
-/// The three deterministic synthetic fixtures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fixture {
     GradientMotion,
@@ -70,7 +36,6 @@ impl Fixture {
     pub const ALL: [Fixture; 3] =
         [Fixture::GradientMotion, Fixture::HardCut, Fixture::CheckerDrift];
 
-    /// Stable kebab-case name (snapshot titles, file names).
     pub fn name(self) -> &'static str {
         match self {
             Fixture::GradientMotion => "gradient-motion",
@@ -85,7 +50,6 @@ fn tri(p: u32) -> u8 {
     if m < 256 { m as u8 } else { (511 - m) as u8 }
 }
 
-/// Y plane (`FIXTURE_BASE_W × FIXTURE_BASE_H` u8) of `frame` — pure function.
 pub fn luma_plane(fixture: Fixture, frame: u32) -> Vec<u8> {
     let (w, h) = (u32::from(FIXTURE_BASE_W), u32::from(FIXTURE_BASE_H));
     let mut plane = Vec::with_capacity((w * h) as usize);
@@ -112,8 +76,6 @@ pub fn luma_plane(fixture: Fixture, frame: u32) -> Vec<u8> {
     plane
 }
 
-/// C plane (half res, RGB565 little-endian — the factory contract) of
-/// `frame` — pure function.
 pub fn chroma_plane(fixture: Fixture, frame: u32) -> Vec<u8> {
     let (cw, ch) = (u32::from(FIXTURE_BASE_W) / 2, u32::from(FIXTURE_BASE_H) / 2);
     let mut plane = Vec::with_capacity((cw * ch * 2) as usize);
@@ -145,8 +107,6 @@ pub fn chroma_plane(fixture: Fixture, frame: u32) -> Vec<u8> {
     plane
 }
 
-/// NORM shot table per fixture (levels position 0 = Y; position 1 = C stays
-/// (0,0) — chroma is never stretched, the factory convention).
 pub fn shot_records(fixture: Fixture) -> Vec<ShotRecord> {
     let shot = |first_frame: u32, flags: u8, p2: u8, p98: u8| {
         let mut levels = [PlaneLevels::default(); 8];
@@ -163,10 +123,6 @@ pub fn shot_records(fixture: Fixture) -> Vec<ShotRecord> {
     }
 }
 
-/// Build the fixture as a complete in-memory ASCI v1 asset (Y + C planes,
-/// temporal delta, keyframe every [`FIXTURE_KEYFRAME_IVL`], zstd-19, CRCs,
-/// NORM shot table) — the production writer profile at fixture scale.
-/// Deterministic: identical bytes on every call, every box.
 pub fn build_fixture(fixture: Fixture) -> Vec<u8> {
     let opts = WriterOptions {
         base_w: FIXTURE_BASE_W,
@@ -196,19 +152,10 @@ pub fn build_fixture(fixture: Fixture) -> Vec<u8> {
     writer.finish().expect("fixture finish").into_inner()
 }
 
-/// Golden palette configurations, keyed exactly like the player —
-/// (charset tier × color depth); the density band and the per-tier ramp
-/// caps fall out of `select_palettes` at reflow, so `ascii` covers both the
-/// coarse and fine ramps across the golden grid sweep. `mono` mirrors the
-/// player's Mono-tier path: chroma decode skipped, palette 8 base, and the
-/// snapshot serializes glyphs only (the Mono painter emits no color SGR).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GoldenPalette {
-    /// `GlyphTier::Ascii` × truecolor (palettes 1/2 base + subposition).
     Ascii,
-    /// `GlyphTier::UnicodeBlocks` × truecolor (palette 5 + half-blocks).
     Unicode,
-    /// `GlyphTier::Ascii` × mono (palette 8, glyph-only serialization).
     MonoGlyphOnly,
 }
 
@@ -216,7 +163,6 @@ impl GoldenPalette {
     pub const ALL: [GoldenPalette; 3] =
         [GoldenPalette::Ascii, GoldenPalette::Unicode, GoldenPalette::MonoGlyphOnly];
 
-    /// Stable kebab-case name (snapshot titles, file names).
     pub fn name(self) -> &'static str {
         match self {
             GoldenPalette::Ascii => "ascii",
@@ -225,12 +171,10 @@ impl GoldenPalette {
         }
     }
 
-    /// Glyph-only rendering: no chroma decode, no fg in snapshots.
     pub fn is_glyph_only(self) -> bool {
         self == GoldenPalette::MonoGlyphOnly
     }
 
-    /// The player-shaped palette-selection inputs.
     pub fn config(self) -> (GlyphTier, ColorDepth) {
         match self {
             GoldenPalette::Ascii => (GlyphTier::Ascii, ColorDepth::True),
@@ -240,16 +184,6 @@ impl GoldenPalette {
     }
 }
 
-/// Replays the player's frame pipeline against a fixture asset using public
-/// APIs only: decode (sequential delta roll / FIDX seek) → shared separable
-/// resample (luma at Vc×2Vr) → per-shot NORM LUT (with the shot-change
-/// hysteresis reset) → the three-layer `compose_frame`.
-/// Buffers reallocate only in [`reflow`](FixtureRenderer::reflow) — render
-/// loops are allocation-free, like the player's. Fixture assets carry Y+C
-/// only, so the edge/highlight layers compose auto-disabled — exactly the
-/// Y+C-only back-compat path the goldens must pin.
-///
-/// Test support for goldens and fuzzing: invalid fixture assets panic.
 pub struct FixtureRenderer<'a> {
     reader: AsciiReader<'a>,
     palette: GoldenPalette,
@@ -279,8 +213,6 @@ pub struct FixtureRenderer<'a> {
 }
 
 impl<'a> FixtureRenderer<'a> {
-    /// Open `asset` (ASCI bytes) for rendering with `palette`. Call
-    /// [`reflow`](FixtureRenderer::reflow) before the first render.
     pub fn new(asset: &'a [u8], palette: GoldenPalette) -> FixtureRenderer<'a> {
         let reader = AsciiReader::open(asset).expect("fixture asset must be a valid ASCI");
         let (src_w, src_h) = reader.plane_dims(plane_id::Y).expect("fixture has a Y plane");
@@ -320,11 +252,6 @@ impl<'a> FixtureRenderer<'a> {
         this
     }
 
-    /// Resize path (player `reflow` parity): grid realloc,
-    /// viewport recompute at cell aspect 2.0, palette reselection, resampler
-    /// tap rebuilds (luma at 2× vertical), hysteresis realloc+reset. Does
-    /// NOT touch any backend — callers pair this with `Backend::resize` +
-    /// `invalidate` themselves (the fuzz driver asserts that pairing).
     pub fn reflow(&mut self, cols: u16, rows: u16) {
         self.grid.resize(cols, rows);
         self.vp = compute_viewport(cols, rows, DEFAULT_CELL_ASPECT);
@@ -350,14 +277,10 @@ impl<'a> FixtureRenderer<'a> {
         }
     }
 
-    /// Viewport chosen by the last [`reflow`](FixtureRenderer::reflow)
-    /// (`None` below the 32×9 minimum).
     pub fn viewport(&self) -> Option<Viewport> {
         self.vp
     }
 
-    /// `(src_dims, dst_dims)` of the current luma resampler — the fuzz
-    /// invariant "tap tables realloc'd consistently" reads this.
     pub fn resampler_dims(&self) -> Option<((u16, u16), (u16, u16))> {
         self.resampler.as_ref().map(|r| (r.src_dims(), r.dst_dims()))
     }
@@ -366,17 +289,10 @@ impl<'a> FixtureRenderer<'a> {
         self.frame_count
     }
 
-    /// The term-sized grid of the last render.
     pub fn grid(&self) -> &Grid<Cell> {
         &self.grid
     }
 
-    /// Decode → resample → NORM → compose `frame` into the grid and return
-    /// it. Sequential successors roll one delta (`decode_plane_into`);
-    /// everything else uses the FIDX seek path (`seek_plane_into`) — the
-    /// decode-policy contract for delta assets. Below the 32×9
-    /// minimum the grid is all [`Cell::BLANK`] (the enlarge card is player
-    /// UI, not pipeline).
     pub fn render(&mut self, frame: u32) -> &Grid<Cell> {
         assert!(frame < self.frame_count, "frame {frame} out of range");
         let (Some(vp), true) = (self.vp, self.resampler.is_some()) else {
@@ -501,12 +417,6 @@ fn fnv1a64(bytes: impl IntoIterator<Item = u8>) -> u64 {
     h
 }
 
-/// Compact text serialization for the insta cell-grid goldens:
-/// a small header, the glyph grid verbatim (rows framed in `|…|` so
-/// trailing-space cells survive editors and diff tools), and — unless the
-/// palette is glyph-only — one FNV-1a 64 digest of the row's fg `(r,g,b)`
-/// bytes per row. Any fg regression pinpoints its row; the glyph grid stays
-/// human-reviewable.
 pub fn snapshot(
     title: &str,
     term: (u16, u16),
@@ -571,21 +481,6 @@ fn riff_chunk(out: &mut Vec<u8>, fourcc: &[u8; 4], payload: &[u8]) {
     out.extend_from_slice(payload);
 }
 
-/// Write `frames` as a minimal RIFF AVI of uncompressed 24-bit BGR
-/// (`BI_RGB`) video at `width`x`height`, `fps`/1.
-///
-/// Each item of `frames` is ONE frame already in DIB order: rows
-/// **bottom-up** (last image row first), pixels **B,G,R** — exactly the
-/// bytes that land in its `00db` chunk. `width` must be a multiple of 4 so
-/// the row stride is 4-byte aligned (no DIB row padding) and every chunk is
-/// even-sized (no RIFF pad byte), which is what keeps this writer a
-/// straight-line byte layout.
-///
-/// Every ffmpeg build decodes these frames identically — there is no codec,
-/// no colour conversion beyond a byte permutation and no scaler in the way
-/// — which is the whole point: `auto-ascii-factory`'s determinism guard
-/// pins the sha256 of this file (`FIXTURE_AVI_SHA`), and an ffmpeg upgrade
-/// must not move it.
 pub fn write_bgr24_avi(
     path: &std::path::Path,
     width: u32,

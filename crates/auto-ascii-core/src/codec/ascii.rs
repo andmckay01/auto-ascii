@@ -1,70 +1,4 @@
-//! `ascii` — printable ASCII only, over a capped shade.
-//!
-//! The same drawing as [`letters`](super::letters) — a ramp ordered by
-//! measured ink, a top-/bottom-heavy variant where a cell's two halves
-//! disagree, directional strokes on edges — with every solid shape taken
-//! away. On every tier and palette selection each glyph is printable ASCII
-//! `0x20..=0x7E`. Where letters' tint would light the cell, `ascii` paints a
-//! background **shade**: the cell colour times letters' exact 32-based
-//! coverage curve and 154/256 gain, using current tone. No neutralization
-//! or whitening is applied. "Not a full pixel" means printable ASCII ink,
-//! no shade under spaces, background channels <=154, and linear Rec.709
-//! background luminance <=0.375 times the glyph foreground as sent.
-//! Truecolor retains every nonblack scaled shade (floor 1); integer black
-//! uses the default background. 256-color chooses the nearest safe gray or
-//! cube entry at levels 0/95/135, within 30 degrees of the quantized glyph's
-//! OKLab hue (or neutral), rechecking contrast after quantization.
-//! 16-color and mono paint no shade. Cells
-//! without one carry [`attrs::DEFAULT_BG`], so the terminal's own background
-//! shows through (letterbox pads and composition gaps too, via
-//! [`GlyphCodec::PAD`]). [`cell_within_cap`] states the whole contract per
-//! color depth.
-//!
-//! The glyph comes from the held tone through an 18-step ramp that tops out
-//! in the densest glyphs (`#`, `D`, `8`, `B`, `@`); the ink target runs
-//! linearly in tone from the black floor to `TONE_TOP`, bent up below
-//! mid-gray so midtones ink sooner, and each tone takes the step of nearest
-//! ink, so `@` starts at held tone 225, a little below `TONE_TOP`, and stays
-//! for near-white. The regular foreground uses letters' gain (0.75 to 2.0)
-//! on the same current-tone coverage curve, limited by one common channel
-//! scale to preserve colour. Color and shade follow current tone,
-//! independently of glyph hysteresis, so old contours cannot latch brightness.
-//! A tone more than `5/8 × idx_hyst_q8` units from the held tone replaces it
-//! at once. That band narrows, down to `idx_hyst_q8 / 4`, in busy cells: a
-//! per-cell activity level (0–15, codec flag bits 4–7) moves an eighth of
-//! the way, rounded up, toward a quarter of each input's distance from the
-//! smoothed tone, and falls one level at most per frame, only while inputs
-//! are at least eight levels calmer; each level above 9 takes
-//! `3/16 × idx_hyst_q8` off the band. Fast-changing picture follows sooner while static noise
-//! keeps the wide band. Nearer changes go through a smoothed tone, which moves a quarter
-//! of the way (rounded up) toward each input: once it has stayed more than
-//! `idx_hyst_q8 / 8` units to one side of the held tone, on another ramp
-//! step, for `min(1 + idx_hyst_q8 / 4, 32)` consecutive frames, the glyph
-//! adopts it. A smoothed tone nearer than that, but at least 4 units inside
-//! another ramp step, converges after twice the wait (`min(h/2, 63) + 1`
-//! frames), so a steady picture ends on the cold glyph within 74 frames,
-//! except a tone within 4 units of a step boundary, which may keep the
-//! neighbouring glyph. Noise averages out instead of resetting the waits, and
-//! a single noisy sample cannot flip the glyph back.
-//! Black-floor crossings need at most four consecutive frames on the new
-//! side (even if tone varies). Half/edge/orientation gates retain their own
-//! hysteresis. Glyph and glyph color are the same on every tier; the backend
-//! quantizes the color.
-//!
-//! **Ramp order.** Coverage was measured on JetBrains Mono 2.304 Regular
-//! (Ghostty's bundled default) as antialiased ink over the advance ×
-//! (ascent + descent) cell, rasterized with CoreText; [`ASCII_INK`] is that
-//! coverage relative to `@`. The ramp is strictly increasing there; Menlo
-//! swaps two near-ties (`+`/`r` and `#`/`D`, each within 0.003). The stroke
-//! glyphs `| / \ - _ = X` stay out of every ramp table, as in letters.
-//!
-//! **Design constants.** The glyph tables, [`ASCII_INK`] and the thresholds
-//! below (`BLACK_FLOOR`, `TONE_TOP`, `SHADE_Q8`, the shade cap and floor,
-//! the 256-color entries and hue test, the curve in `step_table` and the
-//! band, activity, margin, clearance, wait and smoothing factors in
-//! `held_tone` and `jump_band`)
-//! are this codec's DATA, pinned by its tests and goldens; what a viewer
-//! tunes stays in `ComposeParams`, exactly as for letters.
+//! Printable ASCII glyph codec over a capped background shade.
 
 use crate::cell::{Cell, Rgb, attrs};
 use crate::codec::GlyphCodec;
@@ -75,23 +9,16 @@ use crate::orient::{bin_with_guard, coherence_at_least, debias};
 use crate::quant::{ansi256_to_rgb, rgb_to_256};
 use crate::palette::{ASCII_HIGHLIGHT, ColorDepth, GlyphClass, PaletteSet, subpos};
 
-/// Base ramp, darkest first — 18 steps of printable ASCII, strictly
-/// increasing in measured ink.
 pub const ASCII_RAMP: &[char] = &[
     ' ', '.', ':', ';', '+', 'r', 'c', 'x', 'n', 'o', 'e', 'a', 'S', '#', 'D', '8', 'B', '@',
 ];
 
-/// Ink coverage of each [`ASCII_RAMP`] step in Q8 of the densest glyph's
-/// (JetBrains Mono: `@` inks 0.283 of its cell).
 pub const ASCII_INK: &[u8] = &[0, 27, 50, 65, 90, 107, 133, 137, 142, 150, 158, 167, 177, 190, 196, 212, 218, 255];
 
-/// Ink-in-the-top-half variant of each [`ASCII_RAMP`] step, used when the
-/// top tap is decisively brighter.
 pub const ASCII_TOP: &[char] = &[
     ' ', '\'', '\'', '\'', '"', '"', '"', '"', 'T', 'T', 'Y', 'Y', 'F', '7', '7', 'P', 'P', 'M',
 ];
 
-/// Ink-in-the-bottom-half variant of each [`ASCII_RAMP`] step.
 pub const ASCII_BOTTOM: &[char] = &[
     ' ', '.', '.', ',', ',', ',', 'v', 'v', 'u', 'u', 'u', 'a', 'a', 'a', 'w', 'w', 'g', 'g',
 ];
@@ -110,34 +37,20 @@ const ACTIVE: u8 = 9;
 
 const TONE_TOP: u8 = 240;
 
-/// Absolute encoded-channel ceiling. Together with the luminance ratio,
-/// this keeps the background a shade rather than a full pixel.
 pub const SHADE_CEIL: u8 = 154;
 
-/// Spaces have no ink and therefore must have no backing.
 pub const SHADE_BLANK_CEIL: u8 = 0;
 
-/// A glyph cell's backing may have at most this fraction (Q8, 96/256 =
-/// 0.375) of its glyph's relative luminance.
 pub const SHADE_CONTRAST_Q8: u32 = 96;
 
-/// Least brightest channel a truecolor shade keeps. Floor 1 sends every
-/// nonblack scaled shade, as letters does, so dark colours stay continuous;
-/// a shade that scales to exact black falls back to the terminal's own
-/// background instead.
 pub const SHADE_FLOOR: u8 = 1;
 
-/// A chromatic 256-color backing is within 30° of OKLab hue of the glyph's
-/// color as quantized: cos² of that angle.
 pub const SHADE_HUE_COS2: f32 = 0.75;
 
-/// Least OKLab chroma a quantized glyph color needs to have a hue family.
 pub const SHADE_HUE_MIN_CHROMA: f32 = 0.03;
 
 const SHADE_Q8: u32 = 154;
 
-/// All nonblack xterm gray/cube entries below the ceiling. Each candidate
-/// must also pass the quantized foreground contrast and hue-family tests.
 pub const SHADES_256: [Rgb; 41] = [
     Rgb::new(8, 8, 8),
     Rgb::new(18, 18, 18),
@@ -269,10 +182,6 @@ fn hue_near(glyph: Lab, shade: Lab) -> bool {
         && dot * dot >= SHADE_HUE_COS2 * c2(glyph) * c2(shade)
 }
 
-/// Whether `shade` sits in the hue family of the glyph color `glyph`: a
-/// neutral gray always does; a chromatic color does when `glyph` has at
-/// least [`SHADE_HUE_MIN_CHROMA`] and the two OKLab hues are within 30°
-/// ([`SHADE_HUE_COS2`]).
 pub fn in_hue_family(glyph: Rgb, shade: Rgb) -> bool {
     neutral(shade) || hue_near(oklab(glyph), oklab(shade))
 }
@@ -311,20 +220,12 @@ const fn put(g: char, fg: Rgb, bg: Option<Rgb>) -> Cell {
     }
 }
 
-/// Relative luminance of an sRGB color (decoded to linear light, Rec. 709
-/// weights), in Q16: 0 for black, 65535 for white.
 #[inline]
 pub fn luminance(c: Rgb) -> u32 {
     let l = |v: u8| LINEAR[v as usize] as u32;
     (13933 * l(c.r) + 46871 * l(c.g) + 4732 * l(c.b)) >> 16
 }
 
-/// The cap every `ascii` backing shade obeys, checked on the colors the
-/// terminal is sent (after the backend's quantization). No channel may
-/// exceed [`SHADE_BLANK_CEIL`] under a space or [`SHADE_CEIL`] under a
-/// glyph, whose backing also keeps at most [`SHADE_CONTRAST_Q8`]/256 of the
-/// glyph's [`luminance`]. A cell on the terminal's own background passes
-/// trivially.
 pub fn backing_within_cap(glyph: char, fg: Rgb, bg: Rgb) -> bool {
     let top = bg.r.max(bg.g).max(bg.b);
     if glyph == ' ' {
@@ -333,13 +234,6 @@ pub fn backing_within_cap(glyph: char, fg: Rgb, bg: Rgb) -> bool {
     top <= SHADE_CEIL && (luminance(bg) << 8) <= SHADE_CONTRAST_Q8 * luminance(fg)
 }
 
-/// The whole background contract of an `ascii` cell rendered for `color`,
-/// on the colors the codec emits: on 16-color and mono the terminal's own
-/// background; on truecolor the terminal's own or a backing within
-/// [`backing_within_cap`] whose brightest channel reaches [`SHADE_FLOOR`];
-/// on 256-color the terminal's own or one of [`SHADES_256`] (quantized
-/// unchanged) that is [`in_hue_family`] of, and within the cap against, the
-/// glyph's color as quantized.
 pub fn cell_within_cap(cell: &Cell, color: ColorDepth) -> bool {
     if cell.attrs & attrs::DEFAULT_BG != 0 {
         return true;
@@ -411,7 +305,6 @@ fn ideal_backing(c: Rgb, n: u8, glyph: char, seen: Rgb) -> Option<Rgb> {
     (bg.r.max(bg.g).max(bg.b) >= SHADE_FLOOR).then_some(bg)
 }
 
-/// Letters' integer tint curve, including its independent tone-32 floor.
 #[inline]
 fn coverage(n: u8) -> u32 {
     let x = ((n.saturating_sub(32) as u32) << 8) / 223;
@@ -475,7 +368,6 @@ fn held_tone(n: u8, prev: u8, hyst_q8: u8, s: &mut CellState) -> u8 {
     h
 }
 
-/// The `ascii` codec. See the module docs.
 pub struct Ascii;
 
 impl GlyphCodec for Ascii {
@@ -483,8 +375,6 @@ impl GlyphCodec for Ascii {
 
     const PAD: Cell = put(' ', Rgb::WHITE, None);
 
-    /// Layer priority mirrors letters: edge → deep shadow → highlight → half
-    /// variant (STRUCTURE) → base ramp.
     #[inline]
     fn cell(
         inp: &CellInputs,
@@ -559,7 +449,6 @@ impl GlyphCodec for Ascii {
     }
 }
 
-/// Every glyph `ascii` can emit, on any tier — the repertoire the tests pin.
 pub fn ascii_glyphs() -> Vec<char> {
     let mut out: Vec<char> = ASCII_RAMP
         .iter()

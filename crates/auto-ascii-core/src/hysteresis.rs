@@ -1,61 +1,29 @@
-//! Hysteresis state — the flicker killer: per-cell ramp-index hysteresis
-//! (switch only past a configurable margin around a step boundary), the temporal
-//! dual-threshold edge gate (Canny-style T_on/T_off with a `was_edge` buffer),
-//! and the previous orientation bin for the 8° guard.
-//!
-//! All state lives in one `Grid<CellState>` (5 B/cell): [`HysteresisState::reset`]
-//! is the scene-cut reset (no realloc), [`HysteresisState::resize`] the
-//! resize-path realloc+reset. Nothing here allocates outside `new`/`resize`.
+//! Per-cell temporal state and ramp-index and edge-gate hysteresis.
 
 use crate::grid::Grid;
 use crate::orient::BIN_UNSET;
 
-/// Sentinel for "no previous ramp index" (fresh cell / after reset).
 pub const IDX_UNSET: u8 = 0xFF;
 
-/// Historical calibration width used by the low-level quantizer tests:
-/// round(0.35 · 256) = 90 ("boundary ± 0.35·step"). The live width is the
-/// tunable `ComposeParams::idx_hyst_q8`, which trades stickiness against
-/// responsiveness.
 pub const IDX_HYST_Q8: u32 = 90;
 
-/// Shared player dial ceiling: wider bands retain visibly stale contours.
 pub const IDX_HYST_MAX_Q8: u8 = 255;
 
-/// Live default: the recommended setting for most video. Values above this,
-/// up to [`IDX_HYST_MAX_Q8`], are allowed for fast-paced video or video types
-/// that benefit from high hysteresis, but can visibly drift or smear.
 pub const IDX_HYST_DEFAULT_Q8: u8 = 128;
 
-/// Per-cell hysteresis flags. Bits 0–1 are the shared gates below; bits 2–7
-/// are codec-private temporal memory (a [`crate::codec`] may use them freely —
-/// a codec switch resets all state, so no bit outlives the codec that set it).
 pub mod cell_flags {
-    /// The edge gate was on last frame (dual-threshold memory).
     pub const WAS_EDGE: u8 = 1;
-    /// The quadrant-refinement magnitude gate was on last frame — its own
-    /// dual-threshold memory, on a far lower band than [`WAS_EDGE`] (see
-    /// `ComposeParams::quad_e_on`). Separate flag because the two gates
-    /// arm independently: a cell can be well below the edge gate and still
-    /// carry real sub-cell diagonal structure.
     pub const WAS_QUADRANT: u8 = 1 << 1;
+    pub const SHARED_MASK: u8 = WAS_EDGE | WAS_QUADRANT;
+    pub const CODEC_PRIVATE_MASK: u8 = !SHARED_MASK;
 }
 
-/// Per-cell temporal state: ramp index, orientation, flags and ASCII settling.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CellState {
-    /// Previous effective ramp index ([`IDX_UNSET`] = none).
     pub idx: u8,
-    /// Previous orientation bin ([`BIN_UNSET`] = none).
     pub bin: u8,
-    /// See [`cell_flags`].
     pub flags: u8,
-    /// ASCII-only smoothed input tone ([`IDX_UNSET`] = none); ignored by
-    /// pixels and letters.
     pub tone_candidate: u8,
-    /// ASCII-only settling count (bits 0–5): consecutive frames the smoothed
-    /// tone (or a black-floor crossing) has pointed one way; bit 7 is set for
-    /// down, bit 6 for the slow convergence path.
     pub tone_age: u8,
 }
 
@@ -66,8 +34,6 @@ impl Default for CellState {
     }
 }
 
-/// All per-cell temporal state for one viewport, sized `cols × rows`
-/// (viewport cells, not terminal cells — pads carry no state).
 #[derive(Clone, Debug)]
 pub struct HysteresisState {
     cells: Grid<CellState>,
@@ -88,25 +54,19 @@ impl HysteresisState {
         self.cells.rows()
     }
 
-    /// Scene-cut reset: cut flags from the asset reset ALL hysteresis state,
-    /// else ghosting across cuts. No allocation.
     pub fn reset(&mut self) {
         self.cells.fill(CellState::default());
     }
 
-    /// Resize-path realloc + reset: all hysteresis/temporal state is reset and
-    /// reallocated on resize.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.cells.resize(cols, rows);
     }
 
-    /// Read one cell's state (tests/invariants).
     #[inline]
     pub fn cell(&self, col: u16, row: u16) -> CellState {
         self.cells.get(col, row)
     }
 
-    /// Mutable access for the compositor.
     #[inline]
     pub fn cell_mut(&mut self, col: u16, row: u16) -> &mut CellState {
         let i = row as usize * self.cells.cols() as usize + col as usize;
@@ -114,13 +74,6 @@ impl HysteresisState {
     }
 }
 
-/// Ramp-index hysteresis: quantize `n` (0..=255) onto `len` steps, but move
-/// off `prev` only when the position crosses the old step's boundary by more
-/// than `hyst_q8` Q8 fractions of a step (nominal [`IDX_HYST_Q8`] = 0.35·step;
-/// the compositor passes `ComposeParams::idx_hyst_q8`). `prev` = [`IDX_UNSET`]
-/// (or any value ≥ `len`, e.g. after a palette/density change without reset)
-/// quantizes plainly. `hyst_q8` must be < 256 (a full step) — u8-sourced by
-/// contract.
 #[inline]
 pub fn hysteresis_idx(n: u8, len: u8, prev: u8, hyst_q8: u32) -> u8 {
     debug_assert!(len >= 1);
@@ -140,8 +93,6 @@ pub fn hysteresis_idx(n: u8, len: u8, prev: u8, hyst_q8: u32) -> u8 {
     }
 }
 
-/// Temporal dual-threshold edge gate (Canny-style):
-/// `e > T_on || (was_edge && e > T_off)`.
 #[inline]
 pub fn edge_gate(e: u8, was_edge: bool, t_on: u8, t_off: u8) -> bool {
     e > t_on || (was_edge && e > t_off)

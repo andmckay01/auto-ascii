@@ -1,5 +1,4 @@
-//! Play one asset in the terminal with the public Player builder.
-//! Pass an asset path; playback loops until the viewer quits.
+//! Public Player API example.
 
 use auto_ascii::Player;
 

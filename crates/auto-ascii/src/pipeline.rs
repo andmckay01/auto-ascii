@@ -1,27 +1,4 @@
-//! The frame pipeline: decode → resample → NORM levels → compose → present.
-//! It is shared by the player and `auto-ascii-factory eval`, which drives
-//! the EXACT player code path headlessly against `SimBackend` — metrics
-//! measure the real renderer, not a reimplementation. The event loop,
-//! pacing and CLI stay above (`Player` / the `auto-ascii-player` bin);
-//! nothing here touches a clock or a tty.
-//!
-//! Split along the backend seam: [`Player::reflow_grid`]/[`Player::render_grid`]
-//! carry everything up to the composed [`Grid<Cell>`] with NO backend in
-//! sight (the terminal-free [`crate::RenderSession`] path), and
-//! [`Player::reflow`]/[`Player::render_present`] wrap them with the
-//! `Backend` resize/invalidate/present calls. This module is
-//! `#[doc(hidden)]`: it is the workspace harness contract (factory eval,
-//! fuzz, benches, goldens), not the embedding API, and is exempt from
-//! facade semver.
-//!
-//! The three-layer path: luma is resampled at Vc×2Vr (ONE tap-table build
-//! at 2× vertical through the same separable code path); E/Ex/Ey/H are
-//! decoded when the plane registry carries them (absent planes
-//! auto-disable their layers, so Y+C-only assets still play) and resampled
-//! at Vc×Vr; coherence is computed post-resample inside `compose_cell` from
-//! the resampled doubled-angle field; the per-shot NORM LUT feeds the
-//! compositor directly; all temporal state lives in a [`HysteresisState`]
-//! reset on shot change and realloc+reset on resize.
+//! Frame decode, resampling, levels, composition and presentation.
 
 use std::time::Instant;
 
@@ -41,9 +18,6 @@ type Result<T> = std::result::Result<T, Error>;
 const H_HIGHLIGHT_MIN: u8 = 64;
 const H_SHADOW_MIN: u8 = 128;
 
-/// Seconds of asset time one Left/Right arrow press scrubs. Presses
-/// coalesced within one event drain add up (holding the key nets one bigger
-/// jump); digits 0–9 jump to 0–90% instead.
 pub const SCRUB_STEP_SECS: f64 = 5.0;
 
 const PROGRESS_HINT_MIN_COLS: u16 = 64;
@@ -52,43 +26,20 @@ const HINT_SEP: &str = "   ";
 
 const HINT_DROP_ORDER: [usize; 9] = [8, 6, 7, 5, 4, 1, 3, 2, 0];
 
-/// Narrowest grid whose info row carries NO zoom hint.
-/// Below it the picture is being drawn with few cells, and the terminal's
-/// own zoom-out is the cheapest detail there is: the asset is
-/// resolution-independent, so every extra column is a sharper picture. The
-/// player cannot press that key itself — no terminal lets a program change
-/// its font without the user's setup — so the controls overlay says it.
 pub const ZOOM_HINT_MAX_COLS: u16 = 160;
 
 const ZOOM_KEY: &str = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
 
-/// Smallest grid that draws overlay text [`OverlayScale::Big`]. At 240
-/// columns a cell is a third of its 80-column width, so one-cell text has
-/// shrunk to a third too; big text is 4 cells wide and 3 tall per character,
-/// which puts it back near its 80-column size and still leaves a 60-character
-/// line. The row floor keeps the three 3-row bands under a quarter of the
-/// screen.
 pub const BIG_OVERLAY_MIN_COLS: u16 = 240;
-/// See [`BIG_OVERLAY_MIN_COLS`].
 pub const BIG_OVERLAY_MIN_ROWS: u16 = 36;
 
-/// How large the overlay rows draw their text, picked from the grid so the
-/// overlay stays about the same size on screen however far the terminal is
-/// zoomed out. The same on every codec: the overlay is UI, not picture (see
-/// [`UiRows`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverlayScale {
-    /// One character per cell, one row per line.
     Normal,
-    /// A 3x5 pixel font in half-blocks: 4 cells wide and 3 rows tall per
-    /// character (upper case only). Uses `▀ ▄ █`, so only block tiers get
-    /// it. The ASCII tier keeps one-cell text at every size.
     Big,
 }
 
 impl OverlayScale {
-    /// The scale for a `cols x rows` grid on this glyph tier, under every
-    /// codec.
     pub fn for_grid(cols: u16, rows: u16, glyph_tier: GlyphTier) -> OverlayScale {
         if glyph_tier != GlyphTier::Ascii
             && cols >= BIG_OVERLAY_MIN_COLS
@@ -100,8 +51,6 @@ impl OverlayScale {
         }
     }
 
-    /// Characters per overlay line on a `cols`-wide grid — the width every
-    /// row lays its text out for.
     pub fn line_chars(self, cols: u16) -> u16 {
         match self {
             OverlayScale::Normal => cols,
@@ -109,7 +58,6 @@ impl OverlayScale {
         }
     }
 
-    /// Grid rows one overlay line occupies.
     pub fn line_rows(self) -> u16 {
         match self {
             OverlayScale::Normal => 1,
@@ -118,21 +66,6 @@ impl OverlayScale {
     }
 }
 
-/// The UI cells of a frame: the rows the overlay painters drew, each a
-/// full-width band of [`OverlayScale::line_rows`] rows counted up from the
-/// bottom of the grid, one band per overlay line. Every other cell is
-/// picture (or letterbox pad, gap or enlarge card).
-///
-/// This is the boundary of the `ascii` codec's rule: picture cells are
-/// printable ASCII `0x20..=0x7E` on the terminal's own background or a
-/// shade within
-/// [`cell_within_cap`](auto_ascii_core::codec::ascii::cell_within_cap);
-/// block glyphs and full-strength backgrounds appear only in UI cells,
-/// which draw the same overlay as `pixels` and `letters`. Every `draw_*`
-/// overlay painter returns the rows it drew;
-/// [`Player::ui_rows`] and
-/// [`ClipDeck::ui_rows`](crate::deck::ClipDeck::ui_rows) report the
-/// last frame's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UiRows {
     rows: u16,
@@ -141,10 +74,8 @@ pub struct UiRows {
 }
 
 impl UiRows {
-    /// No UI cells: the whole grid is picture.
     pub const NONE: UiRows = UiRows { rows: 0, line_rows: 0, lines: 0 };
 
-    /// Whether grid row `row` is UI.
     pub fn contains(self, row: u16) -> bool {
         if row >= self.rows || self.line_rows == 0 {
             return false;
@@ -153,7 +84,6 @@ impl UiRows {
         line < 8 && self.lines >> line & 1 == 1
     }
 
-    /// Whether no row is UI.
     pub fn is_empty(self) -> bool {
         self.lines == 0
     }
@@ -162,7 +92,6 @@ impl UiRows {
 impl std::ops::BitOr for UiRows {
     type Output = UiRows;
 
-    /// Both painters' rows, on one grid at one scale.
     fn bitor(self, other: UiRows) -> UiRows {
         if self.is_empty() {
             return other;
@@ -269,9 +198,6 @@ fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, sc
     UiRows { rows, line_rows: h, lines: 1 << slot }
 }
 
-/// Map the probed terminal capabilities to the palette-selection charset
-/// tier (`Caps.glyph_support` records the trusted repertoire).
-/// Braille requires *verified* support (never set from passive hints).
 pub fn glyph_tier_from_caps(caps: &Caps) -> GlyphTier {
     match caps.glyph_support {
         GlyphSupportTier::AsciiOnly | GlyphSupportTier::Cp437 => GlyphTier::Ascii,
@@ -286,8 +212,6 @@ pub fn glyph_tier_from_caps(caps: &Caps) -> GlyphTier {
     }
 }
 
-/// Map a terminal color tier to the palette-selection color depth
-/// (auto-ascii-core mirrors the variants without depending on auto-ascii-term).
 pub fn color_depth(tier: ColorTier) -> ColorDepth {
     match tier {
         ColorTier::True => ColorDepth::True,
@@ -297,8 +221,6 @@ pub fn color_depth(tier: ColorTier) -> ColorDepth {
     }
 }
 
-/// Per-stage wall-time accumulators (ns) — the stage split reported by
-/// `--sim` JSON and consumed by the eval driver (per-frame deltas).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StageNs {
     pub decode: u64,
@@ -307,81 +229,40 @@ pub struct StageNs {
     pub present: u64,
 }
 
-/// Result of one event-queue drain.
 pub struct Drained {
     pub quit: bool,
-    /// Digit key 0–9 → jump to that ×10% of the asset (interactive seek).
-    /// When set, `drain_events` has ALREADY reset all per-cell hysteresis
-    /// state: a seek is a temporal discontinuity, so the caller just
-    /// repoints its clock and renders the landing frame.
     pub jump_digit: Option<u8>,
-    /// Net arrow-key scrub steps this drain: each `Right` is +1, each
-    /// `Left` −1; the caller converts steps to ±5 s
-    /// (`auto_ascii::SCRUB_STEP_SECS`) of asset time and repoints its clock.
-    /// When nonzero, hysteresis state has ALREADY been reset (same temporal-
-    /// discontinuity rule as `jump_digit`).
     pub seek_steps: i32,
-    /// `d` presses this drain — each advances the live-dial selection by one
-    /// (wrapping). Dials retune the renderer during playback; see
-    /// [`Dial`](crate::Dial).
     pub dial_cycle: u32,
-    /// Net `[`/`]` steps this drain: each `]` is +1, each `[` −1. The caller
-    /// scales this by the selected dial's step size and hands the result to
-    /// [`Player::set_compose_params`], which is where a turn that actually
-    /// moves resets the per-cell hysteresis memory. A renderer change — no
-    /// asset is touched.
     pub dial_delta: i32,
-    /// `v` pressed this drain — the caller flips the sticky key-hints row.
-    /// Coalesced to a flag like the arrows: holding the key must not race
-    /// the row on and off.
     pub toggle_hints: bool,
-    /// Space pressed this drain — the caller freezes or resumes playback.
-    /// Coalesced to a flag for the same reason as `toggle_hints`:
-    /// a key repeat is one intent, not a pause/resume stutter.
     pub toggle_pause: bool,
-    /// `/` presses this drain — each advances the active glyph codec by one
-    /// through [`Codec::ALL`], wrapping. Counted, not collapsed: every press
-    /// is a visible step, like `d`.
     pub codec_cycle: u32,
-    /// `s` pressed this drain — the caller saves the current dials and codec
-    /// as this video's settings. Collapsed to a flag: a held key is one save.
     pub save: bool,
     pub toggle_sound: bool,
 }
 
-/// What the progress overlay prints instead of this clip's own numbers
-/// while a COMPOSITION is playing: the composition's position, and which
-/// clip of how many is on screen.
+impl Drained {
+    pub fn requests_temporal_reset(&self) -> bool {
+        self.jump_digit.is_some() || self.seek_steps != 0
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProgressContext {
-    /// Frame on the composition timeline.
     pub frame: u32,
-    /// Frames on the composition timeline.
     pub frame_count: u32,
-    /// Composition fps numerator (kept as the exact header rational so the
-    /// row's timecode cannot drift from the timeline's own arithmetic).
     pub fps_num: u16,
-    /// Composition fps denominator.
     pub fps_den: u16,
-    /// `(current clip, clip count)`, both 1-based counts — the ` c/N `
-    /// block. Suppressed below [`PROGRESS_HINT_MIN_COLS`] and for
-    /// single-clip compositions.
     pub clip: Option<(usize, usize)>,
 }
 
 impl ProgressContext {
-    /// The composition frame rate the timecode is printed from.
     pub fn fps(&self) -> f64 {
         (f64::from(self.fps_num) / f64::from(self.fps_den.max(1))).max(1e-9)
     }
 }
 
-/// Coalesce a backend's event queue into a [`Drained`] plus the latest
-/// resize, touching no player state.
-///
-/// Shared by [`Player::drain_events`] and the clip deck, whose gap frames
-/// have no active clip player, so the key mapping exists in one place.
-/// Quit wins and stops the drain.
 pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u16, u16)>) {
     let mut resize: Option<(u16, u16)> = None;
     let mut jump_digit = None;
@@ -440,9 +321,6 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
     (drained, resize)
 }
 
-/// The frame pipeline: decode → resample → NORM levels → compose into a
-/// term-sized grid. All buffers are (re)allocated only in `new`/`reflow` —
-/// the hot loop is allocation-free.
 pub struct Player<'a> {
     reader: Option<AsciiReader<'a>>,
     live_shot: u32,
@@ -650,18 +528,10 @@ impl<'a> Player<'a> {
         }
     }
 
-    /// The compositor tunables currently in force — the starting position for
-    /// the interactive dials.
     pub fn compose_params(&self) -> ComposeParams {
         self.compose_params
     }
 
-    /// Override the compositor tunables (the eval driver wires
-    /// params.toml `[compose]` here; interactive playback starts from the
-    /// defaults, which are pinned to the committed params.toml by test, and
-    /// turns them with the live dials). A change resets ALL per-cell
-    /// hysteresis state, so the next frame is a cold start at the new
-    /// position; an equal value is a no-op.
     pub fn set_compose_params(&mut self, params: ComposeParams) {
         if params == self.compose_params {
             return;
@@ -670,15 +540,10 @@ impl<'a> Player<'a> {
         self.state.reset();
     }
 
-    /// The glyph codec in force.
     pub fn codec(&self) -> Codec {
         self.codec
     }
 
-    /// Switch the glyph codec (the `/` key). A change resets ALL per-cell
-    /// temporal state — remembered ramp indices and codec-private flag bits
-    /// belong to the old codec's ramp — so the next frame is a cold start
-    /// in the new one; an equal value is a no-op.
     pub fn set_codec(&mut self, codec: Codec) {
         if codec != self.codec {
             self.codec = codec;
@@ -686,94 +551,58 @@ impl<'a> Player<'a> {
         }
     }
 
-    /// Start collecting the per-cell winning-layer mask (render metadata for
-    /// the eval harness — the edge-F1 prediction side). Costs one `Grid<u8>`
-    /// kept in step with the terminal grid; interactive playback never calls
-    /// this.
     pub fn enable_layer_mask(&mut self) {
         let mut mask = Grid::new(self.grid.cols(), self.grid.rows());
         mask.fill(auto_ascii_core::layer::BASE);
         self.layer_mask = Some(mask);
     }
 
-    /// The layer mask for the last rendered frame (`None` unless
-    /// [`enable_layer_mask`](Player::enable_layer_mask) was called). Values
-    /// are `auto_ascii_core::compose::layer` ids at full terminal dims; pads are
-    /// `layer::BASE`.
     pub fn layer_mask(&self) -> Option<&Grid<u8>> {
         self.layer_mask.as_ref()
     }
 
-    /// Frames in the asset (> 0 — enforced at `new`).
     pub fn frame_count(&self) -> u32 {
         self.frame_count
     }
 
-    /// The composed full terminal grid (viewport + letterbox pads) as of the
-    /// last [`render_present`](Player::render_present) — the eval driver
-    /// rasterizes this for downscale-SSIM and feeds it to the flicker
-    /// accumulator.
     pub fn grid(&self) -> &Grid<Cell> {
         &self.grid
     }
 
-    /// The overlay rows drawn over [`grid`](Player::grid) on the last
-    /// frame: its UI cells. Every other cell is picture or pad.
     pub fn ui_rows(&self) -> UiRows {
         self.ui_rows
     }
 
-    /// Current viewport (`None` below the 32×9 minimum).
     pub fn viewport(&self) -> Option<Viewport> {
         self.vp
     }
 
-    /// `(src_dims, dst_dims)` of the current LUMA resampler (`None` below
-    /// the viewport minimum). dst is `(Vc, 2·Vr)` — the two-taps-per-cell
-    /// plane; the resize fuzz asserts exactly that.
     pub fn resampler_dims(&self) -> Option<((u16, u16), (u16, u16))> {
         self.resampler.as_ref().map(|r| (r.src_dims(), r.dst_dims()))
     }
 
-    /// Dimensions of the per-cell hysteresis state (viewport cells) — the
-    /// fuzz invariant "hysteresis buffers realloc'd to the new grid".
     pub fn hysteresis_dims(&self) -> (u16, u16) {
         (self.state.cols(), self.state.rows())
     }
 
-    /// Decoded source Y plane (`src_w × src_h` L\* bytes) for the frame last
-    /// passed to [`render_present`](Player::render_present) — the SSIM
-    /// source-side input.
     pub fn luma_src(&self) -> &[u8] {
         &self.luma_src
     }
 
-    /// The active per-shot NORM levels LUT (identity when the asset has no
-    /// NORM). Applying it to [`luma_src`](Player::luma_src) reproduces the
-    /// normalized luma the compositor consumed.
     pub fn levels_lut(&self) -> &[u8; 256] {
         &self.levels_lut
     }
 
-    /// Cumulative per-stage wall times since construction.
     pub fn stage(&self) -> StageNs {
         self.stage
     }
 
-    /// Resize path: backend + grid realloc, viewport recompute, resampler
-    /// tap rebuilds, palette reselection (density band tracks viewport
-    /// cols), hysteresis realloc+reset, invalidate. The next rendered frame
-    /// lands on the new grid.
     pub fn reflow<B: Backend>(&mut self, backend: &mut B, cols: u16, rows: u16) {
         backend.resize(cols, rows);
         self.reflow_grid(cols, rows);
         backend.invalidate();
     }
 
-    /// Backend-free reflow: everything [`reflow`](Player::reflow) does
-    /// except the backend `resize`/`invalidate` calls — grid realloc,
-    /// viewport, tap tables, palette, hysteresis realloc+reset. The
-    /// terminal-free [`crate::RenderSession`] resize path.
     pub fn reflow_grid(&mut self, cols: u16, rows: u16) {
         self.grid.resize(cols, rows);
         self.ui_rows = UiRows::NONE;
@@ -818,21 +647,12 @@ impl<'a> Player<'a> {
         }
     }
 
-    /// Drain the event queue: Quit wins, resizes coalesce to the latest and
-    /// trigger one reflow, digit keys report a jump.
-    ///
-    /// A digit jump or an arrow scrub is an explicit temporal discontinuity
-    /// — the landing frame has no relation to what is on screen — so ALL
-    /// per-cell hysteresis memory (`was_edge`, held ramp idx, orientation
-    /// bin) is reset HERE, before the caller renders the landing frame, as
-    /// at a cut or a resize. Without it a same-shot jump would render edge
-    /// glyphs a cold start at that frame would not.
     pub fn drain_events<B: Backend>(&mut self, backend: &mut B) -> Drained {
         let (drained, resize) = drain_backend_events(backend);
         if let Some((c, r)) = resize {
             self.reflow(backend, c, r);
         }
-        if drained.jump_digit.is_some() || drained.seek_steps != 0 {
+        if drained.requests_temporal_reset() {
             self.state.reset();
         }
         drained
@@ -937,9 +757,6 @@ impl<'a> Player<'a> {
         Ok(())
     }
 
-    /// Show (or clear) the live-dial readout on the bottom row. Same
-    /// hide-repaint contract as [`set_progress_overlay`](Self::set_progress_overlay):
-    /// clearing it schedules the invalidate that repaints the row underneath.
     pub fn set_dial_overlay(&mut self, dial: Option<(&'static str, u8, u8)>) {
         if self.dial_overlay.is_some() && dial.is_none() {
             self.overlay_hide_pending = true;
@@ -947,13 +764,6 @@ impl<'a> Player<'a> {
         self.dial_overlay = dial;
     }
 
-    /// Show/hide the transient bottom-row progress overlay. The overlay is
-    /// drawn over the composed grid by `render_grid`; hiding it schedules a
-    /// one-shot backend invalidate consumed by the next
-    /// [`render_present`](Player::render_present), so the diff baseline is
-    /// rebuilt from a full repaint and can never keep describing overlay
-    /// cells that are no longer drawn. Presentation-only: temporal state,
-    /// the layer mask and the composed viewport are untouched.
     pub fn set_progress_overlay(&mut self, visible: bool) {
         if self.overlay_visible && !visible {
             self.overlay_hide_pending = true;
@@ -961,26 +771,14 @@ impl<'a> Player<'a> {
         self.overlay_visible = visible;
     }
 
-    /// Make the progress overlay report a COMPOSITION's position instead of
-    /// this clip's own. `None` restores the asset reading, which is what
-    /// every single-asset path keeps.
     pub fn set_progress_context(&mut self, ctx: Option<ProgressContext>) {
         self.progress_ctx = ctx;
     }
 
-    /// Tell the progress row that playback is frozen: the bar head becomes
-    /// `|` and the percent block reads ` PAUSED `. Presentation
-    /// only — pausing is the run loop's business, and this just reports it.
     pub fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
     }
 
-    /// Show/hide the key-hints row on `rows-2`. Same
-    /// hide-repaint contract as [`set_progress_overlay`](Self::set_progress_overlay):
-    /// the visible→hidden edge schedules the invalidate that repaints the row
-    /// underneath, so the diff baseline never keeps describing hint cells.
-    /// The caller owns WHEN it shows — timers and stickiness are run-loop
-    /// policy (`crate::Player`), never something the pipeline decides.
     pub fn set_hint_overlay(&mut self, visible: bool) {
         if self.hint_visible && !visible {
             self.overlay_hide_pending = true;
@@ -988,9 +786,6 @@ impl<'a> Player<'a> {
         self.hint_visible = visible;
     }
 
-    /// Set (or clear) the info row's text — shown one row above the hints,
-    /// only while they are. Copies only when the text changes; clearing it
-    /// while it is on screen schedules the repaint underneath.
     pub fn set_info_overlay(&mut self, info: Option<&str>) {
         match info {
             None => {
@@ -1006,9 +801,6 @@ impl<'a> Player<'a> {
         }
     }
 
-    /// Decode → resample → NORM levels → compose → present one asset frame.
-    /// Renders the "enlarge terminal" card when the terminal is below the
-    /// 32x9 minimum.
     pub fn render_present<B: Backend>(
         &mut self,
         backend: &mut B,
@@ -1024,11 +816,6 @@ impl<'a> Player<'a> {
         Ok(stats)
     }
 
-    /// Backend-free frame render: decode → resample → NORM levels →
-    /// compose into [`grid`](Player::grid), stopping short of `present` —
-    /// the terminal-free [`crate::RenderSession`] frame path. Identical
-    /// composition (and identical temporal-state mutations) to
-    /// [`render_present`](Player::render_present).
     pub fn render_grid(&mut self, frame_idx: u32) -> Result<()> {
         if self.vp.is_some() && self.resampler.is_some() {
             let t = Instant::now();
@@ -1136,25 +923,15 @@ impl<'a> Player<'a> {
         Ok(())
     }
 
-    /// Reset ALL per-cell temporal state (ramp-index hysteresis, edge
-    /// on/off memory, orientation bins) — the discontinuity reset.
-    /// [`crate::RenderSession`] calls this on a backward frame jump; the
-    /// interactive digit-seek path resets through
-    /// [`drain_events`](Player::drain_events).
     pub fn reset_temporal_state(&mut self) {
         self.state.reset();
     }
 
-    /// Re-key palette selection (the charset-tier axis). Takes effect
-    /// at the next [`reflow_grid`](Player::reflow_grid)/[`reflow`](Player::reflow)
-    /// — palette objects are (re)built there, keyed on the viewport density.
-    pub fn set_glyph_tier(&mut self, glyph_tier: GlyphTier) {
+    pub fn set_glyph_tier_for_next_reflow(&mut self, glyph_tier: GlyphTier) {
         self.glyph_tier = glyph_tier;
     }
 
-    /// Override the cell aspect (`cell_h_px / cell_w_px`). Takes effect
-    /// at the next reflow (viewport math is recomputed there).
-    pub fn set_cell_aspect(&mut self, cell_aspect: f64) {
+    pub fn set_cell_aspect_for_next_reflow(&mut self, cell_aspect: f64) {
         self.cell_aspect = cell_aspect;
     }
 }
@@ -1193,34 +970,10 @@ pub struct LiveFrame<'f> {
     pub shot_start: u32,
 }
 
-/// Fold per-shot p2/p98 NORM levels into a 256-entry LUT:
-/// `n = clamp((L − shot_lo) · shot_inv_range)`, rounded. `None` levels or a
-/// degenerate span (p98 ≤ p2 — flat shot, or the (0,0) rows of unused plane
-/// slots / NORM-less assets) → identity, so assets without NORM render
-/// unchanged.
 pub fn build_levels_lut(lut: &mut [u8; 256], levels: Option<PlaneLevels>) {
     build_levels_lut_lifted(lut, levels, 0);
 }
 
-/// [`build_levels_lut`] with a shadow lift applied on top of the linear window
-/// ([`auto_ascii_core::ComposeParams::shadow_lift`]). `shadow_lift == 0` reproduces
-/// `build_levels_lut` byte for byte.
-///
-/// The lift blends the normalized value `n` toward `sqrt(n · 255)` — the
-/// classic shadow-opening curve — weighted by `lift/255`:
-///
-/// ```text
-/// out = n + (isqrt(n · 255) − n) · lift / 255
-/// ```
-///
-/// **Integer by construction, deliberately.** A `powf` gamma is the textbook
-/// form, but float results are not guaranteed bit-identical across platforms
-/// and the render goldens here are byte-compared. Both terms are monotonic
-/// non-decreasing in `n` and the blend weights are fixed, so the curve is
-/// monotonic — the ramp can never invert — and identical on every target.
-/// `0` and `255` are fixed points, so this opens the shadows without raising
-/// black or clipping white. At full strength a mid-shadow 64 lands at 127: a
-/// two-to-three step move on an 8–16 step ramp, which is the entire point.
 pub fn build_levels_lut_lifted(lut: &mut [u8; 256], levels: Option<PlaneLevels>, shadow_lift: u8) {
     match levels {
         Some(PlaneLevels { p2, p98 }) if p98 > p2 => {
@@ -1258,9 +1011,6 @@ fn apply_shadow_lift(lut: &mut [u8; 256], lift: u8) {
     }
 }
 
-/// Unpack little-endian RGB565 (the factory's C plane encoding) into
-/// three 8-bit channel planes, expanding with bit replication
-/// (`r8 = r5<<3 | r5>>2` etc. — 0x1f → 255, canonical).
 pub fn unpack_rgb565(src: &[u8], r: &mut [u8], g: &mut [u8], b: &mut [u8]) {
     for (i, px) in src.chunks_exact(2).enumerate() {
         let v = u16::from_le_bytes([px[0], px[1]]);
@@ -1273,8 +1023,6 @@ pub fn unpack_rgb565(src: &[u8], r: &mut [u8], g: &mut [u8], b: &mut [u8]) {
     }
 }
 
-/// Centered "enlarge terminal" card, shown below the 32x9 minimum, on
-/// `pad` (the codec's [`Codec::pad`]); the text takes its background.
 pub fn draw_enlarge_card(grid: &mut Grid<Cell>, pad: Cell) {
     grid.fill(pad);
     let (cols, rows) = (grid.cols(), grid.rows());
@@ -1296,18 +1044,10 @@ pub fn draw_enlarge_card(grid: &mut Grid<Cell>, pad: Cell) {
     }
 }
 
-/// The transient 1-line progress overlay: bottom terminal row,
-/// `_MM:SS_/_MM:SS_[====>....]_NN%_` in pure ASCII (palette/tier-agnostic —
-/// mono quantizes the colors away and the glyphs still carry everything).
-/// Pure function of `(frame, frame_count, fps, cols)` — byte-deterministic,
-/// so diff-mode presents of an unchanged overlay row cost zero damage.
 pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32, frame_count: u32, fps: f64) -> UiRows {
     draw_progress_overlay_clips(grid, frame, frame_count, fps, None, false, OverlayScale::Normal)
 }
 
-/// [`draw_progress_overlay`] with the pause reading: `paused` swaps the
-/// bar head for `|` and the percent block for ` PAUSED `, so a frozen
-/// picture never reads as a stalled one.
 pub fn draw_progress_overlay_paused(
     grid: &mut Grid<Cell>,
     frame: u32,
@@ -1318,13 +1058,6 @@ pub fn draw_progress_overlay_paused(
     draw_progress_overlay_clips(grid, frame, frame_count, fps, None, paused, OverlayScale::Normal)
 }
 
-/// [`draw_progress_overlay`] with the clip block: `clip = Some((c, n))`
-/// adds ` c/N ` right after the timecode while a composition plays. The
-/// block is dropped below [`PROGRESS_HINT_MIN_COLS`] and for single-clip
-/// compositions, so `None` — every single-asset path — prints no block at
-/// all. `scale` sizes the text ([`OverlayScale::Big`] lays the row out for
-/// a quarter of the columns). Returns the rows drawn, like every overlay
-/// painter.
 pub fn draw_progress_overlay_clips(
     grid: &mut Grid<Cell>,
     frame: u32,
@@ -1391,11 +1124,6 @@ pub fn draw_progress_overlay_clips(
     paint_line(grid, 0, &line, fg, bg, scale)
 }
 
-/// The transient 1-line live-dial readout: bottom terminal row,
-/// `_<label>_[####----]_NNN/MMM_` in pure ASCII, so it reads on every palette
-/// and color tier exactly like the progress overlay. Pure function of
-/// `(label, value, max, cols)` — byte-deterministic, so an unchanged row costs
-/// zero damage in diff mode. `scale` sizes the text like the progress row.
 pub fn draw_dial_overlay(
     grid: &mut Grid<Cell>,
     label: &str,
@@ -1471,12 +1199,6 @@ fn hint_line(cols: u16) -> String {
     format!(" {} ", kept.join(HINT_SEP))
 }
 
-/// The key-hints row: one line on `rows-2`, or the
-/// line above the bottom one at [`OverlayScale::Big`], in the progress
-/// overlay's colors, listing every bound key. Shown while a transient overlay
-/// is up, for a short window at start-up and whenever `v` pins it (all
-/// run-loop policy — see `Player::set_hint_overlay`). Pure function of
-/// `(cols, rows, scale)`, so an unchanged row costs zero damage in diff mode.
 pub fn draw_hint_overlay(grid: &mut Grid<Cell>, scale: OverlayScale) -> UiRows {
     let fg = Rgb::gray(235);
     let bg = Rgb::new(24, 24, 40);
@@ -1490,22 +1212,6 @@ fn zoom_line(cols: u16) -> String {
     [long, short].into_iter().find(|l| l.len() <= cols as usize).unwrap_or_default()
 }
 
-/// The info row of the controls overlay: one line on `rows-3` (the third
-/// line up at [`OverlayScale::Big`]), directly above the key hints and in
-/// the same colors. It carries whatever the run loop reports — the clip's
-/// name, the active glyph codec, whether this video's settings are saved —
-/// and, right-aligned, the grid size (` 213x58 cells `), which is
-/// how much detail the picture is getting; the text wins when both do not
-/// fit. Printable ASCII only, like every overlay:
-/// anything else in `text` (a clip named in another script) prints as `?`
-/// rather than as a glyph of unknown width. Truncated to the row and
-/// painted to its full width.
-///
-/// Below [`ZOOM_HINT_MAX_COLS`] a zoom hint goes on the line above
-/// (` Cmd - to zoom out: more cells, a sharper picture `, `Ctrl` off
-/// macOS); it is dropped when no wording fits. Pure function of
-/// `(text, cols, rows, scale)`, so an unchanged row costs zero damage in
-/// diff mode.
 pub fn draw_info_overlay(grid: &mut Grid<Cell>, text: &str, scale: OverlayScale) -> UiRows {
     let (cols, rows) = (grid.cols(), grid.rows());
     let fg = Rgb::gray(235);

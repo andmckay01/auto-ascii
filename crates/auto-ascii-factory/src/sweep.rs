@@ -1,40 +1,4 @@
-//! `auto-ascii-factory sweep` — the parameter-sweep half of the agent socket.
-//!
-//! A sweep file declares **axes** — named lists of param-override sets — and
-//! optional composite-score weights. Combos are the cartesian product across
-//! axes (values *within* one axis vary together, so correlated pairs like
-//! `edges.t_hi`/`edges.t_lo` stay sane); coordinate descent = one or two axes
-//! per file, winner folded into the next file's base. Every combo runs the
-//! real eval pipeline ([`eval::eval_clip`]) over the corpus in sweep mode
-//! (truecolor pass only, no contact PNGs, source-Canny truth memoized across
-//! combos) and shares the eval asset cache — combos differing only in renderer
-//! (`[compose]`) or eval knobs never rebuild assets.
-//!
-//! ```toml
-//! [score]                  # optional; defaults below
-//! ssim = 0.4
-//! edge_f1 = 0.4
-//! flicker = 0.2            # subtracted
-//! flicker_norm = 2.0       # flicker is divided by this before weighting
-//!
-//! [[axes]]
-//! name = "edge-runtime"
-//! values = [
-//!   { "compose.edge_t_on" = 24, "compose.edge_t_off" = 12 },
-//!   { "compose.edge_t_on" = 32, "compose.edge_t_off" = 16 },
-//! ]
-//! ```
-//!
-//! **Composite score** (default weights):
-//! `0.4·mean(ssim) + 0.4·mean(edge_f1) − 0.2·mean(flicker / flicker_norm)`
-//! with means over clips; `flicker_norm` = 2.0 = the flicker gate, so a
-//! clip sitting exactly at the gate costs its full flicker weight. Combos
-//! whose merged params fail validation are recorded as skipped (an axis
-//! cross may legally produce e.g. `t_lo > t_hi`), never silently dropped.
-//!
-//! Outputs under `--out DIR`: `combo-NN.json` (full [`EvalReport`] per
-//! combo), `sweep.json` (ranked results, deterministic layout) and
-//! `leaderboard.html` (compact human half).
+//! Parameter-sweep enumeration, scoring and reports.
 
 use std::path::PathBuf;
 
@@ -48,25 +12,18 @@ use crate::sha256::sha256_hex;
 
 pub struct SweepArgs {
     pub corpus: PathBuf,
-    /// Base params (embedded defaults + `--params` file) that every combo
-    /// starts from.
     pub base: Params,
-    /// The sweep spec file (`--grid`).
     pub grid: PathBuf,
-    /// Output directory (`--out`).
     pub out_dir: PathBuf,
     pub cache_dir: PathBuf,
 }
 
-/// Composite-score weights (see module docs for the formula).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ScoreWeights {
     pub ssim: f64,
     pub edge_f1: f64,
-    /// Weight on normalized flicker; SUBTRACTED from the score.
     pub flicker: f64,
-    /// Flicker normalizer (glyph switches/cell/s); default = the flicker gate.
     pub flicker_norm: f64,
 }
 
@@ -109,7 +66,6 @@ impl Combo {
     }
 }
 
-/// Per-clip metric row in `sweep.json`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SweepClipRow {
     pub clip: String,
@@ -118,13 +74,10 @@ pub struct SweepClipRow {
     pub flicker: Option<f64>,
 }
 
-/// One ranked result in `sweep.json`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SweepResult {
-    /// Combo index in enumeration order (stable across reruns).
     pub id: u32,
     pub combo: String,
-    /// `None` = combo skipped (validation error, recorded in `skip_reason`).
     pub score: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skip_reason: Option<String>,
@@ -133,7 +86,6 @@ pub struct SweepResult {
     pub flicker_mean: Option<f64>,
     #[serde(default)]
     pub clips: Vec<SweepClipRow>,
-    /// The per-combo `EvalReport` file name (relative to the out dir).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<String>,
 }
@@ -143,7 +95,6 @@ pub struct SweepReport {
     pub schema_version: u32,
     pub generator: String,
     pub score_weights: ScoreWeights,
-    /// Ranked: best score first, skipped combos last (by id).
     pub results: Vec<SweepResult>,
 }
 

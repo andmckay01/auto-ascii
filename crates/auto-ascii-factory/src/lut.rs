@@ -1,33 +1,14 @@
-//! Luma transfer LUTs + percentile levels.
-//!
-//! Level normalization is not baked into the plane. The per-pixel transform
-//! is only sRGB → linear light → CIE L\* (folded into [`LumaLut`]); per-shot
-//! p2/p98 levels are *measured* here ([`percentile_levels_pct`]) but travel
-//! in the NORM chunk and are applied at RUNTIME by the player.
-//!
-//! Floats appear only while *building* the tables at startup — the pass 1 /
-//! pass 2 pixel loops are pure table lookups, so the factory output is
-//! byte-deterministic for identical input (a golden requirement).
+//! Luma transfer lookup tables and histogram percentile levels.
 
-/// Lower percentile for the per-shot level stretch (p2).
 pub const LEVELS_LO_PCT: u64 = 2;
-/// Upper percentile for the per-shot level stretch (p98).
 pub const LEVELS_HI_PCT: u64 = 98;
 
-/// Luma levels in the L\* (0..=255) domain, from a pooled shot histogram.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Levels {
-    /// p2 in stored-L\* units — the player maps it to output 0.
     pub lo: u8,
-    /// p98 in stored-L\* units — the player maps it to output 255.
     pub hi: u8,
 }
 
-/// Percentile levels of a 256-bin histogram (nearest-rank, rank = ⌈N·p/100⌉
-/// clamped to ≥ 1 — pure integer math, deterministic). Percentiles are
-/// explicit (params.toml `[levels]`; [`LEVELS_LO_PCT`]/
-/// [`LEVELS_HI_PCT`] are the embedded defaults). Returns `None` for an empty
-/// histogram (the zero-frame edge case is rejected before this is reached).
 pub fn percentile_levels_pct(hist: &[u64; 256], lo_pct: u64, hi_pct: u64) -> Option<Levels> {
     let total: u64 = hist.iter().sum();
     if total == 0 {
@@ -47,13 +28,6 @@ pub fn percentile_levels_pct(hist: &[u64; 256], lo_pct: u64, hi_pct: u64) -> Opt
     Some(Levels { lo: value_at(rank(lo_pct)), hi: value_at(rank(hi_pct)) })
 }
 
-/// rgb24 → L\* byte, as three table lookups + two adds (sRGB→linear→L\*
-/// from full RGB, since one rgb24 decode feeds both the Y and C planes):
-///
-/// ```text
-///   per channel: sRGB byte -> linear light × Rec.709 coefficient, Q16
-///   sum (0..=65535) -> CIE L* (0..100 scaled to 0..=255) via a 64 Ki table
-/// ```
 pub struct LumaLut {
     lin: [[u32; 256]; 3],
     lstar: Box<[u8; 65536]>,
@@ -83,7 +57,6 @@ impl LumaLut {
         LumaLut { lin, lstar }
     }
 
-    /// L\* byte for one rgb24 pixel.
     #[inline]
     pub fn l_of(&self, r: u8, g: u8, b: u8) -> u8 {
         let y = self.lin[0][r as usize] + self.lin[1][g as usize] + self.lin[2][b as usize];

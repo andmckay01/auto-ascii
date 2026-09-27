@@ -1,11 +1,6 @@
-//! Where an asset's sound comes from and how it gets into memory. Discovery
-//! looks beside the asset: `<stem>.m4a`, `<stem>.mp4`, other common
-//! containers, then the folder's `source.mp4`, so a slice's own sidecar beats
-//! the full source it was cut from. `TrackSource` is the seam where an
-//! embedded audio plane would slot in ahead of the sidecars. ffprobe checks
-//! the candidate has an audio stream whose length matches the asset; ffmpeg
-//! then decodes it on a background thread to interleaved s16 at the output's
-//! rate into a fixed-size [`Pcm`] slab, bounded by [`PCM_BUDGET_BYTES`].
+//! Where an asset's sound comes from and how it reaches memory: sidecar
+//! discovery beside the asset, the ffprobe length check, and the background
+//! ffmpeg decode to interleaved s16 into a budget-bounded [`Pcm`] slab.
 
 use std::ffi::OsString;
 use std::io::Read;

@@ -1,25 +1,9 @@
-//! `Grid<Cell>` → grayscale rasterizer (downscale-SSIM, step 1).
-//!
-//! Each cell becomes a constant `cell_w_px × cell_h_px` block of the cell's
-//! *average luminance* under the ink-coverage model:
-//!
-//! ```text
-//! g = min(coverage(glyph) · gain, 1)          // effective ink fraction
-//! y = g · luma(fg) + (1 − g) · luma(bg)       // area-weighted mix
-//! ```
-//!
-//! No sub-cell glyph shape is modeled — deliberately. The renderer's only
-//! controllable quantity is per-cell (glyph, fg, bg); measuring at cell
-//! granularity scores exactly what the compositor can influence, and the
-//! matching source image is produced by downscaling to the same dimensions
-//! ([`crate::ssim::downscale_ssim`]).
+//! Rendered cell-grid grayscale images and ink-coverage rasterization.
 
 use auto_ascii_core::{Cell, Grid, Rgb};
 
 use crate::coverage::CoverageTable;
 
-/// A row-major 8-bit grayscale image (u16 dims, like everything upstream:
-/// grids are u16 and source planes are 480×270).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GrayImage {
     w: u16,
@@ -28,15 +12,10 @@ pub struct GrayImage {
 }
 
 impl GrayImage {
-    /// A zeroed `w × h` image.
     pub fn new(w: u16, h: u16) -> GrayImage {
         GrayImage { w, h, data: vec![0; w as usize * h as usize] }
     }
 
-    /// Wrap raw row-major bytes (e.g. a decoded source luma plane).
-    ///
-    /// # Panics
-    /// If `data.len() != w · h`.
     pub fn from_raw(w: u16, h: u16, data: Vec<u8>) -> GrayImage {
         assert_eq!(data.len(), w as usize * h as usize, "gray image size mismatch");
         GrayImage { w, h, data }
@@ -63,11 +42,6 @@ impl GrayImage {
         &self.data
     }
 
-    /// Copy out a sub-rectangle — e.g. the viewport region of a full-terminal
-    /// raster, so letterbox pads don't enter the SSIM comparison.
-    ///
-    /// # Panics
-    /// If the rectangle exceeds the image or is empty.
     pub fn crop(&self, x: u16, y: u16, w: u16, h: u16) -> GrayImage {
         assert!(w > 0 && h > 0, "empty crop");
         assert!(
@@ -83,32 +57,30 @@ impl GrayImage {
     }
 }
 
-/// Gamma-space Rec. 709 luma of an [`Rgb`] cell color, integer fixed-point
-/// (`(13933·r + 46875·g + 4732·b) >> 16`, weights = round(coeff · 65536)).
-/// The common video approximation — chroma fg is near-gray at cell
-/// granularity, so linear-light exactness buys nothing here.
+const REC709_RED_Q16: u32 = 13933;
+const REC709_GREEN_Q16: u32 = 46875;
+const REC709_BLUE_Q16: u32 = 4732;
+const Q16_SHIFT: u32 = 16;
+const Q16_ROUND_HALF: u32 = 1 << (Q16_SHIFT - 1);
+const _: () = assert!(
+    ((REC709_RED_Q16 + REC709_GREEN_Q16 + REC709_BLUE_Q16) * u8::MAX as u32 + Q16_ROUND_HALF)
+        >> Q16_SHIFT
+        == u8::MAX as u32
+);
+
 #[inline]
 pub fn luma8(c: Rgb) -> u8 {
-    ((13933 * c.r as u32 + 46875 * c.g as u32 + 4732 * c.b as u32 + 32768) >> 16) as u8
+    ((REC709_RED_Q16 * c.r as u32
+        + REC709_GREEN_Q16 * c.g as u32
+        + REC709_BLUE_Q16 * c.b as u32
+        + Q16_ROUND_HALF)
+        >> Q16_SHIFT) as u8
 }
 
-/// Rasterization knobs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RasterOptions {
-    /// Horizontal pixels per cell (default 1).
     pub cell_w_px: u16,
-    /// Vertical pixels per cell (default 2 — with `cell_w_px = 1` this
-    /// matches the default 1:2 cell aspect at the minimal resolution: one
-    /// sample per half-cell, the render's true information content. Contact
-    /// sheets use larger blocks for visibly chunky PNGs.).
     pub cell_h_px: u16,
-    /// Scale coverage so the table's densest glyph reaches full ink
-    /// (`gain = 1 / max_coverage`, default true). Real fonts top out near
-    /// 26% physical cell coverage; ASCII art reads correctly because vision
-    /// adapts to the compressed range, so the metric compares in *relative
-    /// ink* — otherwise a uniform ~4× darkening would dominate SSIM's
-    /// luminance term and drown real regressions. Set false for the raw
-    /// physical model.
     pub normalize_ink: bool,
 }
 
@@ -118,11 +90,6 @@ impl Default for RasterOptions {
     }
 }
 
-/// Rasterize a rendered cell grid to grayscale through an ink-coverage table.
-///
-/// # Panics
-/// On zero `cell_*_px`, or if the output dimensions overflow `u16`
-/// (the resize-fuzz ceiling is 1000×1000 cells — ample headroom).
 pub fn rasterize(grid: &Grid<Cell>, table: &CoverageTable, opts: &RasterOptions) -> GrayImage {
     assert!(opts.cell_w_px > 0 && opts.cell_h_px > 0, "zero px-per-cell");
     let w = (grid.cols() as u32).checked_mul(opts.cell_w_px as u32).unwrap();

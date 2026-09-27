@@ -1,69 +1,5 @@
 #!/usr/bin/env python3
-"""tools/soak.py — resize-storm soak harness for the player.
-
-Forks the release `auto-ascii-player` onto a fresh pty via `pty.fork()` — the
-pty becomes the child's *controlling* terminal, so TIOCSWINSZ on the master
-delivers real SIGWINCHes to the player, exactly like a user dragging a
-terminal corner — then plays the asset with `--loop` and storms randomized
-resizes at it for `--duration` seconds (default 3600).
-
-What it does, continuously, from one single-threaded select loop:
-
-  * every 50–200 ms (uniform): TIOCSWINSZ to a random size in
-    20x6..500x140, with an ~8% chance of the sub-minimum 5x3 (below the
-    32x9 floor -> exercises the "enlarge terminal" card path);
-  * drains the master pty into a rotation-capped log: the FIRST 2 MB go to
-    `head.log`, the LAST 10 MB are kept in a ring and flushed to `tail.log`
-    every 30 s and at exit (disk usage stays bounded no matter how many
-    GB the player emits over an hour);
-  * every 10 s: samples the player's VmRSS from /proc/<pid>/status into
-    `rss.csv` (unix_ts,elapsed_s,rss_kb);
-  * logs every resize into `resizes.csv` and a progress line each minute.
-
-At the deadline it writes a literal `q` to the pty (the player's quit
-key), drains until EOF, and records the exit status. Escalation if the
-player ignores `q`: SIGTERM after 15 s, SIGKILL after 20 s — both count
-as failures. `summary.json` records exit status, byte totals, resize
-counts, whether the RESTORE_SEQ bytes (`ESC[0m ESC[?25h ESC[?7h
-ESC[?1049l`, auto-ascii-term/src/restore.rs) appear in the tail, a post-warmup
-least-squares RSS slope in MB/h, a short escaped tail preview, and the
-**structural escape-stream check** (no desync in captured output: the
-final frames must still parse as valid escape streams):
-both `head.log` and the tail ring are run through a strict VT parser
-(`check_escape_stream`) that accepts EXACTLY what the player is specified
-to emit — the probe volley, the session enter/restore CSI modes, CUP
-within the storm's size bounds, well-formed tier SGRs, the ?2026 wrap and
-printable/UTF-8 ground text — and reports anything else (truncated CSI,
-out-of-bounds CUP, stray control bytes) as a structural error. A
-diff-baseline desync that never crashes the player is caught here, not
-just by the exit code.
-
-Harness exit code: 0 = ran the full duration, player exited 0 on `q`, the
-restore bytes were seen, and both captured logs passed the structural
-check; nonzero otherwise (see `fail_reasons` in summary.json). The
-RSS-slope acceptance (< 1 MB/h after warmup) is *reported*,
-not gated here — the hour-long evidence in rss.csv is evaluated by the
-reviewer.
-
-Standalone modes:
-
-    tools/soak.py --check-logs DIR   # re-run the structural check over an
-                                     # existing outdir's head.log/tail.log
-    tools/soak.py --self-test        # validator self-checks (good stream
-                                     # passes; corrupted streams are caught)
-
-Smoke mode (~1 min sanity check of the harness itself):
-
-    tools/soak.py --duration 60 --asset assets/clip.ascii --outdir /tmp/soak-smoke
-
-Full soak, detached:
-
-    setsid nohup tools/soak.py --duration 3600 --asset assets/clip.ascii \
-        --outdir runs/soak-1h > runs/soak-1h/harness.out 2>&1 &
-
-Python 3.8+ stdlib only. The player binary is NOT built here — build it
-first: `cargo build --release -p auto-ascii --features bin`.
-"""
+# Resize-storm soak harness and captured terminal-stream validation.
 
 from __future__ import annotations
 
@@ -82,6 +18,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+CLI_DESCRIPTION = "tools/soak.py — resize-storm soak harness for the player."
 REPO = Path(__file__).resolve().parent.parent
 
 RESIZE_MIN_S = 0.050
@@ -112,13 +49,6 @@ def _on_signal(signum: int, _frame) -> None:
 
 
 class OutputLog:
-    """First-2MB + last-10MB rotation over an unbounded pty byte stream.
-
-    The head is streamed straight to `head.log` until full. The tail is an
-    in-memory chunk ring (bounded at ~TAIL_CAP) rewritten atomically to
-    `tail.log` every TAIL_FLUSH_IVL_S — bounding *disk writes* too, instead
-    of funneling the player's full multi-GB/h output through the disk.
-    """
 
     def __init__(self, outdir: Path):
         self.head_path = outdir / "head.log"
@@ -173,7 +103,6 @@ def read_rss_kb(pid: int) -> int | None:
 
 
 def child_alive(pid: int) -> tuple[bool, int | None]:
-    """Non-blocking reap. Returns (alive, raw_waitstatus_or_None)."""
     try:
         wpid, status = os.waitpid(pid, os.WNOHANG)
     except ChildProcessError:
@@ -184,7 +113,6 @@ def child_alive(pid: int) -> tuple[bool, int | None]:
 
 
 def drain(master: int, log: OutputLog) -> bool:
-    """Read everything currently buffered. Returns True on EOF/EIO."""
     while True:
         try:
             data = os.read(master, 65536)
@@ -198,7 +126,6 @@ def drain(master: int, log: OutputLog) -> bool:
 
 
 def rss_slope_mb_per_h(samples: list[tuple[float, int]], warmup_s: float) -> float | None:
-    """Least-squares slope of RSS over elapsed time, post-warmup, in MB/h."""
     pts = [(t, kb) for t, kb in samples if t >= warmup_s]
     if len(pts) < 2:
         return None
@@ -223,7 +150,6 @@ SGR_SIMPLE = frozenset(
 
 
 def _sgr_error(body: bytes) -> str | None:
-    """Validate one SGR parameter body; None = well-formed."""
     if not body:
         return "empty SGR (never emitted)"
     parts = body.split(b";")
@@ -255,7 +181,6 @@ def _sgr_error(body: bytes) -> str | None:
 
 
 def _csi_error(final: int, body: bytes) -> str | None:
-    """Validate one complete CSI against the player's vocabulary."""
     f = chr(final)
     if f == "H":
         parts = body.split(b";")
@@ -284,15 +209,6 @@ def _csi_error(final: int, body: bytes) -> str | None:
 
 def check_escape_stream(data: bytes, *, resync_start: bool = False,
                         allow_truncated_end: bool = False) -> dict:
-    """Strict structural parse of captured player output.
-
-    `resync_start`: the capture begins at an arbitrary ring-buffer cut —
-    skip to the first ESC before judging (the skipped prefix may be the
-    printable interior of a cut sequence). `allow_truncated_end`: the
-    capture ends at a byte cap (head.log), so one final incomplete
-    sequence is not an error. Returns a summary dict; `error_count == 0`
-    means the stream is structurally valid.
-    """
     errors: list[str] = []
     n_seq = n_cup = 0
     total_errors = 0
@@ -377,8 +293,6 @@ def check_escape_stream(data: bytes, *, resync_start: bool = False,
 
 
 def check_logs(outdir: Path) -> tuple[dict, list[str]]:
-    """Run the structural check over an outdir's head.log + tail.log.
-    Returns (report, fail_reasons)."""
     report: dict = {}
     reasons: list[str] = []
     head_path, tail_path = outdir / "head.log", outdir / "tail.log"
@@ -402,8 +316,6 @@ def check_logs(outdir: Path) -> tuple[dict, list[str]]:
 
 
 def self_test() -> int:
-    """Validator self-checks: a specified-vocabulary stream passes; each
-    corruption class is caught. Returns a process exit code."""
     volley = b"\x1b[>0q\x1b[?2026$p\x1bP+q524742\x1b\\\x1b[16t\x1b[c"
     enter = b"\x1b[?1049h\x1b[?25l\x1b[?7l"
     frame = (b"\x1b[?2026h\x1b[1;1H\x1b[38;5;120;48;5;16m~~soak~~"
@@ -438,9 +350,6 @@ def self_test() -> int:
 
 
 def spawn_player(player: Path, asset: Path) -> tuple[int, int]:
-    """pty.fork + exec. The child gets the pty as controlling terminal, so
-    TIOCSWINSZ on the master raises SIGWINCH in the player — the whole
-    point of the harness."""
     pid, master = pty.fork()
     if pid == 0:
         try:
@@ -450,14 +359,14 @@ def spawn_player(player: Path, asset: Path) -> tuple[int, int]:
                       "TMUX", "SSH_CONNECTION", "SSH_TTY"):
                 env.pop(k, None)
             os.execve(str(player), [str(player), str(asset), "--loop", "--no-cache"], env)
-        except Exception:  # noqa: BLE001 — child must never unwind into the harness
+        except Exception:
             os._exit(127)
     os.set_blocking(master, False)
     return pid, master
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=CLI_DESCRIPTION)
     ap.add_argument("--duration", type=float, default=3600.0,
                     help="soak length in seconds (default 3600; 60 = smoke mode)")
     ap.add_argument("--asset", type=Path, help="the .ascii asset to loop")

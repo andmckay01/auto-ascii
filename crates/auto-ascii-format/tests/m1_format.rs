@@ -299,6 +299,30 @@ fn write_norm_ordering_rules() {
 }
 
 #[test]
+fn finish_rejects_a_shot_starting_past_the_written_frames() {
+    let mut shots = test_shots();
+    shots.truncate(1);
+    shots.push(ShotRecord { first_frame: 999, flags: norm_flags::CUT, levels: lv(&[]) });
+    let mut w =
+        AsciiWriter::new(Cursor::new(Vec::new()), m1_opts(filter::TEMPORAL_DELTA), &test_meta())
+            .unwrap();
+    w.write_norm(&shots).unwrap();
+    let (y, c) = (synth_y(0), synth_c(0));
+    w.write_frame(&[PlaneRef { id: plane_id::Y, data: &y }, PlaneRef { id: plane_id::C, data: &c }])
+        .unwrap();
+    assert!(matches!(w.finish(), Err(AsciiError::Corrupt(_))));
+
+    let mut w =
+        AsciiWriter::new(Cursor::new(Vec::new()), m1_opts(filter::TEMPORAL_DELTA), &test_meta())
+            .unwrap();
+    w.write_norm(&shots[..1]).unwrap();
+    w.write_frame(&[PlaneRef { id: plane_id::Y, data: &y }, PlaneRef { id: plane_id::C, data: &c }])
+        .unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+    assert_eq!(AsciiReader::open(&bytes).unwrap().frame_count(), 1);
+}
+
+#[test]
 fn rejected_frame_does_not_desync_delta_state() {
     let mut writer =
         AsciiWriter::new(Cursor::new(Vec::new()), m1_opts(filter::TEMPORAL_DELTA), &test_meta())

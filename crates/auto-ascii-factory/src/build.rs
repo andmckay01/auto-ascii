@@ -1,30 +1,4 @@
-//! `auto-ascii-factory build` — the two-pass pipeline, decode to encode:
-//!
-//! - **pass 1:** stream rgb24 frames from ffmpeg, extract L\* luma, detect
-//!   shot boundaries on the RAW histograms (histogram SAD + min shot
-//!   length, [`crate::shots`]) while pooling per-shot levels histograms of
-//!   the EMA'd luma — the EMA'd plane is what pass 2 stores, so NORM
-//!   p2/p98 describe the actual stored bytes. The pass-1 Y-EMA resets at
-//!   exactly the honored boundaries, mirroring pass 2 (both passes decode
-//!   identical frames, so the schedules match deterministically).
-//! - **pass 2:** identical ffmpeg invocation; write NORM (per-shot levels +
-//!   cut flags — applied at RUNTIME by the player), then per frame run
-//!   [`crate::features::FeatureExtractor`] (L\* + Scharr →
-//!   doubled-angle orientation smoothing → hysteresis-thresholded unthinned
-//!   E → Ex/Ey; top-hat + shadow → H; per-plane temporal EMA reset at
-//!   cuts; RGB565 chroma) and stream all six planes (Y, E, Ex, Ey, H, C —
-//!   registry order) through [`AsciiWriter`] under the `[build]` encode
-//!   profile (temporal delta, keyframes every `keyframe_ivl`, zstd at
-//!   `zstd_level`, CRCs on).
-//!
-//! The asset is written to `<out>.part` and renamed into place only after a
-//! successful `finish()` — a killed build never leaves a plausible-looking
-//! truncated `.ascii` behind (an asset missing its TRLR needs a factory
-//! rerun anyway; this just makes the common case obvious). Byte-deterministic: no
-//! timestamps, fixed zstd level, LUT/integer-only pixel math end to end
-//! (see features.rs for the fixed-point EMA and rational orientation math).
-//! Memory: all per-frame state is O(plane) and allocated once — planes
-//! stream to the writer, never accumulate (features.rs memory note).
+//! Two-pass video ingestion and feature-asset encoding.
 
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -49,28 +23,16 @@ pub struct BuildArgs {
     pub output: PathBuf,
     pub ss: Option<f64>,
     pub t: Option<f64>,
-    /// Effective tunables (params.toml + CLI overrides, validated) —
-    /// fps/res/encode profile/shot detection/levels all live here.
     pub params: Params,
 }
 
-/// What a finished build produced: the numbers
-/// `auto-ascii import` records in its sidecar and prints as JSON, read off
-/// the same values the human "wrote …" line reports. Nothing here needs the
-/// asset reopened.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BuildReport {
-    /// Frames encoded (== the ASCI header's `frame_count`).
     pub frames: u32,
-    /// Output frame rate (the header stores it as `fps`/1).
     pub fps: f64,
-    /// `frames / fps`.
     pub duration_secs: f64,
-    /// Stored plane width (`[build].base_w` after CLI overrides).
     pub base_w: u16,
-    /// Stored plane height.
     pub base_h: u16,
-    /// Size of the written `.ascii` file.
     pub bytes: u64,
 }
 
@@ -130,10 +92,6 @@ fn shot_records(shots: &[Shot]) -> Vec<ShotRecord> {
         .collect()
 }
 
-/// Run the two-pass build. Every human progress/info line goes to `info`
-/// (the bin hands it `stderr`; a `--json` caller hands it stderr too and
-/// keeps stdout for the JSON object). The indicatif bars always draw on
-/// stderr and are cleared before any line is written.
 pub fn run(args: &BuildArgs, info: &mut dyn Write) -> Result<BuildReport, BoxErr> {
     if !args.input.is_file() {
         return Err(format!("input not found: {}", args.input.display()).into());

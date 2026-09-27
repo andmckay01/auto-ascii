@@ -52,6 +52,9 @@ crates/
                         It is a THIRD crate because the factory already
                         depends on the facade, so the binary needing both
                         cannot live in either.
+  auto-ascii-lint     lib+bin source comment policy checker (unpublished).
+                        bin: check-comments; developer tooling only, with no
+                        runtime dependency edge into the player or factory.
 ```
 
 - Root workspace: resolver 3, edition 2024, `license = "MIT"`,
@@ -337,7 +340,7 @@ pub mod codec {
     pub struct Letters;
     pub const LETTERS_RAMP, LETTERS_TOP, LETTERS_BOTTOM: &[char]; // 16 each
     pub const LETTERS_FILL: char = '█'; pub const LETTERS_FILL_MIN: u8 = 236;
-    // design constants, not tunables (CONTRIBUTING): see the module docs
+    // design constants, not tunables (CONTRIBUTING): see note 27(h) below
     pub fn letters_glyphs(blocks: bool) -> Vec<char>;  // the repertoire
   }
   pub mod ascii {                         // printable ASCII, no background
@@ -435,7 +438,7 @@ pub fn ProbeReplies::sync_supported(&self) -> bool;  // NEW at M4: DECRPM 1|2
 // shared pty plumbing in tests/common/mod.rs): kitty / alacritty / wezterm /
 // gnome-terminal (VTE) / xterm / xterm-direct / Linux console are replayed
 // through probe_caps on a real pty — their env, their TIOCGWINSZ, their canned
-// reply stream (sourced from each terminal's own code, cited inline) — and the
+// reply stream (sources listed in note 23(a) below) — and the
 // resulting Caps asserted. The harness PROBE-DONE line gained `support=` and
 // `glyphs=` fields, and mode `caps` (alias of probe-silent) is the human-facing
 // diagnostic documented in docs/TERMINAL-CHECKLIST.md.
@@ -563,6 +566,12 @@ impl AsciiWriter<W> {
       // else per-byte cur−prev (mod 256) per plane before zstd. Rejected frames
       // never touch the delta reference (tested).
   pub fn finish(self) -> Result<W>;
+      // Rejects a NORM whose last shot starts at or past the frames written,
+      // the same bound open() enforces, so the writer never emits an asset
+      // the reader refuses. Returns the inner writer flushed, never fsynced:
+      // a caller that renames the result into place must sync_all first to
+      // be crash-durable. Neither current `.part`-then-rename caller
+      // (factory `build.rs`, `auto_ascii::compose` export) does.
 }
 
 // read.rs — over &[u8]; open() now O(pre-frame chunks + FIDX): header
@@ -967,8 +976,9 @@ impl RenderSession {
       // cells (embedder owns quantization), cell aspect 2.0.
       // Internally a one-clip `deck::ClipDeck` (M8) holding
       // Player<'static> over the owned map (encapsulated self-reference;
-      // SAFETY comment in deck.rs — drop order pins the borrow, the fake
-      // 'static never escapes that module)
+      // drop order pins the borrow, the fake 'static never escapes that
+      // module — the soundness argument is in the `auto_ascii::deck` (M8)
+      // paragraph just before `## auto_ascii::pipeline` below)
   pub fn open_composition(impl AsRef<Path>, library_dir: Option<&Path>)
       -> Result<RenderSession, Error>;                    // M8, feature `compose`
   pub fn from_composition(Composition) -> Result<RenderSession, Error>;  // M8
@@ -983,7 +993,7 @@ impl RenderSession {
   pub fn render(&mut self, frame_idx: u32, cols: u16, rows: u16)
       -> Result<&Grid<Cell>, Error>;
       // letterboxed compose at cols×rows; <32×9 renders the enlarge card.
-      // TEMPORAL-STATE CONTRACT (documented on the type): monotonic
+      // TEMPORAL-STATE CONTRACT: monotonic
       // frame_idx advance (skips fine) = full hysteresis quality;
       // BACKWARD jump = automatic full temporal reset (no pre-seek
       // ghosting, landing frame == cold start); grid size change =
@@ -1026,7 +1036,7 @@ impl PlayerBuilder {        // the spec'd builder (§7 M4) + escape hatches
   pub fn looping(self, bool) -> Self;
   pub fn cell_aspect(self, f64) -> Self;          // finite >0 checked at build
   pub fn seek_secs(self, f64) -> Self;            // FIDX seek; bounds at build
-  pub fn duration_secs(self, f64) -> Self;        // stop after N s wall clock
+  pub fn duration_secs(self, f64) -> Self;        // stop after N s wall clock, including pauses
   pub fn no_query(self, bool) -> Self;            // probe escape hatches
   pub fn no_cache(self, bool) -> Self;            //   (PLAN §3.1)
   pub fn no_quirks(self, bool) -> Self;           // M5 item C: skip the
@@ -1079,10 +1089,17 @@ than at each of the four call sites; `stage()` carries evicted clips' time
 and times gap presents, so a composition's budget still adds up. It is the ONE clip-switch
 implementation — `RenderSession`, the terminal `Player` and `--sim` all
 drive it — and it never hands out the `Player<'static>` it holds, which is
-what keeps the fake `'static` inside the module. At most `MAX_LIVE_CLIPS`
+what keeps the fake `'static` inside the module. Soundness of that
+`'static` slice: it points into the OS mapping owned by the clip's `Mmap`,
+whose address is stable however the handle moves, and each open clip is one
+private `Resident { player, map }` slot with `player` declared before
+`map`, so Rust's declaration-order drop kills every borrow before the
+mapping is unmapped — whether the slot is dropped with the deck or taken by
+eviction. Reordering those two fields would still compile and would be a
+use-after-unmap. At most `MAX_LIVE_CLIPS`
 pipelines are resident: opening one past the cap evicts the least recently
-fronted clip, clearing its player BEFORE its mapping (same drop-order
-argument), and re-opening is the lazy path again — cold, which is the
+fronted clip, dropping its slot (player first, then mapping, by the same
+field order), and re-opening is the lazy path again — cold, which is the
 temporal reset a return to a clip wants anyway.
 
 ## auto_ascii::pipeline — the hidden engine room (ex auto-ascii-player lib)
@@ -1102,8 +1119,11 @@ resize/invalidate) and `render_grid(frame_idx)` (everything but present);
 calls (call order and bytes IDENTICAL to M3 — verified by the pre/post
 sim-dump sha256 pin at M4). Also new: `reset_temporal_state()` (the §3.5
 discontinuity reset, used by RenderSession backward jumps),
-`set_glyph_tier(GlyphTier)` + `set_cell_aspect(f64)` (take effect at next
-reflow; RenderSession setters).
+`set_glyph_tier_for_next_reflow(GlyphTier)` +
+`set_cell_aspect_for_next_reflow(f64)` (take effect at next reflow;
+RenderSession setters; renamed from `set_glyph_tier`/`set_cell_aspect` by
+the comment cleanup). A warmed sequential `render_grid` with overlays off
+is allocation-free for every codec (`tests/render_alloc.rs`).
 
 ```rust
 // pipeline.rs — M3: the full §3.5 three-layer path (integrator; note 20).
@@ -1232,7 +1252,8 @@ pub fn drain_backend_events<B: Backend>(&mut B) -> (Drained, Option<(u16,u16)>);
 ```
 
 (M4 additions to this registry — `reflow_grid`/`render_grid`/
-`reset_temporal_state`/`set_glyph_tier`/`set_cell_aspect` — are described in
+`reset_temporal_state`/`set_glyph_tier_for_next_reflow`/
+`set_cell_aspect_for_next_reflow` — are described in
 the facade section above. Nothing else in the crate is `pub` outside the
 facade surface + this hidden module.)
 
@@ -1878,7 +1899,7 @@ facade surface + this hidden module.)
     `assets/*.ascii` are still M1-era Y+C and must be REBUILT at M3
     integration (the `#[ignore]`d grass byte-identity guard fails until
     then, by design). Memory: extraction state is O(plane), ~4 MB fixed
-    (features.rs memory note); planes stream to the writer.
+    (see FEATURE-MAP.md, factory build flow); planes stream to the writer.
 19. **M3 edge-F1 metric + review reel landed** (edge-F1/reel agent; PLAN
     §6 "Edge F1 vs source Canny", §7 M3 review-reel gate). Decisions:
     (a) **ground truth** = imageproc Canny on the RAW source (one streaming
@@ -1893,7 +1914,8 @@ facade surface + this hidden module.)
     masks visually verified). Scored at the `ssim_every` cadence with a
     1-cell Chebyshev tolerance ring both ways (glyph quantization +
     deliberately-unthinned E make off-by-one correct, not lenient);
-    NaN-free empty-frame conventions in edge.rs docs.
+    NaN-free empty-frame conventions in the `edge_f1` entry in the
+    [auto-ascii-eval section](#auto-ascii-eval-plan-6-m2-item-a--metrics-library-no-io-beyond-serde).
     (b) **prediction side / LayerMask contract**: §3.4 composition is
     override-only, so per-cell render metadata is a single u8 layer id —
     additive auto-ascii-core API (`compose::layer`, `compose_cell_layer`,
@@ -1903,8 +1925,9 @@ facade surface + this hidden module.)
     path still active in Player honestly tags every cell BASE, so eval
     currently reports edge_f1 = 0.0 with real nonzero truth — the M3
     pipeline integrator MUST switch an enabled mask to
-    `compose_frame_masked` when wiring the three-layer compose (field doc
-    in pipeline.rs); F1 then becomes live with zero eval-side changes.**
+    `compose_frame_masked` when wiring the three-layer compose (see the
+    `render_present` contract in the pipeline section above); F1 then
+    becomes live with zero eval-side changes.**
     (c) **schema/compare**: report schema v2 (edge_f1/precision/recall;
     deliberate M3 generation marker), `Tolerances.edge_f1_max_drop` 0.05
     (abs, drop-only — the aesthetic-regression drill's gate; only F1 is
@@ -2048,7 +2071,7 @@ facade surface + this hidden module.)
     `TIOCGWINSZ` (with or without pixel fields) and its canned reply stream —
     and the resulting `Caps` (color tier, sync_2026, cell_px, glyph support
     tier, glyph flags, zero stray bytes) asserted. Every stream is derived
-    from that terminal's own source, cited inline (kitty screen.c/terminfo.py/
+    from that terminal's own source (kitty screen.c/terminfo.py/
     window.py; alacritty term/mod.rs + CHANGELOG; wezterm terminalstate/mod.rs;
     vte vteseq.cc/modes.py/pty.cc; xterm ctlseqs + misc.c; console_codes(4)).
     (b) **Two probe readings fixed by that research.** DECRPM 2026 now counts
@@ -2136,7 +2159,11 @@ facade surface + this hidden module.)
     Same-config rot fixed alongside: `tests/m1_sim.rs` and `tests/sim_e2e.rs`
     carry `#![cfg(feature = "bin")]`, so they no longer silently exercise a
     stale `target/debug/auto-ascii-player` left by an earlier default-feature
-    build. No public signature changed in (c).
+    build. No public signature changed in (c). Superseded by the comment
+    rule: the quickstart, `RenderSession` and `Composition` examples are now
+    `crates/auto-ascii/tests/public_examples.rs` (the terminal builder chain
+    is typechecked behind `terminal` and never run), and the facade no
+    longer carries `#![deny(missing_docs)]`.
 
 25. **M5 item B landed** (font-tables agent; PLAN §3.4 "coverage tables for
     4 common monospace fonts plus one conservative default" + `--font-table`).
@@ -2181,7 +2208,8 @@ facade surface + this hidden module.)
     (e) **Eval default unchanged:** `eval` without `--font-table` scores
     through the conservative constants exactly as before (runs/base.json
     untouched); per-font SSIM is a new mode whose normalization anchor
-    moves with the table (documented on from_font_table).
+    moves with the table (see `CoverageTable::from_font_table` in the
+    auto-ascii-eval section above).
 
 26. **M5 items C + D + E + F landed** (scrub/ship agent). PLAN §7 M5 minus
     the soak (A) and font tables (B), which landed separately (note 25).
@@ -2315,7 +2343,8 @@ facade surface + this hidden module.)
     `OVERLAY_HIDE_AFTER`; a pause SUSPENDS it, so the row and the hints row
     riding on it stay up for the whole freeze). `duration_secs` is unchanged
     and deliberately still WALL clock: a pause spends the budget like
-    playback does, now documented on the builder. The hints row gained
+    playback does (see `PlayerBuilder::duration_secs` in the public facade
+    section above). The hints row gained
     `space pause` in second place, dropped third (after `[ ] adjust` and
     `d dial`) for its eleven columns; `v controls` is still last to go.
     (g) **Dials work both ways** (bug fix, after M8: "I can change in one
@@ -2719,7 +2748,7 @@ facade surface + this hidden module.)
     glyph history cannot freeze either. (The glyph rule written here, an
     exact-repeat candidate adopted after `min(1 + idx_hyst_q8 / 5, 32)`
     frames, is superseded: see "Hysteresis range and ASCII glyph hold" at the
-    end of this file and the `ascii` module docs.) Black-floor crossings take
+    end of this file and [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).) Black-floor crossings take
     at most four consecutive frames on the new side; large changes remain
     immediate.
     `CellState` adds two ASCII-only bytes (`tone_candidate`, `tone_age`),
@@ -3040,5 +3069,5 @@ rises above 9; `jump_band`), settles a
 smoothed tone more than `idx_hyst_q8 / 8` away after `min(1 + h/4, 32)`
 frames, and converges nearer smoothed tones that sit at least 4 units inside
 another ramp step after `min(h/2, 63) + 1` frames (`CellState::tone_age`:
-bit 7 down, bit 6 slow path, bits 0–5 count). The rule is in the `ascii`
-module docs and the measurements in [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).
+bit 7 down, bit 6 slow path, bits 0–5 count). The full rule and its
+measurements are in [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).

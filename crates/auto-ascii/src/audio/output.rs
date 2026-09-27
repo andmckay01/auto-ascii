@@ -1,10 +1,7 @@
-//! Sound out of memory: the decoded track is an i16 slab the decode thread
-//! fills front to back and publishes with one atomic frame count, so the
-//! output callback reads it without a lock. An output (cpal, or a null sink
-//! paced in real time for `--sim` and tests) pulls frames at the shared read
-//! cursor, wraps it at the loop length, writes zeros while muted or where the
-//! track has not been decoded yet, and reports what it consumed to the shared
-//! clock state. Adapted from the `yt-stream` branch's `stream/audio.rs`.
+//! Sound out of memory: a lock-free i16 slab the decode thread publishes by
+//! frame count, and the cpal or null-sink output that pulls frames at the
+//! shared read cursor, wraps at the loop length, writes zeros while muted or
+//! undecoded, and reports what it consumed to the shared clock state.
 
 use std::sync::atomic::{AtomicBool, AtomicI16, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};

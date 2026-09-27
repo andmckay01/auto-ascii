@@ -1,17 +1,7 @@
-//! rgb24 → base planes: full-res L\* luma (plane Y) and half-res per-channel
-//! chroma from ONE decoded stream. Orchestration (edges/highlights/EMA/packing)
-//! lives in `features.rs`.
-//!
-//! **C plane wire format (factory⇄player contract):** one
-//! little-endian u16 per pixel at (base_w/2) × (base_h/2), packed
-//! `bits 15..11 = R5 | 10..5 = G6 | 4..0 = B5` ([`pack_rgb565`]), produced
-//! by a 2×2 area-average downsample (per-channel sum + 2 >> 2,
-//! round-half-up) of the rgb24 frame, with the channels EMA'd between
-//! averaging and packing. Half res is invisible at cell granularity.
+//! RGB24 luma and half-resolution chroma extraction.
 
 use crate::lut::LumaLut;
 
-/// Stateless per-frame plane extractor (tables built once per build).
 pub struct Extractor {
     lut: LumaLut,
     w: usize,
@@ -23,8 +13,6 @@ impl Extractor {
         Extractor { lut: LumaLut::new(), w: w as usize, h: h as usize }
     }
 
-    /// Fill the Y plane (`w × h` bytes): per-pixel sRGB→linear→L\*
-    /// ([`LumaLut`]). No level stretch — levels live in NORM.
     pub fn luma(&self, rgb: &[u8], out: &mut [u8]) {
         debug_assert_eq!(rgb.len(), self.w * self.h * 3);
         debug_assert_eq!(out.len(), self.w * self.h);
@@ -33,12 +21,6 @@ impl Extractor {
         }
     }
 
-    /// Fill three half-res channel planes (`(w/2) × (h/2)` bytes each): 2×2
-    /// area average per channel (round-half-up). `build` rejects odd
-    /// `--res`, so every source pixel lands in exactly one 2×2 block.
-    /// Kept separate from the RGB565 packing: the chroma EMA must blend
-    /// full-precision channels — smoothing packed 5/6/5 bits would quantize
-    /// twice.
     pub fn chroma_channels(&self, rgb: &[u8], r: &mut [u8], g: &mut [u8], b: &mut [u8]) {
         let (cw, ch) = (self.w / 2, self.h / 2);
         debug_assert_eq!(rgb.len(), self.w * self.h * 3);
@@ -67,8 +49,6 @@ impl Extractor {
     }
 }
 
-/// Pack three channel planes into the C plane wire format (module docs:
-/// RGB565 little-endian, `bits 15..11 = R5 | 10..5 = G6 | 4..0 = B5`).
 pub fn pack_rgb565(r: &[u8], g: &[u8], b: &[u8], out: &mut [u8]) {
     debug_assert_eq!(out.len(), r.len() * 2);
     debug_assert_eq!(r.len(), g.len());

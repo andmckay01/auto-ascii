@@ -34,7 +34,9 @@ and why every builtin table vetoes `BrailleVerified` down to unicode.
   quadrants/half-blocks, reachable braille masks), never a hardcoded list.
 - Cell: 64×128 px (§3.4). The font is scaled so its monospace **advance**
   equals 64 px (terminals size text by advance); the glyph ink box is
-  centered and clipped to the cell.
+  centered and clipped to the cell. A font whose line box is taller than
+  twice its advance (e.g. Noto Sans Mono) overflows the 1:2 cell exactly as
+  it does in a real terminal; the clip keeps coverage within `0..=1`.
 - `coverage` = Σ antialiased ink / (64·128) — same fractional-ink integral
   as the M2 `derive_coverage.py` ffmpeg reference (ab_glyph vs freetype
   agree within ~1–2% on solid glyphs, e.g. DejaVu `@` 0.2665 vs 0.2627;
@@ -44,7 +46,10 @@ and why every builtin table vetoes `BrailleVerified` down to unicode.
   on stderr. `missing` is the repertoire-veto input.
 - Determinism: byte-identical output for identical font bytes
   (unit-tested: `auto-ascii-factory font_table::generator_is_deterministic`;
-  re-running the commands above reproduces these files byte-for-byte).
+  re-running the commands above reproduces these files byte-for-byte, and
+  `committed_conservative_table_regenerates_byte_for_byte` pins that for
+  the conservative table).
+- Header: one line naming the generator; the file has no other comments.
 
 Regenerate all five:
 

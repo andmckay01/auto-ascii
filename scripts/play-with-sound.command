@@ -1,16 +1,8 @@
 #!/usr/bin/env bash
-# Play an .ascii asset, restarting the player each time the clip reaches its
-# end. Usage:
-#   play-with-sound.command PLAYER ASSET [PLAYER_ARGS...]
-# The player plays the asset's soundtrack itself (a <stem>.m4a/.mp4 or the
-# folder's source.mp4 beside it), in sync through scrubs, jumps, pauses and
-# loops, and `m` toggles it; nothing else is started here. A third argument
-# that is not a flag is the old AUDIO argument: it is logged and ignored.
-# The player exits 0 at the end of the clip, 3 when the viewer quits
-# (q, Esc, Ctrl-C) and anything else on an error, a panic or a signal.
-# Every exit is logged with its status, duration and stderr to $LOG
-# (default ~/Library/Logs/auto-ascii/play-with-sound.log). On an unexpected
-# exit the window stays open with the error until Return is pressed.
+# Loop auto-ascii-player on one asset until the viewer quits (exit status 3).
+# Usage: play-with-sound.command PLAYER ASSET [PLAYER_ARGS...]; a legacy
+# non-flag AUDIO argument is logged and ignored. Every exit goes to $LOG, and
+# an unexpected one keeps the window open until Return is pressed.
 set -u
 
 if [ $# -lt 2 ]; then

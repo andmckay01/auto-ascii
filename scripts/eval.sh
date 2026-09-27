@@ -31,6 +31,10 @@ section "clippy -D warnings"
 cargo clippy --workspace --all-targets --quiet -- -D warnings
 section_done
 
+section "comment rule"
+cargo run --quiet --release -p auto-ascii-lint --bin check-comments -- --count
+section_done
+
 section "resize fuzz x$FUZZ_CASES"
 PROPTEST_CASES="$FUZZ_CASES" cargo test --quiet -p auto-ascii --test resize_fuzz
 section_done

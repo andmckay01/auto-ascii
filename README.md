@@ -378,7 +378,8 @@ lists the feature tiers. There are three runnable examples:
 call), [`embedded-loop`](crates/auto-ascii/examples/embedded-loop.rs)
 (`RenderSession` in a hand-rolled loop with a mid-run resize) and
 [`headless-dump`](crates/auto-ascii/examples/headless-dump.rs) (frames to
-stdout as text). API docs: `cargo doc -p auto-ascii --open`.
+stdout as text). API contracts:
+[the public facade registry](docs/INTERFACES.md#auto-ascii--the-public-facade-m4-item-a-source-of-truth-for-the-api).
 
 ## Palettes
 
@@ -440,7 +441,8 @@ overrides and ranks the combinations; the grid format is in the feature map.
 | `crates/auto-ascii-factory` | the offline factory (lib + bin), eval and sweep drivers |
 | `crates/auto-ascii-cli` | the `auto-ascii` CLI, including `stream` (yt-dlp + ffmpeg + cpal) |
 | `crates/auto-ascii-eval` | metrics, synthetic fixtures, report schema |
-| `scripts/eval.sh` | the gate: tests, clippy, resize fuzz, perf gates, corpus eval |
+| `crates/auto-ascii-lint` | source comment policy checker (unpublished) |
+| `scripts/eval.sh` | the gate: tests, clippy, comment rule, resize fuzz, perf gates, corpus eval |
 | `tools/` | `prep_video.py` (canvas-normalize a source video), `soak.py` (resize-storm soak) |
 
 `auto-ascii` 0.2 and `auto-ascii-core`, `-format` and `-term` 0.1 are on
@@ -455,6 +457,7 @@ Docs:
 - [docs/PLAN.md](docs/PLAN.md) and [docs/PLAN-M6-M8.md](docs/PLAN-M6-M8.md):
   the original designs.
 - [docs/INTERFACES.md](docs/INTERFACES.md): the internal API registry.
+- [docs/NOTES.md](docs/NOTES.md): domain and technology facts that code cannot carry.
 - [docs/research/](docs/research/): the research digests.
 
 `scripts/eval.sh` is what "green" means here. It runs in a few minutes, and

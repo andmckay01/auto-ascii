@@ -1,26 +1,11 @@
-//! One grammar, three shapes — `SS[.f]`, `MM:SS[.f]`, `HH:MM:SS[.f]` — so
-//! `auto-ascii-player --seek 1:30`, `auto-ascii import --ss 1:30` and a
-//! composition's `in`/`out` never disagree about what a string means.
-//! Fractions are allowed in any field and every field is a plain decimal
-//! number: `90`, `1:30`, `0:01:30` and `0:00:90` are all 90 seconds.
-//!
-//! Always available: no dependencies and no features, so
-//! `--no-default-features` embedders get it too.
+//! Shared timestamp parsing and formatting.
 
 use std::fmt;
 
-/// Why [`parse`] rejected a timestamp. The `Display` text is written to be
-/// shown to a user verbatim, under whatever context the caller adds (the
-/// player binary prefixes `--seek "..."`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TimecodeError {
-    /// More than three colon-separated fields — there is no unit above
-    /// hours.
     TooManyFields,
-    /// A field was not a decimal number (the field, verbatim).
     BadField(String),
-    /// A field parsed but was negative, infinite or NaN (the field,
-    /// verbatim).
     OutOfRange(String),
 }
 
@@ -40,19 +25,6 @@ impl fmt::Display for TimecodeError {
 
 impl std::error::Error for TimecodeError {}
 
-/// Parse `SS[.f]`, `MM:SS[.f]` or `HH:MM:SS[.f]` into seconds.
-///
-/// Fields are trimmed, so `" 1 : 30"` is 90 s; nothing else is lenient.
-/// Fields are NOT range-checked against the unit above them — `0:90` is
-/// 90 s, which is what a caller doing arithmetic on the string wants.
-///
-/// ```
-/// use auto_ascii::timecode;
-/// assert_eq!(timecode::parse("42.5").unwrap(), 42.5);
-/// assert_eq!(timecode::parse("1:30").unwrap(), 90.0);
-/// assert_eq!(timecode::parse("0:01:30.5").unwrap(), 90.5);
-/// assert!(timecode::parse("1:2:3:4").is_err());
-/// ```
 pub fn parse(s: &str) -> Result<f64, TimecodeError> {
     let parts: Vec<&str> = s.split(':').collect();
     if parts.len() > 3 {
@@ -70,15 +42,6 @@ pub fn parse(s: &str) -> Result<f64, TimecodeError> {
     Ok(secs)
 }
 
-/// Format seconds as `M:SS`, widening to `H:MM:SS` past the hour — the
-/// exact shape the player's progress overlay prints. Sub-second parts are
-/// truncated, and anything negative or NaN prints as `0:00`.
-///
-/// ```
-/// use auto_ascii::timecode::format_mmss;
-/// assert_eq!(format_mmss(90.9), "1:30");
-/// assert_eq!(format_mmss(3661.0), "1:01:01");
-/// ```
 pub fn format_mmss(secs: f64) -> String {
     let secs = if secs.is_finite() && secs > 0.0 { secs as u64 } else { 0 };
     if secs >= 3600 {

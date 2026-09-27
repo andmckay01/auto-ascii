@@ -1,37 +1,4 @@
-//! Deterministic ASCI writer.
-//!
-//! Stream shape: `HEADER | META | [NORM] | FRAM × frame_count | FIDX | TRLR`.
-//! Default profile: `codec = zstd`, `filter = temporal-delta` with a keyframe
-//! every `keyframe_ivl` frames (flags bit0), per-plane subblocks padded to
-//! 64-byte alignment. `frame_count` + `index_offset` are patched into the
-//! header at close (writer streams frames first) — the one `Seek` use.
-//!
-//! Output is byte-deterministic: fixed zstd level, no timestamps, no
-//! map-ordering ambiguity (META is a struct); identical input ⇒
-//! byte-identical file.
-//!
-//! ## Frozen wire details
-//!
-//! - **Chunk flags as written:** META = 0 and NORM = 0 (skippable),
-//!   FRAM / FIDX / TRLR = `chunk_flags::REQUIRED`.
-//! - **Subblock 64-B alignment:** each `[plane_id u8 | comp_size u32 |
-//!   raw_size u32 | zstd bytes]` subblock occupies `align64(9 + comp_size)`
-//!   bytes inside the FRAM payload; the zero pad bytes are part of the
-//!   payload, so they are counted by the chunk `size` field and covered by
-//!   the chunk CRC32.
-//! - **FIDX `comp_size`:** the FRAM chunk's payload size (its `size` field),
-//!   i.e. everything between the chunk header and the trailing CRC.
-//! - **`meta_offset`:** always 64 (META is written immediately after the
-//!   header). NORM, when present, immediately follows META.
-//! - **Plane raw sizes:** [`crate::header::plane_raw_size`] — `base_w ×
-//!   base_h` bytes for Y/E/Ex/Ey/H; `(base_w/2) × (base_h/2) × 2` bytes for
-//!   C (RGB565).
-//! - **Temporal delta:** for non-keyframes, each plane stores
-//!   `cur − prev (mod 256)` per byte against the *previous frame as handed
-//!   to the writer* (== previous decoded frame); keyframes store the plane
-//!   intra. Keyframes fall on `frame_idx % keyframe_ivl == 0`.
-//! - **NORM records:** [`crate::norm::ShotRecord`] wire layout, 24 B each,
-//!   `first_frame` strictly increasing from 0.
+//! Deterministic streaming ASCI container writer.
 
 use std::io::{Seek, SeekFrom, Write};
 
@@ -47,9 +14,6 @@ use crate::header::{
 use crate::meta::Meta;
 use crate::norm::ShotRecord;
 
-/// Writer configuration (header fields + encode knobs). Defaults are the ASCI
-/// v1 profile: temporal delta + zstd-19, keyframe every 60 frames, Y plane,
-/// CRCs on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WriterOptions {
     pub fps_num: u16,
@@ -58,19 +22,11 @@ pub struct WriterOptions {
     pub base_h: u16,
     pub aspect_num: u16,
     pub aspect_den: u16,
-    /// Plane IDs in subblock order. Must be known IDs (the writer needs
-    /// their geometry, [`plane_raw_size`]).
     pub plane_ids: Vec<u8>,
-    /// `codec::*` — ZSTD only.
     pub codec: u8,
-    /// `filter::*` — TEMPORAL_DELTA (default) or INTRA.
     pub filter: u8,
-    /// Keyframe cadence for TEMPORAL_DELTA (default 60). Ignored by INTRA
-    /// (every frame is keyframe-flagged) but must still be ≥ 1.
     pub keyframe_ivl: u8,
-    /// zstd level (default 19; decode speed is unaffected by the level).
     pub zstd_level: i32,
-    /// Emit per-chunk CRC32s and set `header_flags::CRCS_PRESENT`.
     pub with_crc: bool,
 }
 
@@ -93,24 +49,19 @@ impl Default for WriterOptions {
     }
 }
 
-/// One uncompressed plane handed to [`AsciiWriter::write_frame`].
-/// `data.len()` must equal the plane's raw size ([`plane_raw_size`]).
 #[derive(Clone, Copy, Debug)]
 pub struct PlaneRef<'a> {
-    /// `plane_id::*` — must match `WriterOptions::plane_ids` order.
     pub id: u8,
     pub data: &'a [u8],
 }
 
-/// Streaming ASCI writer over any `Write + Seek`, e.g. a `BufWriter<File>`
-/// (this crate has no I/O policy of its own).
 pub struct AsciiWriter<W: Write + Seek> {
     w: W,
     opts: WriterOptions,
     raw_sizes: Vec<usize>,
     index: Vec<FrameIndexEntry>,
     frames_written: u32,
-    norm_written: bool,
+    last_shot_start: Option<u32>,
     pos: u64,
     codecs: Vec<PlaneCodec>,
     payload_buf: Vec<u8>,
@@ -166,9 +117,6 @@ fn emit_chunk<W: Write>(
 }
 
 impl<W: Write + Seek> AsciiWriter<W> {
-    /// Write the 64-byte header (with `frame_count`/`index_offset` = 0,
-    /// patched in [`finish`](AsciiWriter::finish)) followed by the META chunk.
-    /// `meta` must obey the determinism rules on [`Meta`].
     pub fn new(w: W, opts: WriterOptions, meta: &Meta) -> Result<AsciiWriter<W>> {
         let n = opts.plane_ids.len();
         if n == 0 || n > 8 {
@@ -234,7 +182,7 @@ impl<W: Write + Seek> AsciiWriter<W> {
             raw_sizes,
             index: Vec::new(),
             frames_written: 0,
-            norm_written: false,
+            last_shot_start: None,
             pos: 0,
             codecs,
             payload_buf: Vec::new(),
@@ -248,16 +196,11 @@ impl<W: Write + Seek> AsciiWriter<W> {
         Ok(this)
     }
 
-    /// Write the NORM chunk (per-shot runtime levels + cut flags).
-    /// Must be called before the first [`write_frame`](AsciiWriter::write_frame)
-    /// and at most once. `shots[0].first_frame` must be 0 and `first_frame`
-    /// strictly increasing; upper bounds are checked by the reader against
-    /// the final `frame_count` (unknown while streaming).
     pub fn write_norm(&mut self, shots: &[ShotRecord]) -> Result<()> {
         if self.frames_written > 0 {
             return Err(AsciiError::Corrupt("writer: NORM must precede all frames"));
         }
-        if self.norm_written {
+        if self.last_shot_start.is_some() {
             return Err(AsciiError::Corrupt("writer: duplicate NORM chunk"));
         }
         if shots.is_empty() {
@@ -275,16 +218,10 @@ impl<W: Write + Seek> AsciiWriter<W> {
             payload.extend_from_slice(&shot.to_bytes());
         }
         emit_chunk(&mut self.w, &mut self.pos, self.opts.with_crc, TAG_NORM, 0, &payload)?;
-        self.norm_written = true;
+        self.last_shot_start = shots.last().map(|shot| shot.first_frame);
         Ok(())
     }
 
-    /// Append one FRAM chunk: `frame_idx u32 | flags u8 | [plane_id u8 |
-    /// comp_size u32 | raw_size u32 | zstd bytes] × plane_count`, each plane
-    /// subblock padded to 64-byte alignment. Planes must match `opts.plane_ids`
-    /// in id and order. Under TEMPORAL_DELTA, frames on the keyframe cadence
-    /// are stored intra (flags bit0); all others store the per-byte delta
-    /// against the previous frame. Records the FIDX row.
     pub fn write_frame(&mut self, planes: &[PlaneRef<'_>]) -> Result<()> {
         if planes.len() != self.opts.plane_ids.len() {
             return Err(AsciiError::Corrupt("writer: plane count does not match plane_ids"));
@@ -362,10 +299,10 @@ impl<W: Write + Seek> AsciiWriter<W> {
         Ok(())
     }
 
-    /// Write FIDX (frame_count × 16 B) and TRLR (`"ASCI_END"`), then seek
-    /// back and patch `frame_count` + `index_offset` in the header. Returns
-    /// the inner writer (flushed, not synced).
     pub fn finish(mut self) -> Result<W> {
+        if self.last_shot_start.is_some_and(|start| start >= self.frames_written) {
+            return Err(AsciiError::Corrupt("writer: NORM shot starts past the last written frame"));
+        }
         let index_offset = self.pos;
 
         let mut fidx = Vec::with_capacity(self.index.len() * FIDX_ENTRY_SIZE);
