@@ -136,13 +136,16 @@ pub enum Pick {
     Empty,
     Wait,
     Show { index: usize, dropped: usize },
+    Stale { dropped: usize },
 }
 
-pub fn pick_frame(pts: &[f64], now: f64) -> Pick {
+pub fn pick_frame(pts: &[f64], now: f64, period: f64) -> Pick {
     let due = pts.partition_point(|&p| p <= now + 1e-9);
+    let stale = pts.partition_point(|&p| p + period <= now + 1e-9);
     match (pts.is_empty(), due) {
         (true, _) => Pick::Empty,
         (false, 0) => Pick::Wait,
+        (false, n) if stale >= n => Pick::Stale { dropped: n },
         (false, n) => Pick::Show { index: n - 1, dropped: n - 1 },
     }
 }
@@ -158,13 +161,20 @@ mod tests {
     #[test]
     fn pick_shows_the_newest_due_frame_and_drops_the_older_ones() {
         let pts = [0.0, 0.1, 0.2, 0.3];
-        assert_eq!(pick_frame(&[], 5.0), Pick::Empty);
-        assert_eq!(pick_frame(&pts, -0.01), Pick::Wait);
-        assert_eq!(pick_frame(&pts, 0.0), Pick::Show { index: 0, dropped: 0 });
-        assert_eq!(pick_frame(&pts, 0.15), Pick::Show { index: 1, dropped: 1 });
-        assert_eq!(pick_frame(&pts, 0.3), Pick::Show { index: 3, dropped: 3 });
-        assert_eq!(pick_frame(&pts, 9.0), Pick::Show { index: 3, dropped: 3 });
-        assert_eq!(pick_frame(&[1.0, 1.1], 0.5), Pick::Wait, "the picture waits when it is ahead");
+        assert_eq!(pick_frame(&[], 5.0, 0.1), Pick::Empty);
+        assert_eq!(pick_frame(&pts, -0.01, 0.1), Pick::Wait);
+        assert_eq!(pick_frame(&pts, 0.0, 0.1), Pick::Show { index: 0, dropped: 0 });
+        assert_eq!(pick_frame(&pts, 0.15, 0.1), Pick::Show { index: 1, dropped: 1 });
+        assert_eq!(pick_frame(&pts, 0.35, 0.1), Pick::Show { index: 3, dropped: 3 });
+        assert_eq!(pick_frame(&[1.0, 1.1], 0.5, 0.1), Pick::Wait, "the picture waits when it is ahead");
+    }
+
+    #[test]
+    fn a_frame_whose_slot_has_passed_is_dropped_not_shown_late() {
+        assert_eq!(pick_frame(&[0.0, 0.1, 0.2, 0.3], 9.0, 0.1), Pick::Stale { dropped: 4 });
+        assert_eq!(pick_frame(&[2.0], 3.2, 1.0 / 30.0), Pick::Stale { dropped: 1 }, "1.2 s late: drop, never show");
+        assert_eq!(pick_frame(&[2.0, 3.19], 3.2, 1.0 / 30.0), Pick::Show { index: 1, dropped: 1 });
+        assert_eq!(pick_frame(&[2.0, 3.3], 3.2, 1.0 / 30.0), Pick::Stale { dropped: 1 }, "the next one is not due yet");
     }
 
     #[test]
@@ -176,7 +186,11 @@ mod tests {
         let (mut now, mut shown, mut dropped, mut max_drift) = (0.0f64, 0usize, 0usize, 0.0f64);
         let mut k = 0;
         while !queue.is_empty() {
-            match pick_frame(&queue, now) {
+            match pick_frame(&queue, now, period) {
+                Pick::Stale { dropped: d } => {
+                    dropped += d;
+                    queue.drain(..d);
+                }
                 Pick::Show { index, dropped: d } => {
                     let pts = queue[index];
                     max_drift = max_drift.max((now - pts).abs());

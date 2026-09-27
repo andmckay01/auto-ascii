@@ -13,6 +13,8 @@ use super::procs::Procs;
 
 pub const PROGRAM_ENV: &str = "AUTO_ASCII_YTDLP";
 
+const PREFIX: [&str; 4] = ["--ignore-config", "--simulate", "--skip-download", "--no-warnings"];
+
 const MAX_DEPTH: usize = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,11 +124,27 @@ pub struct YtDlp {
     program: PathBuf,
     procs: Procs,
     cwd: PathBuf,
+    cookies_from_browser: Option<String>,
 }
 
 impl YtDlp {
     pub fn new(program: impl Into<PathBuf>, procs: Procs, cwd: &Path) -> YtDlp {
-        YtDlp { program: program.into(), procs, cwd: cwd.to_path_buf() }
+        YtDlp { program: program.into(), procs, cwd: cwd.to_path_buf(), cookies_from_browser: None }
+    }
+
+    pub fn cookies_from_browser(mut self, browser: Option<&str>) -> YtDlp {
+        self.cookies_from_browser = browser.filter(|b| !b.trim().is_empty()).map(str::to_string);
+        self
+    }
+
+    fn metadata_args(&self, rest: &[&str]) -> Vec<String> {
+        let mut args: Vec<String> = PREFIX.map(String::from).to_vec();
+        if let Some(browser) = &self.cookies_from_browser {
+            args.push("--cookies-from-browser".into());
+            args.push(browser.clone());
+        }
+        args.extend(rest.iter().map(|a| a.to_string()));
+        args
     }
 
     pub fn program_from_env() -> PathBuf {
@@ -151,19 +169,12 @@ impl YtDlp {
             other => self.first_entry(&other.target(), input, 0)?,
         };
         on(Event::EntryFound(video_url.clone()));
-        let json = self.run_json(&[
-            "--no-warnings",
-            "--no-playlist",
-            "-f",
-            &Self::selector(max_height),
-            "-J",
-            &video_url,
-        ])?;
+        let json = self.run_json(&["--no-playlist", "-f", &Self::selector(max_height), "-J", &video_url])?;
         media_from_json(&json, max_height)
     }
 
     fn first_entry(&self, target: &str, input: &Input, depth: usize) -> Result<String, String> {
-        let json = self.run_json(&["--no-warnings", "--flat-playlist", "-I", "1", "-J", target])?;
+        let json = self.run_json(&["--flat-playlist", "-I", "1", "-J", target])?;
         let is_list = json["_type"].as_str() == Some("playlist") || json.get("entries").is_some();
         if !is_list {
             return json["webpage_url"]
@@ -189,7 +200,7 @@ impl YtDlp {
 
     fn run_json(&self, args: &[&str]) -> Result<Value, String> {
         let mut cmd = Command::new(&self.program);
-        cmd.args(args).current_dir(&self.cwd);
+        cmd.args(self.metadata_args(args)).current_dir(&self.cwd);
         let spawned = self.procs.spawn(&mut cmd, "yt-dlp")?;
         let mut stderr = spawned.stderr;
         let drain = std::thread::spawn(move || {
@@ -449,8 +460,12 @@ mod tests {
         }
 
         fn resolve(&self, input: &str) -> (Result<Media, String>, Vec<Vec<String>>, Vec<String>) {
+            self.resolve_with(input, None)
+        }
+
+        fn resolve_with(&self, input: &str, browser: Option<&str>) -> (Result<Media, String>, Vec<Vec<String>>, Vec<String>) {
             let procs = Procs::new();
-            let ytdlp = YtDlp::new(self.dir.join("yt-dlp"), procs.clone(), &self.dir);
+            let ytdlp = YtDlp::new(self.dir.join("yt-dlp"), procs.clone(), &self.dir).cookies_from_browser(browser);
             let mut events = Vec::new();
             let result = ytdlp.resolve(&Input::classify(input), 480, &mut |e| {
                 events.push(match e {
@@ -506,15 +521,49 @@ mod tests {
         let (result, calls, events) = fake.resolve(url);
         let media = assert_zoo(result);
         assert_eq!(calls.len(), 1, "a video URL needs one yt-dlp run: {calls:?}");
-        assert_eq!(
-            calls[0],
-            ["--no-warnings", "--no-playlist", "-f", &YtDlp::selector(480), "-J", url]
-        );
+        assert_eq!(calls[0], with_prefix(&["--no-playlist", "-f", &YtDlp::selector(480), "-J", url]));
         assert_eq!(events, ["started".to_string(), format!("entry {url}")]);
         assert_eq!(media.video.iter().map(|t| t.format_id.as_str()).collect::<Vec<_>>(), ["395", "229"]);
         assert_eq!(media.audio.iter().map(|t| t.format_id.as_str()).collect::<Vec<_>>(), ["251", "234"]);
         assert!(media.video[1].is_hls() && !media.video[0].is_hls());
         assert_eq!(media.video[0].headers, [("Accept".into(), "*/*".into()), ("User-Agent".into(), "UA/1".into())]);
+    }
+
+    fn with_prefix(rest: &[&str]) -> Vec<String> {
+        PREFIX.iter().chain(rest).map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn cookies_are_passed_only_when_asked() {
+        let fake = Fake::new(&video_branch());
+        let url = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
+        let (result, calls, _) = fake.resolve_with(url, Some("firefox"));
+        assert_zoo(result);
+        let at = calls[0].iter().position(|a| a == "--cookies-from-browser").expect("flag passed");
+        assert_eq!(calls[0][at + 1], "firefox");
+        assert_eq!(calls[0][0], "--ignore-config", "config stays ignored even with cookies");
+    }
+
+    #[test]
+    fn every_call_ignores_user_config_and_never_downloads() {
+        let tab = "{\"_type\":\"url\",\"ie_key\":\"YoutubeTab\",\"url\":\"https://www.youtube.com/@jawed/videos\"}";
+        let body = format!(
+            "{}\ncase \"$args\" in *@jawed/videos*) cat <<'JSON'\n{}\nJSON\n;; *@jawed*) cat <<'JSON'\n{}\nJSON\n;; esac",
+            video_branch(),
+            flat(&youtube_entry("jNQXAC9IVRw")),
+            flat(tab)
+        );
+        let fake = Fake::new(&body);
+        let (result, calls, _) = fake.resolve("https://www.youtube.com/@jawed");
+        assert_zoo(result);
+        assert_eq!(calls.len(), 3);
+        for call in &calls {
+            assert_eq!(call.first().map(String::as_str), Some("--ignore-config"), "{call:?}");
+            for flag in ["--simulate", "--skip-download", "-J"] {
+                assert!(call.iter().any(|a| a == flag), "{flag} missing from {call:?}");
+            }
+            assert!(!call.iter().any(|a| a.starts_with("--cookies")), "no cookies unless asked: {call:?}");
+        }
     }
 
     #[test]
@@ -529,7 +578,7 @@ mod tests {
         let (result, calls, _) = fake.resolve(url);
         assert_zoo(result);
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0], ["--no-warnings", "--flat-playlist", "-I", "1", "-J", url]);
+        assert_eq!(calls[0], with_prefix(&["--flat-playlist", "-I", "1", "-J", url]));
         assert_eq!(calls[1].last().map(String::as_str), Some("https://www.youtube.com/watch?v=jNQXAC9IVRw"));
         assert!(calls[1].contains(&"--no-playlist".to_string()));
     }
@@ -578,7 +627,7 @@ mod tests {
         let fake = Fake::new(&body);
         let (result, calls, _) = fake.resolve("me at the zoo");
         assert_zoo(result);
-        assert_eq!(calls[0], ["--no-warnings", "--flat-playlist", "-I", "1", "-J", "ytsearch1:me at the zoo"]);
+        assert_eq!(calls[0], with_prefix(&["--flat-playlist", "-I", "1", "-J", "ytsearch1:me at the zoo"]));
     }
 
     #[test]

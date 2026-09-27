@@ -15,6 +15,14 @@ use super::ytdlp::{Media, Track};
 
 pub const STOPPED: &str = "stopped";
 
+pub const PROGRAM_ENV: &str = "AUTO_ASCII_FFMPEG";
+
+pub fn program_from_env() -> PathBuf {
+    std::env::var_os(PROGRAM_ENV)
+        .filter(|p| !p.is_empty())
+        .map_or_else(|| PathBuf::from("ffmpeg"), PathBuf::from)
+}
+
 #[derive(Clone)]
 pub struct DecodeCtx {
     pub procs: Procs,

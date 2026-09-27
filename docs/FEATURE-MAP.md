@@ -524,7 +524,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   to disk. A centred 0–100% loader, brightening left to right with a travelling shimmer, shows
   while it resolves and buffers, and again while it re-buffers.
 - **User:** `auto-ascii stream <URL|TERMS…> [--codec pixels|letters|ascii] [--palette P]
-  [--max-height 480] [--no-audio] [--sim COLSxROWS:SECONDS [--sim-dump PATH]]`. Keys: `q` / `Esc`
+  [--max-height 480] [--no-audio] [--cookies-from-browser B] [--sim COLSxROWS:SECONDS
+  [--sim-dump PATH]]`. Keys: `q` / `Esc`
   / `Ctrl-C` quit at any time, `/` cycles the codec. `--sim` runs the whole pipeline (real
   network, real ffmpeg, audio into a real-time null sink) against `SimBackend` and prints one JSON
   stats line: id, title, fps, frames rendered and dropped, max drift, samples consumed, loader
@@ -535,13 +536,18 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
      `YtDlp::resolve` uses `--flat-playlist -I 1 -J` for lists (following nested tab playlists at
      most `MAX_DEPTH` levels down) and then `--no-playlist -f <selector> -J` for the video.
      `media_from_json` keeps the requested tracks plus an HLS fallback per track, and
-     `clean_error` makes yt-dlp's `ERROR:` line the message. The program comes from
-     `AUTO_ASCII_YTDLP`, else `yt-dlp`.
+     `clean_error` makes yt-dlp's `ERROR:` line the message. Every call starts with
+     `--ignore-config --simulate --skip-download` (`metadata_args`), so no config file can turn
+     a lookup into a download. Cookies are read only with `--cookies-from-browser`. The program
+     comes from `AUTO_ASCII_YTDLP`, else `yt-dlp`.
   2. **Decode** (`stream/decode.rs` `input_args` / `run_ffmpeg`, `stream/video.rs`,
      `stream/audio.rs`): one ffmpeg per track reads the URL with yt-dlp's headers. Video comes out
      as `rawvideo_filter` rgb24 at `plane_dims` (the factory's area, the source's shape) and
      `stream_fps`; audio as f32 at the device rate. HTTP 403 restarts that track on the next
-     candidate at the current position (`-ss`).
+     candidate at the current position (`-ss`). ffmpeg comes from `AUTO_ASCII_FFMPEG`, else
+     `ffmpeg`, which lets the session tests wrap it. A video track that ends before its first
+     frame is an error. An audio track that ends before its first sample drops to silent
+     playback on a `MonotonicClock`.
   3. **Features:** `crates/auto-ascii-factory/src/live.rs` `LiveExtractor::push` runs the
      factory's `FeatureExtractor::process` with online `ShotDetector` cuts. Levels come from the
      open shot's pooled histogram (`ShotDetector::open_levels`).
@@ -550,8 +556,12 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
      letterbox and `drain_events` reflow.
   5. **Sync** (`stream/clock.rs`): `AudioClock` is the output's consumed frames over the rate,
      minus cpal's playback-minus-callback latency, interpolated only inside the last consumed
-     chunk. `MonotonicClock` covers `--no-audio`. `pick_frame` shows the newest frame with
-     pts ≤ now and drops the older ones.
+     chunk. `MonotonicClock` covers `--no-audio`. `pick_frame` shows the newest frame whose
+     slot `[pts, pts + period)` contains now. Frames whose slot has passed are dropped
+     (`Pick::Stale`) and counted, never shown late. `stall_action` decides re-buffering (the
+     rule is under Invariants). `tail_deadline` is the last callback plus its chunk plus the
+     output latency. At the end of the video the loop keeps handling keys until that deadline
+     passes, then exits.
   6. **Audio out** (`stream/audio.rs`): the bounded `Ring` feeds `Output::fill`, which is shared
      by the cpal callback (`device`, behind the CLI's default `audio` feature) and the `--sim`
      `NullSink`.
@@ -559,18 +569,36 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
      bytes 30–50, buffer fill 50–100) and `Progress` keeps it monotonic. `draw_loader` is a pure
      grid renderer; `LoaderStyle::for_codec` picks the glyphs.
   8. **Cleanup** (`stream/procs.rs`): `Procs` / `ProcsGuard` own every child in its own process
-     group, and `ScratchDir` is the children's private working directory. The stream's
-     SIGINT/SIGTERM/SIGHUP handlers only set a flag, and the loop exits through the guards.
+     group, and `ScratchDir` is the children's private working directory. `Procs::reap` polls
+     `try_wait` while the child stays registered, so a quit can still kill a child someone is
+     waiting on. The stream's SIGINT/SIGTERM/SIGHUP handler only sets a flag for the first two
+     signals, and the loop exits through the guards. A third signal is the emergency exit
+     (`emergency_exit`): it kills the registered groups, `rmdir`s the scratch dir and chains to
+     the terminal's restore handler before re-raising. `Discard` drops `SimBackend`'s captured
+     bytes after every present, so `--sim` memory stays flat.
 - **Invariants:**
   - No media file is written: children run in a private 0700 temp dir, which `--sim` reports as
     empty (`temp_files_written`) and removed.
   - Every child is killed (whole process group) and reaped on every exit path. `--sim` reports
     `children_alive` from `kill(-pgid, 0)`.
-  - The picture never runs ahead of the sound. Audio time advances only on samples the output
-    consumed, so an underrun freezes the picture, and a stall longer than `STALL_SECS` shows the
-    loader until the buffer refills. When the audio ends first, the clock continues on the wall.
+  - The picture never runs ahead of the sound, and it never trails it by a frame period or
+    more: a frame is shown only inside its own slot.
+  - Stall rule (`stall_action`):
+    - **Audio underrun:** the audio clock stops at once, so the picture freezes with the sound.
+      If the sound stays starved for `STALL_SECS` (0.35 s), both tracks re-buffer behind the
+      loader.
+    - **Video-only stall:** the sound keeps playing and the picture holds its last frame. It
+      then catches up by dropping late frames.
+    - **Long video stall:** only when the newest decoded frame falls `VIDEO_BEHIND_SECS` (2 s)
+      behind the audio clock does the stream pause the sound and re-buffer both. While
+      re-buffering it discards frames the clock has already passed.
+    - **Silent streams:** with no audio, the picture is the only track, so it re-buffers after
+      `STALL_SECS`.
+  - When the audio ends first, the clock continues on the wall. The stream exits only after the
+    final samples have played (`tail_deadline`, capped at `TAIL_WAIT_MAX`).
   - Memory is bounded: about `VIDEO_QUEUE_SECS` of feature frames (recycled buffers) and
-    `AUDIO_RING_SECS` of PCM. Full queues block the pipes and so stop network reads.
+    `AUDIO_RING_SECS` of PCM. Full queues block the pipes and so stop network reads. `--sim`
+    keeps no presented bytes.
   - Loader progress is real and monotonic: `percent` only reads stage flags and buffer fills.
     Under `ascii` the loader is printable ASCII on the default background, brightening through
     the fg colour and a `:-=+*#%@` density ramp.
@@ -691,7 +719,7 @@ values = [
 | Factory | `crates/auto-ascii-factory/tests/build_e2e.rs`, `crates/auto-ascii-factory/tests/m2_params_eval.rs` (params plumbing, byte pin, eval/sweep) |
 | Metrics | `crates/auto-ascii-eval/tests/metrics.rs` |
 | CLI | `crates/auto-ascii-cli/tests/cli.rs` (`stream_*`: help, the `--json` refusal, an offline end-to-end `--sim` run over a fake yt-dlp and a local file, a clean yt-dlp error) |
-| Streaming | unit tests in `crates/auto-ascii-cli/src/stream/` (`loader.rs` snapshots, brightness and shimmer, stage mapping; `ytdlp.rs` fake-yt-dlp resolution; `clock.rs` sync; `procs.rs` cleanup; `audio.rs`, `decode.rs`, `video.rs`) and `crates/auto-ascii-factory/src/live.rs` |
+| Streaming | unit tests in `crates/auto-ascii-cli/src/stream/`:<br>- `loader.rs`: snapshots, brightness and shimmer, stage mapping.<br>- `ytdlp.rs`: fake-yt-dlp resolution; config isolation and cookies.<br>- `clock.rs`: sync and stale-frame dropping.<br>- `procs.rs`: cleanup, including a cancellable reap and panic unwind.<br>- `audio.rs`, `decode.rs`, `video.rs`.<br>- `mod.rs`: session tests that drive the real loop against `SimBackend` with a fake yt-dlp and local ffmpeg media (A/V sync to the end, empty audio or video tracks, a brief picture-only stall, the 100% loader frame, no retained sim output), plus the stall rule and tail deadline.<br><br>Also `crates/auto-ascii-factory/src/live.rs`, and the `stream_*` / signal tests in `crates/auto-ascii-cli/tests/cli.rs`. |
 
 ## Related docs
 

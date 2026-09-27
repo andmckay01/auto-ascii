@@ -160,6 +160,8 @@ enum Cmd {
         sim: Option<String>,
         #[arg(long, value_name = "PATH", requires = "sim", help = "With --sim: write one loader frame and one picture frame as text to PATH")]
         sim_dump: Option<PathBuf>,
+        #[arg(long, value_name = "BROWSER", help = "Let yt-dlp read this browser's YouTube cookies (e.g. for age-gated videos); off by default, and yt-dlp config files are never read")]
+        cookies_from_browser: Option<String>,
     },
     /// Print the embedded agent guide.
     AgentGuide,
@@ -285,8 +287,17 @@ fn run(cli: &Cli) -> Result<(), BoxErr> {
         }
         Cmd::Compose { cmd } => run_compose(cli, cmd),
         Cmd::Play { target } => cmd_play(cli, target),
-        Cmd::Stream { input, codec, palette, max_height, no_audio, sim, sim_dump } => {
-            cmd_stream(cli, input, *codec, *palette, *max_height, *no_audio, sim.as_deref(), sim_dump.as_deref())
+        Cmd::Stream { input, codec, palette, max_height, no_audio, sim, sim_dump, cookies_from_browser } => {
+            let opts = StreamOpts {
+                codec: *codec,
+                palette: *palette,
+                max_height: *max_height,
+                no_audio: *no_audio,
+                sim: sim.as_deref(),
+                sim_dump: sim_dump.as_deref(),
+                cookies_from_browser: cookies_from_browser.as_deref(),
+            };
+            cmd_stream(cli, input, &opts)
         }
         Cmd::AgentGuide => cmd_agent_guide(cli),
         Cmd::Home => cmd_home(cli, &Home::resolve()?),
@@ -790,33 +801,34 @@ fn codec_help() -> String {
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn cmd_stream(
-    cli: &Cli,
-    input: &[String],
+struct StreamOpts<'a> {
     codec: auto_ascii::Codec,
     palette: PaletteArg,
     max_height: u32,
     no_audio: bool,
-    sim: Option<&str>,
-    sim_dump: Option<&Path>,
-) -> Result<(), BoxErr> {
-    if cli.json && sim.is_none() {
+    sim: Option<&'a str>,
+    sim_dump: Option<&'a Path>,
+    cookies_from_browser: Option<&'a str>,
+}
+
+fn cmd_stream(cli: &Cli, input: &[String], opts: &StreamOpts<'_>) -> Result<(), BoxErr> {
+    if cli.json && opts.sim.is_none() {
         return Err(STREAM_IS_INTERACTIVE.into());
     }
-    let sim = sim.map(stream::parse_sim).transpose()?;
+    let sim = opts.sim.map(stream::parse_sim).transpose()?;
     let input = input.join(" ");
     if input.trim().is_empty() {
         return Err("stream needs a URL or search terms".into());
     }
     stream::run(&stream::StreamArgs {
         input,
-        codec,
-        palette: palette.into(),
-        max_height,
-        no_audio,
+        codec: opts.codec,
+        palette: opts.palette.into(),
+        max_height: opts.max_height,
+        no_audio: opts.no_audio,
         sim,
-        sim_dump: sim_dump.map(Path::to_path_buf),
+        sim_dump: opts.sim_dump.map(Path::to_path_buf),
+        cookies_from_browser: opts.cookies_from_browser.map(str::to_string),
     })
 }
 

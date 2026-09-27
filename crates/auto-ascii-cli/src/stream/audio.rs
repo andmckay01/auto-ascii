@@ -132,6 +132,13 @@ pub struct NullSink {
     thread: Option<JoinHandle<()>>,
 }
 
+const NULL_CHUNK: u64 = 4096;
+
+pub fn frames_due(elapsed: Duration, rate: u64, pulled: u64, max: u64) -> u64 {
+    let due = (elapsed.as_secs_f64() * rate as f64) as u64;
+    due.saturating_sub(pulled).min(max)
+}
+
 impl NullSink {
     pub fn start(output: Output) -> NullSink {
         let stop = Arc::new(AtomicBool::new(false));
@@ -140,12 +147,11 @@ impl NullSink {
             let rate = u64::from(output.shared.rate);
             let t0 = Instant::now();
             let mut pulled: u64 = 0;
-            let mut buf = vec![0.0f32; 4096 * output.channels.max(1)];
+            let mut buf = vec![0.0f32; NULL_CHUNK as usize * output.channels.max(1)];
             while !flag.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(5));
                 let now = Instant::now();
-                let due = (now.duration_since(t0).as_secs_f64() * rate as f64) as u64;
-                let frames = (due.saturating_sub(pulled)).min(4096) as usize;
+                let frames = frames_due(now.duration_since(t0), rate, pulled, NULL_CHUNK) as usize;
                 if frames == 0 {
                     continue;
                 }
@@ -372,14 +378,14 @@ mod tests {
             let ring = ring.clone();
             std::thread::spawn(move || ring.push(&[1.0; 20]))
         };
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(until(|| ring.len() == 8), "the producer never filled the ring");
         assert_eq!(ring.len(), 8, "never grows past its capacity");
-        assert!(!producer.is_finished(), "the producer waits for room");
+        assert!(!producer.is_finished(), "20 samples cannot fit in 8: the producer waits for room");
         let mut out = [0.0f32; 8];
         let mut got = 0;
         while got < 20 {
             got += 2 * ring.pop_mapped(&mut out, 2, 2);
-            std::thread::sleep(Duration::from_millis(1));
+            std::thread::yield_now();
         }
         assert!(producer.join().unwrap());
         assert_eq!(ring.len(), 0);
@@ -392,9 +398,9 @@ mod tests {
             let ring = ring.clone();
             std::thread::spawn(move || ring.push(&[0.5; 10]))
         };
-        std::thread::sleep(Duration::from_millis(30));
+        assert!(until(|| ring.len() == 4), "the producer never blocked");
         ring.close();
-        assert!(!producer.join().unwrap());
+        assert!(!producer.join().unwrap(), "a closed ring refuses the rest");
     }
 
     #[test]
@@ -425,17 +431,40 @@ mod tests {
         assert_eq!((shared.consumed(), ring.len()), (20, 160));
     }
 
+    fn until(cond: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if cond() {
+                return true;
+            }
+            std::thread::yield_now();
+        }
+        cond()
+    }
+
     #[test]
-    fn the_null_sink_paces_consumption_in_real_time() {
+    fn null_sink_pacing_is_elapsed_time_times_the_rate() {
+        let ms = Duration::from_millis;
+        assert_eq!(frames_due(ms(0), 48_000, 0, 4096), 0);
+        assert_eq!(frames_due(ms(10), 48_000, 0, 4096), 480);
+        assert_eq!(frames_due(ms(20), 48_000, 480, 4096), 480, "only what is newly due");
+        assert_eq!(frames_due(ms(1000), 48_000, 480, 4096), 4096, "a late wake-up pulls one chunk at most");
+        assert_eq!(frames_due(ms(5), 48_000, 480, 4096), 0, "never ahead of the wall clock");
+    }
+
+    #[test]
+    fn the_null_sink_consumes_but_never_faster_than_real_time() {
         let ring = Ring::new(100_000);
         ring.push(&vec![0.0; 100_000]);
         let shared = AudioShared::new(10_000);
         shared.playing.store(true, Ordering::SeqCst);
+        let started = Instant::now();
         let sink = NullSink::start(Output { ring, shared: shared.clone(), channels: 2, src_channels: 2 });
-        std::thread::sleep(Duration::from_millis(300));
+        assert!(until(|| shared.consumed() >= 100), "the null sink never pulled");
         drop(sink);
+        let elapsed = started.elapsed().as_secs_f64();
         let consumed = shared.consumed();
-        assert!((1500..=4500).contains(&consumed), "~3000 frames in 0.3 s, got {consumed}");
+        assert!(consumed as f64 <= elapsed * 10_000.0 + 1.0, "{consumed} frames in {elapsed:.3}s is faster than real time");
     }
 
     #[test]

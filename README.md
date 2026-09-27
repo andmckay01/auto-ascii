@@ -296,6 +296,7 @@ auto-ascii stream "https://www.youtube.com/@jawed"                # a channel's 
 auto-ascii stream me at the zoo                                    # the first search result
 auto-ascii stream <link> --codec letters --max-height 720 --no-audio
 auto-ascii stream <link> --sim 120x40:25 [--sim-dump frames.txt]  # headless, one JSON line
+auto-ascii stream <link> --cookies-from-browser firefox            # opt in to your browser's cookies
 ```
 
 A centred loader fills from 0 to 100% while it resolves and buffers. The bar
@@ -310,6 +311,9 @@ How it works:
 - **Resolve.** yt-dlp resolves the input. A playlist, channel or search is
   walked down to its first video (`--flat-playlist -I 1`, at most three
   levels), then `-J` reads that video's stream URLs, HTTP headers and metadata.
+  Every call passes `--ignore-config --simulate --skip-download`, so a yt-dlp
+  config file can never turn a lookup into a download. Your cookies are used
+  only when you pass `--cookies-from-browser BROWSER`.
 - **Stream.** Two ffmpeg children read those URLs directly. One decodes the
   video to raw rgb24 frames at the factory's plane size and a constant frame
   rate. The other decodes the audio to f32 PCM. Each frame goes through the
@@ -318,12 +322,19 @@ How it works:
   stays flat.
 - **Sync.** Sound plays through the default output device via cpal. The picture
   follows the audio clock: the samples actually played, minus the device's
-  reported latency. Late frames are dropped, never slowed. If the network
-  stalls, the picture freezes with the sound and the loader returns until the
-  buffer refills.
+  reported latency. A frame is shown only during its own frame period; frames
+  that arrive after it are dropped and counted, never shown late or slowed.
+  If the sound runs dry, the picture freezes with it, and after 0.35 s the
+  loader returns until both buffers refill. If only the picture stalls, the
+  sound plays on and the picture catches up by dropping frames. Only when the
+  picture falls 2 s behind does the stream pause the sound and re-buffer both.
+  At the end, the stream waits until the last samples have actually played.
 - **Clean up.** Every child runs in its own process group, inside a private
   temp directory. On quit, error, end of video or signal, every child is
-  killed and reaped and the directory is removed.
+  killed and reaped, and the directory is removed. The first two
+  SIGINT/SIGTERM/SIGHUP signals request this orderly exit. A third forces the
+  exit, still killing the children, removing the directory and restoring the
+  terminal first.
 
 Limitations:
 - YouTube sometimes refuses a DASH URL with HTTP 403. The stream then switches
@@ -331,8 +342,9 @@ Limitations:
   Heavy throttling still shows up as re-buffering.
 - Live streams, premieres, and private, members-only, age-gated or geo-blocked
   videos are refused, with yt-dlp's reason printed as one line.
-- Without a usable audio device (or with `--no-audio`) the video plays silently
-  on a wall clock.
+- Without a usable audio device (or with `--no-audio`), or when the audio track
+  turns out to be empty, the video plays silently on a wall clock. A video
+  track that ends before its first frame is an error.
 - There is no seeking or pausing in a stream, and nothing is saved to the
   library. Use `import` on a downloaded file for that.
 

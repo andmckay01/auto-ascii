@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::os::unix::process::CommandExt;
 
 const SLOTS: usize = 16;
+const REAP_POLL: std::time::Duration = std::time::Duration::from_millis(5);
 
 static GROUPS: [AtomicI32; SLOTS] = [const { AtomicI32::new(0) }; SLOTS];
 
@@ -61,15 +62,24 @@ impl Procs {
     }
 
     pub fn reap(&self, id: u64) -> Option<ExitStatus> {
-        let mut child = {
-            let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-            let at = inner.children.iter().position(|(cid, _)| *cid == id)?;
-            inner.children.swap_remove(at).1
-        };
-        let status = child.wait().ok();
-        kill_group(child.id(), libc_sigkill());
-        forget(i32::try_from(child.id()).unwrap_or(0));
-        status
+        loop {
+            {
+                let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+                let at = inner.children.iter().position(|(cid, _)| *cid == id)?;
+                let status = match inner.children[at].1.try_wait() {
+                    Ok(None) => None,
+                    Ok(Some(status)) => Some(Some(status)),
+                    Err(_) => Some(None),
+                };
+                if let Some(status) = status {
+                    let child = inner.children.swap_remove(at).1;
+                    kill_group(child.id(), libc_sigkill());
+                    forget(i32::try_from(child.id()).unwrap_or(0));
+                    return status;
+                }
+            }
+            std::thread::sleep(REAP_POLL);
+        }
     }
 
     pub fn kill(&self, id: u64) {
@@ -301,6 +311,50 @@ mod tests {
             .err()
             .unwrap();
         assert!(err.starts_with("failed to run yt-dlp (is it installed and on PATH?)"), "{err}");
+    }
+
+    #[test]
+    fn shutdown_ends_a_reap_waiting_on_a_child_that_closed_its_pipes() {
+        let procs = Procs::new();
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exec >&- 2>&-; sleep 30"]);
+        let s = procs.spawn(&mut cmd, "sh").unwrap();
+        let mut out = s.stdout;
+        let mut sink = Vec::new();
+        std::io::Read::read_to_end(&mut out, &mut sink).unwrap();
+        let reaper = {
+            let procs = procs.clone();
+            std::thread::spawn(move || procs.reap(s.id))
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while procs.alive() == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        procs.shutdown();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !reaper.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(reaper.is_finished(), "a quit could not cancel a child that was being reaped");
+        assert!(wait_gone(&procs));
+        let _ = reaper.join();
+    }
+
+    #[test]
+    fn a_panic_unwinds_through_the_guards() {
+        let procs = Procs::new();
+        let seen = std::sync::Mutex::new(PathBuf::new());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let scratch = ScratchDir::new().unwrap();
+            *seen.lock().unwrap() = scratch.path().to_path_buf();
+            let guard = ProcsGuard(procs.clone());
+            let _child = guard.0.spawn(&mut sleeper(scratch.path()), "sh").unwrap();
+            panic!("stream loop panicked");
+        }));
+        assert!(result.is_err());
+        assert!(wait_gone(&procs), "children outlived a panic");
+        assert!(!seen.lock().unwrap().exists(), "the scratch dir outlived a panic");
     }
 
     #[test]

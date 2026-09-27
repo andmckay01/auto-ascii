@@ -1249,3 +1249,90 @@ fn stream_surfaces_a_yt_dlp_refusal_as_one_clean_line() {
         stderr_of(&out)
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn stream_survives_repeated_signals_and_still_cleans_up() {
+    let s = Scratch::new("streamsig");
+    let ytdlp = fake_ytdlp(&s, "exec sleep 30");
+    let child = Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
+        .env("AUTO_ASCII_HOME", s.home())
+        .env("AUTO_ASCII_YTDLP", &ytdlp)
+        .args(["stream", "https://www.youtube.com/watch?v=abcDEF12345", "--sim", "40x12:60"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id() as i32;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let kids = Command::new("pgrep").args(["-P", &pid.to_string()]).output().unwrap();
+        if !kids.stdout.is_empty() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "yt-dlp never started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "killed outright instead of cleaning up: {:?}", out.status);
+    let v: serde_json::Value = serde_json::from_str(stdout_of(&out).trim())
+        .unwrap_or_else(|e| panic!("no stats line ({e}): {}", stdout_of(&out)));
+    assert_eq!(v["exit_reason"], "signal");
+    assert_eq!(v["children_alive"], 0);
+    assert_eq!(v["temp_dir_removed"], true);
+    assert_eq!(stderr_of(&out), "auto-ascii: stopped by signal 15\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_third_signal_forces_an_exit_that_still_leaves_nothing_behind() {
+    use std::os::unix::process::ExitStatusExt;
+    let s = Scratch::new("streamsig3");
+    let ytdlp = fake_ytdlp(&s, "exec sleep 30");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
+        .env("AUTO_ASCII_HOME", s.home())
+        .env("AUTO_ASCII_YTDLP", &ytdlp)
+        .args(["stream", "https://www.youtube.com/watch?v=abcDEF12345", "--sim", "40x12:60"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id() as i32;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let kid: i32 = loop {
+        let kids = Command::new("pgrep").args(["-P", &pid.to_string()]).output().unwrap();
+        if let Some(first) = String::from_utf8_lossy(&kids.stdout).split_whitespace().next() {
+            break first.parse().unwrap();
+        }
+        assert!(std::time::Instant::now() < deadline, "yt-dlp never started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    unsafe {
+        libc::kill(pid, libc::SIGSTOP);
+        libc::kill(pid, libc::SIGHUP);
+        libc::kill(pid, libc::SIGINT);
+        libc::kill(pid, libc::SIGTERM);
+        libc::kill(pid, libc::SIGCONT);
+    }
+    let status = child.wait().unwrap();
+    assert!(status.signal().is_some(), "three signals must force the exit: {status:?}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while unsafe { libc::kill(kid, 0) } == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_ne!(unsafe { libc::kill(kid, 0) }, 0, "the forced exit left yt-dlp running");
+    let prefix = format!("auto-ascii-stream-{pid}-");
+    let left: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .collect();
+    assert!(left.is_empty(), "the forced exit left its scratch dir: {left:?}");
+}
