@@ -163,9 +163,9 @@ mod tests {
     }
 
     #[test]
-    fn old_hysteresis_settings_clamp_to_the_shared_dial_maximum() {
+    fn hysteresis_settings_up_to_255_no_longer_clamp() {
         let s = VideoSettings::parse("idx_hyst_q8 = 255\n").unwrap();
-        assert_eq!(s.compose.idx_hyst_q8, 128);
+        assert_eq!(s.compose.idx_hyst_q8, 255);
     }
 
     #[test]

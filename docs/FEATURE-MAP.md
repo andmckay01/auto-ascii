@@ -220,8 +220,10 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - a backward jump in `RenderSession::render` (`Player::reset_temporal_state`).
   After a reset the next frame is a cold start, identical to seeking straight to that frame.
 
-- **Dial:** 0..128 in steps of 16, default and maximum 128 (`IDX_HYST_MAX_Q8`). Saved
-  player settings clamp; factory params reject larger values. The range, the 160 → 128
+- **Dial:** 0..255 in steps of 16 (`IDX_HYST_MAX_Q8`), recommended default 128
+  (`IDX_HYST_DEFAULT_Q8`). Saved player settings and factory params clamp/reject only
+  above 255. Values above 128 are allowed for fast-paced videos or video types that
+  benefit from high hysteresis, but can visibly drift or smear. The range, the 160 → 128
   default change and ASCII's glyph-hold calibration are measured in
   [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).
 

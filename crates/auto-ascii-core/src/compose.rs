@@ -149,7 +149,7 @@ pub struct ComposeParams {
     /// across it alternate quadrant/half-block every frame.
     pub quad_e_off: u8,
     /// Ramp-index hysteresis width in Q8 fractions of one step. The nominal
-    /// live default is 128 (half a step); the player dial spans 0..=128.
+    /// live default is 128 (half a step); the player dial spans 0..=255.
     /// Wider = stickier cells, narrower = more responsive. The low-level
     /// codec accepts u8 for experiments; the old calibration width was 90.
     pub idx_hyst_q8: u8,

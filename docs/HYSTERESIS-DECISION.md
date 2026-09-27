@@ -1,7 +1,9 @@
-Use one shared maximum and default of **128**, in steps of 16 from 0.
-The readout explicitly says “default, max”; 0 says “floor”. Old saved
-player values above 128 clamp; params.toml is pinned to 128 and factory
-configuration rejects larger values. There are nine normal dial positions.
+Use a recommended default of **128**, in steps of 16 from 0, with the shared
+dial and params.toml maximum at 255. The readout says “default” at 128 and
+“floor”/“max” at the ends. Saved player values and factory configuration
+clamp/reject only above 255. Values above 128 are allowed for fast-paced
+videos or video types that benefit from high hysteresis, but can visibly
+drift or smear.
 
 **Pixels and letters change at default:** the default moves from 160 to 128.
 Their rendering algorithms are unchanged, so equal explicit hysteresis

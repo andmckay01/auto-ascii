@@ -323,12 +323,12 @@ fn hysteresis_turned_down_and_up_tracks_in_both_directions() {
     assert_eq!(pair(&mut p, &mut backend), origin, "down 8 / up 8 must restore the picture");
 
     dial.turn(&mut compose, 6);
-    assert_eq!(compose.idx_hyst_q8, 128, "the default is the maximum; extra upward presses stop there");
+    assert_eq!(compose.idx_hyst_q8, 224, "extra upward presses now move past the old 128 cap, up to 255");
     p.set_compose_params(compose);
-    let capped = pair(&mut p, &mut backend);
-    assert_eq!(glyph_at(&capped, &p, P_COL), held_p);
-    assert_eq!(glyph_at(&capped, &p, Q_COL), moved_q, "the cap avoids the old 0.75-step latch");
-    assert_eq!(capped, origin);
+    dial.turn(&mut compose, -6);
+    assert_eq!(compose, ComposeParams::default(), "down 6 / up 6 past the old cap must restore the default");
+    p.set_compose_params(compose);
+    assert_eq!(pair(&mut p, &mut backend), origin, "the round trip past the old cap restores the picture");
 
     dial.turn(&mut compose, -1);
     p.set_compose_params(compose);
@@ -370,15 +370,16 @@ fn a_turn_is_a_cold_start_and_a_stopped_dial_is_not() {
 }
 
 #[test]
-fn hysteresis_dial_cannot_exceed_128() {
+fn hysteresis_dial_default_128_max_255() {
     let dial = Dial::Hysteresis;
-    assert_eq!(dial.max(), 128);
+    assert_eq!(dial.max(), 255);
+    assert_eq!(ComposeParams::default().idx_hyst_q8, 128);
     for raw in 0..=255 {
         let mut p = ComposeParams::default();
         dial.set_param(&mut p, raw);
-        assert_eq!(p.idx_hyst_q8, raw.min(128));
+        assert_eq!(p.idx_hyst_q8, raw);
         dial.turn(&mut p, 999);
-        assert_eq!(p.idx_hyst_q8, 128);
+        assert_eq!(p.idx_hyst_q8, 255);
         dial.turn(&mut p, -999);
         assert_eq!(p.idx_hyst_q8, 0);
     }

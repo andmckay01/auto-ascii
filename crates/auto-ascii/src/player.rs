@@ -1226,7 +1226,7 @@ mod tests {
         let mut p = ComposeParams::default();
         assert_eq!(Dial::ShadowLift.readout(&p), "shadow lift (floor, default)");
         assert_eq!(Dial::EdgeStrength.readout(&p), "edge strength (default)");
-        assert_eq!(Dial::Hysteresis.readout(&p), "hysteresis (default, max)");
+        assert_eq!(Dial::Hysteresis.readout(&p), "hysteresis (default)");
         Dial::ShadowLift.turn(&mut p, 1);
         assert_eq!(Dial::ShadowLift.readout(&p), "shadow lift");
         Dial::ShadowLift.turn(&mut p, 99);
@@ -1234,7 +1234,7 @@ mod tests {
         Dial::EdgeStrength.turn(&mut p, -99);
         assert_eq!(Dial::EdgeStrength.readout(&p), "edge strength (floor)");
         Dial::Hysteresis.turn(&mut p, 99);
-        assert_eq!(Dial::Hysteresis.readout(&p), "hysteresis (default, max)");
+        assert_eq!(Dial::Hysteresis.readout(&p), "hysteresis (max)");
         Dial::Hysteresis.turn(&mut p, -99);
         assert_eq!(Dial::Hysteresis.readout(&p), "hysteresis (floor)");
     }

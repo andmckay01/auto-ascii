@@ -155,10 +155,11 @@ the backdrop. Terminals that don't understand OSC 11 ignore it.
 
 **Dials** retune the renderer while the video plays. Shadow lift opens dark
 scenes. Edge strength sets how many contours get strokes. Hysteresis trades
-flicker against responsiveness: 0..128 in steps of 16, default 128, which
-is also the top (saved values above 128 clamp; the default was 160 before,
-so pixels and letters hold glyphs a little less at default, and are
-unchanged at any equal value). Every codec keeps it, since switching it off
+flicker against responsiveness: 0..255 in steps of 16, recommended default
+128 (the default was 160 before, so pixels and letters hold glyphs a little
+less at default, and are unchanged at any equal value). Values above 128
+are allowed for fast-paced videos or video types that benefit from high
+hysteresis, but can visibly drift or smear. Every codec keeps it, since switching it off
 raises glyph changes markedly; see
 [hysteresis measurements](docs/HYSTERESIS-DECISION.md). The readout says
 when a dial is at its floor, its default or its top. Nothing is rebuilt: the same asset re-renders

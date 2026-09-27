@@ -441,7 +441,7 @@ impl Params {
             }
         }
         if c.idx_hyst_q8 > auto_ascii_core::hysteresis::IDX_HYST_MAX_Q8 as u32 {
-            return Err("params: compose.idx_hyst_q8 must be in 0..=128".into());
+            return Err("params: compose.idx_hyst_q8 must be in 0..=255".into());
         }
         if c.edge_t_off > c.edge_t_on {
             return Err("params: compose must satisfy edge_t_off <= edge_t_on".into());
@@ -471,8 +471,10 @@ mod tests {
     fn hysteresis_config_obeys_the_player_range() {
         let mut p = Params::default();
         assert_eq!(p.compose.idx_hyst_q8, 128);
-        p.compose.idx_hyst_q8 = 129;
-        assert!(p.validate().unwrap_err().to_string().contains("idx_hyst_q8 must be in 0..=128"));
+        p.compose.idx_hyst_q8 = 255;
+        p.validate().unwrap();
+        p.compose.idx_hyst_q8 = 256;
+        assert!(p.validate().unwrap_err().to_string().contains("idx_hyst_q8 must be in 0..=255"));
     }
 
     #[test]

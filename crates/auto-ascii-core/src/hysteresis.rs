@@ -20,9 +20,11 @@ pub const IDX_UNSET: u8 = 0xFF;
 pub const IDX_HYST_Q8: u32 = 90;
 
 /// Shared player dial ceiling: wider bands retain visibly stale contours.
-pub const IDX_HYST_MAX_Q8: u8 = 128;
+pub const IDX_HYST_MAX_Q8: u8 = 255;
 
-/// Live default, chosen at the ceiling to limit glyph switching.
+/// Live default: the recommended setting for most video. Values above this,
+/// up to [`IDX_HYST_MAX_Q8`], are allowed for fast-paced video or video types
+/// that benefit from high hysteresis, but can visibly drift or smear.
 pub const IDX_HYST_DEFAULT_Q8: u8 = 128;
 
 /// Per-cell hysteresis flags. Bits 0–1 are the shared gates below; bits 2–7
