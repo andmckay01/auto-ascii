@@ -87,7 +87,7 @@ impl AudioShared {
 
 pub struct AudioClock {
     shared: Arc<AudioShared>,
-    ended: Option<(f64, Instant)>,
+    ended: Option<(f64, Option<Instant>)>,
     high: Cell<f64>,
 }
 
@@ -112,7 +112,7 @@ impl AudioClock {
 impl Clock for AudioClock {
     fn now(&self, at: Instant) -> f64 {
         let t = match self.ended {
-            Some((t, from)) => t + at.saturating_duration_since(from).as_secs_f64(),
+            Some((t, since)) => t + since.map_or(0.0, |s| at.saturating_duration_since(s).as_secs_f64()),
             None => self.samples_time(at),
         };
         let t = t.max(self.high.get());
@@ -120,13 +120,21 @@ impl Clock for AudioClock {
         t
     }
 
-    fn set_running(&mut self, running: bool, _at: Instant) {
+    fn set_running(&mut self, running: bool, at: Instant) {
         self.shared.playing.store(running, Ordering::SeqCst);
+        if let Some((base, since)) = self.ended {
+            self.ended = match (running, since) {
+                (true, None) => Some((base, Some(at))),
+                (false, Some(s)) => Some((base + at.saturating_duration_since(s).as_secs_f64(), None)),
+                _ => Some((base, since)),
+            };
+        }
     }
 
     fn mark_ended(&mut self, at: Instant) {
         if self.ended.is_none() {
-            self.ended = Some((self.now(at), at));
+            let running = self.shared.playing.load(Ordering::SeqCst);
+            self.ended = Some((self.now(at), running.then_some(at)));
         }
     }
 }
@@ -260,9 +268,127 @@ mod tests {
         let shared = AudioShared::new(1000);
         let mut clock = AudioClock::new(shared.clone());
         let t0 = shared.epoch;
+        clock.set_running(true, t0);
         shared.record(500, 500, at(t0, 0.5), None, false);
         clock.mark_ended(at(t0, 1.0));
         clock.mark_ended(at(t0, 1.5));
         assert!((clock.now(at(t0, 2.0)) - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn audio_clock_tracks_what_is_heard_across_an_underrun_with_latency() {
+        let rate = 1000u32;
+        let latency = 0.030;
+        let period = 0.010;
+        let shared = AudioShared::new(rate);
+        let mut clock = AudioClock::new(shared.clone());
+        let t0 = shared.epoch;
+        clock.set_running(true, t0);
+        let mut chunks: Vec<(f64, u64)> = Vec::new();
+        let mut consumed_by: Vec<(f64, u64)> = Vec::new();
+        let heard = |t: f64, chunks: &[(f64, u64)]| -> f64 {
+            chunks
+                .iter()
+                .map(|&(cb, n)| ((t - (cb + latency)).max(0.0) * f64::from(rate)).min(n as f64))
+                .sum::<f64>()
+                / f64::from(rate)
+        };
+        let mut plan: Vec<(u64, u64)> = Vec::new();
+        for i in 1..=10 {
+            plan.push((i, 10));
+        }
+        plan.push((11, 4));
+        for i in 12..=30 {
+            plan.push((i, 0));
+        }
+        for i in 31..=60 {
+            plan.push((i, 10));
+        }
+        let mut next = 0usize;
+        let mut last = 0.0f64;
+        let mut worst_lag = 0.0f64;
+        let mut lag_after_recovery = 0.0f64;
+        let steps = 700;
+        for k in 0..=steps {
+            let t = k as f64 * 0.001;
+            while next < plan.len() && (plan[next].0 as f64) * period <= t + 1e-12 {
+                let (i, took) = plan[next];
+                let cb = f64::from(i as u32) * period;
+                shared.record(took, 10, at(t0, cb), Some(Duration::from_secs_f64(latency)), false);
+                if took > 0 {
+                    chunks.push((cb, took));
+                }
+                consumed_by.push((cb, took));
+                next += 1;
+            }
+            let c = clock.now(at(t0, t));
+            let h = heard(t, &chunks);
+            assert!(c + 1e-9 >= last, "clock went backwards at t={t:.3}: {last} -> {c}");
+            assert!(c - last <= 0.001 + 1e-9, "clock jumped forward at t={t:.3}: {last} -> {c}");
+            assert!(c <= h + 1e-9, "clock ahead of what is heard at t={t:.3}: clock {c:.4} heard {h:.4}");
+            let lag = h - c;
+            assert!(lag <= latency + 1e-9, "clock lags the sound by more than the latency at t={t:.3}: {lag:.4}");
+            worst_lag = worst_lag.max(lag);
+            if t >= 31.0 * period + latency && t <= 60.0 * period + 1e-9 {
+                lag_after_recovery = lag_after_recovery.max(lag);
+            }
+            last = c;
+        }
+        assert!(worst_lag > 0.02, "the stall should have exposed the latency-sized lag: {worst_lag}");
+        assert!(lag_after_recovery < 1e-9, "after recovery the clock is not exact: {lag_after_recovery}");
+        assert_eq!(shared.underruns.load(Ordering::SeqCst), 20, "1 partial + 19 empty callbacks");
+        let total: u64 = consumed_by.iter().map(|c| c.1).sum();
+        assert_eq!(shared.consumed(), total);
+        assert!((clock.now(at(t0, 0.7)) - (total as f64 / f64::from(rate) - latency)).abs() < 1e-9);
+        let tail_lag = heard(0.7, &chunks) - clock.now(at(t0, 0.7));
+        assert!((tail_lag - latency).abs() < 1e-9, "once callbacks stop the clock sits one latency behind: {tail_lag}");
+    }
+
+    #[test]
+    fn a_rebuffer_pause_freezes_the_clock_and_resumes_without_a_jump() {
+        let shared = AudioShared::new(1000);
+        let mut clock = AudioClock::new(shared.clone());
+        let t0 = shared.epoch;
+        let lat = Some(Duration::from_millis(30));
+        clock.set_running(true, t0);
+        for i in 1..=5 {
+            shared.record(10, 10, at(t0, i as f64 * 0.01), lat, false);
+        }
+        shared.record(3, 10, at(t0, 0.06), lat, false);
+        let frozen = clock.now(at(t0, 0.07));
+        assert!((frozen - (0.053 - 0.03)).abs() < 1e-9, "{frozen}");
+        clock.set_running(false, at(t0, 0.07));
+        for i in 7..=20 {
+            shared.record(0, 0, at(t0, i as f64 * 0.01), lat, false);
+            assert_eq!(clock.now(at(t0, i as f64 * 0.01 + 0.005)), frozen, "paused: the clock must not move");
+        }
+        assert_eq!(shared.underruns.load(Ordering::SeqCst), 1, "paused callbacks are not underruns");
+        clock.set_running(true, at(t0, 0.205));
+        shared.record(10, 10, at(t0, 0.21), lat, false);
+        let resumed = clock.now(at(t0, 0.21));
+        assert!((resumed - frozen).abs() < 1e-9, "resume must continue from the frozen time: {frozen} -> {resumed}");
+        assert!((clock.now(at(t0, 0.215)) - (frozen + 0.005)).abs() < 1e-9);
+        shared.record(10, 10, at(t0, 0.22), lat, false);
+        assert!((clock.now(at(t0, 0.225)) - (frozen + 0.015)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_ended_audio_clock_pauses_while_rebuffering() {
+        let shared = AudioShared::new(1000);
+        let mut clock = AudioClock::new(shared.clone());
+        let t0 = shared.epoch;
+        clock.set_running(true, t0);
+        shared.record(500, 500, at(t0, 0.5), None, false);
+        clock.mark_ended(at(t0, 1.0));
+        assert!((clock.now(at(t0, 1.2)) - 0.7).abs() < 1e-9, "after the sound ends the clock runs on the wall");
+        clock.set_running(false, at(t0, 1.2));
+        let paused = clock.now(at(t0, 1.2));
+        assert!(
+            (clock.now(at(t0, 5.0)) - paused).abs() < 1e-9,
+            "a re-buffer after the sound ended must pause the clock like MonotonicClock does: {paused} -> {}",
+            clock.now(at(t0, 5.0))
+        );
+        clock.set_running(true, at(t0, 6.0));
+        assert!((clock.now(at(t0, 6.5)) - (paused + 0.5)).abs() < 1e-9);
     }
 }

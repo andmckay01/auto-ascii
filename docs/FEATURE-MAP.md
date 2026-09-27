@@ -593,7 +593,10 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
       behind the audio clock does the stream pause the sound and re-buffer both. While
       re-buffering it discards frames the clock has already passed.
     - **Silent streams:** with no audio, the picture is the only track, so it re-buffers after
-      `STALL_SECS`.
+      `STALL_SECS`. The same goes once the sound has ended or the device is lost: `mark_ended`
+      hands the `AudioClock` to the wall. From then on `set_running` pauses and resumes it like a
+      `MonotonicClock`, so a re-buffer after the sound ends freezes the clock instead of letting
+      every arriving frame go stale.
   - When the audio ends first, the clock continues on the wall. The stream exits only after the
     final samples have played (`tail_deadline`, capped at `TAIL_WAIT_MAX`).
   - Memory is bounded: about `VIDEO_QUEUE_SECS` of feature frames (recycled buffers) and

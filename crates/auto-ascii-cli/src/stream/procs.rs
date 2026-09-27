@@ -26,7 +26,7 @@ pub struct Spawned {
 #[derive(Default)]
 struct Inner {
     children: Vec<(u64, Child)>,
-    groups: Vec<i32>,
+    groups: Vec<(i32, bool)>,
     next: u64,
     closed: bool,
 }
@@ -55,7 +55,7 @@ impl Procs {
         let id = inner.next;
         inner.next += 1;
         let group = i32::try_from(child.id()).unwrap_or(0);
-        inner.groups.push(group);
+        inner.groups.push((group, false));
         remember(group);
         inner.children.push((id, child));
         Ok(Spawned { id, stdout, stderr })
@@ -75,6 +75,7 @@ impl Procs {
                     let child = inner.children.swap_remove(at).1;
                     kill_group(child.id(), libc_sigkill());
                     forget(i32::try_from(child.id()).unwrap_or(0));
+                    latch_gone(&mut inner.groups);
                     return status;
                 }
             }
@@ -93,6 +94,7 @@ impl Procs {
             let _ = child.kill();
             let _ = child.wait();
             forget(i32::try_from(child.id()).unwrap_or(0));
+            latch_gone(&mut self.inner.lock().unwrap_or_else(|p| p.into_inner()).groups);
         }
     }
 
@@ -108,6 +110,7 @@ impl Procs {
             let _ = child.wait();
             forget(i32::try_from(child.id()).unwrap_or(0));
         }
+        latch_gone(&mut self.inner.lock().unwrap_or_else(|p| p.into_inner()).groups);
     }
 
     pub fn spawned(&self) -> usize {
@@ -120,8 +123,9 @@ impl Procs {
     }
 
     pub fn alive(&self) -> usize {
-        let groups = self.inner.lock().unwrap_or_else(|p| p.into_inner()).groups.clone();
-        groups.into_iter().filter(|&g| group_exists(g)).count()
+        let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        latch_gone(&mut inner.groups);
+        inner.groups.iter().filter(|(_, gone)| !gone).count()
     }
 }
 
@@ -154,6 +158,14 @@ fn forget(group: i32) {
     }
     for slot in &GROUPS {
         let _ = slot.compare_exchange(group, 0, Ordering::SeqCst, Ordering::SeqCst);
+    }
+}
+
+fn latch_gone(groups: &mut [(i32, bool)]) {
+    for (group, gone) in groups.iter_mut() {
+        if !*gone && !group_exists(*group) {
+            *gone = true;
+        }
     }
 }
 

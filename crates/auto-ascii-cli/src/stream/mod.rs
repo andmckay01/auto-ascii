@@ -1228,4 +1228,90 @@ mod tests {
         let first = Codec::ALL[0];
         assert_eq!(next_codec(first, 1), Codec::ALL[1]);
     }
+
+    impl Local {
+        fn media_split(&self, video_secs: u32, audio_secs: u32) -> PathBuf {
+            let path = self.dir().join(format!("split-{video_secs}-{audio_secs}.mkv"));
+            let mut cmd = std::process::Command::new(decode::program_from_env());
+            cmd.args(["-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i"])
+                .arg(format!("testsrc2=size=160x90:rate=30:duration={video_secs}"))
+                .args(["-f", "lavfi", "-i"])
+                .arg(format!("sine=frequency=440:sample_rate=48000:duration={audio_secs}"))
+                .args(["-c:a", "pcm_s16le", "-c:v", "ffv1"])
+                .arg(&path);
+            let out = cmd.output().expect("ffmpeg runs");
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            path
+        }
+    }
+
+    #[test]
+    fn video_outlives_audio_and_still_plays_to_the_end() {
+        let local = Local::new();
+        let av = local.media_split(3, 1);
+        let ytdlp = local.ytdlp(3, &av, Some(&av));
+        let (reason, stats, error, _, took) = local.run(ytdlp, real_ffmpeg(), 30.0);
+        assert_eq!((reason, error), (Reason::Eof, None), "did not reach a clean end");
+        assert_eq!(stats.frames_rendered + stats.frames_dropped, 90, "every frame shown or dropped");
+        assert!(stats.frames_rendered >= 80, "{} rendered", stats.frames_rendered);
+        assert_eq!(stats.rebuffers, 0, "audio EOF was mistaken for starvation");
+        assert_eq!(stats.underruns, 0);
+        let period = 1.0 / 30.0;
+        assert!(stats.max_drift < 2.0 * period, "drift {:.4}s", stats.max_drift);
+        let consumed = stats.samples_consumed as f64 / 48_000.0;
+        assert!((consumed - 1.0).abs() < 0.05, "{consumed:.3}s of audio played");
+        let started = stats.started_at.unwrap();
+        let wall = took.as_secs_f64();
+        assert!(wall >= started + 3.0 - 0.1, "exited early: {wall:.2}s (started {started:.2}s)");
+        assert!(wall <= started + 3.0 + 0.6, "exited late: {wall:.2}s (started {started:.2}s)");
+    }
+
+    fn stall_after(local: &Local, with_audio: bool) -> (Reason, Stats, Option<String>) {
+        let media = if with_audio { local.media_split(5, 1) } else { local.media(5, false) };
+        let ytdlp = local.ytdlp(5, &media, with_audio.then_some(media.as_path()));
+        let real = real_ffmpeg();
+        let frame = 480 * 270 * 3;
+        let throttle = local.dir().join("throttle.py");
+        std::fs::write(
+            &throttle,
+            "import sys,time\nn=int(sys.argv[1]);i=0\ninp=sys.stdin.buffer;out=sys.stdout.buffer\nwhile True:\n    b=inp.read(n)\n    if not b: break\n    out.write(b);out.flush();i+=1\n    if i==60: time.sleep(3)\n    elif i>60: time.sleep(0.05)\n",
+        )
+        .unwrap();
+        let ffmpeg = local.script(
+            "ffmpeg",
+            &format!(
+                "case \"$*\" in *0:v:0*) '{r}' \"$@\" | python3 '{t}' {frame}; exit 0;; esac\nexec '{r}' \"$@\"",
+                r = real.display(),
+                t = throttle.display(),
+            ),
+        );
+        let (reason, stats, error, _, _) = local.run(ytdlp, ffmpeg, 40.0);
+        (reason, stats, error)
+    }
+
+    #[test]
+    fn a_picture_stall_after_the_sound_ended_rebuffers_like_a_silent_stream() {
+        let silent = Local::new();
+        let (reason, base, error) = stall_after(&silent, false);
+        assert_eq!((reason, error), (Reason::Eof, None));
+        let ended = Local::new();
+        let (reason, stats, error) = stall_after(&ended, true);
+        assert_eq!((reason, error), (Reason::Eof, None));
+        eprintln!(
+            "silent: rendered {} dropped {} rebuffers {} | audio-ended: rendered {} dropped {} rebuffers {}",
+            base.frames_rendered, base.frames_dropped, base.rebuffers, stats.frames_rendered, stats.frames_dropped, stats.rebuffers
+        );
+        assert_eq!(base.rebuffers, 1, "the silent baseline re-buffers once");
+        assert!(base.frames_rendered >= 110, "silent baseline: {} rendered", base.frames_rendered);
+        assert_eq!(stats.frames_rendered + stats.frames_dropped, 150);
+        assert_eq!(stats.rebuffers, base.rebuffers, "the same stall should re-buffer the same way");
+        assert!(
+            stats.frames_rendered >= base.frames_rendered - 15,
+            "after the sound ended the re-buffer kept the clock running: {} rendered, {} dropped (silent stream: {} rendered, {} dropped)",
+            stats.frames_rendered,
+            stats.frames_dropped,
+            base.frames_rendered,
+            base.frames_dropped
+        );
+    }
 }
