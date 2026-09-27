@@ -13,7 +13,7 @@ use memmap2::Mmap;
 use crate::composition::Located;
 use crate::error::Error;
 use crate::pipeline::{
-    self, Drained, OverlayScale, ProgressContext, StageNs, draw_dial_overlay,
+    self, Drained, OverlayScale, ProgressContext, StageNs, UiRows, draw_dial_overlay,
     draw_enlarge_card, draw_hint_overlay, draw_info_overlay, draw_progress_overlay_clips,
 };
 
@@ -66,6 +66,7 @@ pub struct ClipDeck {
     repaint_pending: bool,
     carried: StageNs,
     blank: Grid<Cell>,
+    blank_ui: UiRows,
 }
 
 impl std::fmt::Debug for ClipDeck {
@@ -103,6 +104,7 @@ impl ClipDeck {
             repaint_pending: false,
             carried: StageNs::default(),
             blank: Grid::new(0, 0),
+            blank_ui: UiRows::NONE,
         }
     }
 
@@ -182,6 +184,13 @@ impl ClipDeck {
         match self.active.and_then(|idx| self.residents[idx].as_ref()) {
             Some(resident) => resident.player.grid(),
             None => &self.blank,
+        }
+    }
+
+    pub fn ui_rows(&self) -> UiRows {
+        match self.active.and_then(|idx| self.residents[idx].as_ref()) {
+            Some(resident) => resident.player.ui_rows(),
+            None => self.blank_ui,
         }
     }
 
@@ -399,11 +408,12 @@ impl ClipDeck {
         } else {
             self.blank.fill(self.codec.pad());
         }
-        let scale = OverlayScale::for_codec(cols, rows, self.cfg.glyph_tier, self.codec);
+        let scale = OverlayScale::for_grid(cols, rows, self.cfg.glyph_tier);
+        let mut ui = UiRows::NONE;
         if self.progress_visible
             && let Some(ctx) = self.progress_ctx
         {
-            draw_progress_overlay_clips(
+            ui |= draw_progress_overlay_clips(
                 &mut self.blank,
                 ctx.frame,
                 ctx.frame_count,
@@ -414,14 +424,15 @@ impl ClipDeck {
             );
         }
         if let Some((label, value, max)) = self.dial {
-            draw_dial_overlay(&mut self.blank, label, value, max, scale);
+            ui |= draw_dial_overlay(&mut self.blank, label, value, max, scale);
         }
         if self.hint_visible && !tiny {
-            draw_hint_overlay(&mut self.blank, scale);
+            ui |= draw_hint_overlay(&mut self.blank, scale);
             if let Some(info) = &self.info {
-                draw_info_overlay(&mut self.blank, info, scale);
+                ui |= draw_info_overlay(&mut self.blank, info, scale);
             }
         }
+        self.blank_ui = ui;
     }
 }
 

@@ -3,6 +3,9 @@
 #[doc(hidden)]
 pub mod pipeline;
 
+#[doc(hidden)]
+pub mod audio;
+
 mod composition;
 mod error;
 mod session;
@@ -28,7 +31,7 @@ pub use error::Error;
 pub use session::RenderSession;
 
 #[cfg(feature = "terminal")]
-pub use player::{Dial, MIN_FPS_CAP, Player, PlayerBuilder, RepaintMode, SCRUB_STEP_SECS};
+pub use player::{Dial, MIN_FPS_CAP, Player, PlayerBuilder, RepaintMode, SCRUB_STEP_SECS, Stopped};
 
 pub use auto_ascii_core::{Cell, Grid, Rgb};
 pub use auto_ascii_core::Codec;

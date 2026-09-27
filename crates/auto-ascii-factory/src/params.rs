@@ -155,7 +155,7 @@ impl Default for ComposeTable {
             edge_strong: 96,
             quad_e_on: 2,
             quad_e_off: 1,
-            idx_hyst_q8: 160,
+            idx_hyst_q8: auto_ascii_core::hysteresis::IDX_HYST_DEFAULT_Q8 as u32,
             shadow_lift: 0,
         }
     }
@@ -328,6 +328,9 @@ impl Params {
         }
         let c = &self.compose;
         c.to_core()?;
+        if c.idx_hyst_q8 > auto_ascii_core::hysteresis::IDX_HYST_MAX_Q8 as u32 {
+            return Err("params: compose.idx_hyst_q8 must be in 0..=255".into());
+        }
         if c.edge_t_off > c.edge_t_on {
             return Err("params: compose must satisfy edge_t_off <= edge_t_on".into());
         }
@@ -351,6 +354,16 @@ impl Params {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hysteresis_config_obeys_the_player_range() {
+        let mut p = Params::default();
+        assert_eq!(p.compose.idx_hyst_q8, 128);
+        p.compose.idx_hyst_q8 = 255;
+        p.validate().unwrap();
+        p.compose.idx_hyst_q8 = 256;
+        assert!(p.validate().unwrap_err().to_string().contains("idx_hyst_q8 must be in 0..=255"));
+    }
 
     #[test]
     fn embedded_file_equals_in_code_defaults() {

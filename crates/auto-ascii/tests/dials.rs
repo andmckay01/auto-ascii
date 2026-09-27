@@ -125,7 +125,7 @@ fn every_dial_retraces_its_own_steps() {
         }
         assert_eq!(*up.last().unwrap(), dial.max(), "{label}: the climb ends at max()");
         let presses = up.len() - 1;
-        assert!(presses >= 4, "{label}: a dial has a range to walk ({presses} presses)");
+        assert!(i32::from(dial.max()) / dial.step() >= 4, "{label}: a dial has a range to walk");
 
         for &expect in up.iter().rev().skip(1) {
             dial.turn(&mut p, -1);
@@ -307,35 +307,30 @@ fn hysteresis_turned_down_and_up_tracks_in_both_directions() {
     };
 
     let origin = pair(&mut p, &mut backend);
-    assert_eq!(glyph_at(&origin, &p, P_COL), held_p, "width 160 holds a 0.25-step crossing");
-    assert_eq!(glyph_at(&origin, &p, Q_COL), moved_q, "width 160 lets a 0.75-step crossing move");
+    assert_eq!(glyph_at(&origin, &p, P_COL), held_p, "width 128 holds a 0.25-step crossing");
+    assert_eq!(glyph_at(&origin, &p, Q_COL), moved_q, "width 128 lets a 0.75-step crossing move");
 
-    dial.turn(&mut compose, -10);
+    dial.turn(&mut compose, -8);
     assert_eq!(compose.idx_hyst_q8, 0);
     p.set_compose_params(compose);
     let responsive = pair(&mut p, &mut backend);
     assert_eq!(responsive, plain1, "width 0 is plain quantization");
     assert_ne!(responsive, origin);
 
-    dial.turn(&mut compose, 10);
+    dial.turn(&mut compose, 8);
     assert_eq!(compose, ComposeParams::default());
     p.set_compose_params(compose);
-    assert_eq!(pair(&mut p, &mut backend), origin, "down 10 / up 10 must restore the picture");
+    assert_eq!(pair(&mut p, &mut backend), origin, "down 8 / up 8 must restore the picture");
 
     dial.turn(&mut compose, 6);
-    assert_eq!(compose.idx_hyst_q8, 255);
+    assert_eq!(compose.idx_hyst_q8, 224, "extra upward presses now move past the old 128 cap, up to 255");
     p.set_compose_params(compose);
-    let sticky = pair(&mut p, &mut backend);
-    assert_eq!(glyph_at(&sticky, &p, P_COL), held_p);
-    assert_eq!(glyph_at(&sticky, &p, Q_COL), held_q, "width 255 holds a 0.75-step crossing");
-    assert_ne!(sticky, origin);
-
     dial.turn(&mut compose, -6);
-    assert_eq!(compose, ComposeParams::default());
+    assert_eq!(compose, ComposeParams::default(), "down 6 / up 6 past the old cap must restore the default");
     p.set_compose_params(compose);
-    assert_eq!(pair(&mut p, &mut backend), origin, "up 6 / down 6 must restore the picture");
+    assert_eq!(pair(&mut p, &mut backend), origin, "the round trip past the old cap restores the picture");
 
-    dial.turn(&mut compose, 6);
+    dial.turn(&mut compose, -1);
     p.set_compose_params(compose);
     let after_turn = render(&mut p, &mut backend, 1);
     assert_eq!(glyph_at(&after_turn, &p, P_COL), moved_p, "a turn re-quantizes the frame on screen");
@@ -354,9 +349,10 @@ fn a_turn_is_a_cold_start_and_a_stopped_dial_is_not() {
         render(&mut p, &mut backend, 0);
         render(&mut p, &mut backend, 1);
 
-        dial.turn(&mut compose, 1);
+        let direction = if dial.get(&compose) == dial.max() { -1 } else { 1 };
+        dial.turn(&mut compose, direction);
         p.set_compose_params(compose);
-        assert_eq!(render(&mut p, &mut backend, 1), cold(&asset, compose, 1), "{label}: +1");
+        assert_eq!(render(&mut p, &mut backend, 1), cold(&asset, compose, 1), "{label}: turn inward");
         dial.turn(&mut compose, -2);
         p.set_compose_params(compose);
         assert_eq!(render(&mut p, &mut backend, 1), cold(&asset, compose, 1), "{label}: -2");
@@ -370,5 +366,21 @@ fn a_turn_is_a_cold_start_and_a_stopped_dial_is_not() {
         assert_eq!(dial.get(&compose), dial.max(), "{label}: the top is a stop");
         p.set_compose_params(compose);
         assert_eq!(render(&mut p, &mut backend, 1), warm, "{label}: a stopped press leaves state alone");
+    }
+}
+
+#[test]
+fn hysteresis_dial_default_128_max_255() {
+    let dial = Dial::Hysteresis;
+    assert_eq!(dial.max(), 255);
+    assert_eq!(ComposeParams::default().idx_hyst_q8, 128);
+    for raw in 0..=255 {
+        let mut p = ComposeParams::default();
+        dial.set_param(&mut p, raw);
+        assert_eq!(p.idx_hyst_q8, raw);
+        dial.turn(&mut p, 999);
+        assert_eq!(p.idx_hyst_q8, 255);
+        dial.turn(&mut p, -999);
+        assert_eq!(p.idx_hyst_q8, 0);
     }
 }

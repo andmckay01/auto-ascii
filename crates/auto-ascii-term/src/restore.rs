@@ -7,11 +7,15 @@ use std::mem::MaybeUninit;
 use std::sync::Once;
 #[cfg(unix)]
 use std::sync::atomic::AtomicI32;
-#[cfg(windows)]
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const RESTORE_SEQ: &[u8] = b"\x1b[0m\x1b[?25h\x1b[?7h\x1b[?1049l";
+
+pub const BACKDROP_SET: &[u8] = b"\x1b]11;rgb:0000/0000/0000\x1b\\";
+
+pub const BACKDROP_RESET: &[u8] = b"\x1b]111\x1b\\";
+
+static BACKDROP: AtomicBool = AtomicBool::new(false);
 
 #[cfg(windows)]
 static ARMED: AtomicBool = AtomicBool::new(false);
@@ -28,7 +32,8 @@ pub fn install_restore_hooks() {
 }
 
 #[cfg(windows)]
-pub(crate) fn arm() {
+pub(crate) fn arm(backdrop: bool) {
+    BACKDROP.store(backdrop, Ordering::SeqCst);
     ARMED.store(true, Ordering::SeqCst);
 }
 
@@ -39,6 +44,9 @@ pub(crate) fn restore_now() {
     }
     use std::io::Write as _;
     let mut out = std::io::stdout();
+    if BACKDROP.swap(false, Ordering::SeqCst) {
+        let _ = out.write_all(BACKDROP_RESET);
+    }
     let _ = out.write_all(RESTORE_SEQ);
     let _ = out.flush();
     let _ = crossterm::terminal::disable_raw_mode();
@@ -68,16 +76,18 @@ pub fn install_restore_hooks() {
             let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
             libc::signal(libc::SIGINT, handler);
             libc::signal(libc::SIGTERM, handler);
+            libc::signal(libc::SIGHUP, handler);
             libc::atexit(at_exit);
         }
     });
 }
 
 #[cfg(unix)]
-pub(crate) fn arm(fd: libc::c_int, saved: libc::termios) {
+pub(crate) fn arm(fd: libc::c_int, saved: libc::termios, backdrop: bool) {
     unsafe {
         (*SAVED_TERMIOS.0.get()).write(saved);
     }
+    BACKDROP.store(backdrop, Ordering::SeqCst);
     RESTORE_FD.store(fd, Ordering::SeqCst);
 }
 
@@ -87,23 +97,31 @@ pub(crate) fn restore_now() {
     if fd < 0 {
         return;
     }
+    if BACKDROP.swap(false, Ordering::SeqCst) {
+        write_raw(fd, BACKDROP_RESET);
+    }
+    write_raw(fd, RESTORE_SEQ);
     unsafe {
-        let mut rem: &[u8] = RESTORE_SEQ;
-        while !rem.is_empty() {
-            let n = libc::write(fd, rem.as_ptr().cast(), rem.len());
-            if n < 0 {
-                if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-                    continue;
-                }
-                break;
-            }
-            if n == 0 {
-                break;
-            }
-            rem = &rem[n as usize..];
-        }
         let saved = (*SAVED_TERMIOS.0.get()).assume_init_ref();
         let _ = libc::tcsetattr(fd, libc::TCSANOW, saved);
+    }
+}
+
+#[cfg(unix)]
+fn write_raw(fd: libc::c_int, bytes: &[u8]) {
+    let mut rem = bytes;
+    while !rem.is_empty() {
+        let n = unsafe { libc::write(fd, rem.as_ptr().cast(), rem.len()) };
+        if n < 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            break;
+        }
+        if n == 0 {
+            break;
+        }
+        rem = &rem[n as usize..];
     }
 }
 

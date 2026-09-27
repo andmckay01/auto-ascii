@@ -2,7 +2,6 @@
 
 use std::time::Instant;
 
-use auto_ascii_core::cell::attrs;
 use auto_ascii_core::{
     Cell, Codec, ColorDepth, ComposeParams, FramePlanes, GlyphTier, Grid, HysteresisState,
     PaletteSet, Resampler, Rgb, Viewport, compose_frame_codec, compute_viewport_for,
@@ -25,7 +24,7 @@ const PROGRESS_HINT_MIN_COLS: u16 = 64;
 
 const HINT_SEP: &str = "   ";
 
-const HINT_DROP_ORDER: [usize; 8] = [7, 6, 5, 4, 1, 3, 2, 0];
+const HINT_DROP_ORDER: [usize; 9] = [8, 6, 7, 5, 4, 1, 3, 2, 0];
 
 pub const ZOOM_HINT_MAX_COLS: u16 = 160;
 
@@ -38,7 +37,6 @@ pub const BIG_OVERLAY_MIN_ROWS: u16 = 36;
 pub enum OverlayScale {
     Normal,
     Big,
-    Plain,
 }
 
 impl OverlayScale {
@@ -53,26 +51,59 @@ impl OverlayScale {
         }
     }
 
-    pub fn for_codec(cols: u16, rows: u16, glyph_tier: GlyphTier, codec: Codec) -> OverlayScale {
-        if codec.pad().attrs & attrs::DEFAULT_BG != 0 {
-            OverlayScale::Plain
-        } else {
-            OverlayScale::for_grid(cols, rows, glyph_tier)
-        }
-    }
-
     pub fn line_chars(self, cols: u16) -> u16 {
         match self {
-            OverlayScale::Normal | OverlayScale::Plain => cols,
+            OverlayScale::Normal => cols,
             OverlayScale::Big => cols / BIG_CHAR_COLS,
         }
     }
 
     pub fn line_rows(self) -> u16 {
         match self {
-            OverlayScale::Normal | OverlayScale::Plain => 1,
+            OverlayScale::Normal => 1,
             OverlayScale::Big => BIG_LINE_ROWS,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UiRows {
+    rows: u16,
+    line_rows: u16,
+    lines: u8,
+}
+
+impl UiRows {
+    pub const NONE: UiRows = UiRows { rows: 0, line_rows: 0, lines: 0 };
+
+    pub fn contains(self, row: u16) -> bool {
+        if row >= self.rows || self.line_rows == 0 {
+            return false;
+        }
+        let line = (self.rows - 1 - row) / self.line_rows;
+        line < 8 && self.lines >> line & 1 == 1
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.lines == 0
+    }
+}
+
+impl std::ops::BitOr for UiRows {
+    type Output = UiRows;
+
+    fn bitor(self, other: UiRows) -> UiRows {
+        if self.is_empty() {
+            return other;
+        }
+        debug_assert!(other.is_empty() || (self.rows, self.line_rows) == (other.rows, other.line_rows));
+        UiRows { lines: self.lines | other.lines, ..self }
+    }
+}
+
+impl std::ops::BitOrAssign for UiRows {
+    fn bitor_assign(&mut self, other: UiRows) {
+        *self = *self | other;
     }
 }
 
@@ -117,14 +148,14 @@ fn big_glyph(c: char) -> u16 {
     }
 }
 
-fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, scale: OverlayScale) {
+fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, scale: OverlayScale) -> UiRows {
     let (cols, rows) = (grid.cols(), grid.rows());
     let h = scale.line_rows();
     let Some(top) = rows.checked_sub(h * (slot + 1)) else {
-        return;
+        return UiRows::NONE;
     };
     if cols == 0 {
-        return;
+        return UiRows::NONE;
     }
     match scale {
         OverlayScale::Normal => {
@@ -132,13 +163,6 @@ fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, sc
             for col in 0..cols {
                 let ch = chars.next().unwrap_or(' ');
                 grid.set(col, top, Cell::new(ch, fg, bg));
-            }
-        }
-        OverlayScale::Plain => {
-            let mut chars = line.chars();
-            for col in 0..cols {
-                let ch = chars.next().map_or(' ', |c| if c == ' ' || c.is_ascii_graphic() { c } else { '?' });
-                grid.set(col, top, Cell { ch: ch as u32, fg, bg: Rgb::BLACK, attrs: attrs::DEFAULT_BG });
             }
         }
         OverlayScale::Big => {
@@ -171,6 +195,7 @@ fn paint_line(grid: &mut Grid<Cell>, slot: u16, line: &str, fg: Rgb, bg: Rgb, sc
             }
         }
     }
+    UiRows { rows, line_rows: h, lines: 1 << slot }
 }
 
 pub fn glyph_tier_from_caps(caps: &Caps) -> GlyphTier {
@@ -214,6 +239,7 @@ pub struct Drained {
     pub toggle_pause: bool,
     pub codec_cycle: u32,
     pub save: bool,
+    pub toggle_sound: bool,
 }
 
 impl Drained {
@@ -247,6 +273,7 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
     let mut toggle_pause = false;
     let mut codec_cycle: u32 = 0;
     let mut save = false;
+    let mut toggle_sound = false;
     while let Some(ev) = backend.events().pop() {
         match ev {
             Event::Quit => {
@@ -260,6 +287,7 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
                     toggle_pause: false,
                     codec_cycle: 0,
                     save: false,
+                    toggle_sound: false,
                 };
                 return (quit, None);
             }
@@ -274,6 +302,7 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
             Event::Key(Key::Char(' ')) => toggle_pause = true,
             Event::Key(Key::Char('/')) => codec_cycle = codec_cycle.saturating_add(1),
             Event::Key(Key::Char('s')) => save = true,
+            Event::Key(Key::Char('m')) => toggle_sound = true,
             Event::Key(_) => {}
         }
     }
@@ -287,12 +316,16 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
         toggle_pause,
         codec_cycle,
         save,
+        toggle_sound,
     };
     (drained, resize)
 }
 
 pub struct Player<'a> {
-    reader: AsciiReader<'a>,
+    reader: Option<AsciiReader<'a>>,
+    live_shot: u32,
+    live_levels: Option<PlaneLevels>,
+    live_lut_levels: Option<PlaneLevels>,
     frame_count: u32,
     src_w: u16,
     src_h: u16,
@@ -341,6 +374,7 @@ pub struct Player<'a> {
     loaded: Option<u32>,
     grid: Grid<Cell>,
     layer_mask: Option<Grid<u8>>,
+    ui_rows: UiRows,
     stage: StageNs,
     overlay_visible: bool,
     progress_ctx: Option<ProgressContext>,
@@ -367,24 +401,73 @@ impl<'a> Player<'a> {
             return Err(Error::Asset("asset has zero frames"));
         }
         let chroma_dims = reader.plane_dims(plane_id::C);
-        let use_chroma = color != ColorDepth::Mono && chroma_dims.is_some();
-        let chroma_len = chroma_dims.map_or(0, |(w, h)| w as usize * h as usize);
         let has_edges = reader.plane_dims(plane_id::E).is_some()
             && reader.plane_dims(plane_id::EX).is_some()
             && reader.plane_dims(plane_id::EY).is_some();
         let has_h = reader.plane_dims(plane_id::H).is_some();
         let header = reader.header();
-        let (aspect_num, aspect_den) = if header.aspect_num == 0 || header.aspect_den == 0 {
-            (16, 9)
-        } else {
-            (header.aspect_num, header.aspect_den)
-        };
-        let src_len = src_w as usize * src_h as usize;
+        let aspect = (header.aspect_num, header.aspect_den);
         let fps = (f64::from(header.fps_num) / f64::from(header.fps_den.max(1))).max(1e-9);
+        let geometry = Geometry {
+            src_w,
+            src_h,
+            frame_count,
+            chroma_dims,
+            has_edges,
+            has_h,
+            aspect,
+            fps,
+        };
+        Ok(Player::with_geometry(Some(reader), &geometry, cell_aspect, repaint_full, color, glyph_tier))
+    }
+
+    pub fn live(
+        spec: &LiveSpec,
+        cell_aspect: f64,
+        repaint_full: bool,
+        color: ColorDepth,
+        glyph_tier: GlyphTier,
+    ) -> Result<Player<'a>> {
+        if spec.w < 2 || spec.h < 2 || !spec.w.is_multiple_of(2) || !spec.h.is_multiple_of(2) {
+            return Err(Error::Config(format!(
+                "live planes must be even and at least 2x2 (got {}x{})",
+                spec.w, spec.h
+            )));
+        }
+        let geometry = Geometry {
+            src_w: spec.w,
+            src_h: spec.h,
+            frame_count: spec.frame_count.max(1),
+            chroma_dims: Some((spec.w / 2, spec.h / 2)),
+            has_edges: true,
+            has_h: true,
+            aspect: (spec.aspect_num, spec.aspect_den),
+            fps: spec.fps.max(1e-9),
+        };
+        Ok(Player::with_geometry(None, &geometry, cell_aspect, repaint_full, color, glyph_tier))
+    }
+
+    fn with_geometry(
+        reader: Option<AsciiReader<'a>>,
+        g: &Geometry,
+        cell_aspect: f64,
+        repaint_full: bool,
+        color: ColorDepth,
+        glyph_tier: GlyphTier,
+    ) -> Player<'a> {
+        let Geometry { src_w, src_h, frame_count, chroma_dims, has_edges, has_h, aspect, fps } = *g;
+        let use_chroma = color != ColorDepth::Mono && chroma_dims.is_some();
+        let chroma_len = chroma_dims.map_or(0, |(w, h)| w as usize * h as usize);
+        let (aspect_num, aspect_den) =
+            if aspect.0 == 0 || aspect.1 == 0 { (16, 9) } else { aspect };
+        let src_len = src_w as usize * src_h as usize;
         let mut levels_lut = [0u8; 256];
         build_levels_lut(&mut levels_lut, None);
-        Ok(Player {
+        Player {
             reader,
+            live_shot: 0,
+            live_levels: None,
+            live_lut_levels: None,
             frame_count,
             src_w,
             src_h,
@@ -433,6 +516,7 @@ impl<'a> Player<'a> {
             loaded: None,
             grid: Grid::new(0, 0),
             layer_mask: None,
+            ui_rows: UiRows::NONE,
             stage: StageNs::default(),
             overlay_visible: false,
             progress_ctx: None,
@@ -441,7 +525,7 @@ impl<'a> Player<'a> {
             paused: false,
             overlay_hide_pending: false,
             fps,
-        })
+        }
     }
 
     pub fn compose_params(&self) -> ComposeParams {
@@ -485,6 +569,10 @@ impl<'a> Player<'a> {
         &self.grid
     }
 
+    pub fn ui_rows(&self) -> UiRows {
+        self.ui_rows
+    }
+
     pub fn viewport(&self) -> Option<Viewport> {
         self.vp
     }
@@ -517,6 +605,7 @@ impl<'a> Player<'a> {
 
     pub fn reflow_grid(&mut self, cols: u16, rows: u16) {
         self.grid.resize(cols, rows);
+        self.ui_rows = UiRows::NONE;
         if let Some(mask) = &mut self.layer_mask {
             mask.resize(cols, rows);
         }
@@ -589,35 +678,83 @@ impl<'a> Player<'a> {
         if self.loaded == Some(frame_idx) {
             return Ok(());
         }
+        let Some(reader) = self.reader.as_mut() else {
+            return Ok(());
+        };
         let sequential = frame_idx > 0 && self.loaded == Some(frame_idx - 1);
-        Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::Y, &mut self.luma_src)?;
+        Self::load_plane(reader, sequential, frame_idx, plane_id::Y, &mut self.luma_src)?;
         if self.has_edges {
-            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::E, &mut self.e_src)?;
-            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::EX, &mut self.ex_src)?;
-            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::EY, &mut self.ey_src)?;
+            Self::load_plane(reader, sequential, frame_idx, plane_id::E, &mut self.e_src)?;
+            Self::load_plane(reader, sequential, frame_idx, plane_id::EX, &mut self.ex_src)?;
+            Self::load_plane(reader, sequential, frame_idx, plane_id::EY, &mut self.ey_src)?;
         }
         if self.has_h {
-            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::H, &mut self.h_src)?;
+            Self::load_plane(reader, sequential, frame_idx, plane_id::H, &mut self.h_src)?;
         }
         if self.use_chroma {
-            Self::load_plane(&mut self.reader, sequential, frame_idx, plane_id::C, &mut self.chroma_src)?;
+            Self::load_plane(reader, sequential, frame_idx, plane_id::C, &mut self.chroma_src)?;
         }
         self.loaded = Some(frame_idx);
         Ok(())
     }
 
     fn update_levels(&mut self, frame_idx: u32) {
-        let shot = self.reader.shot_for_frame(frame_idx).map(|s| s.first_frame);
+        let Some(reader) = self.reader.as_ref() else {
+            self.update_live_levels();
+            return;
+        };
+        let shot = reader.shot_for_frame(frame_idx).map(|s| s.first_frame);
         let key = (shot, self.compose_params.shadow_lift);
         if self.lut_key != Some(key) {
             build_levels_lut_lifted(
                 &mut self.levels_lut,
-                self.reader.norm_levels(frame_idx, plane_id::Y),
+                reader.norm_levels(frame_idx, plane_id::Y),
                 key.1,
             );
             self.lut_key = Some(key);
             self.state.reset();
         }
+    }
+
+    fn update_live_levels(&mut self) {
+        let key = (Some(self.live_shot), self.compose_params.shadow_lift);
+        let fresh = self.lut_key != Some(key);
+        if fresh || self.live_lut_levels != self.live_levels {
+            build_levels_lut_lifted(&mut self.levels_lut, self.live_levels, key.1);
+            self.live_lut_levels = self.live_levels;
+            if fresh {
+                self.lut_key = Some(key);
+                self.state.reset();
+            }
+        }
+    }
+
+    pub fn load_live(&mut self, frame_idx: u32, frame: &LiveFrame<'_>) -> Result<()> {
+        if self.reader.is_some() {
+            return Err(Error::Config("load_live needs a live player (Player::live)".into()));
+        }
+        let n = self.luma_src.len();
+        let cn = self.chroma_dims.map_or(0, |(w, h)| w as usize * h as usize);
+        let sized = [frame.y, frame.e, frame.ex, frame.ey, frame.h].iter().all(|p| p.len() == n)
+            && frame.c.len() == cn * 2;
+        if !sized {
+            return Err(Error::Config(format!(
+                "live frame planes do not match the {}x{} geometry",
+                self.src_w, self.src_h
+            )));
+        }
+        self.luma_src.copy_from_slice(frame.y);
+        self.e_src.copy_from_slice(frame.e);
+        self.ex_src.copy_from_slice(frame.ex);
+        self.ey_src.copy_from_slice(frame.ey);
+        self.h_src.copy_from_slice(frame.h);
+        if self.use_chroma {
+            self.chroma_src.copy_from_slice(frame.c);
+        }
+        self.live_shot = frame.shot_start;
+        self.live_levels = frame.levels;
+        self.loaded = Some(frame_idx);
+        Ok(())
     }
 
     pub fn set_dial_overlay(&mut self, dial: Option<(&'static str, u8, u8)>) {
@@ -749,9 +886,10 @@ impl<'a> Player<'a> {
                 mask.fill(auto_ascii_core::layer::BASE);
             }
         }
-        let scale = OverlayScale::for_codec(self.grid.cols(), self.grid.rows(), self.glyph_tier, self.codec);
+        let scale = OverlayScale::for_grid(self.grid.cols(), self.grid.rows(), self.glyph_tier);
+        let mut ui = UiRows::NONE;
         if self.overlay_visible {
-            match self.progress_ctx {
+            ui |= match self.progress_ctx {
                 Some(ctx) => draw_progress_overlay_clips(
                     &mut self.grid,
                     ctx.frame,
@@ -770,17 +908,18 @@ impl<'a> Player<'a> {
                     self.paused,
                     scale,
                 ),
-            }
+            };
         }
         if let Some((label, value, max)) = self.dial_overlay {
-            draw_dial_overlay(&mut self.grid, label, value, max, scale);
+            ui |= draw_dial_overlay(&mut self.grid, label, value, max, scale);
         }
         if self.hint_visible && self.vp.is_some() {
-            draw_hint_overlay(&mut self.grid, scale);
+            ui |= draw_hint_overlay(&mut self.grid, scale);
             if let Some(info) = &self.info {
-                draw_info_overlay(&mut self.grid, info, scale);
+                ui |= draw_info_overlay(&mut self.grid, info, scale);
             }
         }
+        self.ui_rows = ui;
         Ok(())
     }
 
@@ -795,6 +934,40 @@ impl<'a> Player<'a> {
     pub fn set_cell_aspect_for_next_reflow(&mut self, cell_aspect: f64) {
         self.cell_aspect = cell_aspect;
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Geometry {
+    src_w: u16,
+    src_h: u16,
+    frame_count: u32,
+    chroma_dims: Option<(u16, u16)>,
+    has_edges: bool,
+    has_h: bool,
+    aspect: (u16, u16),
+    fps: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiveSpec {
+    pub w: u16,
+    pub h: u16,
+    pub aspect_num: u16,
+    pub aspect_den: u16,
+    pub fps: f64,
+    pub frame_count: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LiveFrame<'f> {
+    pub y: &'f [u8],
+    pub e: &'f [u8],
+    pub ex: &'f [u8],
+    pub ey: &'f [u8],
+    pub h: &'f [u8],
+    pub c: &'f [u8],
+    pub levels: Option<PlaneLevels>,
+    pub shot_start: u32,
 }
 
 pub fn build_levels_lut(lut: &mut [u8; 256], levels: Option<PlaneLevels>) {
@@ -871,8 +1044,8 @@ pub fn draw_enlarge_card(grid: &mut Grid<Cell>, pad: Cell) {
     }
 }
 
-pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32, frame_count: u32, fps: f64) {
-    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, false, OverlayScale::Normal);
+pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32, frame_count: u32, fps: f64) -> UiRows {
+    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, false, OverlayScale::Normal)
 }
 
 pub fn draw_progress_overlay_paused(
@@ -881,8 +1054,8 @@ pub fn draw_progress_overlay_paused(
     frame_count: u32,
     fps: f64,
     paused: bool,
-) {
-    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, paused, OverlayScale::Normal);
+) -> UiRows {
+    draw_progress_overlay_clips(grid, frame, frame_count, fps, None, paused, OverlayScale::Normal)
 }
 
 pub fn draw_progress_overlay_clips(
@@ -893,9 +1066,9 @@ pub fn draw_progress_overlay_clips(
     clip: Option<(usize, usize)>,
     paused: bool,
     scale: OverlayScale,
-) {
+) -> UiRows {
     if grid.cols() == 0 || grid.rows() == 0 {
-        return;
+        return UiRows::NONE;
     }
     let cols = scale.line_chars(grid.cols());
     let fg = Rgb::gray(235);
@@ -948,7 +1121,7 @@ pub fn draw_progress_overlay_clips(
         line.push(']');
     }
     line.push_str(&right);
-    paint_line(grid, 0, &line, fg, bg, scale);
+    paint_line(grid, 0, &line, fg, bg, scale)
 }
 
 pub fn draw_dial_overlay(
@@ -957,9 +1130,9 @@ pub fn draw_dial_overlay(
     value: u8,
     max: u8,
     scale: OverlayScale,
-) {
+) -> UiRows {
     if grid.cols() == 0 || grid.rows() == 0 {
-        return;
+        return UiRows::NONE;
     }
     let cols = scale.line_chars(grid.cols());
     let fg = Rgb::gray(245);
@@ -984,7 +1157,7 @@ pub fn draw_dial_overlay(
         line.push(']');
     }
     line.push_str(&right);
-    paint_line(grid, 0, &line, fg, bg, scale);
+    paint_line(grid, 0, &line, fg, bg, scale)
 }
 
 fn scrub_step_label() -> String {
@@ -993,7 +1166,7 @@ fn scrub_step_label() -> String {
 
 fn hint_line(cols: u16) -> String {
     let arrows = format!("<- -> {}", scrub_step_label());
-    let items: [&str; 9] = [
+    let items: [&str; 10] = [
         "q quit",
         "space pause",
         "0-9 jump",
@@ -1001,16 +1174,17 @@ fn hint_line(cols: u16) -> String {
         "d dial",
         "[ ] adjust",
         "/ codec",
+        "m sound",
         "s save",
         "v controls",
     ];
-    let width = |keep: &[bool; 9]| -> usize {
+    let width = |keep: &[bool; 10]| -> usize {
         let kept = items.iter().zip(keep).filter(|(_, k)| **k);
         let (n, len) = kept.fold((0, 0), |(n, len), (it, _)| (n + 1, len + it.len()));
         if n == 0 { 0 } else { len + (n - 1) * HINT_SEP.len() + 2 }
     };
 
-    let mut keep = [true; 9];
+    let mut keep = [true; 10];
     for i in HINT_DROP_ORDER {
         if width(&keep) <= cols as usize {
             break;
@@ -1025,11 +1199,11 @@ fn hint_line(cols: u16) -> String {
     format!(" {} ", kept.join(HINT_SEP))
 }
 
-pub fn draw_hint_overlay(grid: &mut Grid<Cell>, scale: OverlayScale) {
+pub fn draw_hint_overlay(grid: &mut Grid<Cell>, scale: OverlayScale) -> UiRows {
     let fg = Rgb::gray(235);
     let bg = Rgb::new(24, 24, 40);
     let line = hint_line(scale.line_chars(grid.cols()));
-    paint_line(grid, 1, &line, fg, bg, scale);
+    paint_line(grid, 1, &line, fg, bg, scale)
 }
 
 fn zoom_line(cols: u16) -> String {
@@ -1038,7 +1212,7 @@ fn zoom_line(cols: u16) -> String {
     [long, short].into_iter().find(|l| l.len() <= cols as usize).unwrap_or_default()
 }
 
-pub fn draw_info_overlay(grid: &mut Grid<Cell>, text: &str, scale: OverlayScale) {
+pub fn draw_info_overlay(grid: &mut Grid<Cell>, text: &str, scale: OverlayScale) -> UiRows {
     let (cols, rows) = (grid.cols(), grid.rows());
     let fg = Rgb::gray(235);
     let bg = Rgb::new(24, 24, 40);
@@ -1051,18 +1225,20 @@ pub fn draw_info_overlay(grid: &mut Grid<Cell>, text: &str, scale: OverlayScale)
         line.extend(std::iter::repeat_n(' ', width - used - size.len()));
         line.push_str(&size);
     }
-    paint_line(grid, 2, &line, fg, bg, scale);
+    let mut ui = paint_line(grid, 2, &line, fg, bg, scale);
     if cols < ZOOM_HINT_MAX_COLS {
         let zoom = zoom_line(width as u16);
         if !zoom.is_empty() {
-            paint_line(grid, 3, &zoom, fg, bg, scale);
+            ui |= paint_line(grid, 3, &zoom, fg, bg, scale);
         }
     }
+    ui
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use auto_ascii_core::cell::attrs;
 
     #[test]
     fn shadow_lift_opens_shadows_monotonically() {
@@ -1274,31 +1450,46 @@ mod tests {
     }
 
     #[test]
-    fn plain_overlays_keep_the_terminal_background_at_every_size() {
-        for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks, GlyphTier::BrailleVerified] {
-            for (cols, rows) in [(1, 1), (80, 24), (400, 120), (1000, 1000)] {
-                assert_eq!(OverlayScale::for_codec(cols, rows, tier, Codec::Ascii), OverlayScale::Plain);
-                for codec in [Codec::Pixels, Codec::Letters] {
-                    let want = OverlayScale::for_grid(cols, rows, tier);
-                    assert_eq!(OverlayScale::for_codec(cols, rows, tier, codec), want);
+    fn ui_rows_are_exactly_the_rows_the_overlays_draw() {
+        type Draw = fn(&mut Grid<Cell>, OverlayScale) -> UiRows;
+        let pad = Codec::Ascii.pad();
+        for (cols, rows) in [(80u16, 24u16), (159, 45), (239, 36), (240, 36), (400, 120), (1000, 300)] {
+            for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks] {
+                let scale = OverlayScale::for_grid(cols, rows, tier);
+                let h = scale.line_rows();
+                let band = |line: u16| rows - h * (line + 1)..rows - h * line;
+                let draws: [(&str, Draw, &[u16]); 4] = [
+                    ("progress", |g, s| draw_progress_overlay_clips(g, 900, 5400, 30.0, None, true, s), &[0]),
+                    ("dial", |g, s| draw_dial_overlay(g, "edge", 7, 255, s), &[0]),
+                    ("hints", draw_hint_overlay, &[1]),
+                    ("info", |g, s| draw_info_overlay(g, " clip ", s), &[2, 3]),
+                ];
+                for (what, draw, lines) in draws {
+                    let mut g: Grid<Cell> = Grid::new(cols, rows);
+                    g.fill(pad);
+                    let ui = draw(&mut g, scale);
+                    let zoom = what == "info" && cols < ZOOM_HINT_MAX_COLS;
+                    let lines = if what == "info" && !zoom { &lines[..1] } else { lines };
+                    for r in 0..rows {
+                        let want = lines.iter().any(|&l| band(l).contains(&r));
+                        assert_eq!(ui.contains(r), want, "{what} {cols}x{rows} {tier:?} row {r}");
+                        let painted = (0..cols).any(|c| g.get(c, r) != pad);
+                        assert_eq!(painted, want, "{what} {cols}x{rows} {tier:?} row {r} painted");
+                    }
                 }
+                let mut g: Grid<Cell> = Grid::new(cols, rows);
+                let ui = draw_hint_overlay(&mut g, scale) | draw_info_overlay(&mut g, " clip ", scale);
+                assert!(!ui.contains(rows - 1), "hints alone leave the bottom line to the picture");
+                assert!(ui.contains(rows - h - 1) && ui.contains(rows - 2 * h - 1));
             }
         }
-        let (cols, rows) = (400, 120);
-        let mut g: Grid<Cell> = Grid::new(cols, rows);
-        g.fill(Codec::Ascii.pad());
-        draw_progress_overlay_clips(&mut g, 900, 5400, 30.0, Some((1, 2)), true, OverlayScale::Plain);
-        draw_hint_overlay(&mut g, OverlayScale::Plain);
-        draw_info_overlay(&mut g, " Caf\u{e9} ", OverlayScale::Plain);
-        assert!(row_text(&g, rows - 1).contains("PAUSED"));
-        assert!(row_text(&g, rows - 2).contains("v controls"));
-        assert!(row_text(&g, rows - 3).starts_with(" Caf? "));
-        for c in g.as_slice() {
-            assert!(c.glyph() == ' ' || c.glyph().is_ascii_graphic(), "{:?}", c.glyph());
-            assert_eq!((c.bg, c.attrs), (Rgb::BLACK, attrs::DEFAULT_BG));
-        }
+        assert!(UiRows::NONE.is_empty() && (0..100).all(|r| !UiRows::NONE.contains(r)));
+        let mut g: Grid<Cell> = Grid::new(0, 5);
+        assert!(draw_hint_overlay(&mut g, OverlayScale::Normal).is_empty(), "nothing drawn, no UI");
+        let mut g: Grid<Cell> = Grid::new(400, 2);
+        assert!(draw_hint_overlay(&mut g, OverlayScale::Big).is_empty(), "a band that does not fit");
         let mut card: Grid<Cell> = Grid::new(8, 3);
-        draw_enlarge_card(&mut card, Codec::Ascii.pad());
+        draw_enlarge_card(&mut card, pad);
         assert!(card.as_slice().iter().all(|c| c.attrs == attrs::DEFAULT_BG));
         assert!(card.as_slice().iter().any(|c| c.glyph() == 'A'), "the card still reads");
     }
@@ -1426,5 +1617,31 @@ mod tests {
         let mut g = Grid::new(240, 8);
         draw_info_overlay(&mut g, " clip ", OverlayScale::Big);
         assert!(g.as_slice().iter().all(|c| *c == Cell::BLANK), "slot 2 needs 9 rows");
+    }
+
+    #[test]
+    fn m_toggles_sound_once_per_drain_and_quit_still_wins() {
+        let mut backend = auto_ascii_term::SimBackend::new(80, 24);
+        let (drained, _) = drain_backend_events(&mut backend);
+        assert!(!drained.toggle_sound, "no key, no toggle");
+        for _ in 0..3 {
+            backend.push_event(Event::Key(Key::Char('m')));
+        }
+        let (drained, _) = drain_backend_events(&mut backend);
+        assert!(drained.toggle_sound, "a held m is one toggle, like space");
+        assert!(!drained.save && !drained.toggle_pause && drained.codec_cycle == 0, "m is its own key");
+        backend.push_event(Event::Key(Key::Char('m')));
+        backend.push_event(Event::Quit);
+        let (drained, _) = drain_backend_events(&mut backend);
+        assert!(drained.quit && !drained.toggle_sound);
+    }
+
+    #[test]
+    fn hint_line_fits_m_sound_between_codec_and_save() {
+        assert!(hint_line(108).contains("/ codec   m sound   s save   v controls"), "{:?}", hint_line(108));
+        assert_eq!(hint_line(108).len(), 108, "the full row is exactly 108 columns");
+        assert!(hint_line(89).ends_with("[ ] adjust   m sound   v controls "), "{:?}", hint_line(89));
+        assert!(!hint_line(88).contains("m sound"));
+        assert_eq!(hint_line(80), hint_line(88), "80 columns keep the M6 row");
     }
 }

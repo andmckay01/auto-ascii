@@ -1,3 +1,4 @@
+use auto_ascii::Codec;
 use auto_ascii::pipeline::{BIG_OVERLAY_MIN_COLS, OverlayScale, Player, ZOOM_HINT_MAX_COLS};
 use auto_ascii_core::{Cell, ColorDepth, GlyphTier, Grid};
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
@@ -12,7 +13,7 @@ fn row(grid: &Grid<Cell>, r: u16) -> String {
     grid.row(r).iter().map(|c| c.glyph()).collect()
 }
 
-const INFO: &str = " The Architect   codec: letters   settings: default ";
+const INFO: &str = " The Architect   codec: letters   settings: default   sound: on ";
 
 fn reference(bytes: &[u8], tier: GlyphTier, cols: u16, rows: u16, frame: u32) -> Vec<Cell> {
     let mut b = SimBackend::new(cols, rows);
@@ -85,6 +86,20 @@ fn big_text_on_wide_grids_and_a_clean_hide() {
     p.render_present(&mut backend, 3).unwrap();
     assert!(row(p.grid(), rows - 3).ends_with(" 320x90 cells "));
     assert!(row(p.grid(), rows - 2).is_ascii());
+
+    let mut backend = SimBackend::new(cols, rows);
+    let mut p = player(&asset, GlyphTier::UnicodeBlocks);
+    p.set_codec(Codec::Ascii);
+    p.reflow(&mut backend, cols, rows);
+    p.set_progress_overlay(true);
+    p.set_hint_overlay(true);
+    p.set_info_overlay(Some(INFO));
+    p.render_present(&mut backend, 3).unwrap();
+    for r in rows - bands..rows {
+        assert!(p.ui_rows().contains(r), "row {r} is UI");
+        assert!(row(p.grid(), r).contains(['▀', '▄', '█']), "ascii draws the same big text: row {r}");
+    }
+    assert!(!p.ui_rows().contains(rows - bands - 1), "the picture starts above the bands");
 }
 
 #[test]
@@ -96,18 +111,28 @@ fn every_overlay_on_tiny_and_threshold_grids() {
     ];
     for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks] {
         for (cols, rows) in sizes {
-            let mut backend = SimBackend::new(cols, rows);
-            let mut p = player(&asset, tier);
-            p.reflow(&mut backend, cols, rows);
-            p.set_progress_overlay(true);
-            p.set_dial_overlay(Some(("edge on", 32, 255)));
-            p.set_hint_overlay(true);
-            p.set_info_overlay(Some(INFO));
-            p.render_present(&mut backend, 1).unwrap();
-            assert_eq!((p.grid().cols(), p.grid().rows()), (cols, rows));
-            if (cols, rows) == (10, 3) {
-                assert!(row(p.grid(), 2).starts_with(" edge on"), "{:?}", row(p.grid(), 2));
+            let mut huds = Vec::new();
+            for codec in Codec::ALL {
+                let mut backend = SimBackend::new(cols, rows);
+                let mut p = player(&asset, tier);
+                p.set_codec(codec);
+                p.reflow(&mut backend, cols, rows);
+                p.set_progress_overlay(true);
+                p.set_dial_overlay(Some(("edge on", 32, 255)));
+                p.set_hint_overlay(true);
+                p.set_info_overlay(Some(INFO));
+                p.render_present(&mut backend, 1).unwrap();
+                assert_eq!((p.grid().cols(), p.grid().rows()), (cols, rows));
+                if (cols, rows) == (10, 3) {
+                    assert!(row(p.grid(), 2).starts_with(" edge on"), "{:?}", row(p.grid(), 2));
+                }
+                let ui = p.ui_rows();
+                assert!(ui.contains(rows - 1), "{codec:?} {cols}x{rows}: the dial row is UI");
+                let rows: Vec<Vec<Cell>> =
+                    (0..rows).filter(|&r| ui.contains(r)).map(|r| p.grid().row(r).to_vec()).collect();
+                huds.push((ui, rows));
             }
+            assert!(huds.windows(2).all(|w| w[0] == w[1]), "{tier:?} {cols}x{rows}: one HUD for every codec");
         }
     }
 }

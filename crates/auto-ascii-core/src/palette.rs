@@ -243,6 +243,9 @@ pub struct PaletteSet {
     pub braille: bool,
     pub subpos: bool,
     pub bg_tint: bool,
+    /// The color depth this set was selected for, for codecs whose colors
+    /// must hold a rule after the backend quantizes them.
+    pub color: ColorDepth,
 }
 
 pub fn select_palettes(tier: GlyphTier, color: ColorDepth, viewport_cols: u16) -> PaletteSet {
@@ -272,6 +275,7 @@ pub fn select_palettes(tier: GlyphTier, color: ColorDepth, viewport_cols: u16) -
         braille: matches!(tier, GlyphTier::BrailleVerified) && density == DensityBand::Fine,
         subpos: !unicode,
         bg_tint: matches!(color, ColorDepth::True | ColorDepth::C256),
+        color,
     }
 }
 

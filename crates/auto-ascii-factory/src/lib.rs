@@ -8,6 +8,7 @@ pub mod features;
 pub mod ffmpeg;
 pub mod font_table;
 pub mod highlights;
+pub mod live;
 pub mod lut;
 pub mod params;
 pub mod reel;

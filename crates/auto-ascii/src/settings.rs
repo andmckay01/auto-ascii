@@ -123,6 +123,12 @@ mod tests {
     }
 
     #[test]
+    fn hysteresis_settings_up_to_255_no_longer_clamp() {
+        let s = VideoSettings::parse("idx_hyst_q8 = 255\n").unwrap();
+        assert_eq!(s.compose.idx_hyst_q8, 255);
+    }
+
+    #[test]
     fn text_round_trip_keeps_every_dial_and_the_codec() {
         let s = turned();
         assert_ne!(s.compose, ComposeParams::default(), "the fixture moved the dials");

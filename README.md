@@ -48,13 +48,14 @@ The Rust workspace, supported by Python tools, has a library (`auto-ascii`),
 two engine binaries (`auto-ascii-factory` and `auto-ascii-player`), and the `auto-ascii`
 CLI, which files clips in a library folder and stitches them into
 compositions. The factory runs ffmpeg as a subprocess; the player links no
-video codecs.
+video codecs (it runs ffmpeg too, only to decode an asset's soundtrack).
 
 ## Install
 
 You need a recent stable Rust toolchain (edition 2024). The factory also needs
 `ffmpeg` on `PATH` (`brew install ffmpeg`, `apt install ffmpeg`); the player
-does not.
+does not. `auto-ascii stream` needs both `yt-dlp` and `ffmpeg` on `PATH`
+(`brew install yt-dlp ffmpeg`).
 
 ```bash
 git clone https://github.com/andmckay01/auto-ascii && cd auto-ascii
@@ -108,6 +109,7 @@ container's header and chunks and verifies every CRC.
 | `[` / `]` | turn the selected dial down / up |
 | `/` | cycle the glyph codec (`pixels` → `letters` → `ascii`) |
 | `s` | save this video's dials and codec |
+| `m` | turn the sound on / off |
 | `v` | pin or hide the controls overlay |
 
 **Glyph codecs** decide how a cell becomes a glyph. `pixels` (the default)
@@ -117,21 +119,108 @@ on edges, and blocks only where the picture is lit (`█` for near-white, `▀�
 for a bright half). On truecolor and 256-color terminals each character sits
 on a dim tint of its cell's colour, so faces and midtones hold their shape;
 16-color and mono terminals keep a black background.
-`ascii` is letters with only printable ASCII: no blocks, no tint and no
-background color at all (the terminal's own shows through), every glyph in
-its cell's color brightened to make up for the ink a character leaves
-unfilled. Glyph selection is the same on every terminal tier; colours
-follow the terminal's capabilities.
+`ascii` is letters with only printable ASCII and no blocks in the picture
+(the controls overlay is the same as in the other codecs). Behind each
+character it paints a dim shade of the character's own colour, the way
+letters does, with its exact current-tone tint curve and colour preserved.
+“Not a full pixel” means printable ASCII ink, unshaded spaces, background
+channels at most 154/255, and background linear luminance at most 0.375 times
+the foreground as sent. The character stays clearly brighter than its shade.
+Truecolor retains every nonblack shade, including dark colours below 8/255.
+On 256-colour terminals, safe gray and 0/95/135 cube entries must pass the
+same contrast cap and stay within the glyph's hue family. 16-colour and mono
+terminals get no shade (the terminal's own background shows through). Glyph selection is the
+same on every terminal tier; colours follow the terminal's capabilities.
+ASCII colour and shade follow current brightness independently of glyph
+hysteresis, so playback cannot retain old brightness bands. Big changes
+switch the glyph at once (sooner in busy, fast-changing areas); otherwise it
+follows a smoothed tone. A steady change of more than 16 tone units settles
+within 41 frames; a smaller one within 74, unless the tone sits within 4
+units of the boundary to the neighbouring glyph, which may then stay.
+Black-floor crossings take at most four frames.
+
+**Black backdrop.** While it plays, the player sets your terminal's default
+background to black (OSC 11). `ascii` needs it: its unshaded cells (shadows,
+blank cells, and everything on 16-colour terminals) use the terminal's
+background, and on a grey or light theme they would sit on that colour, next
+to shades designed for black. `pixels` and `letters`
+paint every cell themselves and look the same either way. On exit it sends
+OSC 111, which resets the background to the one in your terminal's config or
+profile (not to a colour something else set at runtime). That reset runs on a
+normal quit, on an error, on a Rust panic, on SIGINT (Ctrl-C), SIGTERM and
+SIGHUP, and at process exit. Nothing can run when the player is killed with
+SIGKILL or dies from an abort or a segfault; if a tab is left black, run
+`printf '\e]111\e\\'` in it or open a new one. `--no-backdrop` keeps your
+terminal's background; the mono tier (`--tier mono`) never sets it, since it
+draws in your terminal's own foreground colour. `auto-ascii play` always uses
+the backdrop. Terminals that don't understand OSC 11 ignore it.
 
 **Dials** retune the renderer while the video plays. Shadow lift opens dark
 scenes. Edge strength sets how many contours get strokes. Hysteresis trades
-flicker against responsiveness. Nothing is rebuilt: the same asset re-renders
+flicker against responsiveness: 0..255 in steps of 16, recommended default
+128 (the default was 160 before, so pixels and letters hold glyphs a little
+less at default, and are unchanged at any equal value). Values above 128
+are allowed for fast-paced videos or video types that benefit from high
+hysteresis, but can visibly drift or smear. Every codec keeps it, since switching it off
+raises glyph changes markedly; see
+[hysteresis measurements](docs/HYSTERESIS-DECISION.md). The readout says
+when a dial is at its floor, its default or its top. Nothing is rebuilt: the same asset re-renders
 at the new setting. `s` saves the dials and codec beside the asset as
 `<name>.player.toml`, and they load the next time that video plays.
 
 **The controls overlay** (`v`, and briefly at start-up) lists the keys. Above
-them is the clip name, the active codec, whether the settings are saved, and
-the grid size (`213x58 cells`).
+them is the clip name, the active codec, whether the settings are saved, the
+sound (`on`, `off`, `wait` while the audio output is stalled or being
+re-opened, or `none` when there is nothing to play) and the grid
+size (`213x58 cells`), e.g.
+` Interstellar   codec: ascii   settings: saved   sound: on `.
+
+**Sound.** The player plays the asset's soundtrack itself. It looks beside the
+asset for `<name>.m4a`, then `<name>.mp4`, then `<name>` with `.aac`, `.mp3`,
+`.wav`, `.flac`, `.ogg`, `.opus`, `.mov`, `.m4v`, `.mkv` or `.webm`, and last
+the folder's `source.mp4`, so `1.ascii` plays `1.mp4` even when `source.mp4`
+beside it is the 80-minute mix it was cut from. A track whose length is more
+than 3 s and more than 10% off the asset's is a different cut: it is not
+played, and the player says so on stderr after it exits. ffmpeg (on `PATH` or
+in `/opt/homebrew/bin`) decodes the track into memory in the background, so
+the picture starts at once and the sound comes in as it decodes. The picture
+then follows the sound: its clock is the audio the output device has
+actually played, minus the device's latency. Jumps, arrow scrubs, `--seek`,
+pause and `--loop` move the sound with the picture (a loop wraps the sound at
+the video's length, so nothing drifts however long it loops); `/` and the
+dials don't touch time. `m` mutes and unmutes instantly: a muted track keeps
+playing silently, so it stays in sync. `--mute` starts muted; `--no-audio`
+never looks for a track or opens a device. With no track, no ffmpeg, no audio
+device, a track that won't decode or one over the 512 MiB memory budget
+(the track is held at the output's rate: about 46 minutes of 48 kHz stereo,
+23 at 96 kHz, 11 at 192 kHz), it plays silently on the wall clock as
+before (`sound: none`) and notes why on stderr after exit. If the track is
+shorter than the video, the picture keeps its pace in silence after it ends,
+and seeking back plays it again. Outages are never permanent: if the output
+stops calling back for 1.5 s (a Bluetooth device slow to start, a stuck
+driver) the picture carries on silently on the wall clock (`sound: wait`), and
+the moment the output calls back the sound is moved to where the picture is
+and leads again. A pause of the whole process (Mac sleep, Ctrl-Z) is not a
+stall. If the device goes away (unplugged, invalidated across sleep, its audio
+host gone), the player drops the dead stream and re-opens the default output
+every 2 s for the rest of the session; if the new output runs at a different
+sample rate or channel count than the track was decoded for, it stays silent
+with a note and keeps retrying (switching back brings the sound back). Each
+outage is noted once on stderr after exit. `m` during an outage still flips
+mute, and the recovered sound honours it. A switch of the system's default
+output or an audio glitch does not interrupt the sound at all; only a decode
+failure turns it off for good (`sound: none`). `--duration-secs` always counts
+wall time. Limitations: compositions play silently (`sound: none`); the
+`.ascii` format has no embedded audio plane yet, so the sound always comes
+from a file beside the asset (a library clip only has sound if you put one
+beside it); and `--sim` stays silent unless `--sim-audio` is given, which
+plays into a null sink and never opens a device.
+
+`scripts/play-with-sound.command PLAYER ASSET [PLAYER_ARGS...]` no longer
+starts `afplay`: it is a launcher that restarts the player at each clip end,
+stops on quit, and logs every exit to
+`~/Library/Logs/auto-ascii/play-with-sound.log` (use `--loop` instead if you
+don't need the log). An old third `AUDIO` argument is ignored.
 
 **Zoom out for detail.** The asset is resolution-independent, so a smaller
 terminal font means more cells and a sharper picture. Use your terminal's
@@ -139,15 +228,21 @@ zoom-out shortcut (often Cmd - on macOS; bindings vary by terminal). The
 player can't change the font itself
 ([docs/research/zoom.md](docs/research/zoom.md)), so below 160 columns the
 overlay says so. At 240 or more columns and 36 or more rows, on a non-ASCII
-tier, the overlay text is drawn in big block letters so it stays readable,
-except under the `ascii` codec, where overlays stay plain one-character-per-cell
-ASCII on the terminal's default background.
+tier, the overlay text is drawn in big block letters so it stays readable.
+Every codec draws the same overlay, `ascii` included.
+
+**The `ascii` rule.** Picture cells are printable ASCII 0x20-0x7E, background
+default or a shade within the cap; block glyphs and full-strength backgrounds
+are allowed only in UI overlay cells (HUD text), which use the same big text as
+pixels/letters.
 
 Useful flags:
 - `--loop`, `--seek 1:30`, `--fps-cap 30`
 - `--codec pixels|letters|ascii`
+- `--mute` (start with the sound off), `--no-audio` (no sound at all)
 - `--palette ascii|unicode|braille`, `--tier truecolor|256|16|mono`
 - `--no-query` (skip capability queries)
+- `--no-backdrop` (keep the terminal's own background)
 - `--font-table NAME|PATH` (tell the player which font your terminal uses)
 
 `auto-ascii-player --help` lists everything.
@@ -170,6 +265,8 @@ auto-ascii compose add demo clip --at 0:10  # append a clip at 0:10 (black befor
 auto-ascii compose show demo                # the resolved timeline, gaps and overlaps
 auto-ascii compose play demo                # play it without re-encoding anything
 auto-ascii compose export demo              # flatten to exports/demo.ascii
+
+auto-ascii stream "https://youtu.be/jNQXAC9IVRw"  # stream a YouTube video, with sound
 ```
 
 `import` also takes `--name`, `--ss`/`--t` (times as `SS`, `MM:SS` or
@@ -180,11 +277,76 @@ timeline. Each clip is placed with `at` and trimmed with `in`/`out`; gaps are
 black and a later clip draws on top. The file is the source of truth, so you
 can write it by hand; `auto-ascii-player demo.toml` plays one directly.
 
-Every command except interactive `play` and `compose play` accepts `--json`,
-which makes stdout exactly one JSON value.
+Every command except interactive `play`, `compose play` and `stream` accepts
+`--json`, which makes stdout exactly one JSON value (`stream` takes it only
+with `--sim`).
 [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) (also printed by `auto-ascii
 agent-guide`) documents the folder layout, the JSON shapes and the composition
 schema.
+
+## Streaming from YouTube
+
+`auto-ascii stream` plays the first video behind a link as live ASCII with
+sound. It downloads nothing:
+
+```bash
+auto-ascii stream "https://www.youtube.com/watch?v=jNQXAC9IVRw"   # a video (a &list= is ignored)
+auto-ascii stream "https://www.youtube.com/playlist?list=PL…"     # its first video
+auto-ascii stream "https://www.youtube.com/@jawed"                # a channel's newest video
+auto-ascii stream me at the zoo                                    # the first search result
+auto-ascii stream <link> --codec letters --max-height 720 --no-audio
+auto-ascii stream <link> --sim 120x40:25 [--sim-dump frames.txt]  # headless, one JSON line
+auto-ascii stream <link> --cookies-from-browser firefox            # opt in to your browser's cookies
+```
+
+A centred loader fills from 0 to 100% while it resolves and buffers. The bar
+brightens from left to right, with a soft band sweeping across it, and says
+`loading...` underneath. The percentage tracks real stages: yt-dlp running,
+first video found, stream URLs ready, ffmpeg started, first audio and first
+video bytes, then the buffer filling. Playback starts at 100%. `q`, `Esc` or
+`Ctrl-C` quits at any point, even while loading, and `/` cycles the glyph codec.
+The default codec is `ascii`, and `--palette` works as it does for the player.
+
+How it works:
+- **Resolve.** yt-dlp resolves the input. A playlist, channel or search is
+  walked down to its first video (`--flat-playlist -I 1`, at most three
+  levels), then `-J` reads that video's stream URLs, HTTP headers and metadata.
+  Every call passes `--ignore-config --simulate --skip-download`, so a yt-dlp
+  config file can never turn a lookup into a download. Your cookies are used
+  only when you pass `--cookies-from-browser BROWSER`.
+- **Stream.** Two ffmpeg children read those URLs directly. One decodes the
+  video to raw rgb24 frames at the factory's plane size and a constant frame
+  rate. The other decodes the audio to f32 PCM. Each frame goes through the
+  factory's own feature extraction and then the player's own pipeline. Bounded
+  queues (about 2.5 s of video, 4 s of audio) push back on the pipes, so memory
+  stays flat.
+- **Sync.** Sound plays through the default output device via cpal. The picture
+  follows the audio clock: the samples actually played, minus the device's
+  reported latency. A frame is shown only during its own frame period; frames
+  that arrive after it are dropped and counted, never shown late or slowed.
+  If the sound runs dry, the picture freezes with it, and after 0.35 s the
+  loader returns until both buffers refill. If only the picture stalls, the
+  sound plays on and the picture catches up by dropping frames. Only when the
+  picture falls 2 s behind does the stream pause the sound and re-buffer both.
+  At the end, the stream waits until the last samples have actually played.
+- **Clean up.** Every child runs in its own process group, inside a private
+  temp directory. On quit, error, end of video or signal, every child is
+  killed and reaped, and the directory is removed. The first two
+  SIGINT/SIGTERM/SIGHUP signals request this orderly exit. A third forces the
+  exit, still killing the children, removing the directory and restoring the
+  terminal first.
+
+Limitations:
+- YouTube sometimes refuses a DASH URL with HTTP 403. The stream then switches
+  that track to the video's HLS formats and carries on from the same position.
+  Heavy throttling still shows up as re-buffering.
+- Live streams, premieres, and private, members-only, age-gated or geo-blocked
+  videos are refused, with yt-dlp's reason printed as one line.
+- Without a usable audio device (or with `--no-audio`), or when the audio track
+  turns out to be empty, the video plays silently on a wall clock. A video
+  track that ends before its first frame is an error.
+- There is no seeking or pausing in a stream, and nothing is saved to the
+  library. Use `import` on a downloaded file for that.
 
 ## Embedding
 
@@ -277,7 +439,7 @@ overrides and ranks the combinations; the grid format is in the feature map.
 | `crates/auto-ascii-format` | the ASCI container (zstd + temporal delta, fast seek) |
 | `crates/auto-ascii-term` | `Backend` trait, ANSI backend, capability probe, simulator |
 | `crates/auto-ascii-factory` | the offline factory (lib + bin), eval and sweep drivers |
-| `crates/auto-ascii-cli` | the `auto-ascii` CLI |
+| `crates/auto-ascii-cli` | the `auto-ascii` CLI, including `stream` (yt-dlp + ffmpeg + cpal) |
 | `crates/auto-ascii-eval` | metrics, synthetic fixtures, report schema |
 | `crates/auto-ascii-lint` | source comment policy checker (unpublished) |
 | `scripts/eval.sh` | the gate: tests, clippy, comment rule, resize fuzz, perf gates, corpus eval |

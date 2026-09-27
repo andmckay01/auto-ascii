@@ -15,8 +15,9 @@ workspace = true
 [features]
 default = ["bin", "compose"]
 terminal = ["auto-ascii-term/session", "compose"]
-bin = ["terminal", "dep:clap", "dep:anyhow"]
+bin = ["terminal", "audio", "dep:clap", "dep:anyhow"]
 compose = ["dep:toml"]
+audio = ["dep:cpal"]
 
 [dependencies]
 auto-ascii-core = { workspace = true }
@@ -26,6 +27,7 @@ memmap2 = { workspace = true }
 clap = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
+cpal = { version = "0.18", optional = true }
 
 [[bin]]
 name = "auto-ascii-player"
@@ -46,6 +48,9 @@ name = "headless-dump"
 criterion = { workspace = true }
 auto-ascii-eval = { workspace = true }
 proptest = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }
 
 [[bench]]
 name = "pipeline"

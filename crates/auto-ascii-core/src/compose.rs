@@ -90,7 +90,7 @@ impl Default for ComposeParams {
             edge_strong: 96,
             quad_e_on: 2,
             quad_e_off: 1,
-            idx_hyst_q8: 160,
+            idx_hyst_q8: crate::hysteresis::IDX_HYST_DEFAULT_Q8,
             shadow_lift: 0,
         }
     }

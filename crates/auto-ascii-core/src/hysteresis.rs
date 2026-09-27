@@ -7,6 +7,10 @@ pub const IDX_UNSET: u8 = 0xFF;
 
 pub const IDX_HYST_Q8: u32 = 90;
 
+pub const IDX_HYST_MAX_Q8: u8 = 255;
+
+pub const IDX_HYST_DEFAULT_Q8: u8 = 128;
+
 pub mod cell_flags {
     pub const WAS_EDGE: u8 = 1;
     pub const WAS_QUADRANT: u8 = 1 << 1;
@@ -19,12 +23,14 @@ pub struct CellState {
     pub idx: u8,
     pub bin: u8,
     pub flags: u8,
+    pub tone_candidate: u8,
+    pub tone_age: u8,
 }
 
 impl Default for CellState {
     #[inline]
     fn default() -> CellState {
-        CellState { idx: IDX_UNSET, bin: BIN_UNSET, flags: 0 }
+        CellState { idx: IDX_UNSET, bin: BIN_UNSET, flags: 0, tone_candidate: IDX_UNSET, tone_age: 0 }
     }
 }
 
@@ -141,7 +147,7 @@ mod tests {
     #[test]
     fn scene_cut_reset() {
         let mut st = HysteresisState::new(4, 3);
-        *st.cell_mut(2, 1) = CellState { idx: 5, bin: 3, flags: cell_flags::WAS_EDGE };
+        *st.cell_mut(2, 1) = CellState { idx: 5, bin: 3, flags: cell_flags::WAS_EDGE, tone_candidate: 120, tone_age: 17 };
         st.reset();
         assert_eq!(st.cell(2, 1), CellState::default());
         assert_eq!((st.cols(), st.rows()), (4, 3));
@@ -150,7 +156,7 @@ mod tests {
     #[test]
     fn resize_reallocs_and_resets() {
         let mut st = HysteresisState::new(2, 2);
-        *st.cell_mut(1, 1) = CellState { idx: 7, bin: 1, flags: cell_flags::WAS_EDGE };
+        *st.cell_mut(1, 1) = CellState { idx: 7, bin: 1, flags: cell_flags::WAS_EDGE, tone_candidate: 120, tone_age: 17 };
         st.resize(5, 4);
         assert_eq!((st.cols(), st.rows()), (5, 4));
         for r in 0..4 {
