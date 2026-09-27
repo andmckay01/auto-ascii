@@ -138,8 +138,9 @@ switch the glyph at once (sooner in busy, fast-changing areas); otherwise it
 follows a smoothed tone. A steady change of more than 16 tone units settles
 within 41 frames; a smaller one within 74, unless the tone sits within 4
 units of the boundary to the neighbouring glyph, which may then stay.
-As in letters, a cell lights at tone 32 and, once lit, holds its lightest
-ink down to tone 16; crossings of that floor take at most four frames.
+As in letters, a cell lights at tone 32; once lit, a cell showing the lightest
+ink keeps it down to tone 16, and crossings of that floor take at most four
+frames.
 
 **Black backdrop.** While it plays, the player sets your terminal's default
 background to black (OSC 11). `ascii` needs it: its unshaded cells (shadows,

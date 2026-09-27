@@ -3101,19 +3101,23 @@ shade stays at the dim half's tone. `glyph_foreground_matches_letters_on
 _the_ascii_tier` pins exact fg equality (truecolor and 256) with
 `Letters::cell` on `GlyphTier::Ascii` for every non-space, non-deep-shadow
 cell in the same layer; the only differing branch is the highlight cut
-(letters 10 of 16 steps, ascii 11 of 18), where one side adds `boost`.
+(letters 10 of 16 steps, ascii 11 of 18), where one side adds `boost`,
+and the near-white edge cut (ascii 228 on its 18-glyph ramp, letters 240
+on 16), where fg is the same.
 Floor: letters' `BLACK_FLOOR` 32 and `FLOOR_HOLD` 16, tier-independent
 (letters gates its hold on `bg_tint`; ascii must not, glyph and colour are
 the same on every tier). A cell with no lit history needs tone ≥ 32; a lit
-one (held tone `s.idx ≥ 32`, letters' own predicate) stays lit down to 16,
+one (held tone `s.idx ≥ 32`, letters' own predicate) showing `.` keeps it
+down to 16, a denser one settles toward its tone (slow path, up to 64 frames),
 and one whose held tone settles below 32 blanks within the four-frame floor
 settle rather than holding `.` indefinitely; `held_tone`'s crossing predicate
 is on `FLOOR_HOLD`, so blanking still settles within four frames and a
 blank cell does not re-arm below 32. The ramp origin is the separate
 `INK_FROM` 24 (`unit()`, saturating; `step_table()` fills from 16, where
 tones 16..31 map to `.`), so STEP is unchanged for tones ≥ 32 and `@`
-still starts at 225. Held cells at 16..31 draw `.` at letters' 0.75× ink
-with no shade. Goldens: only the floor band's blank/`.` cells change.
+still starts at 225. Held cells at 16..31 draw their held glyph (`.` for
+held tones below 58) at letters' 0.75× ink with no shade. Goldens: only the
+floor band's blank/`.` cells change.
 `ascii_glyph_brightness_range_matches_letters_on_the_ascii_tier` checks
 architect-motion at 200x56 after 40 warm frames against letters on the
 ascii tier: non-space fg luma p5/p50/p95 within max(5%, 2), spread95 within
