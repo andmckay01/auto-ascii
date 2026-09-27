@@ -278,7 +278,9 @@ pub struct ComposeParams { pub edge_t_on/edge_t_off: u8,        // 32/16 (M3
                                      // real fine diagonal to a half-block
   pub idx_hyst_q8: u8 }              // §3.5 idx hysteresis width in Q8 steps
                                      // (promoted at M3 Tune, note 21);
-                                     // default 128 = IDX_HYST_MAX_Q8 (was
+                                     // default 128 = IDX_HYST_DEFAULT_Q8,
+                                     // also the recommended max (hard
+                                     // ceiling IDX_HYST_MAX_Q8 = 255; was
                                      // 160 from the Tune finish, note 22;
                                      // spec nominal 0.35·step = 90)
   // + Default (the M3 baseline; all params.toml candidates)
@@ -3062,7 +3064,8 @@ all must pass the existing quantized hue-family and luminance checks.
 letters does, for dark colour continuity; a shade that scales to exact black
 uses the terminal's own background.
 
-Hysteresis range and ASCII glyph hold: `IDX_HYST_MAX_Q8` = default = 128
+Hysteresis range and ASCII glyph hold: `IDX_HYST_DEFAULT_Q8` = 128 is the
+default and recommended max, below the hard ceiling `IDX_HYST_MAX_Q8` = 255
 (`hysteresis.rs`). `held_tone` jumps beyond `5/8 × idx_hyst_q8` (down to
 `idx_hyst_q8 / 4` as a per-cell activity level in ascii's flag bits 4–7
 rises above 9; `jump_band`), settles a

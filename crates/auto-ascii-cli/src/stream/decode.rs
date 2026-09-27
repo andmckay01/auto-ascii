@@ -47,7 +47,8 @@ pub enum Msg {
 pub fn input_args(track: &Track, ss: Option<f64>) -> Vec<String> {
     let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-v", "error"].map(String::from).to_vec();
     let lower = track.url.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") {
+    let network = lower.starts_with("http://") || lower.starts_with("https://");
+    if network {
         for a in [
             "-reconnect",
             "1",
@@ -64,6 +65,12 @@ pub fn input_args(track: &Track, ss: Option<f64>) -> Vec<String> {
         }
         let mut extra = String::new();
         for (k, v) in &track.headers {
+            if ["cookie", "set-cookie", "authorization", "proxy-authorization"]
+                .iter()
+                .any(|name| k.eq_ignore_ascii_case(name))
+            {
+                continue;
+            }
             if k.eq_ignore_ascii_case("user-agent") {
                 args.push("-user_agent".into());
                 args.push(v.clone());
@@ -80,6 +87,8 @@ pub fn input_args(track: &Track, ss: Option<f64>) -> Vec<String> {
         args.push("-ss".into());
         args.push(format!("{ss:.3}"));
     }
+    args.push("-protocol_whitelist".into());
+    args.push(if network { "http,https,tcp,tls,crypto,httpproxy" } else { "file" }.into());
     args.push("-i".into());
     args.push(track.url.clone());
     args
@@ -186,6 +195,53 @@ mod tests {
         assert!(args.iter().position(|a| a == "-ss") < args.iter().position(|a| a == "-i"));
         let fresh = input_args(&track("https://v.example/395", "395"), None);
         assert!(!fresh.contains(&"-ss".to_string()));
+    }
+
+    #[test]
+    fn sensitive_headers_never_reach_ffmpeg_argv() {
+        let mut track = track("https://v.example/395", "395");
+        let sensitive = [
+            ("Cookie", "cookie-secret"),
+            ("cookie", "lowercase-secret"),
+            ("AUTHORIZATION", "authorization-secret"),
+            ("sEt-CoOkIe", "set-cookie-secret"),
+            ("Proxy-Authorization", "proxy-secret"),
+        ];
+        track.headers.extend(sensitive.map(|(k, v)| (k.into(), v.into())));
+        track.headers.extend([
+            ("Referer".into(), "https://www.example/".into()),
+            ("Origin".into(), "https://www.example".into()),
+        ]);
+        let args = input_args(&track, None);
+        for (_, secret) in sensitive {
+            assert!(args.iter().all(|arg| !arg.contains(secret)), "leaked {secret}");
+        }
+        let headers = args.iter().position(|arg| arg == "-headers").unwrap();
+        assert_eq!(
+            args[headers + 1],
+            "Accept: */*\r\nReferer: https://www.example/\r\nOrigin: https://www.example\r\n"
+        );
+        let user_agent = args.iter().position(|arg| arg == "-user_agent").unwrap();
+        assert_eq!(args[user_agent + 1], "UA/1");
+    }
+
+    #[test]
+    fn input_protocol_whitelists_are_narrow_and_precede_the_input() {
+        for (url, protocol, whitelist) in [
+            ("https://v.example/395", "https", "http,https,tcp,tls,crypto,httpproxy"),
+            ("https://m.example/x.m3u8", "m3u8_native", "http,https,tcp,tls,crypto,httpproxy"),
+            ("http://v.example/395", "http", "http,https,tcp,tls,crypto,httpproxy"),
+            ("/tmp/fixture.avi", "file", "file"),
+        ] {
+            let mut track = track(url, "fixture");
+            track.protocol = protocol.into();
+            let args = input_args(&track, None);
+            let at = args.iter().position(|arg| arg == "-protocol_whitelist").unwrap();
+            let input = args.iter().position(|arg| arg == "-i").unwrap();
+            assert_eq!(args[at + 1], whitelist, "{url}");
+            assert_eq!(at + 2, input, "{url}");
+            assert_eq!(args[input + 1], url);
+        }
     }
 
     #[test]
