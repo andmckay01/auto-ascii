@@ -1053,7 +1053,12 @@ impl Player {
       // shutdown/restore. Consumes self; the M0–M3 machinery verbatim
       // (moved from the old auto-ascii-player main.rs — no logic fork with the
       // bin, which is now a pure argv shim)
+  pub fn play(self) -> Result<Stopped, Error>;  // run(), reporting why it
+      // stopped; the bin exits 0 on Ended and 3 on Quit, so a launcher loop
+      // tells a quit from the end of the clip without timing the run
 }
+pub enum Stopped { Ended, Quit }  // Ended: end of asset or duration_secs;
+    // Quit: q / Esc / Ctrl-C
 pub use auto_ascii_term::ColorTier;   // the tier(..) argument type — the ONLY
     // auto-ascii-term re-export; Caps deliberately NOT re-exported (probing is
     // run()'s internal business; audit: a simple project never needs it)

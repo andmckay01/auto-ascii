@@ -47,6 +47,9 @@ criterion = { workspace = true }
 auto-ascii-eval = { workspace = true }
 proptest = { workspace = true }
 
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }
+
 [[bench]]
 name = "pipeline"
 harness = false

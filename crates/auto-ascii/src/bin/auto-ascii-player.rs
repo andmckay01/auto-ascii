@@ -1,12 +1,13 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use auto_ascii::deck::{ClipDeck, DeckConfig};
 use auto_ascii::pipeline::color_depth;
-use auto_ascii::{Codec, Composition, PaletteChoice, RepaintMode};
+use auto_ascii::{Codec, Composition, PaletteChoice, RepaintMode, Stopped};
 use auto_ascii_term::{Backend, Caps, ColorTier, Event, SimBackend};
 
 /// CLI face of [`auto_ascii::RepaintMode`] (one render path — "full" is diff
@@ -52,7 +53,13 @@ impl From<PaletteArg> for PaletteChoice {
 }
 
 #[derive(Parser)]
-#[command(name = "auto-ascii-player", version, about = "Play ASCI assets in the terminal")]
+#[command(
+    name = "auto-ascii-player",
+    version,
+    about = "Play ASCI assets in the terminal",
+    after_help = "Exit status: 0 when playback reaches the end of the asset or --duration-secs, \
+                  3 when the viewer quits (q, Esc, Ctrl-C), 1 on an error."
+)]
 struct Cli {
     /// ASCI asset (mmap'd read-only via memmap2), or a composition `.toml` —
     /// a stitch of clips played virtually, on one timeline. Bare library
@@ -170,6 +177,8 @@ struct Cli {
     #[arg(long, value_name = "N", conflicts_with = "sim")]
     bench_seek: Option<u32>,
 }
+
+const QUIT_STATUS: u8 = 3;
 
 fn parse_codec(name: &str) -> std::result::Result<Codec, String> {
     Codec::from_name(name)
@@ -351,7 +360,7 @@ fn run_bench_seek(comp: &Composition, mut deck: ClipDeck, seeks: u32) -> Result<
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
 
     let seek_secs = cli
@@ -385,9 +394,9 @@ fn main() -> Result<()> {
         );
         deck.set_codec(cli.codec.unwrap_or_default());
         if let Some(n) = cli.bench_seek {
-            return run_bench_seek(&comp, deck, n);
+            return run_bench_seek(&comp, deck, n).map(|()| ExitCode::SUCCESS);
         }
-        return run_sim(&comp, deck, &cli, tier, start_frame);
+        return run_sim(&comp, deck, &cli, tier, start_frame).map(|()| ExitCode::SUCCESS);
     }
 
     let source = auto_ascii::Player::builder();
@@ -423,8 +432,10 @@ fn main() -> Result<()> {
     if let Some(codec) = cli.codec {
         builder = builder.codec(codec);
     }
-    builder.build()?.run()?;
-    Ok(())
+    Ok(match builder.build()?.play()? {
+        Stopped::Ended => ExitCode::SUCCESS,
+        Stopped::Quit => ExitCode::from(QUIT_STATUS),
+    })
 }
 
 #[cfg(test)]

@@ -109,6 +109,7 @@ dependencies = [
  "auto-ascii-term",
  "clap",
  "criterion",
+ "libc",
  "memmap2",
  "proptest",
  "toml",

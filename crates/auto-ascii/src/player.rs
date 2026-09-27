@@ -285,6 +285,13 @@ impl LiveSettings {
 
 const OVERLAY_HIDE_AFTER: Duration = Duration::from_millis(1000);
 
+#[allow(missing_docs)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stopped {
+    Ended,
+    Quit,
+}
+
 #[derive(Debug)]
 struct Transport {
     base_frame: u64,
@@ -667,6 +674,11 @@ impl Player {
     /// [`crate::RenderSession`]); [`Error::Decode`] on mid-playback asset
     /// corruption.
     pub fn run(self) -> Result<(), Error> {
+        self.play().map(|_| ())
+    }
+
+    #[allow(missing_docs)]
+    pub fn play(self) -> Result<Stopped, Error> {
         let probe_opts = ProbeOptions {
             forced_tier: self.cfg.tier,
             no_query: self.cfg.no_query || self.cfg.tier.is_some(),
@@ -724,10 +736,10 @@ impl Player {
         let mut was_dial = false;
         let mut was_size = deck.size();
 
-        loop {
+        let stopped = loop {
             let drained = deck.drain_events(&mut backend);
             if drained.quit {
-                break;
+                break Stopped::Quit;
             }
             let mut sought = false;
             let mut resumed = false;
@@ -794,7 +806,7 @@ impl Player {
             if let Some(dur) = self.cfg.duration_secs
                 && t0.elapsed().as_secs_f64() >= dur
             {
-                break;
+                break Stopped::Ended;
             }
             let mut target = self
                 .comp
@@ -803,7 +815,7 @@ impl Player {
                 if self.cfg.looping {
                     target %= frame_count;
                 } else {
-                    break;
+                    break Stopped::Ended;
                 }
             }
             let located = self.comp.locate_frame(target as u32);
@@ -855,12 +867,12 @@ impl Player {
             } else {
                 next_tick = now;
             }
-        }
+        };
         backend.shutdown();
         for problem in &live.problems {
             eprintln!("auto-ascii-player: settings: {problem}");
         }
-        Ok(())
+        Ok(stopped)
     }
 }
 
