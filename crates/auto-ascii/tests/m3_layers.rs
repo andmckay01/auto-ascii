@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use auto_ascii::Style;
 use auto_ascii::pipeline::Player;
 use auto_ascii_core::{ColorDepth, GlyphTier, layer};
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
@@ -12,7 +13,9 @@ fn meta() -> Meta {
 }
 
 fn player<'a>(bytes: &'a [u8], depth: ColorDepth, tier: GlyphTier) -> Player<'a> {
-    Player::new(AsciiReader::open(bytes).unwrap(), 2.0, true, depth, tier).unwrap()
+    let mut p = Player::new(AsciiReader::open(bytes).unwrap(), 2.0, true, depth, tier).unwrap();
+    p.set_style(Style::Pixels);
+    p
 }
 
 #[test]

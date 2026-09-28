@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use auto_ascii::compose::{ExportOptions, export};
-use auto_ascii::{Cell, Composition, Grid, RenderSession, Rgb};
+use auto_ascii::{Cell, Composition, Grid, RenderSession, Rgb, Style};
 use auto_ascii_eval::fixtures::{FIXTURE_FRAMES, Fixture, build_fixture};
 use auto_ascii_format::{AsciiReader, norm_flags};
 
@@ -113,6 +113,7 @@ fn clip_frames_match_the_clip_played_alone() {
 fn gap_frames_are_blank() {
     let dir = TmpDir::new("gap");
     let mut comp = open_demo(&dir);
+    comp.set_style(Style::Pixels);
     for frame in [GAP_START - 1, GAP_START, GAP_START + 20, B_START - 1, B_START] {
         let grid = comp.render(frame, GRID.0, GRID.1).expect("render");
         let blank = grid.as_slice().iter().all(|c| *c == Cell::BLANK);
@@ -139,6 +140,7 @@ fn backward_jump_across_clips_lands_cold() {
 fn palette_knobs_reach_every_clip() {
     let dir = TmpDir::new("palette");
     let mut comp = open_demo(&dir);
+    comp.set_style(Style::Pixels);
     let unicode = cells(comp.render(0, GRID.0, GRID.1).unwrap());
     assert!(
         unicode.iter().any(|c| !c.glyph().is_ascii()),
@@ -189,8 +191,10 @@ fn export_flattens_the_timeline() {
     assert_eq!(flags, vec![false, true, true, true], "record 0 has nothing to cut from");
 
     let mut flat = RenderSession::open(&out).unwrap();
+    flat.set_style(Style::Pixels);
     assert_eq!(flat.frame_count(), TOTAL);
     let mut comp_session = open_demo(&dir);
+    comp_session.set_style(Style::Pixels);
     for frame in [0u32, 10, GAP_START - 1, B_START, TOTAL - 1] {
         let want = cells(comp_session.render(frame, GRID.0, GRID.1).unwrap());
         let got = cells(flat.render(frame, GRID.0, GRID.1).unwrap());

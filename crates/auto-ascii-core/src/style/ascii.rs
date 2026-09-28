@@ -1,8 +1,8 @@
-//! Printable ASCII glyph codec over a capped background shade.
+//! Printable ASCII glyph style over a capped background shade.
 
 use crate::cell::{Cell, Rgb, attrs};
-use crate::codec::GlyphCodec;
-use crate::codec::letters::{
+use crate::style::GlyphStyle;
+use crate::style::letters::{
     EDGE, HALF_MASK, HALF_NONE, HALF_SHIFT, HALF_TOP, JUNCTION, coverage, half_variant, tint,
 };
 use crate::compose::{CellInputs, ComposeParams, boost, h_flags, layer};
@@ -360,7 +360,7 @@ fn held_tone(n: u8, prev: u8, hyst_q8: u8, s: &mut CellState) -> u8 {
 
 pub struct Ascii;
 
-impl GlyphCodec for Ascii {
+impl GlyphStyle for Ascii {
     const NAME: &'static str = "ascii";
 
     const PAD: Cell = put(' ', Rgb::WHITE, None);
@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn glyph_foreground_matches_letters_on_the_ascii_tier() {
-        use crate::codec::letters::Letters;
+        use crate::style::letters::Letters;
         let chromas = [None, Some(Rgb::new(200, 150, 120)), Some(Rgb::WHITE), Some(Rgb::new(255, 40, 0)),
             Some(Rgb::new(20, 60, 255)), Some(Rgb::new(40, 20, 10)), Some(Rgb::new(90, 120, 60))];
         let tones = [(20, 20), (40, 40), (64, 64), (100, 100), (128, 128), (170, 170), (200, 200), (240, 240),

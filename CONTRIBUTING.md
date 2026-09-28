@@ -141,11 +141,11 @@ existing eval gate.
   its defaults, so editing the build-side tables (`[build]`, `[shots]`,
   `[levels]`, `[edges]`, `[highlights]`, `[temporal]`) is a re-baselining
   act: the byte-pin test and any `runs/base.json` you keep will move.
-  Glyph-codec design constants — the `letters` ramps and its fill/hold
-  thresholds, like the §3.4 palettes — are codec *data*, not tunables: they
-  live in their codec module (`auto-ascii-core/src/codec/`), pinned by its
+  Glyph-style design constants — the `letters` ramps and its fill/hold
+  thresholds, like the §3.4 palettes — are style *data*, not tunables: they
+  live in their style module (`auto-ascii-core/src/style/`), pinned by its
   tests and goldens. Anything a viewer or a sweep adjusts is a
-  `ComposeParams` field in `[compose]`, which every codec reads.
+  `ComposeParams` field in `[compose]`, which every style reads.
 - **Perf thresholds are calibrated, not guessed.** Each `perf/thresholds.toml`
   entry's `max_median_ns` is the median of medians over three consecutive
   runs × 1.15 on an idle machine; `measured_median_ns` is informational.
@@ -160,8 +160,8 @@ existing eval gate.
   existing estimates without re-running the benches (existence, thresholds
   and coverage only; staleness needs a run).
 - **The player stays codec-free and rayon-free.** (Video codecs — decoding
-  is the factory's job. The *glyph* codecs in `auto_ascii_core::codec`,
-  which map cell features to glyphs at render time, are not what this means.)
+  is the factory's job. The glyph styles in `auto_ascii_core::style`, which
+  map cell features to glyphs at render time, are not codecs.)
   `cargo tree -p auto-ascii -e normal | grep -c rayon` is 0, and a
   `--no-default-features` build carries no clap, anyhow or crossterm.
   (`rayon` appears in the workspace only behind `auto-ascii-format`'s

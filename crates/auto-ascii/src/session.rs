@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use auto_ascii_core::{Cell, Codec, ColorDepth, FontTable, Grid};
+use auto_ascii_core::{Cell, ColorDepth, FontTable, Grid, Style};
 
 use crate::composition::Composition;
 use crate::deck::{ClipDeck, DeckConfig};
@@ -128,12 +128,22 @@ impl RenderSession {
         Ok(())
     }
 
-    pub fn set_codec(&mut self, codec: Codec) {
-        self.deck.set_codec(codec);
+    pub fn set_style(&mut self, style: Style) {
+        self.deck.set_style(style);
     }
 
-    pub fn codec(&self) -> Codec {
-        self.deck.codec()
+    pub fn style(&self) -> Style {
+        self.deck.style()
+    }
+
+    #[deprecated(note = "renamed to `set_style`")]
+    pub fn set_codec(&mut self, codec: Style) {
+        self.set_style(codec);
+    }
+
+    #[deprecated(note = "renamed to `style`")]
+    pub fn codec(&self) -> Style {
+        self.style()
     }
 
     pub fn set_cell_aspect(&mut self, cell_aspect: f64) -> Result<(), Error> {

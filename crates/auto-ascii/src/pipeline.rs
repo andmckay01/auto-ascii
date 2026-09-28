@@ -3,8 +3,8 @@
 use std::time::Instant;
 
 use auto_ascii_core::{
-    Cell, Codec, ColorDepth, ComposeParams, FramePlanes, GlyphTier, Grid, HysteresisState,
-    PaletteSet, Resampler, Rgb, Viewport, compose_frame_codec, compute_viewport_for,
+    Cell, ColorDepth, ComposeParams, FramePlanes, GlyphTier, Grid, HysteresisState,
+    PaletteSet, Resampler, Rgb, Style, Viewport, compose_frame_style, compute_viewport_for,
     select_palettes,
 };
 use auto_ascii_format::header::plane_id;
@@ -237,7 +237,7 @@ pub struct Drained {
     pub dial_delta: i32,
     pub toggle_hints: bool,
     pub toggle_pause: bool,
-    pub codec_cycle: u32,
+    pub style_cycle: u32,
     pub save: bool,
     pub toggle_sound: bool,
 }
@@ -271,7 +271,7 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
     let mut dial_delta: i32 = 0;
     let mut toggle_hints = false;
     let mut toggle_pause = false;
-    let mut codec_cycle: u32 = 0;
+    let mut style_cycle: u32 = 0;
     let mut save = false;
     let mut toggle_sound = false;
     while let Some(ev) = backend.events().pop() {
@@ -285,7 +285,7 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
                     dial_delta: 0,
                     toggle_hints: false,
                     toggle_pause: false,
-                    codec_cycle: 0,
+                    style_cycle: 0,
                     save: false,
                     toggle_sound: false,
                 };
@@ -300,7 +300,7 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
             Event::Key(Key::Char(']')) => dial_delta = dial_delta.saturating_add(1),
             Event::Key(Key::Char('v')) => toggle_hints = true,
             Event::Key(Key::Char(' ')) => toggle_pause = true,
-            Event::Key(Key::Char('/')) => codec_cycle = codec_cycle.saturating_add(1),
+            Event::Key(Key::Char('/')) => style_cycle = style_cycle.saturating_add(1),
             Event::Key(Key::Char('s')) => save = true,
             Event::Key(Key::Char('m')) => toggle_sound = true,
             Event::Key(_) => {}
@@ -314,7 +314,7 @@ pub fn drain_backend_events<B: Backend>(backend: &mut B) -> (Drained, Option<(u1
         dial_delta,
         toggle_hints,
         toggle_pause,
-        codec_cycle,
+        style_cycle,
         save,
         toggle_sound,
     };
@@ -341,7 +341,7 @@ pub struct Player<'a> {
     color: ColorDepth,
     palette: Option<PaletteSet>,
     compose_params: ComposeParams,
-    codec: Codec,
+    style: Style,
     state: HysteresisState,
     vp: Option<Viewport>,
     resampler: Option<Resampler>,
@@ -483,7 +483,7 @@ impl<'a> Player<'a> {
             color,
             palette: None,
             compose_params: ComposeParams::default(),
-            codec: Codec::default(),
+            style: Style::default(),
             state: HysteresisState::new(0, 0),
             vp: None,
             resampler: None,
@@ -540,13 +540,13 @@ impl<'a> Player<'a> {
         self.state.reset();
     }
 
-    pub fn codec(&self) -> Codec {
-        self.codec
+    pub fn style(&self) -> Style {
+        self.style
     }
 
-    pub fn set_codec(&mut self, codec: Codec) {
-        if codec != self.codec {
-            self.codec = codec;
+    pub fn set_style(&mut self, style: Style) {
+        if style != self.style {
+            self.style = style;
             self.state.reset();
         }
     }
@@ -868,8 +868,8 @@ impl<'a> Player<'a> {
                     .use_chroma
                     .then(|| (&self.cr_dst[..], &self.cg_dst[..], &self.cb_dst[..])),
             };
-            compose_frame_codec(
-                self.codec,
+            compose_frame_style(
+                self.style,
                 &planes,
                 &vp,
                 &self.levels_lut,
@@ -881,7 +881,7 @@ impl<'a> Player<'a> {
             );
             self.stage.compose += t.elapsed().as_nanos() as u64;
         } else {
-            draw_enlarge_card(&mut self.grid, self.codec.pad());
+            draw_enlarge_card(&mut self.grid, self.style.pad());
             if let Some(mask) = &mut self.layer_mask {
                 mask.fill(auto_ascii_core::layer::BASE);
             }
@@ -1173,7 +1173,7 @@ fn hint_line(cols: u16) -> String {
         &arrows,
         "d dial",
         "[ ] adjust",
-        "/ codec",
+        "/ style",
         "m sound",
         "s save",
         "v controls",
@@ -1452,7 +1452,7 @@ mod tests {
     #[test]
     fn ui_rows_are_exactly_the_rows_the_overlays_draw() {
         type Draw = fn(&mut Grid<Cell>, OverlayScale) -> UiRows;
-        let pad = Codec::Ascii.pad();
+        let pad = Style::Ascii.pad();
         for (cols, rows) in [(80u16, 24u16), (159, 45), (239, 36), (240, 36), (400, 120), (1000, 300)] {
             for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks] {
                 let scale = OverlayScale::for_grid(cols, rows, tier);
@@ -1496,7 +1496,7 @@ mod tests {
 
     #[test]
     fn info_row_reads_the_grid_size_and_the_zoom_hint_on_narrow_grids() {
-        let text = " clip   codec: pixels   settings: default ";
+        let text = " clip   style: pixels   settings: default ";
         let draw = |cols: u16, rows: u16| -> Grid<Cell> {
             let mut g = Grid::new(cols, rows);
             draw_info_overlay(&mut g, text, OverlayScale::Normal);
@@ -1533,7 +1533,7 @@ mod tests {
 
     #[test]
     fn info_text_outranks_the_size_block() {
-        let text = " a-very-long-clip-name-from-a-stitch   codec: letters   settings: s to save ";
+        let text = " a-very-long-clip-name-from-a-stitch   style: letters   settings: s to save ";
         let mut g = Grid::new(80, 24);
         draw_info_overlay(&mut g, text, OverlayScale::Normal);
         let info = row_text(&g, 21);
@@ -1552,7 +1552,7 @@ mod tests {
         let mut g = Grid::new(cols, rows);
         draw_progress_overlay_clips(&mut g, 900, 5400, 30.0, None, true, scale);
         draw_hint_overlay(&mut g, scale);
-        draw_info_overlay(&mut g, " The Architect   codec: letters ", scale);
+        draw_info_overlay(&mut g, " The Architect   style: letters ", scale);
 
         let chars = scale.line_chars(cols) as usize;
         let progress = read_big_line(&g, 0).expect("progress row in the font");
@@ -1562,7 +1562,7 @@ mod tests {
         let hints = read_big_line(&g, 1).unwrap();
         assert_eq!(hints.trim_end(), hint_line(80).to_uppercase().trim_end());
         let info = read_big_line(&g, 2).unwrap();
-        assert!(info.starts_with(" THE ARCHITECT   CODEC: LETTERS "), "{info:?}");
+        assert!(info.starts_with(" THE ARCHITECT   STYLE: LETTERS "), "{info:?}");
         assert!(info.ends_with(" 320X90 CELLS "), "{info:?}");
         let top = rows - 3 * BIG_LINE_ROWS;
         for row in 0..top {
@@ -1607,7 +1607,7 @@ mod tests {
                 draw_progress_overlay_clips(&mut g, 3, 10, 30.0, Some((1, 2)), false, scale);
                 draw_dial_overlay(&mut g, "edge", 7, 255, scale);
                 draw_hint_overlay(&mut g, scale);
-                draw_info_overlay(&mut g, " clip   codec: pixels ", scale);
+                draw_info_overlay(&mut g, " clip   style: pixels ", scale);
                 assert_eq!((g.cols(), g.rows()), (cols, rows));
             }
         }
@@ -1629,7 +1629,7 @@ mod tests {
         }
         let (drained, _) = drain_backend_events(&mut backend);
         assert!(drained.toggle_sound, "a held m is one toggle, like space");
-        assert!(!drained.save && !drained.toggle_pause && drained.codec_cycle == 0, "m is its own key");
+        assert!(!drained.save && !drained.toggle_pause && drained.style_cycle == 0, "m is its own key");
         backend.push_event(Event::Key(Key::Char('m')));
         backend.push_event(Event::Quit);
         let (drained, _) = drain_backend_events(&mut backend);
@@ -1637,8 +1637,8 @@ mod tests {
     }
 
     #[test]
-    fn hint_line_fits_m_sound_between_codec_and_save() {
-        assert!(hint_line(108).contains("/ codec   m sound   s save   v controls"), "{:?}", hint_line(108));
+    fn hint_line_fits_m_sound_between_style_and_save() {
+        assert!(hint_line(108).contains("/ style   m sound   s save   v controls"), "{:?}", hint_line(108));
         assert_eq!(hint_line(108).len(), 108, "the full row is exactly 108 columns");
         assert!(hint_line(89).ends_with("[ ] adjust   m sound   v controls "), "{:?}", hint_line(89));
         assert!(!hint_line(88).contains("m sound"));

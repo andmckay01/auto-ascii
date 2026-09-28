@@ -1,4 +1,4 @@
-letters codec, UnicodeBlocks tier, truecolor, 80x24, frame 5
+letters style, UnicodeBlocks tier, truecolor, 80x24, frame 5
 |                     ................::::::::::::::;;;;;;;;;;;;;+++++++++++++ccc|
 |        X_____________________________________________________________X++++ccccc|
 |        |█████████████████████████████████████████████████████████████8|+ccccccc|

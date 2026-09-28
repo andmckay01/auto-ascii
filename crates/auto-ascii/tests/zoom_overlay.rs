@@ -1,4 +1,4 @@
-use auto_ascii::Codec;
+use auto_ascii::Style;
 use auto_ascii::pipeline::{BIG_OVERLAY_MIN_COLS, OverlayScale, Player, ZOOM_HINT_MAX_COLS};
 use auto_ascii_core::{Cell, ColorDepth, GlyphTier, Grid};
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
@@ -13,7 +13,7 @@ fn row(grid: &Grid<Cell>, r: u16) -> String {
     grid.row(r).iter().map(|c| c.glyph()).collect()
 }
 
-const INFO: &str = " The Architect   codec: letters   settings: default   sound: on ";
+const INFO: &str = " The Architect   style: letters   settings: default   sound: on ";
 
 fn reference(bytes: &[u8], tier: GlyphTier, cols: u16, rows: u16, frame: u32) -> Vec<Cell> {
     let mut b = SimBackend::new(cols, rows);
@@ -89,7 +89,7 @@ fn big_text_on_wide_grids_and_a_clean_hide() {
 
     let mut backend = SimBackend::new(cols, rows);
     let mut p = player(&asset, GlyphTier::UnicodeBlocks);
-    p.set_codec(Codec::Ascii);
+    p.set_style(Style::Ascii);
     p.reflow(&mut backend, cols, rows);
     p.set_progress_overlay(true);
     p.set_hint_overlay(true);
@@ -112,10 +112,10 @@ fn every_overlay_on_tiny_and_threshold_grids() {
     for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks] {
         for (cols, rows) in sizes {
             let mut huds = Vec::new();
-            for codec in Codec::ALL {
+            for style in Style::ALL {
                 let mut backend = SimBackend::new(cols, rows);
                 let mut p = player(&asset, tier);
-                p.set_codec(codec);
+                p.set_style(style);
                 p.reflow(&mut backend, cols, rows);
                 p.set_progress_overlay(true);
                 p.set_dial_overlay(Some(("edge on", 32, 255)));
@@ -127,12 +127,12 @@ fn every_overlay_on_tiny_and_threshold_grids() {
                     assert!(row(p.grid(), 2).starts_with(" edge on"), "{:?}", row(p.grid(), 2));
                 }
                 let ui = p.ui_rows();
-                assert!(ui.contains(rows - 1), "{codec:?} {cols}x{rows}: the dial row is UI");
+                assert!(ui.contains(rows - 1), "{style:?} {cols}x{rows}: the dial row is UI");
                 let rows: Vec<Vec<Cell>> =
                     (0..rows).filter(|&r| ui.contains(r)).map(|r| p.grid().row(r).to_vec()).collect();
                 huds.push((ui, rows));
             }
-            assert!(huds.windows(2).all(|w| w[0] == w[1]), "{tier:?} {cols}x{rows}: one HUD for every codec");
+            assert!(huds.windows(2).all(|w| w[0] == w[1]), "{tier:?} {cols}x{rows}: one HUD for every style");
         }
     }
 }

@@ -1,7 +1,7 @@
-//! Letters glyph codec, ink ramps and half-cell selection.
+//! Letters glyph style, ink ramps and half-cell selection.
 
 use crate::cell::{Cell, Rgb};
-use crate::codec::GlyphCodec;
+use crate::style::GlyphStyle;
 use crate::compose::{CellInputs, ComposeParams, boost, h_flags, layer, shade};
 use crate::hysteresis::{CellState, IDX_UNSET, cell_flags, edge_gate};
 use crate::orient::{bin_with_guard, coherence_at_least, debias};
@@ -44,8 +44,8 @@ pub(super) const HALF_NONE: u8 = 0;
 pub(super) const HALF_TOP: u8 = 1;
 const HALF_BOTTOM: u8 = 2;
 const WAS_FILL: u8 = 1 << 4;
-const _: () = assert!(HALF_MASK & !cell_flags::CODEC_PRIVATE_MASK == 0);
-const _: () = assert!(WAS_FILL & !cell_flags::CODEC_PRIVATE_MASK == 0);
+const _: () = assert!(HALF_MASK & !cell_flags::STYLE_PRIVATE_MASK == 0);
+const _: () = assert!(WAS_FILL & !cell_flags::STYLE_PRIVATE_MASK == 0);
 const _: () = assert!(WAS_FILL & HALF_MASK == 0);
 
 const HALF_HOLD_Q8: u16 = 160;
@@ -124,7 +124,7 @@ pub(super) fn half_variant(lt: u8, lb: u8, arm: u8, flags: &mut u8) -> u8 {
     v
 }
 
-impl GlyphCodec for Letters {
+impl GlyphStyle for Letters {
     const NAME: &'static str = "letters";
 
     #[inline]

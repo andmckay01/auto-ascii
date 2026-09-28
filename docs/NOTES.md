@@ -49,7 +49,7 @@ packing; smoothing packed 5/6/5-bit channels would quantize twice.
 
 ### Letters highlight threshold
 
-The letters codec uses plain picture tone for `LETTERS_FILL_MIN`, rather
+The letters style uses plain picture tone for `LETTERS_FILL_MIN`, rather
 than the ramp's contrast curve. Its value of 236 reserves solid fill for
 true highlights (a lit window or a white core) and keeps it off ordinary lit
 skin, where isolated blocks read as speckle rather than light.

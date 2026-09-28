@@ -1,8 +1,8 @@
-//! Luma and glyph-codec frame composition with per-cell layer metadata.
+//! Luma and glyph-style frame composition with per-cell layer metadata.
 
 use crate::cell::{Cell, Rgb};
-use crate::codec::GlyphCodec;
-use crate::codec::pixels::Pixels;
+use crate::style::GlyphStyle;
+use crate::style::pixels::Pixels;
 use crate::grid::Grid;
 use crate::hysteresis::HysteresisState;
 use crate::palette::PaletteSet;
@@ -173,7 +173,7 @@ pub fn compose_frame_masked(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn frame_impl<C: GlyphCodec>(
+pub(crate) fn frame_impl<C: GlyphStyle>(
     planes: &FramePlanes<'_>,
     vp: &Viewport,
     lut: &[u8; 256],

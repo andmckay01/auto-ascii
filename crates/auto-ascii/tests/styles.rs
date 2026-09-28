@@ -3,11 +3,11 @@ use std::path::PathBuf;
 
 use auto_ascii::deck::{ClipDeck, DeckConfig};
 use auto_ascii::pipeline::{OverlayScale, Player, ProgressContext, UiRows, color_depth};
-use auto_ascii::{Codec, Located, RenderSession};
-use auto_ascii_core::codec::ascii::{
+use auto_ascii::{Located, RenderSession, Style};
+use auto_ascii_core::style::ascii::{
     SHADE_FLOOR, SHADES_256, ascii_glyphs, backing_within_cap, cell_within_cap, in_hue_family,
 };
-use auto_ascii_core::codec::letters::letters_glyphs;
+use auto_ascii_core::style::letters::letters_glyphs;
 use auto_ascii_core::{Cell, ColorDepth, GlyphTier, Grid, Rgb};
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
 use auto_ascii_format::header::plane_id;
@@ -26,7 +26,7 @@ fn full_asset() -> Vec<u8> {
         zstd_level: 3,
         ..WriterOptions::default()
     };
-    let meta = Meta { factory_version: "codecs-test".into(), source: "synthetic".into(), palette_hints: vec![] };
+    let meta = Meta { factory_version: "styles-test".into(), source: "synthetic".into(), palette_hints: vec![] };
     let mut writer = AsciiWriter::new(Cursor::new(Vec::new()), opts, &meta).unwrap();
     for f in 0..FRAMES as usize {
         let luma = |x: usize, y: usize| -> u8 {
@@ -119,7 +119,7 @@ fn slash_and_s_surface_through_the_event_queue() {
         backend.push_event(Event::Key(Key::Char('/')));
     }
     let d = p.drain_events(&mut backend);
-    assert_eq!(d.codec_cycle, 3);
+    assert_eq!(d.style_cycle, 3);
     assert!(!d.save && !d.toggle_hints && !d.toggle_pause && !d.quit);
     assert_eq!((d.jump_digit, d.seek_steps, d.dial_cycle, d.dial_delta), (None, 0, 0, 0));
 
@@ -127,17 +127,17 @@ fn slash_and_s_surface_through_the_event_queue() {
     backend.push_event(Event::Key(Key::Char('s')));
     let d = p.drain_events(&mut backend);
     assert!(d.save);
-    assert_eq!((d.codec_cycle, d.dial_cycle, d.dial_delta), (0, 0, 0));
+    assert_eq!((d.style_cycle, d.dial_cycle, d.dial_delta), (0, 0, 0));
 
     for key in ['q', ' ', '0', '9', 'd', '[', ']', 'v', 'x', '?'] {
         backend.push_event(Event::Key(Key::Char(key)));
         let d = p.drain_events(&mut backend);
-        assert_eq!((d.codec_cycle, d.save), (0, false), "{key:?} must not cycle or save");
+        assert_eq!((d.style_cycle, d.save), (0, false), "{key:?} must not cycle or save");
     }
     for key in [Key::Left, Key::Right] {
         backend.push_event(Event::Key(key));
         let d = p.drain_events(&mut backend);
-        assert_eq!((d.codec_cycle, d.save), (0, false));
+        assert_eq!((d.style_cycle, d.save), (0, false));
     }
 }
 
@@ -161,7 +161,7 @@ fn letters_fade_to_black_without_a_shadow_plane() {
         for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
             for hyst in [160, 255] {
                 let mut p = Player::new(AsciiReader::open(&bytes).unwrap(), 2.0, true, color, tier).unwrap();
-                p.set_codec(Codec::Letters);
+                p.set_style(Style::Letters);
                 p.set_compose_params(auto_ascii_core::ComposeParams { idx_hyst_q8: hyst, ..Default::default() });
                 let mut backend = SimBackend::new(80, 24);
                 p.reflow(&mut backend, 80, 24);
@@ -181,27 +181,29 @@ fn letters_fade_to_black_without_a_shadow_plane() {
 }
 
 #[test]
-fn codec_switch_is_a_cold_start_and_pixels_comes_back_exactly() {
+fn style_switch_is_a_cold_start_and_pixels_comes_back_exactly() {
     let asset = full_asset();
     for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks] {
         let (mut b1, mut b2) = (SimBackend::new(80, 24), SimBackend::new(80, 24));
         let mut p = player(&asset, tier);
+        p.set_style(Style::Pixels);
         p.reflow(&mut b1, 80, 24);
         let pixels = render(&mut p, &mut b1, 3);
 
-        p.set_codec(Codec::Letters);
-        assert_eq!(p.codec(), Codec::Letters);
+        p.set_style(Style::Letters);
+        assert_eq!(p.style(), Style::Letters);
         p.render_present(&mut b1, 4).unwrap();
         let mut fresh = player(&asset, tier);
-        fresh.set_codec(Codec::Letters);
+        fresh.set_style(Style::Letters);
         fresh.reflow(&mut b2, 80, 24);
         fresh.render_present(&mut b2, 4).unwrap();
         assert_eq!(p.grid().as_slice(), fresh.grid().as_slice(), "{tier:?}: switch = cold start");
         assert_ne!(p.grid().as_slice(), pixels.as_slice(), "letters is a different picture");
 
-        p.set_codec(Codec::Pixels);
+        p.set_style(Style::Pixels);
         p.render_present(&mut b1, 3).unwrap();
         let mut cold = player(&asset, tier);
+        cold.set_style(Style::Pixels);
         cold.reflow(&mut b2, 80, 24);
         cold.render_present(&mut b2, 3).unwrap();
         assert_eq!(p.grid().as_slice(), cold.grid().as_slice(), "{tier:?}: pixels restored");
@@ -209,8 +211,8 @@ fn codec_switch_is_a_cold_start_and_pixels_comes_back_exactly() {
 }
 
 #[test]
-fn deck_carries_the_codec_across_clip_switches() {
-    let dir = std::env::temp_dir().join(format!("auto-ascii-codecs-deck-{}", std::process::id()));
+fn deck_carries_the_style_across_clip_switches() {
+    let dir = std::env::temp_dir().join(format!("auto-ascii-styles-deck-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let bytes = full_asset();
     let paths: Vec<PathBuf> = (0..2)
@@ -232,7 +234,7 @@ fn deck_carries_the_codec_across_clip_switches() {
     deck.render_at(at(0)).unwrap();
     let pixels = deck.showing().as_slice().to_vec();
 
-    deck.set_codec(Codec::Letters);
+    deck.set_style(Style::Letters);
     deck.render_at(at(1)).unwrap();
     let letters = deck.showing().as_slice().to_vec();
     assert_ne!(letters, pixels);
@@ -255,15 +257,15 @@ fn hints_row_names_the_new_keys_where_there_is_room() {
     let hints = row(p.grid(), rows - 2);
     assert_eq!(
         hints.trim_end(),
-        " q quit   space pause   0-9 jump   <- -> 5s   d dial   [ ] adjust   / codec   m sound   s save   v controls"
+        " q quit   space pause   0-9 jump   <- -> 5s   d dial   [ ] adjust   / style   m sound   s save   v controls"
     );
     let mut backend = SimBackend::new(80, 24);
     let mut p = player(&asset, GlyphTier::Ascii);
     p.reflow(&mut backend, 80, 24);
     p.set_hint_overlay(true);
     p.render_present(&mut backend, 0).unwrap();
-    assert!(!row(p.grid(), 22).contains("codec"), "80 columns keep the M6 row");
-    for (cols, sound, codec, save) in [(89u16, true, false, false), (99, true, true, false), (108, true, true, true), (88, false, false, false)] {
+    assert!(!row(p.grid(), 22).contains("style"), "80 columns keep the M6 row");
+    for (cols, sound, style, save) in [(89u16, true, false, false), (99, true, true, false), (108, true, true, true), (88, false, false, false)] {
         let mut backend = SimBackend::new(cols, 24);
         let mut p = player(&asset, GlyphTier::Ascii);
         p.reflow(&mut backend, cols, 24);
@@ -271,34 +273,34 @@ fn hints_row_names_the_new_keys_where_there_is_room() {
         p.render_present(&mut backend, 0).unwrap();
         let hints = row(p.grid(), 22);
         assert_eq!(
-            (hints.contains("m sound"), hints.contains("/ codec"), hints.contains("s save")),
-            (sound, codec, save),
-            "{cols} columns: m sound outlasts / codec, s save goes first: {hints:?}"
+            (hints.contains("m sound"), hints.contains("/ style"), hints.contains("s save")),
+            (sound, style, save),
+            "{cols} columns: m sound outlasts / style, s save goes first: {hints:?}"
         );
         assert!(hints.contains("v controls"));
     }
 }
 
 #[test]
-fn info_row_reads_the_sound_state_on_every_codec() {
+fn info_row_reads_the_sound_state_on_every_style() {
     let asset = build_fixture(Fixture::GradientMotion);
     let (cols, rows) = (200u16, 56u16);
     let allowed = ascii_glyphs();
     for sound in ["on", "off", "wait", "none"] {
-        for codec in Codec::ALL {
+        for style in Style::ALL {
             let mut backend = SimBackend::new(cols, rows);
             let mut p = player(&asset, GlyphTier::UnicodeBlocks);
-            p.set_codec(codec);
+            p.set_style(style);
             p.reflow(&mut backend, cols, rows);
-            let text = format!(" Interstellar   codec: {}   settings: saved   sound: {sound} ", codec.name());
+            let text = format!(" Interstellar   style: {}   settings: saved   sound: {sound} ", style.name());
             p.set_info_overlay(Some(&text));
             p.set_hint_overlay(true);
             p.render_present(&mut backend, 0).unwrap();
             let info = row(p.grid(), rows - 3);
             let pad = " ".repeat(cols as usize - text.len() - " 200x56 cells ".len());
-            assert_eq!(info, format!("{text}{pad} 200x56 cells "), "{codec:?} sound {sound}");
+            assert_eq!(info, format!("{text}{pad} 200x56 cells "), "{style:?} sound {sound}");
             assert!(row(p.grid(), rows - 2).contains("m sound"), "the hint names the key");
-            if codec == Codec::Ascii {
+            if style == Style::Ascii {
                 let ui = p.ui_rows();
                 for r in (0..rows).filter(|&r| !ui.contains(r)) {
                     assert!(p.grid().row(r).iter().all(|c| allowed.contains(&c.glyph())), "row {r} stays picture");
@@ -327,7 +329,7 @@ fn info_row_rides_with_the_hints() {
     reference.reflow(&mut b_ref, cols, rows);
     reference.render_present(&mut b_ref, 0).unwrap();
 
-    p.set_info_overlay(Some(" Café   codec: letters   settings: saved "));
+    p.set_info_overlay(Some(" Café   style: letters   settings: saved "));
     p.render_present(&mut backend, 0).unwrap();
     backend.take_output();
     assert_eq!(p.grid().as_slice(), reference.grid().as_slice(), "no hints, no info row");
@@ -336,24 +338,38 @@ fn info_row_rides_with_the_hints() {
     p.render_present(&mut backend, 1).unwrap();
     backend.take_output();
     let info = row(p.grid(), rows - 3);
-    assert!(info.starts_with(" Caf?   codec: letters   settings: saved "), "{info:?}");
+    assert!(info.starts_with(" Caf?   style: letters   settings: saved "), "{info:?}");
     assert_eq!(info.chars().count(), cols as usize, "painted edge to edge");
     assert!(row(p.grid(), rows - 2).contains("v controls"), "hints below it");
 
     p.set_info_overlay(None);
     let stats = p.render_present(&mut backend, 2).unwrap();
     assert_eq!(stats.cells_damaged, u32::from(cols) * u32::from(rows), "hide → full repaint");
-    assert!(!row(p.grid(), rows - 3).contains("codec"));
+    assert!(!row(p.grid(), rows - 3).contains("style"));
 }
 
 #[test]
-fn render_session_selects_the_codec() {
-    let path = std::env::temp_dir().join(format!("auto-ascii-codecs-session-{}.ascii", std::process::id()));
+#[allow(deprecated)]
+fn deprecated_codec_accessors_still_select_the_style() {
+    let path = std::env::temp_dir().join(format!("auto-ascii-styles-deprecated-{}.ascii", std::process::id()));
     std::fs::write(&path, full_asset()).unwrap();
     let mut s = RenderSession::open(&path).unwrap();
-    assert_eq!(s.codec(), Codec::Pixels);
+    use auto_ascii::Codec::Letters;
+    let letters: auto_ascii::Codec = Letters;
+    s.set_codec(letters);
+    assert_eq!((s.codec(), s.style()), (Style::Letters, Style::Letters));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn render_session_selects_the_style() {
+    let path = std::env::temp_dir().join(format!("auto-ascii-styles-session-{}.ascii", std::process::id()));
+    std::fs::write(&path, full_asset()).unwrap();
+    let mut s = RenderSession::open(&path).unwrap();
+    assert_eq!(s.style(), Style::Ascii);
+    s.set_style(Style::Pixels);
     let pixels = s.render(2, 100, 30).unwrap().as_slice().to_vec();
-    s.set_codec(Codec::Letters);
+    s.set_style(Style::Letters);
     let letters = s.render(3, 100, 30).unwrap().as_slice().to_vec();
     assert_ne!(pixels, letters);
     let allowed = letters_glyphs(true);
@@ -388,7 +404,7 @@ fn check_golden(name: &str, text: &str) {
     let want = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!("missing golden {} ({e}); bless with ASCII_UPDATE_GOLDENS=1", path.display())
     });
-    assert_eq!(text, want, "codec render diverged from {}", path.display());
+    assert_eq!(text, want, "style render diverged from {}", path.display());
 }
 
 #[test]
@@ -400,7 +416,7 @@ fn letters_goldens() {
     ] {
         let mut backend = SimBackend::new(80, 24);
         let mut p = player(&asset, tier);
-        p.set_codec(Codec::Letters);
+        p.set_style(Style::Letters);
         p.reflow(&mut backend, 80, 24);
         let grid = render(&mut p, &mut backend, FRAMES - 1);
         let allowed = letters_glyphs(tier != GlyphTier::Ascii);
@@ -410,7 +426,7 @@ fn letters_goldens() {
         if tier != GlyphTier::Ascii {
             assert!(text.contains('█'), "{name}: dense fill");
         }
-        let title = format!("letters codec, {tier:?} tier, truecolor, 80x24, frame {}", FRAMES - 1);
+        let title = format!("letters style, {tier:?} tier, truecolor, 80x24, frame {}", FRAMES - 1);
         check_golden(name, &golden_text(&grid, &title));
     }
 }
@@ -424,11 +440,11 @@ fn letters_goldens_untinted_tiers() {
     ] {
         let mut backend = SimBackend::new(80, 24);
         let mut p = Player::new(AsciiReader::open(&asset).unwrap(), 2.0, true, color, tier).unwrap();
-        p.set_codec(Codec::Letters);
+        p.set_style(Style::Letters);
         p.reflow(&mut backend, 80, 24);
         let grid = render(&mut p, &mut backend, FRAMES - 1);
         assert!(grid.as_slice().iter().all(|c| c.bg == Rgb::BLACK), "{name}: no background tint");
-        let title = format!("letters codec, {tier:?} tier, {color:?}, 80x24, frame {}", FRAMES - 1);
+        let title = format!("letters style, {tier:?} tier, {color:?}, 80x24, frame {}", FRAMES - 1);
         check_golden(name, &golden_text(&grid, &title));
     }
 }
@@ -582,9 +598,9 @@ fn joined(frames: &[Frame]) -> Vec<u8> {
     frames.iter().flat_map(|f| f.bytes.iter().copied()).collect()
 }
 
-fn deck_stream(codec: Codec, tier: GlyphTier, color: ColorTier, overlays: bool) -> Vec<Frame> {
-    let tag = format!("{}-{tier:?}-{color:?}-{codec:?}-{overlays}", std::process::id());
-    let dir = std::env::temp_dir().join(format!("auto-ascii-codecs-stream-{tag}"));
+fn deck_stream(style: Style, tier: GlyphTier, color: ColorTier, overlays: bool) -> Vec<Frame> {
+    let tag = format!("{}-{tier:?}-{color:?}-{style:?}-{overlays}", std::process::id());
+    let dir = std::env::temp_dir().join(format!("auto-ascii-styles-stream-{tag}"));
     std::fs::create_dir_all(&dir).unwrap();
     let bytes = full_asset();
     let paths: Vec<PathBuf> = (0..2)
@@ -596,12 +612,12 @@ fn deck_stream(codec: Codec, tier: GlyphTier, color: ColorTier, overlays: bool) 
         .collect();
     let cfg = DeckConfig { cell_aspect: 2.0, repaint_full: false, color: color_depth(color), glyph_tier: tier };
     let mut deck = ClipDeck::new(paths, cfg);
-    deck.set_codec(codec);
+    deck.set_style(style);
     let mut backend = SimBackend::new(80, 24);
     backend.set_caps(Caps { color, ..Caps::default() });
     if overlays {
         deck.set_hint_overlay(true);
-        deck.set_info_overlay(Some(" Caf\u{e9} clip   codec: ascii   settings: saved   sound: on "));
+        deck.set_info_overlay(Some(" Caf\u{e9} clip   style: ascii   settings: saved   sound: on "));
         let ctx = ProgressContext { frame: 90, frame_count: 600, fps_num: 30, fps_den: 1, clip: Some((1, 2)) };
         deck.set_progress_context(Some(ctx));
     }
@@ -632,7 +648,7 @@ fn ascii_picture_cells_are_printable_ascii_over_a_capped_shade() {
         for color in [ColorTier::True, ColorTier::C256, ColorTier::C16, ColorTier::Mono] {
             for overlays in [false, true] {
                 let what = format!("{tier:?} {color:?} overlays {overlays}");
-                let frames = deck_stream(Codec::Ascii, tier, color, overlays);
+                let frames = deck_stream(Style::Ascii, tier, color, overlays);
                 let mut screen = Screen::new();
                 let (mut shaded, mut ui_cells, mut ui_blocks, mut ui_backed) = (0, 0, 0, 0);
                 for (n, frame) in frames.iter().enumerate() {
@@ -686,13 +702,13 @@ fn ascii_picture_cells_are_printable_ascii_over_a_capped_shade() {
     }
 }
 
-fn hud(asset: &[u8], codec: Codec, tier: GlyphTier, (cols, rows): (u16, u16), on: &[&str]) -> (Grid<Cell>, UiRows) {
+fn hud(asset: &[u8], style: Style, tier: GlyphTier, (cols, rows): (u16, u16), on: &[&str]) -> (Grid<Cell>, UiRows) {
     let mut p = player(asset, tier);
-    p.set_codec(codec);
+    p.set_style(style);
     p.reflow_grid(cols, rows);
     p.set_progress_overlay(on.contains(&"progress"));
     p.set_hint_overlay(on.contains(&"hints") || on.contains(&"info"));
-    p.set_info_overlay(on.contains(&"info").then_some(" The Architect   codec: ascii   settings: default   sound: off "));
+    p.set_info_overlay(on.contains(&"info").then_some(" The Architect   style: ascii   settings: default   sound: off "));
     p.set_dial_overlay(on.contains(&"dial").then_some(("edge on", 32, 255)));
     p.set_paused(true);
     p.render_grid(3).unwrap();
@@ -712,13 +728,13 @@ fn ascii_draws_the_same_hud_as_pixels_and_letters() {
             assert_eq!(big, tier != GlyphTier::Ascii && size.0 >= 240 && size.1 >= 36);
             for on in sets {
                 let what = format!("{tier:?} {}x{} {on:?}", size.0, size.1);
-                let (ascii, ui) = hud(&asset, Codec::Ascii, tier, size, on);
+                let (ascii, ui) = hud(&asset, Style::Ascii, tier, size, on);
                 assert!(!ui.is_empty(), "{what}");
-                for codec in [Codec::Pixels, Codec::Letters] {
-                    let (other, other_ui) = hud(&asset, codec, tier, size, on);
-                    assert_eq!(other_ui, ui, "{what}: {codec:?} draws the same rows");
+                for style in [Style::Pixels, Style::Letters] {
+                    let (other, other_ui) = hud(&asset, style, tier, size, on);
+                    assert_eq!(other_ui, ui, "{what}: {style:?} draws the same rows");
                     for r in (0..size.1).filter(|&r| ui.contains(r)) {
-                        assert_eq!(ascii.row(r), other.row(r), "{what}: row {r} differs from {codec:?}");
+                        assert_eq!(ascii.row(r), other.row(r), "{what}: row {r} differs from {style:?}");
                     }
                 }
                 let hud_text: String =
@@ -742,7 +758,7 @@ fn ascii_without_overlays_is_all_picture_on_big_grids() {
         for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
             for (cols, rows) in [(200, 56), (239, 36), (240, 36), (320, 90), (400, 120), (1000, 300)] {
                 let mut p = Player::new(AsciiReader::open(&asset).unwrap(), 2.0, false, color, tier).unwrap();
-                p.set_codec(Codec::Ascii);
+                p.set_style(Style::Ascii);
                 p.reflow_grid(cols, rows);
                 for f in 0..FRAMES {
                     p.render_grid(f).unwrap();
@@ -758,11 +774,11 @@ fn ascii_without_overlays_is_all_picture_on_big_grids() {
 }
 
 #[test]
-fn other_codecs_keep_their_backgrounds_and_big_overlay_text() {
-    let pixels = joined(&deck_stream(Codec::Pixels, GlyphTier::Ascii, ColorTier::True, true));
+fn other_styles_keep_their_backgrounds_and_big_overlay_text() {
+    let pixels = joined(&deck_stream(Style::Pixels, GlyphTier::Ascii, ColorTier::True, true));
     let bg = background_sgrs(&pixels).unwrap();
     assert!(bg.contains(&"48;2;0;0;0".to_string()) && bg.contains(&"48;2;24;24;40".to_string()), "{bg:?}");
-    let letters = joined(&deck_stream(Codec::Letters, GlyphTier::UnicodeBlocks, ColorTier::C16, true));
+    let letters = joined(&deck_stream(Style::Letters, GlyphTier::UnicodeBlocks, ColorTier::C16, true));
     assert!(background_sgrs(&letters).is_err(), "letters keeps blocks and big overlay text");
     assert!(String::from_utf8_lossy(&letters).contains('\u{2580}'), "big text at 400x120");
 }
@@ -776,7 +792,7 @@ fn ascii_goldens() {
     ] {
         let mut backend = SimBackend::new(80, 24);
         let mut p = Player::new(AsciiReader::open(&asset).unwrap(), 2.0, true, color, tier).unwrap();
-        p.set_codec(Codec::Ascii);
+        p.set_style(Style::Ascii);
         p.reflow(&mut backend, 80, 24);
         let grid = render(&mut p, &mut backend, FRAMES - 1);
         let allowed = ascii_glyphs();
@@ -784,7 +800,7 @@ fn ascii_goldens() {
         let text: String = grid.as_slice().iter().map(|c| c.glyph()).collect();
         assert!(text.contains(['|', '/', '\\']), "{name}: edge strokes");
         assert!(text.contains('@'), "{name}: the disc core is the densest glyph");
-        let title = format!("ascii codec, {tier:?} tier, {color:?}, 80x24, frame {}", FRAMES - 1);
+        let title = format!("ascii style, {tier:?} tier, {color:?}, 80x24, frame {}", FRAMES - 1);
         check_golden(name, &golden_text(&grid, &title));
     }
 }

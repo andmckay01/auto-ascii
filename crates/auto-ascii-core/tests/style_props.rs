@@ -1,9 +1,9 @@
-use auto_ascii_core::codec::ascii::{ascii_glyphs, cell_within_cap};
-use auto_ascii_core::codec::letters::letters_glyphs;
 use auto_ascii_core::compose::{ComposeParams, FramePlanes, compose_frame, compose_frame_masked};
 use auto_ascii_core::hysteresis::HysteresisState;
 use auto_ascii_core::palette::{ColorDepth, GlyphTier, select_palettes};
-use auto_ascii_core::{Cell, Codec, Grid, compose_frame_codec, compute_viewport};
+use auto_ascii_core::style::ascii::{ascii_glyphs, cell_within_cap};
+use auto_ascii_core::style::letters::letters_glyphs;
+use auto_ascii_core::{Cell, Grid, Style, compose_frame_style, compute_viewport};
 use proptest::prelude::*;
 
 fn tier(i: u8) -> GlyphTier {
@@ -67,8 +67,8 @@ proptest! {
                 h: Some(&h),
                 chroma: Some((&r, &g, &b)),
             };
-            compose_frame_codec(
-                Codec::Letters, &planes, &vp, &lut, &set, &ComposeParams::default(),
+            compose_frame_style(
+                Style::Letters, &planes, &vp, &lut, &set, &ComposeParams::default(),
                 &mut st, &mut grid, None,
             );
             for cell in grid.as_slice() {
@@ -110,8 +110,8 @@ proptest! {
                 h: Some(&h),
                 chroma: if f == 1 { None } else { Some((&r, &g, &b)) },
             };
-            compose_frame_codec(
-                Codec::Ascii, &planes, &vp, &lut, &set, &ComposeParams::default(),
+            compose_frame_style(
+                Style::Ascii, &planes, &vp, &lut, &set, &ComposeParams::default(),
                 &mut st, &mut grid, None,
             );
             for cell in grid.as_slice() {
@@ -144,7 +144,7 @@ proptest! {
             let h: Vec<u8> = plane(s ^ 4, vc * vr).iter().map(|v| v & 3).collect();
             let planes = FramePlanes { luma2: &luma2, e: Some(&e), ex: Some(&ex), ey: Some(&ey), h: Some(&h), chroma: None };
             compose_frame_masked(&planes, &vp, &lut, &set, &p, &mut st_a, &mut a, &mut ma);
-            compose_frame_codec(Codec::Pixels, &planes, &vp, &lut, &set, &p, &mut st_b, &mut b, Some(&mut mb));
+            compose_frame_style(Style::Pixels, &planes, &vp, &lut, &set, &p, &mut st_b, &mut b, Some(&mut mb));
             prop_assert_eq!(a.as_slice(), b.as_slice());
             prop_assert_eq!(ma.as_slice(), mb.as_slice());
             let mut st_c = st_a.clone();
@@ -152,8 +152,24 @@ proptest! {
             let mut st_d = st_a.clone();
             let mut d_grid: Grid<Cell> = Grid::new(100, 30);
             compose_frame(&planes, &vp, &lut, &set, &p, &mut st_c, &mut c_grid);
-            compose_frame_codec(Codec::Pixels, &planes, &vp, &lut, &set, &p, &mut st_d, &mut d_grid, None);
+            compose_frame_style(Style::Pixels, &planes, &vp, &lut, &set, &p, &mut st_d, &mut d_grid, None);
             prop_assert_eq!(c_grid.as_slice(), d_grid.as_slice());
         }
     }
+}
+
+#[test]
+#[allow(deprecated)]
+fn deprecated_codec_names_still_resolve_to_styles() {
+    use auto_ascii_core::codec::{self, GlyphCodec};
+    use auto_ascii_core::Codec::{Letters, Pixels};
+    assert_eq!(auto_ascii_core::Codec::ALL, Style::ALL);
+    assert_eq!((Letters, Pixels), (Style::Letters, Style::Pixels));
+    assert_eq!(<codec::ascii::Ascii as auto_ascii_core::GlyphCodec>::NAME, Style::Ascii.name());
+    assert_eq!(codec::Codec::from_name("letters"), Some(Style::Letters));
+    assert_eq!(<codec::ascii::Ascii as GlyphCodec>::NAME, Style::Ascii.name());
+    assert_eq!(
+        auto_ascii_core::hysteresis::cell_flags::CODEC_PRIVATE_MASK,
+        auto_ascii_core::hysteresis::cell_flags::STYLE_PRIVATE_MASK
+    );
 }

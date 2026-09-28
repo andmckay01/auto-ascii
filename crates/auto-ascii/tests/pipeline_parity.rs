@@ -1,3 +1,4 @@
+use auto_ascii::Style;
 use auto_ascii::pipeline::Player;
 use auto_ascii_eval::fixtures::{Fixture, FixtureRenderer, GoldenPalette, build_fixture};
 use auto_ascii_format::AsciiReader;
@@ -22,6 +23,7 @@ fn assert_grid_parity(fixture: Fixture, palette: GoldenPalette) {
     let (tier, depth) = palette.config();
     let mut player = Player::new(reader, auto_ascii_core::DEFAULT_CELL_ASPECT, false, depth, tier)
         .expect("player over the fixture");
+    player.set_style(Style::Pixels);
     let mut backend = SimBackend::new(80, 24);
 
     for &(cols, rows) in TERMS {

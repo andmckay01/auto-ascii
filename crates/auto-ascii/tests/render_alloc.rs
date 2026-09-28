@@ -1,7 +1,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use auto_ascii::Codec;
+use auto_ascii::Style;
 use auto_ascii::pipeline::{Player, color_depth};
 use auto_ascii_core::GlyphTier;
 use auto_ascii_eval::fixtures::{FIXTURE_FRAMES, Fixture, build_fixture};
@@ -63,7 +63,7 @@ fn the_counter_sees_heap_allocations() {
 #[test]
 fn warmed_sequential_render_grid_does_not_allocate() {
     let asset = build_fixture(Fixture::HardCut);
-    for codec in Codec::ALL {
+    for style in Style::ALL {
         let reader = AsciiReader::open(&asset).unwrap();
         let mut player = Player::new(
             reader,
@@ -73,7 +73,7 @@ fn warmed_sequential_render_grid_does_not_allocate() {
             GlyphTier::UnicodeBlocks,
         )
         .unwrap();
-        player.set_codec(codec);
+        player.set_style(style);
         player.set_progress_overlay(false);
         player.reflow_grid(120, 40);
         let warm = 4;
@@ -85,6 +85,6 @@ fn warmed_sequential_render_grid_does_not_allocate() {
                 player.render_grid(frame).unwrap();
             }
         });
-        assert_eq!(allocations, 0, "{codec:?}");
+        assert_eq!(allocations, 0, "{style:?}");
     }
 }

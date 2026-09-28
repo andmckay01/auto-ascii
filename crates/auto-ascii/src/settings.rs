@@ -1,9 +1,9 @@
-//! Per-video dial and codec sidecar I/O.
+//! Per-video dial and style sidecar I/O.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use auto_ascii_core::{Codec, ComposeParams};
+use auto_ascii_core::{ComposeParams, Style};
 
 use crate::error::Error;
 use crate::player::Dial;
@@ -34,7 +34,7 @@ fn without_comment(line: &str) -> &str {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VideoSettings {
     pub compose: ComposeParams,
-    pub codec: Codec,
+    pub style: Style,
 }
 
 impl VideoSettings {
@@ -47,7 +47,7 @@ impl VideoSettings {
         for dial in Dial::ALL {
             dial.set_param(&mut compose, dial.raw_param_value(&self.compose));
         }
-        VideoSettings { compose, codec: self.codec }
+        VideoSettings { compose, style: self.style }
     }
 
     pub fn to_toml(&self) -> String {
@@ -56,7 +56,7 @@ impl VideoSettings {
              # playback. Keys are params.toml [compose] names; a missing key keeps\n\
              # its default.\n",
         );
-        let _ = writeln!(out, "codec = \"{}\"", self.codec.name());
+        let _ = writeln!(out, "style = \"{}\"", self.style.name());
         for dial in Dial::ALL {
             let _ = writeln!(out, "{} = {}", dial.param_key(), dial.raw_param_value(&self.compose));
         }
@@ -75,9 +75,9 @@ impl VideoSettings {
                 return Err(err(format!("expected `key = value`, got {line:?}")));
             };
             let (key, val) = (key.trim(), val.trim());
-            if key == "codec" {
+            if key == "style" || key == "codec" {
                 let name = val.trim_matches(['"', '\'']);
-                out.codec = Codec::from_name(name).unwrap_or_default();
+                out.style = Style::from_name(name).unwrap_or_default();
             } else if let Some(dial) = Dial::ALL.into_iter().find(|d| d.param_key() == key) {
                 let v: u8 = val
                     .parse()
@@ -119,7 +119,7 @@ mod tests {
         Dial::ShadowLift.turn(&mut compose, 4);
         Dial::EdgeStrength.turn(&mut compose, -3);
         Dial::Hysteresis.turn(&mut compose, 2);
-        VideoSettings { compose, codec: Codec::Letters }
+        VideoSettings { compose, style: Style::Letters }
     }
 
     #[test]
@@ -129,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn text_round_trip_keeps_every_dial_and_the_codec() {
+    fn text_round_trip_keeps_every_dial_and_the_style() {
         let s = turned();
         assert_ne!(s.compose, ComposeParams::default(), "the fixture moved the dials");
         assert_eq!(VideoSettings::parse(&s.to_toml()), Ok(s));
@@ -152,12 +152,12 @@ mod tests {
     }
 
     #[test]
-    fn ascii_codec_round_trips_as_text_and_on_disk() {
-        let s = VideoSettings { codec: Codec::Ascii, ..turned() };
-        assert!(s.to_toml().contains("codec = \"ascii\"\n"), "{}", s.to_toml());
+    fn ascii_style_round_trips_as_text_and_on_disk() {
+        let s = VideoSettings { style: Style::Ascii, ..turned() };
+        assert!(s.to_toml().contains("style = \"ascii\"\n"), "{}", s.to_toml());
         assert_eq!(VideoSettings::parse(&s.to_toml()), Ok(s));
-        assert_eq!(VideoSettings::parse("codec = ascii").unwrap().codec, Codec::Ascii);
-        assert_eq!(VideoSettings::parse("codec = 'ascii' # mine").unwrap().codec, Codec::Ascii);
+        assert_eq!(VideoSettings::parse("style = ascii").unwrap().style, Style::Ascii);
+        assert_eq!(VideoSettings::parse("style = 'ascii' # mine").unwrap().style, Style::Ascii);
 
         let dir = std::env::temp_dir().join(format!("auto-ascii-settings-ascii-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -169,10 +169,20 @@ mod tests {
     }
 
     #[test]
-    fn a_file_without_codec_defaults_to_pixels() {
+    fn files_saved_with_the_old_codec_key_still_load() {
+        assert_eq!(VideoSettings::parse("codec = \"letters\"\n").unwrap().style, Style::Letters);
+        assert_eq!(VideoSettings::parse("codec = 'ascii' # old build").unwrap().style, Style::Ascii);
+        let old = VideoSettings::parse("codec = \"letters\"\nshadow_lift = 64\n").unwrap();
+        assert_eq!((old.style, old.compose.shadow_lift), (Style::Letters, 64));
+        assert!(!old.to_toml().contains("codec"), "new writes use `style`: {}", old.to_toml());
+        assert_eq!(VideoSettings::parse(&old.to_toml()), Ok(old));
+    }
+
+    #[test]
+    fn a_file_without_style_defaults_to_ascii() {
         let old = "shadow_lift = 64\nedge_t_on = 40\nidx_hyst_q8 = 96\n";
         let s = VideoSettings::parse(old).unwrap();
-        assert_eq!(s.codec, Codec::Pixels);
+        assert_eq!(s.style, Style::Ascii);
         assert_eq!(
             (s.compose.shadow_lift, s.compose.edge_t_on, s.compose.idx_hyst_q8),
             (64, 40, 96)
@@ -181,11 +191,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_keys_and_codecs_are_ignored_but_bad_values_are_not() {
-        let fwd = "# newer build\ncodec = \"hieroglyphs\"\nsparkle = 9\nshadow_lift = 16\n";
+    fn unknown_keys_and_styles_are_ignored_but_bad_values_are_not() {
+        let fwd = "# newer build\nstyle = \"hieroglyphs\"\nsparkle = 9\nshadow_lift = 16\n";
         let s = VideoSettings::parse(fwd).unwrap();
-        assert_eq!((s.codec, s.compose.shadow_lift), (Codec::Pixels, 16));
-        assert_eq!(VideoSettings::parse("codec = letters").unwrap().codec, Codec::Letters);
+        assert_eq!((s.style, s.compose.shadow_lift), (Style::Ascii, 16));
+        assert_eq!(VideoSettings::parse("style = letters").unwrap().style, Style::Letters);
         for bad in ["shadow_lift = 300", "shadow_lift = x", "shadow_lift"] {
             let e = VideoSettings::parse(bad).unwrap_err();
             assert!(e.starts_with("line 1:"), "{bad}: {e}");
@@ -193,18 +203,18 @@ mod tests {
     }
 
     #[test]
-    fn trailing_comments_preserve_codec_and_numeric_values() {
+    fn trailing_comments_preserve_style_and_numeric_values() {
         let s = VideoSettings::parse(
-            "codec = \"letters\" # favorite\nshadow_lift = 64 # brighter\n\
+            "style = \"letters\" # favorite\nshadow_lift = 64 # brighter\n\
              edge_t_on = 40 # less edge\nidx_hyst_q8 = 96 # responsive\n\
              future = 'a # value' # ignored\n",
         ).unwrap();
-        assert_eq!(s.codec, Codec::Letters);
+        assert_eq!(s.style, Style::Letters);
         assert_eq!((s.compose.shadow_lift, s.compose.edge_t_on, s.compose.idx_hyst_q8), (64, 40, 96));
         let old = VideoSettings::parse("shadow_lift = 64 # old file\nfuture = 1 # ignored").unwrap();
-        assert_eq!((old.codec, old.compose.shadow_lift), (Codec::Pixels, 64));
-        assert_eq!(VideoSettings::parse("codec = 'letters' # literal").unwrap().codec, Codec::Letters);
-        assert_eq!(VideoSettings::parse("codec = \"letters#future\" # unknown").unwrap().codec, Codec::Pixels);
+        assert_eq!((old.style, old.compose.shadow_lift), (Style::Ascii, 64));
+        assert_eq!(VideoSettings::parse("style = 'letters' # literal").unwrap().style, Style::Letters);
+        assert_eq!(VideoSettings::parse("style = \"letters#future\" # unknown").unwrap().style, Style::Ascii);
         for value in [r#""a # value""#, r#"'a # value'"#, r#""a \" # value""#, r#""a \\""#] {
             let line = format!("future = {value} # comment");
             assert_eq!(without_comment(&line).trim_end(), format!("future = {value}"));
@@ -225,7 +235,7 @@ mod tests {
         assert_eq!(VideoSettings::load(&asset).unwrap(), Some(s));
         assert!(!dir.join("My Clip.player.toml.tmp").exists(), "the temp file is renamed away");
 
-        let again = VideoSettings { codec: Codec::Pixels, ..s };
+        let again = VideoSettings { style: Style::Pixels, ..s };
         again.save(&asset).unwrap();
         assert_eq!(VideoSettings::load(&asset).unwrap(), Some(again));
 

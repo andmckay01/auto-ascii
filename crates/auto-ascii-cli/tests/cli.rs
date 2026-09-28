@@ -1123,7 +1123,7 @@ fn an_uppercase_toml_path_is_a_composition() {
 fn stream_help_lists_its_flags() {
     let s = Scratch::new("streamhelp");
     let text = ok(&cli(&s, &["stream", "--help"]));
-    for flag in ["--codec", "--palette", "--max-height", "--no-audio", "--sim", "--sim-dump", "--cookies-from-browser", "URL|TERMS"] {
+    for flag in ["--style", "--palette", "--max-height", "--no-audio", "--sim", "--sim-dump", "--cookies-from-browser", "URL|TERMS"] {
         assert!(text.contains(flag), "{flag} missing from:\n{text}");
     }
     assert!(text.contains("yt-dlp"), "{text}");

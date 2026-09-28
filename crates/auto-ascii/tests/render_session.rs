@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use auto_ascii_eval::fixtures::{FIXTURE_FRAMES, Fixture, build_fixture};
-use auto_ascii::{Cell, Error, Grid, PaletteChoice, RenderSession};
+use auto_ascii::{Cell, Error, Grid, PaletteChoice, RenderSession, Style};
 
 struct TmpFile(PathBuf);
 
@@ -77,6 +77,7 @@ fn resize_reflows_and_below_minimum_renders_card() {
 fn palette_and_cell_aspect_knobs() {
     let f = TmpFile::with_fixture(Fixture::GradientMotion, "knobs");
     let mut session = RenderSession::open(&f.0).unwrap();
+    session.set_style(Style::Pixels);
     session.set_palette(PaletteChoice::Ascii);
     let ascii = glyphs(session.render(0, 80, 24).unwrap());
     assert!(ascii.is_ascii(), "ascii tier: {ascii:?}");
@@ -147,6 +148,7 @@ fn assert_letterbox(grid: &Grid<Cell>, l: u16, r: u16, t: u16, b: u16) {
 fn four_by_three_asset_letterboxes_to_its_own_aspect() {
     let f = TmpFile::with_bytes(&aspect_asset(4, 3, 160, 120), "aspect-4x3");
     let mut session = RenderSession::open(&f.0).unwrap();
+    session.set_style(Style::Pixels);
     assert!((session.aspect() - 4.0 / 3.0).abs() < 1e-9, "aspect() reports 4:3");
 
     assert_letterbox(session.render(0, 80, 24).unwrap(), 8, 8, 0, 0);
@@ -160,6 +162,7 @@ fn four_by_three_asset_letterboxes_to_its_own_aspect() {
 fn portrait_9_16_asset_letterboxes_to_its_own_aspect() {
     let f = TmpFile::with_bytes(&aspect_asset(9, 16, 90, 160), "aspect-9x16");
     let mut session = RenderSession::open(&f.0).unwrap();
+    session.set_style(Style::Pixels);
     assert!((session.aspect() - 9.0 / 16.0).abs() < 1e-9, "aspect() reports 9:16");
 
     assert_letterbox(session.render(0, 80, 24).unwrap(), 26, 27, 0, 0);
@@ -169,6 +172,7 @@ fn portrait_9_16_asset_letterboxes_to_its_own_aspect() {
 fn sixteen_by_nine_assets_are_unchanged() {
     let f = TmpFile::with_fixture(Fixture::GradientMotion, "aspect-16x9");
     let mut session = RenderSession::open(&f.0).unwrap();
+    session.set_style(Style::Pixels);
     let grid = session.render(0, 80, 24).unwrap();
     assert!(
         grid.row(23).iter().all(|c| *c == Cell::BLANK),
@@ -202,6 +206,7 @@ fn error_surface_is_coherent() {
 fn font_table_repertoire_vetoes_palette_tier() {
     let f = TmpFile::with_fixture(Fixture::GradientMotion, "font-veto");
     let mut session = RenderSession::open(&f.0).unwrap();
+    session.set_style(Style::Pixels);
 
     let unicode = glyphs(session.render(10, 120, 40).unwrap());
     assert!(!unicode.is_ascii(), "default = unicode blocks");
