@@ -358,9 +358,11 @@ pub mod style {
 // compose_frame_style arm. The bin's --style help and headless-dump's usage
 // are built from Style::names, so neither needs an edit.
 // Renamed from codec/Codec/GlyphCodec/compose_frame_codec; those names stay
-// one release as #[deprecated] aliases (pub mod codec, pub type Codec,
-// fn compose_frame_codec, cell_flags::CODEC_PRIVATE_MASK), as do
-// RenderSession::set_codec/codec, PlayerBuilder::codec and auto_ascii::Codec.
+// one release as #[deprecated] aliases (pub mod codec, fn compose_frame_codec,
+// cell_flags::CODEC_PRIVATE_MASK), as do RenderSession::set_codec/codec and
+// PlayerBuilder::codec. The root Codec/GlyphCodec (and auto_ascii::Codec) are
+// plain re-exports, not type aliases, so `use Codec::{Letters, ..}` still
+// compiles; rustc ignores #[deprecated] on re-exports, so they don't warn.
 // cell_flags bits 2–7 are style-private temporal memory (a style switch
 // resets all state).
 ```

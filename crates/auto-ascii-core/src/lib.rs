@@ -37,8 +37,7 @@ pub mod codec {
     pub use crate::style::{GlyphStyle as GlyphCodec, Style as Codec, compose_frame_style as compose_frame_codec};
 }
 
-#[deprecated(note = "renamed to `Style`")]
-pub type Codec = Style;
+pub use style::{GlyphStyle as GlyphCodec, Style as Codec};
 
 #[deprecated(note = "renamed to `compose_frame_style`")]
 #[allow(clippy::too_many_arguments)]

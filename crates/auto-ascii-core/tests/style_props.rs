@@ -162,7 +162,10 @@ proptest! {
 #[allow(deprecated)]
 fn deprecated_codec_names_still_resolve_to_styles() {
     use auto_ascii_core::codec::{self, GlyphCodec};
+    use auto_ascii_core::Codec::{Letters, Pixels};
     assert_eq!(auto_ascii_core::Codec::ALL, Style::ALL);
+    assert_eq!((Letters, Pixels), (Style::Letters, Style::Pixels));
+    assert_eq!(<codec::ascii::Ascii as auto_ascii_core::GlyphCodec>::NAME, Style::Ascii.name());
     assert_eq!(codec::Codec::from_name("letters"), Some(Style::Letters));
     assert_eq!(<codec::ascii::Ascii as GlyphCodec>::NAME, Style::Ascii.name());
     assert_eq!(

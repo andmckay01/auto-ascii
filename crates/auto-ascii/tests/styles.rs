@@ -352,7 +352,8 @@ fn deprecated_codec_accessors_still_select_the_style() {
     let path = std::env::temp_dir().join(format!("auto-ascii-styles-deprecated-{}.ascii", std::process::id()));
     std::fs::write(&path, full_asset()).unwrap();
     let mut s = RenderSession::open(&path).unwrap();
-    let letters: auto_ascii::Codec = Style::Letters;
+    use auto_ascii::Codec::Letters;
+    let letters: auto_ascii::Codec = Letters;
     s.set_codec(letters);
     assert_eq!((s.codec(), s.style()), (Style::Letters, Style::Letters));
     let _ = std::fs::remove_file(&path);
