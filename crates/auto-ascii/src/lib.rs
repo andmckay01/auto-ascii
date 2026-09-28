@@ -34,7 +34,10 @@ pub use session::RenderSession;
 pub use player::{Dial, MIN_FPS_CAP, Player, PlayerBuilder, RepaintMode, SCRUB_STEP_SECS, Stopped};
 
 pub use auto_ascii_core::{Cell, Grid, Rgb};
-pub use auto_ascii_core::Codec;
+pub use auto_ascii_core::Style;
+
+#[deprecated(note = "renamed to `Style`")]
+pub type Codec = Style;
 #[cfg(feature = "terminal")]
 pub use auto_ascii_term::ColorTier;
 

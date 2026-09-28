@@ -20,7 +20,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use auto_ascii::pipeline::{self, LiveSpec, drain_backend_events};
-use auto_ascii::{Cell, Codec, ColorTier, Grid, PaletteChoice};
+use auto_ascii::{Cell, ColorTier, Grid, PaletteChoice, Style};
 use auto_ascii_core::GlyphTier;
 use auto_ascii_term::{AnsiBackend, Backend, ProbeOptions, SimBackend, probe_caps};
 
@@ -69,7 +69,7 @@ pub fn parse_sim(spec: &str) -> Result<SimSpec, String> {
 
 pub struct StreamArgs {
     pub input: String,
-    pub codec: Codec,
+    pub style: Style,
     pub palette: PaletteChoice,
     pub max_height: u32,
     pub no_audio: bool,
@@ -251,9 +251,9 @@ fn resolve_cell_aspect(cell_px: Option<(u16, u16)>) -> f64 {
     }
 }
 
-fn next_codec(codec: Codec, presses: u32) -> Codec {
-    let at = Codec::ALL.iter().position(|c| *c == codec).unwrap_or(0);
-    Codec::ALL[(at + presses as usize) % Codec::ALL.len()]
+fn next_style(style: Style, presses: u32) -> Style {
+    let at = Style::ALL.iter().position(|c| *c == style).unwrap_or(0);
+    Style::ALL[(at + presses as usize) % Style::ALL.len()]
 }
 
 pub fn run(args: &StreamArgs) -> Result<(), BoxErr> {
@@ -473,7 +473,7 @@ struct Loop {
     load: LoadState,
     progress: Progress,
     phase: Phase,
-    codec: Codec,
+    style: Style,
     glyph_tier: GlyphTier,
     color: ColorTier,
     loader: Grid<Cell>,
@@ -500,7 +500,7 @@ impl Loop {
         if self.loader.cols() != cols || self.loader.rows() != rows {
             self.loader.resize(cols, rows);
         }
-        let style = LoaderStyle::for_codec(self.codec, self.glyph_tier, self.color);
+        let style = LoaderStyle::for_style(self.style, self.glyph_tier, self.color);
         let tick = (t0.elapsed().as_millis() / LOADER_FRAME.as_millis()) as u32;
         let title = self.stats.media.as_ref().map(|m| m.title.as_str());
         draw_loader(&mut self.loader, pct, Some(tick), &style, title);
@@ -540,7 +540,7 @@ fn session<B: Backend + Discard>(
         load: LoadState::default(),
         progress: Progress::default(),
         phase: Phase::Loading,
-        codec: args.codec,
+        style: args.style,
         glyph_tier,
         color,
         loader: Grid::new(0, 0),
@@ -581,10 +581,10 @@ fn session<B: Backend + Discard>(
         if drained.quit {
             break Reason::Quit;
         }
-        if drained.codec_cycle > 0 {
-            lp.codec = next_codec(lp.codec, drained.codec_cycle);
+        if drained.style_cycle > 0 {
+            lp.style = next_style(lp.style, drained.style_cycle);
             if let Some(p) = player.as_mut() {
-                p.set_codec(lp.codec);
+                p.set_style(lp.style);
             }
             lp.showing_loader = false;
         }
@@ -618,7 +618,7 @@ fn session<B: Backend + Discard>(
                             break 'run Reason::Error;
                         }
                     };
-                    live.set_codec(lp.codec);
+                    live.set_style(lp.style);
                     let (cols, rows) = backend.caps().cells;
                     live.reflow(backend, cols, rows);
                     player = Some(live);
@@ -1104,7 +1104,7 @@ mod tests {
             };
             let args = StreamArgs {
                 input: "https://www.youtube.com/watch?v=localfixture".into(),
-                codec: Codec::Ascii,
+                style: Style::Ascii,
                 palette: PaletteChoice::Auto,
                 max_height: 480,
                 no_audio: false,
@@ -1223,10 +1223,10 @@ mod tests {
     }
 
     #[test]
-    fn slash_cycles_every_codec() {
-        assert_eq!(next_codec(Codec::Ascii, Codec::ALL.len() as u32), Codec::Ascii);
-        let first = Codec::ALL[0];
-        assert_eq!(next_codec(first, 1), Codec::ALL[1]);
+    fn slash_cycles_every_style() {
+        assert_eq!(next_style(Style::Ascii, Style::ALL.len() as u32), Style::Ascii);
+        let first = Style::ALL[0];
+        assert_eq!(next_style(first, 1), Style::ALL[1]);
     }
 
     impl Local {

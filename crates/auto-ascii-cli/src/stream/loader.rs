@@ -1,9 +1,9 @@
 //! The loading screen: real stages mapped to a monotonic 0-100 percent, and
 //! a pure renderer for the bar (brightening left to right, a soft shimmer
 //! band travelling across the filled part) with `loading...` centred under
-//! it, obeying the active codec's glyph and background rules.
+//! it, obeying the active style's glyph and background rules.
 
-use auto_ascii::{Cell, Codec, ColorTier, Grid, Rgb};
+use auto_ascii::{Cell, ColorTier, Grid, Rgb, Style};
 use auto_ascii_core::GlyphTier;
 use auto_ascii_core::cell::attrs;
 
@@ -83,8 +83,8 @@ pub struct LoaderStyle {
 }
 
 impl LoaderStyle {
-    pub fn for_codec(codec: Codec, glyph_tier: GlyphTier, color: ColorTier) -> LoaderStyle {
-        let pad = codec.pad();
+    pub fn for_style(style: Style, glyph_tier: GlyphTier, color: ColorTier) -> LoaderStyle {
+        let pad = style.pad();
         let default_bg = pad.attrs & attrs::DEFAULT_BG != 0;
         let glyphs = if default_bg || glyph_tier == GlyphTier::Ascii {
             Glyphs::AsciiDensity
@@ -260,7 +260,7 @@ mod tests {
     use auto_ascii_term::{Backend, SimBackend};
 
     fn ascii_style(color: ColorTier) -> LoaderStyle {
-        LoaderStyle::for_codec(Codec::Ascii, GlyphTier::UnicodeBlocks, color)
+        LoaderStyle::for_style(Style::Ascii, GlyphTier::UnicodeBlocks, color)
     }
 
     fn render(cols: u16, rows: u16, pct: u8, tick: Option<u32>, style: &LoaderStyle) -> Grid<Cell> {
@@ -359,10 +359,10 @@ mod tests {
 
     #[test]
     fn snapshot_unicode_blocks_and_tiny_widths() {
-        let solid = LoaderStyle::for_codec(Codec::Pixels, GlyphTier::UnicodeBlocks, ColorTier::True);
+        let solid = LoaderStyle::for_style(Style::Pixels, GlyphTier::UnicodeBlocks, ColorTier::True);
         let text = grid_text(&render(40, 6, 50, None, &solid));
         assert_eq!(text, "\n\n     ████████████░░░░░░░░░░░░  50%\n               loading...\n\n\n");
-        let dense = LoaderStyle::for_codec(Codec::Letters, GlyphTier::UnicodeBlocks, ColorTier::Mono);
+        let dense = LoaderStyle::for_style(Style::Letters, GlyphTier::UnicodeBlocks, ColorTier::Mono);
         let text = grid_text(&render(20, 5, 100, None, &dense));
         assert_eq!(text, "\n ░░▒▒▒▒▓▓▓▓██ 100%\n     loading...\n\n\n");
         let text = grid_text(&render(20, 5, 0, None, &ascii_style(ColorTier::C16)));
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn brightness_rises_left_to_right_without_shimmer() {
-        for style in [ascii_style(ColorTier::True), LoaderStyle::for_codec(Codec::Pixels, GlyphTier::UnicodeBlocks, ColorTier::True)] {
+        for style in [ascii_style(ColorTier::True), LoaderStyle::for_style(Style::Pixels, GlyphTier::UnicodeBlocks, ColorTier::True)] {
             for (cols, pct) in [(80, 42), (200, 100), (30, 7), (120, 99)] {
                 let grid = render(cols, 10, pct, None, &style);
                 let lay = layout(cols, 10).unwrap();
@@ -430,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ascii_codec_loader_is_printable_ascii_on_the_default_background() {
+    fn the_ascii_style_loader_is_printable_ascii_on_the_default_background() {
         for tier in [ColorTier::True, ColorTier::C256, ColorTier::C16, ColorTier::Mono] {
             let style = ascii_style(tier);
             for (pct, tick) in [(0, None), (42, Some(9)), (100, Some(77))] {
@@ -457,7 +457,7 @@ mod tests {
     fn tiny_and_empty_terminals_do_not_panic() {
         for style in [
             ascii_style(ColorTier::True),
-            LoaderStyle::for_codec(Codec::Pixels, GlyphTier::UnicodeBlocks, ColorTier::C16),
+            LoaderStyle::for_style(Style::Pixels, GlyphTier::UnicodeBlocks, ColorTier::C16),
         ] {
             for cols in 0..24 {
                 for rows in 0..6 {

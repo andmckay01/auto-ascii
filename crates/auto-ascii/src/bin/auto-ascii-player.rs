@@ -8,7 +8,7 @@ use clap::{Parser, ValueEnum};
 use auto_ascii::audio::{SinkChoice, SoundOptions, Soundtrack};
 use auto_ascii::deck::{ClipDeck, DeckConfig};
 use auto_ascii::pipeline::color_depth;
-use auto_ascii::{Codec, Composition, PaletteChoice, RepaintMode, Stopped};
+use auto_ascii::{Composition, PaletteChoice, RepaintMode, Stopped, Style};
 use auto_ascii_term::{Backend, Caps, ColorTier, Event, SimBackend};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -137,7 +137,7 @@ struct Cli {
     #[arg(
         long,
         help = "Keep the terminal's own default background. By default the player sets it to \
-                black for the session (OSC 11, reset with OSC 111 on exit), so the ascii codec's \
+                black for the session (OSC 11, reset with OSC 111 on exit), so the ascii style's \
                 unshaded cells (dark areas, pads, gaps, and every cell on 16-color and mono) sit \
                 on black under any theme"
     )]
@@ -165,8 +165,8 @@ struct Cli {
     )]
     font_table: Option<String>,
 
-    #[arg(long, value_name = "NAME", value_parser = parse_codec, help = codec_help())]
-    codec: Option<Codec>,
+    #[arg(long, alias = "codec", value_name = "NAME", value_parser = parse_style, help = style_help())]
+    style: Option<Style>,
 
     #[arg(long, conflicts_with = "no_audio", help = "Start with sound off: the soundtrack \
           still loads and plays silently in sync, and `m` turns it on")]
@@ -237,18 +237,18 @@ struct Cli {
 
 const QUIT_STATUS: u8 = 3;
 
-fn parse_codec(name: &str) -> std::result::Result<Codec, String> {
-    Codec::from_name(name)
-        .ok_or_else(|| format!("unknown codec {name:?} (known: {})", Codec::names(", ")))
+fn parse_style(name: &str) -> std::result::Result<Style, String> {
+    Style::from_name(name)
+        .ok_or_else(|| format!("unknown style {name:?} (known: {})", Style::names(", ")))
 }
 
-fn codec_help() -> String {
+fn style_help() -> String {
     format!(
-        "Glyph codec — how cell features become glyphs: {} (default {}). \
-         Interactively it overrides the codec saved for a video until `/` \
-         picks another; with --sim it is the codec the run renders in",
-        Codec::names(", "),
-        Codec::default().name()
+        "Glyph style — how cell features become glyphs: {} (default {}). \
+         Interactively it overrides the style saved for a video until `/` \
+         picks another; with --sim it is the style the run renders in",
+        Style::names(", "),
+        Style::default().name()
     )
 }
 
@@ -533,7 +533,7 @@ fn main() -> Result<ExitCode> {
                 glyph_tier: glyphs,
             },
         );
-        deck.set_codec(cli.codec.unwrap_or_default());
+        deck.set_style(cli.style.unwrap_or_default());
         if let Some(n) = cli.bench_seek {
             return run_bench_seek(&comp, deck, n).map(|()| ExitCode::SUCCESS);
         }
@@ -570,8 +570,8 @@ fn main() -> Result<ExitCode> {
     if let Some(spec) = &cli.font_table {
         builder = builder.font_table(spec.as_str());
     }
-    if let Some(codec) = cli.codec {
-        builder = builder.codec(codec);
+    if let Some(style) = cli.style {
+        builder = builder.style(style);
     }
     builder = builder.mute(cli.mute).no_audio(cli.no_audio);
     Ok(match builder.build()?.play()? {
@@ -585,11 +585,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codec_flag_parsing() {
-        assert_eq!(parse_codec("pixels"), Ok(Codec::Pixels));
-        assert_eq!(parse_codec("letters"), Ok(Codec::Letters));
-        assert_eq!(parse_codec("ascii"), Ok(Codec::Ascii));
-        let e = parse_codec("ASCII").unwrap_err();
+    fn style_flag_parsing() {
+        assert_eq!(parse_style("pixels"), Ok(Style::Pixels));
+        assert_eq!(parse_style("letters"), Ok(Style::Letters));
+        assert_eq!(parse_style("ascii"), Ok(Style::Ascii));
+        let e = parse_style("ASCII").unwrap_err();
         assert!(e.contains("pixels, letters, ascii"), "the error lists the registry: {e}");
     }
 
@@ -602,6 +602,15 @@ mod tests {
         assert_eq!(parse_sim_spec("213x58:900").unwrap(), ((213, 58), 900));
         assert!(parse_sim_spec("213x58").is_err());
         assert!(parse_sim_spec("213x58:0").is_err());
+    }
+
+    #[test]
+    fn style_flag_keeps_the_old_codec_spelling() {
+        let cli = Cli::try_parse_from(["auto-ascii-player", "a.ascii", "--style", "letters"]).unwrap();
+        assert_eq!(cli.style, Some(Style::Letters));
+        let cli = Cli::try_parse_from(["auto-ascii-player", "a.ascii", "--codec", "ascii"]).unwrap();
+        assert_eq!(cli.style, Some(Style::Ascii));
+        assert_eq!(Cli::try_parse_from(["auto-ascii-player", "a.ascii"]).unwrap().style, None);
     }
 
     #[test]

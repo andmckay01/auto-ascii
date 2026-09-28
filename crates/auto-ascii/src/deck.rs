@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use auto_ascii_core::{
-    Cell, Codec, ColorDepth, ComposeParams, GlyphTier, Grid, MIN_COLS, MIN_ROWS,
+    Cell, ColorDepth, ComposeParams, GlyphTier, Grid, MIN_COLS, MIN_ROWS, Style,
 };
 use auto_ascii_format::AsciiReader;
 use auto_ascii_term::{Backend, FrameStats};
@@ -55,7 +55,7 @@ pub struct ClipDeck {
     size: (u16, u16),
     cfg: DeckConfig,
     compose_params: Option<ComposeParams>,
-    codec: Codec,
+    style: Style,
     progress_visible: bool,
     hint_visible: bool,
     info: Option<String>,
@@ -93,7 +93,7 @@ impl ClipDeck {
             size: (0, 0),
             cfg,
             compose_params: None,
-            codec: Codec::default(),
+            style: Style::default(),
             progress_visible: false,
             hint_visible: false,
             info: None,
@@ -255,14 +255,14 @@ impl ClipDeck {
         }
     }
 
-    pub fn codec(&self) -> Codec {
-        self.codec
+    pub fn style(&self) -> Style {
+        self.style
     }
 
-    pub fn set_codec(&mut self, codec: Codec) {
-        self.codec = codec;
+    pub fn set_style(&mut self, style: Style) {
+        self.style = style;
         for player in self.players_mut() {
-            player.set_codec(codec);
+            player.set_style(style);
         }
     }
 
@@ -361,7 +361,7 @@ impl ClipDeck {
         if let Some(params) = self.compose_params {
             player.set_compose_params(params);
         }
-        player.set_codec(self.codec);
+        player.set_style(self.style);
         if self.layer_mask {
             player.enable_layer_mask();
         }
@@ -404,9 +404,9 @@ impl ClipDeck {
         }
         let tiny = cols < MIN_COLS || rows < MIN_ROWS;
         if tiny {
-            draw_enlarge_card(&mut self.blank, self.codec.pad());
+            draw_enlarge_card(&mut self.blank, self.style.pad());
         } else {
-            self.blank.fill(self.codec.pad());
+            self.blank.fill(self.style.pad());
         }
         let scale = OverlayScale::for_grid(cols, rows, self.cfg.glyph_tier);
         let mut ui = UiRows::NONE;
@@ -566,7 +566,7 @@ mod tests {
             let mut deck = ClipDeck::new(clips.1.clone(), headless());
             deck.set_size(cols, rows);
             deck.set_hint_overlay(true);
-            deck.set_info_overlay(Some(" gap   codec: pixels "));
+            deck.set_info_overlay(Some(" gap   style: pixels "));
             deck.render_at(None).unwrap();
             let grid = deck.showing();
             let row = |r: u16| -> String { (0..cols).map(|c| grid.get(c, r).glyph()).collect() };

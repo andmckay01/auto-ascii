@@ -25,7 +25,7 @@ with `library/` (the `<name>.ascii` clips, each with a `<name>.json` sidecar),
    prints the resolved timeline with gaps and overlaps; `<name>` may be a path.
 5. **play / export** — `auto-ascii play <clip | composition>` and `compose play
    <name>` are interactive (no `--json`, no re-encode, black backdrop until exit):
-   `q` quits, `v` controls, `/` codec, `s` saves dials + codec as `<clip>.player.toml`.
+   `q` quits, `v` controls, `/` style, `s` saves dials + style as `<clip>.player.toml`.
    A bare name is the library clip first (a `.toml` path forces a composition);
    `compose export <name> [-o path]` flattens one into `exports/<name>.ascii`.
 6. **stream** — `auto-ascii stream <youtube-url | search terms>` plays the first

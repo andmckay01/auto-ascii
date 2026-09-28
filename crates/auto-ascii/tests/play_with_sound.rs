@@ -41,7 +41,7 @@ impl Stage {
             .arg(launcher())
             .args([self.0.join("player"), "clip.ascii".into()])
             .args(before_flags)
-            .args(["--codec", "ascii"])
+            .args(["--style", "ascii"])
             .env("LOG", self.0.join("launcher.log"))
             .stdin(Stdio::null())
             .output()
@@ -77,7 +77,7 @@ fn reaching_the_end_restarts_and_only_a_quit_stops() {
     let stage = Stage::new("loop", &[0, 0, 3]);
     let out = stage.launch();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    assert_eq!(stage.read("runs").lines().collect::<Vec<_>>(), ["clip.ascii --codec ascii"; 3]);
+    assert_eq!(stage.read("runs").lines().collect::<Vec<_>>(), ["clip.ascii --style ascii"; 3]);
     assert_eq!(exits(&stage.read("launcher.log")), ["exit=0", "exit=0", "exit=3"]);
 }
 
@@ -88,7 +88,7 @@ fn the_launcher_starts_no_audio_player_and_drops_the_old_audio_argument() {
     let stage = Stage::new("legacy", &[3]);
     let out = stage.launch_with(&["clip.m4a"]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    assert_eq!(stage.read("runs").lines().collect::<Vec<_>>(), ["clip.ascii --codec ascii"]);
+    assert_eq!(stage.read("runs").lines().collect::<Vec<_>>(), ["clip.ascii --style ascii"]);
     assert!(stage.read("launcher.log").contains("ignoring audio argument clip.m4a"), "{}", stage.read("launcher.log"));
 }
 

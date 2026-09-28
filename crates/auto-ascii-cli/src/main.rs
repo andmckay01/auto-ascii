@@ -145,7 +145,7 @@ enum Cmd {
     },
     #[command(
         about = "Play the first YouTube video behind a link (or search terms) as live ASCII with sound, streamed, never downloaded. Needs yt-dlp and ffmpeg on PATH",
-        after_help = "Keys: q / Esc / Ctrl-C quit (also while loading), / cycles the glyph codec."
+        after_help = "Keys: q / Esc / Ctrl-C quit (also while loading), / cycles the glyph style."
     )]
     Stream {
         #[arg(
@@ -155,8 +155,8 @@ enum Cmd {
             help = "A video, playlist, channel or search-results URL, or plain search terms (the first result plays)"
         )]
         input: Vec<String>,
-        #[arg(long, value_name = "NAME", value_parser = parse_codec, default_value = "ascii", help = codec_help())]
-        codec: auto_ascii::Codec,
+        #[arg(long, alias = "codec", value_name = "NAME", value_parser = parse_style, default_value = "ascii", help = style_help())]
+        style: auto_ascii::Style,
         #[arg(long, value_enum, default_value_t = PaletteArg::Auto, help = "Charset tier: auto (from the terminal probe), ascii, unicode or braille")]
         palette: PaletteArg,
         #[arg(long, value_name = "PX", default_value_t = 480, value_parser = clap::value_parser!(u32).range(144..=4320), help = "Tallest video format to stream")]
@@ -290,9 +290,9 @@ fn run(cli: &Cli) -> Result<(), BoxErr> {
         }
         Cmd::Compose { cmd } => run_compose(cli, cmd),
         Cmd::Play { target } => cmd_play(cli, target),
-        Cmd::Stream { input, codec, palette, max_height, no_audio, sim, sim_dump, cookies_from_browser } => {
+        Cmd::Stream { input, style, palette, max_height, no_audio, sim, sim_dump, cookies_from_browser } => {
             let opts = StreamOpts {
-                codec: *codec,
+                style: *style,
                 palette: *palette,
                 max_height: *max_height,
                 no_audio: *no_audio,
@@ -792,20 +792,20 @@ impl From<PaletteArg> for auto_ascii::PaletteChoice {
     }
 }
 
-fn parse_codec(name: &str) -> Result<auto_ascii::Codec, String> {
-    auto_ascii::Codec::from_name(name)
-        .ok_or_else(|| format!("unknown codec {name:?} (known: {})", auto_ascii::Codec::names(", ")))
+fn parse_style(name: &str) -> Result<auto_ascii::Style, String> {
+    auto_ascii::Style::from_name(name)
+        .ok_or_else(|| format!("unknown style {name:?} (known: {})", auto_ascii::Style::names(", ")))
 }
 
-fn codec_help() -> String {
+fn style_help() -> String {
     format!(
-        "Glyph codec: {} (default ascii); `/` cycles it while playing",
-        auto_ascii::Codec::names(", ")
+        "Glyph style: {} (default ascii); `/` cycles it while playing",
+        auto_ascii::Style::names(", ")
     )
 }
 
 struct StreamOpts<'a> {
-    codec: auto_ascii::Codec,
+    style: auto_ascii::Style,
     palette: PaletteArg,
     max_height: u32,
     no_audio: bool,
@@ -825,7 +825,7 @@ fn cmd_stream(cli: &Cli, input: &[String], opts: &StreamOpts<'_>) -> Result<(), 
     }
     stream::run(&stream::StreamArgs {
         input,
-        codec: opts.codec,
+        style: opts.style,
         palette: opts.palette.into(),
         max_height: opts.max_height,
         no_audio: opts.no_audio,
@@ -977,6 +977,21 @@ fn human_bytes(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_takes_style_and_the_old_codec_flag() {
+        let style_of = |flag: &str| {
+            let cli = Cli::try_parse_from(["auto-ascii", "stream", flag, "letters", "zoo"]).unwrap();
+            match cli.cmd {
+                Cmd::Stream { style, .. } => style,
+                _ => unreachable!(),
+            }
+        };
+        assert_eq!(style_of("--style"), auto_ascii::Style::Letters);
+        assert_eq!(style_of("--codec"), auto_ascii::Style::Letters);
+        let e = Cli::try_parse_from(["auto-ascii", "stream", "--style", "runes", "zoo"]).err().unwrap();
+        assert!(e.to_string().contains("unknown style \"runes\""), "{e}");
+    }
 
     #[test]
     fn times_parse_through_the_shared_grammar() {

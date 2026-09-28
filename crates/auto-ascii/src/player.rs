@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use std::fmt::Write as _;
 
-use auto_ascii_core::{Codec, ComposeParams};
+use auto_ascii_core::{ComposeParams, Style};
 use auto_ascii_term::{AnsiBackend, Backend, ColorTier, ProbeOptions, probe_caps};
 
 use crate::audio::{SinkChoice, Sound, SoundOptions, Soundtrack};
@@ -148,8 +148,8 @@ fn dial_after_cycle(idx: usize, presses: u32, readout_up: bool) -> usize {
 
 #[derive(Debug)]
 struct LiveSettings {
-    forced: Option<Codec>,
-    session: Option<Codec>,
+    forced: Option<Style>,
+    session: Option<Style>,
     session_compose: Option<ComposeParams>,
     fronted: Option<usize>,
     clip_name: String,
@@ -157,11 +157,11 @@ struct LiveSettings {
     note: Option<&'static str>,
     problems: Vec<String>,
     compose: ComposeParams,
-    codec: Codec,
+    style: Style,
 }
 
 impl LiveSettings {
-    fn new(forced: Option<Codec>) -> LiveSettings {
+    fn new(forced: Option<Style>) -> LiveSettings {
         LiveSettings {
             forced,
             session: None,
@@ -172,7 +172,7 @@ impl LiveSettings {
             note: None,
             problems: Vec::new(),
             compose: ComposeParams::default(),
-            codec: forced.unwrap_or_default(),
+            style: forced.unwrap_or_default(),
         }
     }
 
@@ -193,15 +193,15 @@ impl LiveSettings {
         };
         let start = self.saved.unwrap_or_default();
         self.compose = self.session_compose.unwrap_or(start.compose);
-        self.codec = self.session.or(self.forced).unwrap_or(start.codec);
+        self.style = self.session.or(self.forced).unwrap_or(start.style);
         true
     }
 
     fn cycle(&mut self, presses: u32) {
         for _ in 0..presses {
-            self.codec = self.codec.next();
+            self.style = self.style.next();
         }
-        self.session = Some(self.codec);
+        self.session = Some(self.style);
     }
 
     fn turn(&mut self, dial: Dial, steps: i32) {
@@ -227,7 +227,7 @@ impl LiveSettings {
     }
 
     fn current(&self) -> VideoSettings {
-        VideoSettings { compose: self.compose, codec: self.codec }
+        VideoSettings { compose: self.compose, style: self.style }
     }
 
     fn status(&self) -> &'static str {
@@ -243,9 +243,9 @@ impl LiveSettings {
         out.clear();
         let _ = write!(
             out,
-            " {}   codec: {}   settings: {}   sound: {} ",
+            " {}   style: {}   settings: {}   sound: {} ",
             self.clip_name,
-            self.codec.name(),
+            self.style.name(),
             self.status(),
             sound.label()
         );
@@ -443,7 +443,7 @@ pub struct PlayerBuilder {
     no_cache: bool,
     no_backdrop: bool,
     font_table: Option<String>,
-    codec: Option<Codec>,
+    style: Option<Style>,
     mute: bool,
     no_audio: bool,
 }
@@ -524,9 +524,14 @@ impl PlayerBuilder {
         self
     }
 
-    pub fn codec(mut self, codec: Codec) -> Self {
-        self.codec = Some(codec);
+    pub fn style(mut self, style: Style) -> Self {
+        self.style = Some(style);
         self
+    }
+
+    #[deprecated(note = "renamed to `style`")]
+    pub fn codec(self, codec: Style) -> Self {
+        self.style(codec)
     }
 
     pub fn mute(mut self, mute: bool) -> Self {
@@ -670,8 +675,8 @@ impl Player {
         let mut progress = ProgressTimer::default();
         let mut dial_idx: usize = 0;
         let mut dial_until: Option<Instant> = None;
-        let mut live = LiveSettings::new(self.cfg.codec);
-        deck.set_codec(live.codec);
+        let mut live = LiveSettings::new(self.cfg.style);
+        deck.set_style(live.style);
         let mut note_until: Option<Instant> = None;
         let mut info = String::new();
         let mut hints = HintState::new(t0);
@@ -730,9 +735,9 @@ impl Player {
                 deck.set_dial_overlay(None);
                 dial_until = None;
             }
-            if drained.codec_cycle > 0 {
-                live.cycle(drained.codec_cycle);
-                deck.set_codec(live.codec);
+            if drained.style_cycle > 0 {
+                live.cycle(drained.style_cycle);
+                deck.set_style(live.style);
             }
             if drained.save
                 && let Some(idx) = live.fronted
@@ -740,7 +745,7 @@ impl Player {
                 live.save(&self.comp.clips()[idx].path);
             }
             let resized = deck.size() != was_size;
-            if drained.codec_cycle > 0 || drained.save || drained.toggle_sound || resized {
+            if drained.style_cycle > 0 || drained.save || drained.toggle_sound || resized {
                 note_until = Some(Instant::now() + DIAL_OVERLAY_HIDE_AFTER);
             } else if note_until.is_some_and(|t| Instant::now() >= t) {
                 note_until = None;
@@ -769,7 +774,7 @@ impl Player {
                 && live.front(l.clip_idx, &self.comp.clips()[l.clip_idx].path)
             {
                 deck.set_compose_params(live.compose);
-                deck.set_codec(live.codec);
+                deck.set_style(live.style);
                 if dial_until.is_some() {
                     let dial = Dial::ALL[dial_idx];
                     deck.set_dial_overlay(Some((dial.readout(&live.compose), dial.display_value(&live.compose), dial.max())));
@@ -791,7 +796,7 @@ impl Player {
                 || sought
                 || drained.dial_cycle > 0
                 || drained.dial_delta != 0
-                || drained.codec_cycle > 0
+                || drained.style_cycle > 0
                 || drained.save
                 || drained.toggle_sound
                 || sound_lost
@@ -1105,7 +1110,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let (a, b) = (dir.join("clip-a.ascii"), dir.join("clip-b.ascii"));
-        std::fs::write(dir.join("clip-a.player.toml"), "codec = \"letters\"\nshadow_lift = 64\n")
+        std::fs::write(dir.join("clip-a.player.toml"), "style = \"letters\"\nshadow_lift = 64\n")
             .unwrap();
         (dir, a, b)
     }
@@ -1115,27 +1120,27 @@ mod tests {
         let (dir, a, b) = two_clip_dir("cuts");
         let mut live = LiveSettings::new(None);
         assert!(live.front(0, &a), "first clip fronts");
-        assert_eq!((live.codec, live.compose.shadow_lift, live.status()), (Codec::Letters, 64, "saved"));
+        assert_eq!((live.style, live.compose.shadow_lift, live.status()), (Style::Letters, 64, "saved"));
         assert!(!live.front(0, &a), "same clip again is not a switch");
         assert!(live.front(1, &b));
-        assert_eq!((live.codec, live.compose, live.status()), (Codec::Pixels, ComposeParams::default(), "default"));
+        assert_eq!((live.style, live.compose, live.status()), (Style::Pixels, ComposeParams::default(), "default"));
         let mut info = String::new();
         live.write_info(&mut info, Sound::None);
-        assert_eq!(info, " clip-b   codec: pixels   settings: default   sound: none ");
+        assert_eq!(info, " clip-b   style: pixels   settings: default   sound: none ");
 
         live.cycle(1);
-        assert_eq!((live.codec, live.status()), (Codec::Letters, "s to save"));
+        assert_eq!((live.style, live.status()), (Style::Letters, "s to save"));
         live.front(0, &a);
-        assert_eq!((live.codec, live.compose.shadow_lift), (Codec::Letters, 64));
+        assert_eq!((live.style, live.compose.shadow_lift), (Style::Letters, 64));
         live.cycle(1);
         live.front(1, &b);
-        assert_eq!((live.codec, live.compose.shadow_lift), (Codec::Ascii, 0), "the / pick holds");
+        assert_eq!((live.style, live.compose.shadow_lift), (Style::Ascii, 0), "the / pick holds");
 
         live.save(&b);
         assert_eq!(live.status(), "saved");
         live.front(0, &a);
         live.front(1, &b);
-        assert_eq!(live.saved, Some(VideoSettings { compose: ComposeParams::default(), codec: Codec::Ascii }));
+        assert_eq!(live.saved, Some(VideoSettings { compose: ComposeParams::default(), style: Style::Ascii }));
         assert!(live.problems.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1168,14 +1173,14 @@ mod tests {
     }
 
     #[test]
-    fn codec_flag_beats_saved_until_slash_beats_it() {
+    fn style_flag_beats_saved_until_slash_beats_it() {
         let (dir, a, b) = two_clip_dir("forced");
-        let mut live = LiveSettings::new(Some(Codec::Pixels));
+        let mut live = LiveSettings::new(Some(Style::Pixels));
         live.front(0, &a);
-        assert_eq!((live.codec, live.compose.shadow_lift), (Codec::Pixels, 64), "--codec over saved");
+        assert_eq!((live.style, live.compose.shadow_lift), (Style::Pixels, 64), "--style over saved");
         live.cycle(1);
         live.front(1, &b);
-        assert_eq!(live.codec, Codec::Letters, "/ over --codec, across the cut");
+        assert_eq!(live.style, Style::Letters, "/ over --style, across the cut");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1185,7 +1190,7 @@ mod tests {
         std::fs::write(dir.join("clip-a.player.toml"), "shadow_lift = lots\n").unwrap();
         let mut live = LiveSettings::new(None);
         live.front(0, &a);
-        assert_eq!((live.codec, live.compose, live.status()), (Codec::Pixels, ComposeParams::default(), "unreadable"));
+        assert_eq!((live.style, live.compose, live.status()), (Style::Pixels, ComposeParams::default(), "unreadable"));
         assert_eq!(live.problems.len(), 1);
         assert!(live.problems[0].contains("clip-a.player.toml") && live.problems[0].contains("line 1"), "{:?}", live.problems);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1239,7 +1244,7 @@ mod tests {
         let mut info = String::new();
         for (sound, want) in [(Sound::On, "on"), (Sound::Off, "off"), (Sound::Wait, "wait"), (Sound::None, "none")] {
             live.write_info(&mut info, sound);
-            assert_eq!(info, format!(" clip-a   codec: letters   settings: saved   sound: {want} "));
+            assert_eq!(info, format!(" clip-a   style: letters   settings: saved   sound: {want} "));
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

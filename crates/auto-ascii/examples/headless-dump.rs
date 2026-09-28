@@ -2,13 +2,13 @@
 
 use std::io::Write;
 
-use auto_ascii::{Cell, Codec, Grid, PaletteChoice, RenderSession};
+use auto_ascii::{Cell, Grid, PaletteChoice, RenderSession, Style};
 
 fn usage() -> String {
     format!(
         "usage: headless-dump <asset.ascii | composition.toml> [FRAMES] [COLSxROWS] \
-         [--codec {}] [--palette ascii|unicode|braille] [--from FRAME]",
-        Codec::names("|")
+         [--style {}] [--palette ascii|unicode|braille] [--from FRAME]",
+        Style::names("|")
     )
 }
 
@@ -54,13 +54,13 @@ fn parse_palette(s: &str) -> PaletteChoice {
 }
 
 fn main() -> Result<(), auto_ascii::Error> {
-    let (mut codec, mut palette, mut from) = (Codec::default(), PaletteChoice::Ascii, None);
+    let (mut style, mut palette, mut from) = (Style::default(), PaletteChoice::Ascii, None);
     let mut positional = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| bad());
         match arg.as_str() {
-            "--codec" => codec = Codec::from_name(&value()).unwrap_or_else(|| bad()),
+            "--style" | "--codec" => style = Style::from_name(&value()).unwrap_or_else(|| bad()),
             "--palette" => palette = parse_palette(&value()),
             "--from" => from = Some(value().parse::<u32>().unwrap_or_else(|_| bad())),
             _ => positional.push(arg),
@@ -73,7 +73,7 @@ fn main() -> Result<(), auto_ascii::Error> {
 
     let mut session = open(&path)?;
     session.set_palette(palette);
-    session.set_codec(codec);
+    session.set_style(style);
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();

@@ -2,8 +2,8 @@
 
 This map traces how a video becomes ASCII art in a terminal. It covers the offline factory
 (ffmpeg ingest → feature planes → `.ascii` container), the runtime player (probe → letterbox →
-resample → glyph codec → hysteresis → present), the interactive controls (transport, dials,
-codecs, overlays), compositions, the `auto-ascii` CLI and its library folder, the embedding API,
+resample → glyph style → hysteresis → present), the interactive controls (transport, dials,
+styles, overlays), compositions, the `auto-ascii` CLI and its library folder, the embedding API,
 and the eval/perf gates, and streaming a YouTube link live (flow 17). It doesn't cover the research
 digests under `docs/research/`.
 
@@ -134,7 +134,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - Tap tables are pure integer arithmetic and byte-deterministic across platforms.
   - `reflow_grid` and `HysteresisState::resize` are the only hot-path allocation points, overlay text aside.
 
-### 5. Glyph codecs: features → glyphs (`pixels`, `letters`, `ascii`)
+### 5. Glyph styles: features → glyphs (`pixels`, `letters`, `ascii`)
 - **Does:** turns each cell's features into one glyph plus fg/bg colors. `pixels` (default)
   paints a low-res picture from shade ramps, half-blocks and quadrants. `letters` draws with
   type: characters ordered by ink, ASCII strokes on edges, `█`/`▀▄` only where the picture is
@@ -165,13 +165,13 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   letters' floor applies (blank below `BLACK_FLOOR` 32, a lit cell held down to `FLOOR_HOLD`
   16, on every tier), and floor crossings take at most four. The half, edge and orientation gates retain hysteresis. The player's black
   backdrop (flow 7) puts the unshaded cells on black in any terminal theme.
-- **User:** `/` cycles codecs while playing (`pixels` → `letters` → `ascii`), `--codec
+- **User:** `/` cycles styles while playing (`pixels` → `letters` → `ascii`), `--style
   pixels|letters|ascii` picks one at startup, and `s` saves it for this video (flow 9).
-- **Code:** `crates/auto-ascii-core/src/codec/mod.rs` `GlyphCodec` (trait: `NAME`, `cell`),
-  `Codec` (`ALL`, `next`, `from_name`, `names`), `compose_frame_codec`, and the `registry!` list.
-  `crates/auto-ascii-core/src/codec/pixels.rs` `Pixels` and
-  `crates/auto-ascii-core/src/codec/letters.rs` `Letters`,
-  `crates/auto-ascii-core/src/codec/ascii.rs` `Ascii`. `GlyphCodec::PAD` / `Codec::pad` is the
+- **Code:** `crates/auto-ascii-core/src/style/mod.rs` `GlyphStyle` (trait: `NAME`, `cell`),
+  `Style` (`ALL`, `next`, `from_name`, `names`), `compose_frame_style`, and the `registry!` list.
+  `crates/auto-ascii-core/src/style/pixels.rs` `Pixels` and
+  `crates/auto-ascii-core/src/style/letters.rs` `Letters`,
+  `crates/auto-ascii-core/src/style/ascii.rs` `Ascii`. `GlyphStyle::PAD` / `Style::pad` is the
   letterbox and gap cell. `crates/auto-ascii-term/src/render.rs` `emit_cell` turns
   `attrs::DEFAULT_BG` into SGR 49. The frame loop is
   `crates/auto-ascii-core/src/compose.rs` `compose_frame` / `compose_frame_masked` over
@@ -185,9 +185,9 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     pins.
   - One glyph per cell, priority composition, never blended.
   - Every ASCII-tier glyph is printable ASCII `0x20..=0x7E` (CP437-safe).
-    `crates/auto-ascii-core/tests/codec_props.rs` holds `letters` to its repertoire on every
+    `crates/auto-ascii-core/tests/style_props.rs` holds `letters` to its repertoire on every
     tier.
-  - **The `ascii` rule:** ascii codec: picture cells are printable ASCII 0x20-0x7E, background
+  - **The `ascii` rule:** ascii style: picture cells are printable ASCII 0x20-0x7E, background
     default or a shade within the cap; block glyphs and full-strength backgrounds are allowed
     only in UI overlay cells (HUD text), which use the same big text as pixels/letters. The
     boundary is `pipeline::UiRows`: every overlay painter returns the rows it drew, and
@@ -195,16 +195,16 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     is picture: on any tier or palette it obeys `backing_within_cap` on the colors actually
     sent, reaches `SHADE_FLOOR`, and on 256-color is one of `SHADES_256` in the glyph's hue
     family; 16-color and mono picture cells carry no background SGR, and letterbox pads and
-    gap frames (`Codec::pad`), the enlarge card and every resize in between keep SGR 49.
-    `crates/auto-ascii/tests/codecs.rs` replays the real escape stream through the deck, with
+    gap frames (`Style::pad`), the enlarge card and every resize in between keep SGR 49.
+    `crates/auto-ascii/tests/styles.rs` replays the real escape stream through the deck, with
     overlays off and on, from 1x1 to 1000x300, tracking each printed cell's row against
     `ClipDeck::ui_rows`, and checks that ascii's UI rows equal pixels' and letters' cell for
-    cell; `codec_props.rs` checks `cell_within_cap` on random planes.
+    cell; `style_props.rs` checks `cell_within_cap` on random planes.
   - Cells without `attrs::DEFAULT_BG` paint byte for byte as before, so `pixels` and `letters`
     streams are unchanged.
-  - Adding a codec means one module plus one `registry!` line. The line generates the `Codec`
+  - Adding a style means one module plus one `registry!` line. The line generates the `Style`
     variant, its place in the `/` cycle, its name and its dispatch arm.
-  - Codec design constants (the `letters` and `ascii` ramps, thresholds and color curves) are codec data,
+  - Style design constants (the `letters` and `ascii` ramps, thresholds and color curves) are style data,
     pinned by its tests and goldens. They are not `params.toml` tunables.
 
 ### 6. Temporal stability: hysteresis and resets
@@ -213,7 +213,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   cell): ramp-index hysteresis (`idx_hyst_q8`, a fraction of a ramp step), a dual-threshold edge
   gate (`edge_t_on` / `edge_t_off`, `WAS_EDGE`), an orientation bin with an 8° guard, and the
   quadrant flag (`WAS_QUADRANT`, `quad_e_on` / `quad_e_off`), plus the ASCII candidate
-  tone and settling age (ignored by the other codecs).
+  tone and settling age (ignored by the other styles).
 - **Invariants — every temporal discontinuity resets all per-cell state:**
   - a shot change or shadow-lift change (`crates/auto-ascii/src/pipeline.rs`
     `Player::update_levels`, keyed on `(shot, shadow_lift)`);
@@ -221,7 +221,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - a resize (`HysteresisState::resize` in `reflow_grid`);
   - any change to the compose params, including a dial turn that moves
     (`Player::set_compose_params`; an equal value is a no-op);
-  - a codec change (`Player::set_codec`) or clip switch (`ClipDeck::activate`);
+  - a style change (`Player::set_style`) or clip switch (`ClipDeck::activate`);
   - a backward jump in `RenderSession::render` (`Player::reset_temporal_state`).
   After a reset the next frame is a cold start, identical to seeking straight to that frame.
 
@@ -267,7 +267,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Does:** plays an asset or composition at its own fps with pause, jump and scrub.
 - **User:** `auto-ascii-player <asset|comp.toml>` or `auto-ascii play <clip|composition>`.
   `q`/`Esc`/Ctrl-C quit · space pause · `0`–`9` jump to 0–90% · `←`/`→` ±5 s · `d` / `[` `]`
-  dials · `/` codec · `s` save · `m` sound · `v` controls. Flags: `--loop`, `--fps-cap N`,
+  dials · `/` style · `s` save · `m` sound · `v` controls. Flags: `--loop`, `--fps-cap N`,
   `--seek T`, `--duration-secs S`, `--repaint full|diff`, `--cell-aspect R`, `--no-backdrop`,
   `--mute`, `--no-audio` (feature 16).
 - **Code:** `crates/auto-ascii/src/bin/auto-ascii-player.rs` (clap; argv maps 1:1 onto
@@ -291,11 +291,11 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Does:** retunes the renderer during playback and remembers the result per video.
 - **User:** `d` shows the dial readout and then cycles **shadow lift → edge strength →
   hysteresis**. `[`/`]` turn the selected dial. `s` writes `<name>.player.toml` beside the
-  asset, and the next time that video comes to the front its dials and codec load.
+  asset, and the next time that video comes to the front its dials and style load.
 - **Code:** `crates/auto-ascii/src/player.rs` `Dial` (`ALL`, `label`, `readout`, `step`, `max`,
   `get`, `turn`, `param_key`, `set_param`) and `dial_after_cycle` (the first `d` only reveals the
   readout). `LiveSettings` (`front`, `turn`, `cycle`, `save`, `status`, `write_info`) tracks the fronted
-  clip, a `--codec` override and the session's `/` and dial choices. `crates/auto-ascii/src/settings.rs`
+  clip, a `--style` override and the session's `/` and dial choices. `crates/auto-ascii/src/settings.rs`
   `VideoSettings` (`path_for`, `to_toml`, `parse`, `load`, `save`). Shadow lift bends the NORM
   LUT in `crates/auto-ascii/src/pipeline.rs` `build_levels_lut_lifted` / `apply_shadow_lift`.
 - **Invariants:**
@@ -305,11 +305,13 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     starts at `(floor, default)`.
   - A dial walk retraces its own steps: the top of the scale is a stop, and a press away from it
     counts from the detent above `max()` (`Dial::turn`; `crates/auto-ascii/tests/dials.rs`).
-  - Codec precedence: a `/` press this session beats `--codec`, which beats the saved file,
+  - Style precedence: a `/` press this session beats `--style`, which beats the saved file,
     which beats the default (`pixels`).
   - Saved dials load per clip until a turn sets the full session compose override; it survives
     cuts and wraps. A visible dial readout refreshes when the next clip fronts.
-  - The settings file is optional per key. Unknown keys and unknown codec names are ignored. It
+  - The settings file is optional per key. Unknown keys and unknown style names are ignored.
+    Files saved before the rename say `codec = "..."`; that key still loads, and saves write
+    `style`. It
     is hand-parsed, so the facade takes no TOML dependency for it.
   - An unreadable settings file falls back to defaults under session/CLI overrides, and the
     info row says `unreadable`.
@@ -318,27 +320,27 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Does:** event-driven on-screen chrome. Nothing is always on.
 - **User:** a progress row on seek, resume or pause (a timeline and ` c/N ` clip index in a
   composition). The dial readout. The key-hints row for 3 s at startup and whenever another
-  overlay is up; `v` pins it. The info row above it shows clip name, codec, settings status,
-  sound state and grid size (` Interstellar   codec: ascii   settings: saved   sound: on `,
+  overlay is up; `v` pins it. The info row above it shows clip name, style, settings status,
+  sound state and grid size (` Interstellar   style: ascii   settings: saved   sound: on `,
   then ` 213x58 cells ` right-aligned). Below 160 columns a zoom hint appears (`Cmd - to zoom out: more
   cells, a sharper picture`, `Ctrl` off macOS). From 240×36 on block tiers, overlay text is drawn
-  in big 3×5 block letters. The overlay is UI, not picture, so every codec (`ascii` included)
+  in big 3×5 block letters. The overlay is UI, not picture, so every style (`ascii` included)
   draws it the same, cell for cell.
 - **Code:** `crates/auto-ascii/src/pipeline.rs` `draw_progress_overlay_clips`,
   `draw_dial_overlay`, `draw_hint_overlay` (`hint_line`, which drops items by `HINT_DROP_ORDER`
-  to fit: `s save` first, then `/ codec`, then `m sound`, so 80 columns keep the M6 row), `draw_info_overlay` (`zoom_line`, `ZOOM_HINT_MAX_COLS`), `OverlayScale::for_grid`
+  to fit: `s save` first, then `/ style`, then `m sound`, so 80 columns keep the M6 row), `draw_info_overlay` (`zoom_line`, `ZOOM_HINT_MAX_COLS`), `OverlayScale::for_grid`
   (`BIG_OVERLAY_MIN_COLS`, `BIG_OVERLAY_MIN_ROWS`, `BIG_FONT`, `paint_line`), `UiRows` (the
   rows each painter returns; `Player::ui_rows`, `ClipDeck::ui_rows`), `draw_enlarge_card` (on
-  the codec's pad). Visibility policy
+  the style's pad). Visibility policy
   is `crates/auto-ascii/src/player.rs` `ProgressTimer`, `HintState`, `DIAL_OVERLAY_HIDE_AFTER`
   (2.5 s) and `OVERLAY_HIDE_AFTER` (1 s).
 - **Invariants:**
   - Overlays are drawn over the composed grid and never touch temporal state or the layer mask.
     The parity and console goldens render the bare grid unblessed.
   - Overlay text is printable ASCII (other characters print as `?`). Big text needs `▀▄█`, so
-    the ASCII glyph tier keeps one-cell text at every size, under every codec.
+    the ASCII glyph tier keeps one-cell text at every size, under every style.
   - The overlay's scale, layout, colors and glyphs depend on the grid and glyph tier only, never
-    the codec, and its rows are exactly `UiRows`.
+    the style, and its rows are exactly `UiRows`.
   - Under `pixels` and `letters` the overlays paint byte for byte as before `ascii` existed.
   - The player cannot change the terminal font. The zoom hint is the whole feature
     (`docs/research/zoom.md`).
@@ -394,9 +396,9 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 ### 13. Embedding: `Player` and `RenderSession`
 - **Does:** the published library API.
 - **Code:** `crates/auto-ascii/src/lib.rs` (re-exports `Player`, `PlayerBuilder`,
-  `RenderSession`, `Composition`, `Codec`, `Dial`, `Error`, `Cell`, `Grid`, `Rgb`).
+  `RenderSession`, `Composition`, `Style`, `Dial`, `Error`, `Cell`, `Grid`, `Rgb`).
   `crates/auto-ascii/src/session.rs` `RenderSession` (`open`, `open_composition`, `render`,
-  `set_palette`, `set_font_table`, `set_codec`, `set_cell_aspect`).
+  `set_palette`, `set_font_table`, `set_style`, `set_cell_aspect`).
   `crates/auto-ascii/src/error.rs` `Error`. Examples:
   `crates/auto-ascii/examples/simple-play.rs`, `crates/auto-ascii/examples/embedded-loop.rs`,
   `crates/auto-ascii/examples/headless-dump.rs`.
@@ -416,7 +418,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   `audio` object (`sound`, `clock`, `source`, `device`, `rate`, `channels`, `decoded_secs`,
   `callbacks`, `underruns`, `clock_secs`, `wall_secs`); without it `--sim` never touches audio. `--bench-seek N` reports scrub latency.
   `cargo run --release -p auto-ascii --example headless-dump -- <asset|comp.toml> [FRAMES]
-  [COLSxROWS] [--codec C] [--palette P] [--from F]` prints frames as text.
+  [COLSxROWS] [--style C] [--palette P] [--from F]` prints frames as text.
 - **Code:** `crates/auto-ascii/src/bin/auto-ascii-player.rs` (the `--sim` harness drives
   `ClipDeck` against `SimBackend`) and `crates/auto-ascii/examples/headless-dump.rs`.
 
@@ -526,10 +528,10 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   ASCII and the sound plays through the default output device. Nothing is downloaded or written
   to disk. A centred 0–100% loader, brightening left to right with a travelling shimmer, shows
   while it resolves and buffers, and again while it re-buffers.
-- **User:** `auto-ascii stream <URL|TERMS…> [--codec pixels|letters|ascii] [--palette P]
+- **User:** `auto-ascii stream <URL|TERMS…> [--style pixels|letters|ascii] [--palette P]
   [--max-height 480] [--no-audio] [--cookies-from-browser B] [--sim COLSxROWS:SECONDS
   [--sim-dump PATH]]`. Keys: `q` / `Esc`
-  / `Ctrl-C` quit at any time, `/` cycles the codec. `--sim` runs the whole pipeline (real
+  / `Ctrl-C` quit at any time, `/` cycles the style. `--sim` runs the whole pipeline (real
   network, real ffmpeg, audio into a real-time null sink) against `SimBackend` and prints one JSON
   stats line: id, title, fps, frames rendered and dropped, max drift, samples consumed, loader
   stages, children alive, temp dir removed, exit reason.
@@ -555,7 +557,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
      factory's `FeatureExtractor::process` with online `ShotDetector` cuts. Levels come from the
      open shot's pooled histogram (`ShotDetector::open_levels`).
   4. **Render:** `crates/auto-ascii/src/pipeline.rs` `Player::live` + `load_live` feed the same
-     resample → NORM → `compose_frame_codec` → present path as an asset, with the same hysteresis,
+     resample → NORM → `compose_frame_style` → present path as an asset, with the same hysteresis,
      letterbox and `drain_events` reflow.
   5. **Sync** (`stream/clock.rs`): `AudioClock` is the output's consumed frames over the rate,
      minus cpal's playback-minus-callback latency, interpolated only inside the last consumed
@@ -570,7 +572,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
      `NullSink`.
   7. **Loader** (`stream/loader.rs`): `percent(LoadState)` is the stage map (resolve 0–30, first
      bytes 30–50, buffer fill 50–100) and `Progress` keeps it monotonic. `draw_loader` is a pure
-     grid renderer; `LoaderStyle::for_codec` picks the glyphs.
+     grid renderer; `LoaderStyle::for_style` picks the glyphs.
   8. **Cleanup** (`stream/procs.rs`): `Procs` / `ProcsGuard` own every child in its own process
      group, and `ScratchDir` is the children's private working directory. `Procs::reap` polls
      `try_wait` while the child stays registered, so a quit can still kill a child someone is
@@ -639,7 +641,7 @@ cut), then eight `(p2, p98)` pairs indexed by plane position (`crates/auto-ascii
 **Per-video settings** (`<asset stem>.player.toml`, `crates/auto-ascii/src/settings.rs`):
 
 ```toml
-codec = "letters"
+style = "letters"
 shadow_lift = 64
 edge_t_on = 32
 idx_hyst_q8 = 128
@@ -716,10 +718,10 @@ values = [
 
 | Area | Files |
 |---|---|
-| Engine units + properties | `crates/auto-ascii-core/tests/codec_props.rs`, `crates/auto-ascii-core/tests/compose_props.rs`, `crates/auto-ascii-core/tests/viewport_props.rs`, unit tests in each `crates/auto-ascii-core/src/` module |
+| Engine units + properties | `crates/auto-ascii-core/tests/style_props.rs`, `crates/auto-ascii-core/tests/compose_props.rs`, `crates/auto-ascii-core/tests/viewport_props.rs`, unit tests in each `crates/auto-ascii-core/src/` module |
 | Container | `crates/auto-ascii-format/tests/container.rs` (byte golden), `crates/auto-ascii-format/tests/m1_format.rs` (delta, seek, NORM, hostile input) |
 | Terminal | `crates/auto-ascii-term/tests/m1_tiers.rs`, `crates/auto-ascii-term/tests/tier_goldens.rs`, `crates/auto-ascii-term/tests/sim_diff.rs`, `crates/auto-ascii-term/tests/probe_parser.rs`, `crates/auto-ascii-term/tests/pty_probe.rs`, `crates/auto-ascii-term/tests/pty_restore.rs`, `crates/auto-ascii-term/tests/terminal_identity.rs` |
-| Cell-grid goldens | `crates/auto-ascii-eval/tests/golden_grids.rs` (36 insta snapshots), `crates/auto-ascii/tests/linux_console_golden.rs`, `crates/auto-ascii/tests/pipeline_parity.rs`, `crates/auto-ascii/tests/codecs.rs` (`letters` and `ascii` goldens, the `ascii` escape-stream check) |
+| Cell-grid goldens | `crates/auto-ascii-eval/tests/golden_grids.rs` (36 insta snapshots), `crates/auto-ascii/tests/linux_console_golden.rs`, `crates/auto-ascii/tests/pipeline_parity.rs`, `crates/auto-ascii/tests/styles.rs` (`letters` and `ascii` goldens, the `ascii` escape-stream check) |
 | Sound | `crates/auto-ascii/tests/sound.rs` (`--sim-audio` end to end), unit tests in `crates/auto-ascii/src/audio/` (`tests.rs`, `clock.rs`, `output.rs`, `source.rs`) and the `MediaClock` sync tests in `crates/auto-ascii/src/player.rs`, `crates/auto-ascii/tests/play_with_sound.rs` (the launcher) |
 | Player | `crates/auto-ascii/tests/m1_sim.rs`, `crates/auto-ascii/tests/m3_layers.rs`, `crates/auto-ascii/tests/sim_e2e.rs`, `crates/auto-ascii/tests/scrub_overlay.rs`, `crates/auto-ascii/tests/zoom_overlay.rs`, `crates/auto-ascii/tests/dials.rs`, `crates/auto-ascii/tests/render_session.rs` |
 | Compositions | `crates/auto-ascii/tests/composition.rs`, unit tests in `crates/auto-ascii/src/deck.rs` and `crates/auto-ascii/src/composition.rs` |
@@ -746,22 +748,24 @@ values = [
 ## Agent navigation tips
 
 - **Start here:** `crates/auto-ascii/src/pipeline.rs` `Player::render_grid` is the whole runtime
-  in one function (decode → levels → resample → `compose_frame_codec` → overlays). Then read
+  in one function (decode → levels → resample → `compose_frame_style` → overlays). Then read
   `crates/auto-ascii/src/player.rs` `Player::run` for the interactive loop, and
   `crates/auto-ascii-factory/src/build.rs` `run` for the factory.
 - **"Where does a key do X?"** Keys map in `drain_backend_events` (`crates/auto-ascii/src/pipeline.rs`).
   The meaning is applied in `Player::run` (`crates/auto-ascii/src/player.rs`). `m` is
   `Drained::toggle_sound` → `MediaClock::toggle_mute`. The hint text is
   `hint_line`. A new key touches all three, plus `crates/auto-ascii/tests/scrub_overlay.rs`.
-- **Changing the look** is a codec change (`crates/auto-ascii-core/src/codec/`) or a `[compose]`
+- **Changing the look** is a style change (`crates/auto-ascii-core/src/style/`) or a `[compose]`
   tunable, never an asset change. Expect insta snapshots, `.ansi` tier goldens, the console
   golden and `pipeline_parity` to move for `pixels`. Re-pin deliberately (`CONTRIBUTING.md`).
 - **Changing the factory** moves `FIXTURE_ASSET_SHA` in
   `crates/auto-ascii-factory/tests/m2_params_eval.rs` and invalidates every eval cache entry.
 - **Two players:** `pipeline::Player` (per-clip frame pipeline, no clock, no tty) is not
   `auto_ascii::Player` (the blocking terminal session that owns a `ClipDeck` of them).
-- **Two "codecs":** `auto_ascii_core::Codec` (glyph codecs, render time) is not the container's
-  `header::codec` (zstd). The player links no *video* codecs.
+- **Styles are not codecs:** `auto_ascii_core::Style` (glyph styles, render time; `Codec` until
+  the rename, kept one release as a deprecated alias along with `--codec` and the `codec =`
+  settings key) is unrelated to the container's `header::codec` (zstd). The player links no
+  *video* codecs.
 - **Don't "fix":** the player has no always-on chrome (overlays are event-driven), there is no
   SSH/tmux/throughput tuning, `WriterOptions::default()` stays at zstd 19 while the factory uses
   15, and `pipeline` stays `#[doc(hidden)]`. All four are deliberate (`CONTRIBUTING.md`).

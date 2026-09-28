@@ -40,7 +40,7 @@ in a Linux console, at 320×90 in a GPU terminal, and inside your own renderer.
        .:               "7FPooeeSoa,
 ```
 
-<sub>One frame of Apple's "1984" ad on a 90×26 grid, `letters` codec, colors
+<sub>One frame of Apple's "1984" ad on a 90×26 grid, `letters` style, colors
 dropped (`headless-dump` example). In a terminal every cell also carries the
 source's color.</sub>
 
@@ -107,12 +107,12 @@ container's header and chunks and verifies every CRC.
 | `←` / `→` | seek back / forward 5 s |
 | `d` | show the dial readout, then cycle **shadow lift → edge strength → hysteresis** |
 | `[` / `]` | turn the selected dial down / up |
-| `/` | cycle the glyph codec (`pixels` → `letters` → `ascii`) |
-| `s` | save this video's dials and codec |
+| `/` | cycle the glyph style (`pixels` → `letters` → `ascii`) |
+| `s` | save this video's dials and style |
 | `m` | turn the sound on / off |
 | `v` | pin or hide the controls overlay |
 
-**Glyph codecs** decide how a cell becomes a glyph. `pixels` (the default)
+**Glyph styles** decide how a cell becomes a glyph. `pixels` (the default)
 paints a low-resolution picture from shade ramps, half-blocks and quadrants.
 `letters` draws with type: printable characters ordered by ink, ASCII strokes
 on edges, and blocks only where the picture is lit (`█` for near-white, `▀▄`
@@ -120,7 +120,7 @@ for a bright half). On truecolor and 256-color terminals each character sits
 on a dim tint of its cell's colour, so faces and midtones hold their shape;
 16-color and mono terminals keep a black background.
 `ascii` is letters with only printable ASCII and no blocks in the picture
-(the controls overlay is the same as in the other codecs). Behind each
+(the controls overlay is the same as in the other styles). Behind each
 character it paints a dim shade of the character's own colour, the way
 letters does, with letters' exact current-tone foreground: each channel is
 clipped at 255, so highlights bleach toward white exactly where letters' do.
@@ -164,19 +164,19 @@ flicker against responsiveness: 0..255 in steps of 16, recommended default
 128 (the default was 160 before, so pixels and letters hold glyphs a little
 less at default, and are unchanged at any equal value). Values above 128
 are allowed for fast-paced videos or video types that benefit from high
-hysteresis, but can visibly drift or smear. Every codec keeps it, since switching it off
+hysteresis, but can visibly drift or smear. Every style keeps it, since switching it off
 raises glyph changes markedly; see
 [hysteresis measurements](docs/HYSTERESIS-DECISION.md). The readout says
 when a dial is at its floor, its default or its top. Nothing is rebuilt: the same asset re-renders
-at the new setting. `s` saves the dials and codec beside the asset as
+at the new setting. `s` saves the dials and style beside the asset as
 `<name>.player.toml`, and they load the next time that video plays.
 
 **The controls overlay** (`v`, and briefly at start-up) lists the keys. Above
-them is the clip name, the active codec, whether the settings are saved, the
+them is the clip name, the active style, whether the settings are saved, the
 sound (`on`, `off`, `wait` while the audio output is stalled or being
 re-opened, or `none` when there is nothing to play) and the grid
 size (`213x58 cells`), e.g.
-` Interstellar   codec: ascii   settings: saved   sound: on `.
+` Interstellar   style: ascii   settings: saved   sound: on `.
 
 **Sound.** The player plays the asset's soundtrack itself. It looks beside the
 asset for `<name>.m4a`, then `<name>.mp4`, then `<name>` with `.aac`, `.mp3`,
@@ -232,7 +232,7 @@ player can't change the font itself
 ([docs/research/zoom.md](docs/research/zoom.md)), so below 160 columns the
 overlay says so. At 240 or more columns and 36 or more rows, on a non-ASCII
 tier, the overlay text is drawn in big block letters so it stays readable.
-Every codec draws the same overlay, `ascii` included.
+Every style draws the same overlay, `ascii` included.
 
 **The `ascii` rule.** Picture cells are printable ASCII 0x20-0x7E, background
 default or a shade within the cap; block glyphs and full-strength backgrounds
@@ -241,7 +241,7 @@ pixels/letters.
 
 Useful flags:
 - `--loop`, `--seek 1:30`, `--fps-cap 30`
-- `--codec pixels|letters|ascii`
+- `--style pixels|letters|ascii` (`--codec` still works for one release)
 - `--mute` (start with the sound off), `--no-audio` (no sound at all)
 - `--palette ascii|unicode|braille`, `--tier truecolor|256|16|mono`
 - `--no-query` (skip capability queries)
@@ -297,7 +297,7 @@ auto-ascii stream "https://www.youtube.com/watch?v=jNQXAC9IVRw"   # a video (a &
 auto-ascii stream "https://www.youtube.com/playlist?list=PL…"     # its first video
 auto-ascii stream "https://www.youtube.com/@jawed"                # a channel's newest video
 auto-ascii stream me at the zoo                                    # the first search result
-auto-ascii stream <link> --codec letters --max-height 720 --no-audio
+auto-ascii stream <link> --style letters --max-height 720 --no-audio
 auto-ascii stream <link> --sim 120x40:25 [--sim-dump frames.txt]  # headless, one JSON line
 auto-ascii stream <link> --cookies-from-browser firefox            # opt in to your browser's cookies
 ```
@@ -307,8 +307,8 @@ brightens from left to right, with a soft band sweeping across it, and says
 `loading...` underneath. The percentage tracks real stages: yt-dlp running,
 first video found, stream URLs ready, ffmpeg started, first audio and first
 video bytes, then the buffer filling. Playback starts at 100%. `q`, `Esc` or
-`Ctrl-C` quits at any point, even while loading, and `/` cycles the glyph codec.
-The default codec is `ascii`, and `--palette` works as it does for the player.
+`Ctrl-C` quits at any point, even while loading, and `/` cycles the glyph style.
+The default style is `ascii`, and `--palette` works as it does for the player.
 
 How it works:
 - **Resolve.** yt-dlp resolves the input. A playlist, channel or search is
@@ -438,7 +438,7 @@ overrides and ranks the combinations; the grid format is in the feature map.
 | path | what |
 |---|---|
 | `crates/auto-ascii` | the public library + the `auto-ascii-player` binary |
-| `crates/auto-ascii-core` | pure engine: viewport, resampler, glyph codecs, palettes, hysteresis |
+| `crates/auto-ascii-core` | pure engine: viewport, resampler, glyph styles, palettes, hysteresis |
 | `crates/auto-ascii-format` | the ASCI container (zstd + temporal delta, fast seek) |
 | `crates/auto-ascii-term` | `Backend` trait, ANSI backend, capability probe, simulator |
 | `crates/auto-ascii-factory` | the offline factory (lib + bin), eval and sweep drivers |

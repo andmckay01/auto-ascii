@@ -1,7 +1,7 @@
-//! Pixels glyph codec and per-cell layer selection.
+//! Pixels glyph style and per-cell layer selection.
 
 use crate::cell::{Cell, Rgb};
-use crate::codec::GlyphCodec;
+use crate::style::GlyphStyle;
 use crate::compose::{CellInputs, ComposeParams, boost, h_flags, layer, shade};
 use crate::hysteresis::{CellState, cell_flags, edge_gate, hysteresis_idx};
 use crate::orient::{bin_with_guard, coherence_at_least, debias};
@@ -12,7 +12,7 @@ use crate::palette::{
 
 pub struct Pixels;
 
-impl GlyphCodec for Pixels {
+impl GlyphStyle for Pixels {
     const NAME: &'static str = "pixels";
 
     #[inline]

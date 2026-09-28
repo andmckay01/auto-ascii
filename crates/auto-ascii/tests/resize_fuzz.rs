@@ -216,7 +216,7 @@ fn run_storm(ops: &[Op]) -> Result<(), TestCaseError> {
                 player.set_progress_overlay(on);
                 player.set_dial_overlay(on.then_some(("edge on", 32, 255)));
                 player.set_hint_overlay(on);
-                player.set_info_overlay(on.then_some(" clip   codec: pixels   settings: default "));
+                player.set_info_overlay(on.then_some(" clip   style: pixels   settings: default "));
             }
         }
     }

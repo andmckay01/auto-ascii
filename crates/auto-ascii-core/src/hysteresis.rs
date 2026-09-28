@@ -15,7 +15,9 @@ pub mod cell_flags {
     pub const WAS_EDGE: u8 = 1;
     pub const WAS_QUADRANT: u8 = 1 << 1;
     pub const SHARED_MASK: u8 = WAS_EDGE | WAS_QUADRANT;
-    pub const CODEC_PRIVATE_MASK: u8 = !SHARED_MASK;
+    pub const STYLE_PRIVATE_MASK: u8 = !SHARED_MASK;
+    #[deprecated(note = "renamed to `STYLE_PRIVATE_MASK`")]
+    pub const CODEC_PRIVATE_MASK: u8 = STYLE_PRIVATE_MASK;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

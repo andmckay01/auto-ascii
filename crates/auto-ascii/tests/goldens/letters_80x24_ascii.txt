@@ -1,4 +1,4 @@
-letters codec, Ascii tier, truecolor, 80x24, frame 5
+letters style, Ascii tier, truecolor, 80x24, frame 5
 |                     ................::::::::::::::;;;;;;;;;;;;;+++++++++++++ccc|
 |        X_____________________________________________________________X++++ccccc|
 |        |MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM8|+ccccccc|

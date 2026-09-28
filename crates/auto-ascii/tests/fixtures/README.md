@@ -14,7 +14,7 @@ Y/E/Ex/Ey use the core area resampler; H and RGB565 C use nearest samples
 (C at half size). Frame timing, aspect ratio, shot levels and cut boundaries
 are retained, rebased to frame zero. The containers use temporal deltas,
 a keyframe interval of 60, and zstd level 9. Metadata records the source
-and frame range. No glyph, palette, codec output or expected result is baked in.
+and frame range. No glyph, palette, style output or expected result is baked in.
 
 `ascii_temporal.rs` plays 121 Architect frames at five zoom sizes. At the
 last frame, any-cell differences from cold measure 16.0–19.5%; the limit is
