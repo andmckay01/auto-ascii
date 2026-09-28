@@ -397,31 +397,21 @@ impl RepaintGate {
     }
 }
 
-const HINT_STARTUP_SHOW_FOR: Duration = Duration::from_millis(3000);
-
 #[derive(Debug)]
 struct HintState {
-    startup_until: Instant,
-    sticky: bool,
+    pinned: bool,
 }
 
 impl HintState {
-    fn new(now: Instant) -> HintState {
-        HintState { startup_until: now + HINT_STARTUP_SHOW_FOR, sticky: false }
+    fn new() -> HintState {
+        HintState { pinned: true }
     }
 
-    fn visible(&mut self, now: Instant, toggle: bool, overlays_up: bool) -> bool {
-        let in_startup = now < self.startup_until;
-        if !toggle {
-            return self.sticky || overlays_up || in_startup;
+    fn visible(&mut self, toggle: bool, overlays_up: bool) -> bool {
+        if toggle {
+            self.pinned = !self.pinned;
         }
-        self.startup_until = now;
-        self.sticky = if self.sticky {
-            false
-        } else {
-            !in_startup
-        };
-        self.sticky || overlays_up
+        self.pinned || overlays_up
     }
 }
 
@@ -679,7 +669,7 @@ impl Player {
         deck.set_style(live.style);
         let mut note_until: Option<Instant> = None;
         let mut info = String::new();
-        let mut hints = HintState::new(t0);
+        let mut hints = HintState::new();
         let mut gate = RepaintGate::default();
         let mut presented: Option<u64> = None;
         let (mut was_progress, mut was_hints) = (false, false);
@@ -754,7 +744,7 @@ impl Player {
                 progress.visible(Instant::now(), sought || resumed, clock.paused());
             deck.set_progress_overlay(show_progress);
             let overlays_up = show_progress || dial_until.is_some() || note_until.is_some();
-            let show_hints = hints.visible(Instant::now(), drained.toggle_hints, overlays_up);
+            let show_hints = hints.visible(drained.toggle_hints, overlays_up);
             deck.set_hint_overlay(show_hints);
             if let Some(dur) = self.cfg.duration_secs
                 && t0.elapsed().as_secs_f64() >= dur
@@ -945,53 +935,25 @@ mod tests {
     }
 
     #[test]
-    fn hint_row_shows_at_start_up_then_rides_the_overlays() {
-        let t0 = Instant::now();
-        let mut hints = HintState::new(t0);
-
-        assert!(hints.visible(t0, false, false), "hints show at start-up");
-        let last = t0 + HINT_STARTUP_SHOW_FOR - Duration::from_millis(1);
-        assert!(hints.visible(last, false, false), "still up inside the window");
-        assert!(!hints.visible(t0 + HINT_STARTUP_SHOW_FOR, false, false), "window lapses");
-
-        let late = t0 + HINT_STARTUP_SHOW_FOR + Duration::from_secs(60);
-        assert!(hints.visible(late, false, true), "rides with a visible overlay");
-        assert!(!hints.visible(late, false, false), "and leaves with it");
-
-        assert!(hints.visible(late, true, false), "v pins the row open");
-        assert!(hints.visible(late, false, false), "and it stays pinned");
-        assert!(!hints.visible(late, true, false), "a second v unpins it");
+    fn hint_row_is_pinned_at_start_up_until_v() {
+        let mut hints = HintState::new();
+        assert!(hints.visible(false, false), "the controls show at start-up");
+        assert!(hints.visible(false, false), "and stay up with nothing else on screen");
+        assert!(!hints.visible(true, false), "v hides them");
+        assert!(!hints.visible(false, false), "and they stay hidden");
+        assert!(hints.visible(false, true), "an overlay pulls the row up");
+        assert!(!hints.visible(false, false), "and it leaves with the overlay");
+        assert!(hints.visible(true, false), "the next v pins it again");
+        assert!(hints.visible(false, false), "and it stays pinned");
     }
 
     #[test]
-    fn hint_press_dismisses_the_start_up_row_and_pins_otherwise() {
-        let t0 = Instant::now();
-        let mut hints = HintState::new(t0);
-        assert!(hints.visible(t0, false, false), "the start-up row is up");
-        assert!(!hints.visible(t0, true, false), "v during start-up dismisses it");
-        let tick = t0 + Duration::from_millis(1);
-        assert!(!hints.visible(tick, false, false), "and the window does not bring it back");
-        assert!(hints.visible(tick, true, false), "the next v summons it again");
-
-        let mut hints = HintState::new(t0);
-        let late = t0 + HINT_STARTUP_SHOW_FOR + Duration::from_secs(60);
-        assert!(hints.visible(late, false, true), "an overlay pulls the row up");
-        assert!(hints.visible(late, true, true), "v pins it while the bar is up");
-        assert!(hints.visible(late, false, false), "and it stays after the bar goes");
-        assert!(!hints.visible(late, true, false), "the next press unpins");
-    }
-
-    #[test]
-    fn hints_can_be_pinned_while_the_progress_row_is_up() {
-        let t0 = Instant::now();
-        let mut hints = HintState::new(t0);
-        let late = t0 + HINT_STARTUP_SHOW_FOR + Duration::from_secs(60);
-        assert!(hints.visible(late, true, true), "v pins during a pause");
-        assert!(hints.visible(late, false, true), "and stays pinned");
-        assert!(hints.visible(late, true, true), "a second v unpins");
-        assert!(!hints.visible(late, false, false), "gone once the bar goes");
-        assert!(hints.visible(late, true, false), "v pins with nothing up");
-        assert!(hints.visible(late, false, false), "and it stays");
+    fn hints_can_be_toggled_while_the_progress_row_is_up() {
+        let mut hints = HintState::new();
+        assert!(hints.visible(true, true), "v unpins during a pause, the bar keeps the row up");
+        assert!(!hints.visible(false, false), "gone once the bar goes");
+        assert!(hints.visible(true, true), "v pins during a pause");
+        assert!(hints.visible(false, false), "and it stays after the bar goes");
     }
 
     #[test]
@@ -1123,24 +1085,24 @@ mod tests {
         assert_eq!((live.style, live.compose.shadow_lift, live.status()), (Style::Letters, 64, "saved"));
         assert!(!live.front(0, &a), "same clip again is not a switch");
         assert!(live.front(1, &b));
-        assert_eq!((live.style, live.compose, live.status()), (Style::Pixels, ComposeParams::default(), "default"));
+        assert_eq!((live.style, live.compose, live.status()), (Style::Ascii, ComposeParams::default(), "default"));
         let mut info = String::new();
         live.write_info(&mut info, Sound::None);
-        assert_eq!(info, " clip-b   style: pixels   settings: default   sound: none ");
+        assert_eq!(info, " clip-b   style: ascii   settings: default   sound: none ");
 
         live.cycle(1);
-        assert_eq!((live.style, live.status()), (Style::Letters, "s to save"));
+        assert_eq!((live.style, live.status()), (Style::Pixels, "s to save"));
         live.front(0, &a);
-        assert_eq!((live.style, live.compose.shadow_lift), (Style::Letters, 64));
+        assert_eq!((live.style, live.compose.shadow_lift), (Style::Pixels, 64), "the / pick beats saved");
         live.cycle(1);
         live.front(1, &b);
-        assert_eq!((live.style, live.compose.shadow_lift), (Style::Ascii, 0), "the / pick holds");
+        assert_eq!((live.style, live.compose.shadow_lift), (Style::Letters, 0), "the / pick holds");
 
         live.save(&b);
         assert_eq!(live.status(), "saved");
         live.front(0, &a);
         live.front(1, &b);
-        assert_eq!(live.saved, Some(VideoSettings { compose: ComposeParams::default(), style: Style::Ascii }));
+        assert_eq!(live.saved, Some(VideoSettings { compose: ComposeParams::default(), style: Style::Letters }));
         assert!(live.problems.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1190,7 +1152,7 @@ mod tests {
         std::fs::write(dir.join("clip-a.player.toml"), "shadow_lift = lots\n").unwrap();
         let mut live = LiveSettings::new(None);
         live.front(0, &a);
-        assert_eq!((live.style, live.compose, live.status()), (Style::Pixels, ComposeParams::default(), "unreadable"));
+        assert_eq!((live.style, live.compose, live.status()), (Style::Ascii, ComposeParams::default(), "unreadable"));
         assert_eq!(live.problems.len(), 1);
         assert!(live.problems[0].contains("clip-a.player.toml") && live.problems[0].contains("line 1"), "{:?}", live.problems);
         let _ = std::fs::remove_dir_all(&dir);

@@ -43,6 +43,7 @@ fn ascii_startup_matches_pixels_then_style_cycle() {
         direct.set_style(Style::Ascii);
         direct.set_size(cols, rows);
         let mut cycled = ClipDeck::new(vec![path.clone()], cfg);
+        cycled.set_style(Style::Pixels);
         cycled.set_size(cols, rows);
         let mut backend = SimBackend::new(cols, rows);
         for f in 0..20 {

@@ -162,6 +162,8 @@ fn tier_256_emits_only_indexed_sgr() {
         "80x24:3",
         "--sim-tier",
         "256",
+        "--style",
+        "pixels",
         "--sim-dump",
         dump.0.to_str().unwrap(),
     ]);
@@ -284,6 +286,8 @@ fn norm_levels_apply_per_shot_at_runtime() {
         asset.0.to_str().unwrap(),
         "--sim",
         "40x12:4",
+        "--style",
+        "pixels",
         "--sim-dump",
         dump.0.to_str().unwrap(),
     ]);

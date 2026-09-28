@@ -2,7 +2,7 @@
 
 use std::io::Cursor;
 
-use auto_ascii::Dial;
+use auto_ascii::{Dial, Style};
 use auto_ascii::pipeline::Player;
 use auto_ascii_core::ramp::ASCII_BASE_FINE;
 use auto_ascii_core::{Cell, ColorDepth, ComposeParams, GlyphTier, layer};
@@ -24,8 +24,11 @@ fn meta() -> Meta {
 }
 
 fn player(bytes: &[u8]) -> Player<'_> {
-    Player::new(AsciiReader::open(bytes).unwrap(), 2.0, true, ColorDepth::True, GlyphTier::Ascii)
-        .unwrap()
+    let mut p =
+        Player::new(AsciiReader::open(bytes).unwrap(), 2.0, true, ColorDepth::True, GlyphTier::Ascii)
+            .unwrap();
+    p.set_style(Style::Pixels);
+    p
 }
 
 fn dial_asset() -> Vec<u8> {

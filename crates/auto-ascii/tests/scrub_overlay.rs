@@ -1,3 +1,4 @@
+use auto_ascii::Style;
 use auto_ascii::pipeline::Player;
 use auto_ascii_core::{ColorDepth, GlyphTier};
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
@@ -5,8 +6,11 @@ use auto_ascii_format::AsciiReader;
 use auto_ascii_term::{Event, Key, SimBackend};
 
 fn player(bytes: &[u8], repaint_full: bool) -> Player<'_> {
-    Player::new(AsciiReader::open(bytes).unwrap(), 2.0, repaint_full, ColorDepth::True, GlyphTier::Ascii)
-        .unwrap()
+    let mut p =
+        Player::new(AsciiReader::open(bytes).unwrap(), 2.0, repaint_full, ColorDepth::True, GlyphTier::Ascii)
+            .unwrap();
+    p.set_style(Style::Pixels);
+    p
 }
 
 fn grid_row(p: &Player<'_>, row: u16) -> String {

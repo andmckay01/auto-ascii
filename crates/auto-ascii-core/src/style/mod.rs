@@ -30,7 +30,6 @@ macro_rules! registry {
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
         pub enum Style {
             $(#[$doc])*
-            #[default]
             $first,
             $($(#[$vdoc])* $variant,)*
         }
@@ -85,6 +84,7 @@ macro_rules! registry {
 registry! {
     Pixels => pixels::Pixels,
     Letters => letters::Letters,
+    #[default]
     Ascii => ascii::Ascii,
 }
 
@@ -108,8 +108,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_is_complete_and_default_first() {
-        assert_eq!(Style::ALL[0], Style::default(), "the default leads the cycle");
+    fn registry_is_complete_and_the_default_is_ascii() {
+        assert_eq!(Style::default(), Style::Ascii);
+        assert!(Style::ALL.contains(&Style::default()), "the default is in the cycle");
         for (i, a) in Style::ALL.iter().enumerate() {
             assert!(Style::ALL[i + 1..].iter().all(|b| b != a), "{a:?} listed twice");
         }
@@ -137,14 +138,14 @@ mod tests {
 
     #[test]
     fn next_cycles_through_all_and_wraps() {
-        let mut c = Style::default();
+        let mut c = Style::ALL[0];
         let mut seen = Vec::new();
         for _ in 0..Style::ALL.len() {
             seen.push(c);
             c = c.next();
         }
         assert_eq!(seen, Style::ALL.to_vec(), "one press per style, in registry order");
-        assert_eq!(c, Style::default(), "and back to the start");
+        assert_eq!(c, Style::ALL[0], "and back to the start");
         assert_eq!(Style::ALL, [Style::Pixels, Style::Letters, Style::Ascii]);
         assert_eq!(Style::Pixels.next(), Style::Letters);
         assert_eq!(Style::Letters.next(), Style::Ascii);

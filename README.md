@@ -110,16 +110,16 @@ container's header and chunks and verifies every CRC.
 | `/` | cycle the glyph style (`pixels` → `letters` → `ascii`) |
 | `s` | save this video's dials and style |
 | `m` | turn the sound on / off |
-| `v` | pin or hide the controls overlay |
+| `v` | hide or show the controls overlay |
 
-**Glyph styles** decide how a cell becomes a glyph. `pixels` (the default)
+**Glyph styles** decide how a cell becomes a glyph. `pixels`
 paints a low-resolution picture from shade ramps, half-blocks and quadrants.
 `letters` draws with type: printable characters ordered by ink, ASCII strokes
 on edges, and blocks only where the picture is lit (`█` for near-white, `▀▄`
 for a bright half). On truecolor and 256-color terminals each character sits
 on a dim tint of its cell's colour, so faces and midtones hold their shape;
 16-color and mono terminals keep a black background.
-`ascii` is letters with only printable ASCII and no blocks in the picture
+`ascii` (the default) is letters with only printable ASCII and no blocks in the picture
 (the controls overlay is the same as in the other styles). Behind each
 character it paints a dim shade of the character's own colour, the way
 letters does, with letters' exact current-tone foreground: each channel is
@@ -171,7 +171,7 @@ when a dial is at its floor, its default or its top. Nothing is rebuilt: the sam
 at the new setting. `s` saves the dials and style beside the asset as
 `<name>.player.toml`, and they load the next time that video plays.
 
-**The controls overlay** (`v`, and briefly at start-up) lists the keys. Above
+**The controls overlay** (up from start-up until `v` hides it) lists the keys. Above
 them is the clip name, the active style, whether the settings are saved, the
 sound (`on`, `off`, `wait` while the audio output is stalled or being
 re-opened, or `none` when there is nothing to play) and the grid
@@ -241,7 +241,7 @@ pixels/letters.
 
 Useful flags:
 - `--loop`, `--seek 1:30`, `--fps-cap 30`
-- `--style pixels|letters|ascii` (`--codec` still works for one release)
+- `--style pixels|letters|ascii` (default `ascii`; `--codec` still works for one release)
 - `--mute` (start with the sound off), `--no-audio` (no sound at all)
 - `--palette ascii|unicode|braille`, `--tier truecolor|256|16|mono`
 - `--no-query` (skip capability queries)

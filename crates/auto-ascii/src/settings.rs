@@ -179,10 +179,10 @@ mod tests {
     }
 
     #[test]
-    fn a_file_without_style_defaults_to_pixels() {
+    fn a_file_without_style_defaults_to_ascii() {
         let old = "shadow_lift = 64\nedge_t_on = 40\nidx_hyst_q8 = 96\n";
         let s = VideoSettings::parse(old).unwrap();
-        assert_eq!(s.style, Style::Pixels);
+        assert_eq!(s.style, Style::Ascii);
         assert_eq!(
             (s.compose.shadow_lift, s.compose.edge_t_on, s.compose.idx_hyst_q8),
             (64, 40, 96)
@@ -194,7 +194,7 @@ mod tests {
     fn unknown_keys_and_styles_are_ignored_but_bad_values_are_not() {
         let fwd = "# newer build\nstyle = \"hieroglyphs\"\nsparkle = 9\nshadow_lift = 16\n";
         let s = VideoSettings::parse(fwd).unwrap();
-        assert_eq!((s.style, s.compose.shadow_lift), (Style::Pixels, 16));
+        assert_eq!((s.style, s.compose.shadow_lift), (Style::Ascii, 16));
         assert_eq!(VideoSettings::parse("style = letters").unwrap().style, Style::Letters);
         for bad in ["shadow_lift = 300", "shadow_lift = x", "shadow_lift"] {
             let e = VideoSettings::parse(bad).unwrap_err();
@@ -212,9 +212,9 @@ mod tests {
         assert_eq!(s.style, Style::Letters);
         assert_eq!((s.compose.shadow_lift, s.compose.edge_t_on, s.compose.idx_hyst_q8), (64, 40, 96));
         let old = VideoSettings::parse("shadow_lift = 64 # old file\nfuture = 1 # ignored").unwrap();
-        assert_eq!((old.style, old.compose.shadow_lift), (Style::Pixels, 64));
+        assert_eq!((old.style, old.compose.shadow_lift), (Style::Ascii, 64));
         assert_eq!(VideoSettings::parse("style = 'letters' # literal").unwrap().style, Style::Letters);
-        assert_eq!(VideoSettings::parse("style = \"letters#future\" # unknown").unwrap().style, Style::Pixels);
+        assert_eq!(VideoSettings::parse("style = \"letters#future\" # unknown").unwrap().style, Style::Ascii);
         for value in [r#""a # value""#, r#"'a # value'"#, r#""a \" # value""#, r#""a \\""#] {
             let line = format!("future = {value} # comment");
             assert_eq!(without_comment(&line).trim_end(), format!("future = {value}"));

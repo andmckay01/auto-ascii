@@ -186,6 +186,7 @@ fn style_switch_is_a_cold_start_and_pixels_comes_back_exactly() {
     for tier in [GlyphTier::Ascii, GlyphTier::UnicodeBlocks] {
         let (mut b1, mut b2) = (SimBackend::new(80, 24), SimBackend::new(80, 24));
         let mut p = player(&asset, tier);
+        p.set_style(Style::Pixels);
         p.reflow(&mut b1, 80, 24);
         let pixels = render(&mut p, &mut b1, 3);
 
@@ -202,6 +203,7 @@ fn style_switch_is_a_cold_start_and_pixels_comes_back_exactly() {
         p.set_style(Style::Pixels);
         p.render_present(&mut b1, 3).unwrap();
         let mut cold = player(&asset, tier);
+        cold.set_style(Style::Pixels);
         cold.reflow(&mut b2, 80, 24);
         cold.render_present(&mut b2, 3).unwrap();
         assert_eq!(p.grid().as_slice(), cold.grid().as_slice(), "{tier:?}: pixels restored");
@@ -364,7 +366,8 @@ fn render_session_selects_the_style() {
     let path = std::env::temp_dir().join(format!("auto-ascii-styles-session-{}.ascii", std::process::id()));
     std::fs::write(&path, full_asset()).unwrap();
     let mut s = RenderSession::open(&path).unwrap();
-    assert_eq!(s.style(), Style::Pixels);
+    assert_eq!(s.style(), Style::Ascii);
+    s.set_style(Style::Pixels);
     let pixels = s.render(2, 100, 30).unwrap().as_slice().to_vec();
     s.set_style(Style::Letters);
     let letters = s.render(3, 100, 30).unwrap().as_slice().to_vec();

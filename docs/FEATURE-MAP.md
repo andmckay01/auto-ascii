@@ -135,13 +135,13 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - `reflow_grid` and `HysteresisState::resize` are the only hot-path allocation points, overlay text aside.
 
 ### 5. Glyph styles: features → glyphs (`pixels`, `letters`, `ascii`)
-- **Does:** turns each cell's features into one glyph plus fg/bg colors. `pixels` (default)
+- **Does:** turns each cell's features into one glyph plus fg/bg colors. `pixels`
   paints a low-res picture from shade ramps, half-blocks and quadrants. `letters` draws with
   type: characters ordered by ink, ASCII strokes on edges, `█`/`▀▄` only where the picture is
   lit. On truecolor and 256-color it sets each cell on a dim tint of its own colour
   (`PaletteSet::bg_tint`), so midtones and faces keep their shape at pixels' brightness, and
   holds glyphs longer (a wider tone deadband and a floor hold) since the tint carries the tone.
-  On 16-color and mono it keeps a black background and the narrower deadband. `ascii` is
+  On 16-color and mono it keeps a black background and the narrower deadband. `ascii` (default) is
   letters without blocks: printable ASCII on every tier and palette, over a capped background
   shade on truecolor and 256-color. The shade is letters' tint of the current tone, held to
   `backing_within_cap`: no channel above `SHADE_CEIL` (154), at most `SHADE_CONTRAST_Q8`/256
@@ -306,7 +306,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - A dial walk retraces its own steps: the top of the scale is a stop, and a press away from it
     counts from the detent above `max()` (`Dial::turn`; `crates/auto-ascii/tests/dials.rs`).
   - Style precedence: a `/` press this session beats `--style`, which beats the saved file,
-    which beats the default (`pixels`).
+    which beats the default (`ascii`; also the fallback for an unknown or missing
+    `style`).
   - Saved dials load per clip until a turn sets the full session compose override; it survives
     cuts and wraps. A visible dial readout refreshes when the next clip fronts.
   - The settings file is optional per key. Unknown keys and unknown style names are ignored.
@@ -317,10 +318,10 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     info row says `unreadable`.
 
 ### 10. Overlays: progress, hints, info row, zoom hint, big text
-- **Does:** event-driven on-screen chrome. Nothing is always on.
+- **Does:** event-driven on-screen chrome. Only the controls start on, and `v` hides them.
 - **User:** a progress row on seek, resume or pause (a timeline and ` c/N ` clip index in a
-  composition). The dial readout. The key-hints row for 3 s at startup and whenever another
-  overlay is up; `v` pins it. The info row above it shows clip name, style, settings status,
+  composition). The dial readout. The key-hints row from startup until `v` hides it, and whenever another
+  overlay is up; the next `v` pins it again. The info row above it shows clip name, style, settings status,
   sound state and grid size (` Interstellar   style: ascii   settings: saved   sound: on `,
   then ` 213x58 cells ` right-aligned). Below 160 columns a zoom hint appears (`Cmd - to zoom out: more
   cells, a sharper picture`, `Ctrl` off macOS). From 240×36 on block tiers, overlay text is drawn

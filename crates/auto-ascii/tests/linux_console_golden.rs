@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use auto_ascii::pipeline::{Player, color_depth};
-use auto_ascii::{Cell, Grid, PaletteChoice};
+use auto_ascii::{Cell, Grid, PaletteChoice, Style};
 use auto_ascii_eval::fixtures::{Fixture, build_fixture};
 use auto_ascii_format::AsciiReader;
 use auto_ascii_term::{
@@ -47,6 +47,7 @@ fn console_grids(fixture: Fixture, frames: &[u32]) -> Vec<Grid<Cell>> {
         glyph_tier,
     )
     .expect("player over the fixture");
+    player.set_style(Style::Pixels);
     let mut backend = SimBackend::new(COLS, ROWS);
     backend.set_caps(caps);
     player.reflow(&mut backend, COLS, ROWS);
