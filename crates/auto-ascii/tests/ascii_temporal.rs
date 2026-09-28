@@ -210,3 +210,33 @@ fn ascii_toggle_rate_is_bounded_on_techno_6() {
 fn ascii_toggle_rate_is_bounded_on_darth_vader() {
     assert_toggles_bounded_by_pixels(include_bytes!("fixtures/vader-1126.bin"), &[(80, 24), (200, 56)]);
 }
+
+fn fg_lumas(codec: Codec, tier: GlyphTier) -> Vec<u32> {
+    let mut p = Player::new(AsciiReader::open(ASSET).unwrap(), 2.0, false, ColorDepth::True, tier).unwrap();
+    p.set_codec(codec);
+    p.reflow_grid(200, 56);
+    for f in 0..=40 {
+        p.render_grid(f).unwrap();
+    }
+    let luma = |c: &Cell| (299 * c.fg.r as u32 + 587 * c.fg.g as u32 + 114 * c.fg.b as u32 + 500) / 1000;
+    let mut v: Vec<u32> = p.grid().as_slice().iter().filter(|c| c.glyph() != ' ').map(luma).collect();
+    v.sort_unstable();
+    v
+}
+
+#[test]
+fn ascii_glyph_brightness_range_matches_letters_on_the_ascii_tier() {
+    let letters = fg_lumas(Codec::Letters, GlyphTier::Ascii);
+    let ascii = fg_lumas(Codec::Ascii, GlyphTier::UnicodeBlocks);
+    let pct = |v: &[u32], p: usize| v[(v.len() * p / 100).min(v.len() - 1)];
+    let hi = |v: &[u32]| v.iter().filter(|&&l| l >= 240).count() as f64 / v.len() as f64;
+    let (l, a) = ([5, 50, 95].map(|p| pct(&letters, p)), [5, 50, 95].map(|p| pct(&ascii, p)));
+    eprintln!("fg luma p5/p50/p95 letters {l:?} ascii {a:?}, >=240 {:.3} {:.3}, cells {} {}",
+        hi(&letters), hi(&ascii), letters.len(), ascii.len());
+    for k in 0..3 {
+        assert!(a[k].abs_diff(l[k]) * 20 <= l[k].max(40), "p{}: letters {}, ascii {}", [5, 50, 95][k], l[k], a[k]);
+    }
+    let (sl, sa) = (l[2] - l[0], a[2] - a[0]);
+    assert!(sa.abs_diff(sl) * 20 <= sl, "spread95: letters {sl}, ascii {sa}");
+    assert!((hi(&ascii) - hi(&letters)).abs() <= 0.02, ">=240: letters {:.3}, ascii {:.3}", hi(&letters), hi(&ascii));
+}

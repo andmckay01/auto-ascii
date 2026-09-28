@@ -3074,3 +3074,60 @@ frames, and converges nearer smoothed tones that sit at least 4 units inside
 another ramp step after `min(h/2, 63) + 1` frames (`CellState::tone_age`:
 bit 7 down, bit 6 slow path, bits 0–5 count). The full rule and its
 measurements are in [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).
+
+ASCII dynamic range (2026-09-27; supersedes the foreground rule of the ASCII
+warmth update above, d5e2066's "no whitening"): McKay asked that ascii glyph
+brightness and darkness match letters. `codec::letters::tint(c, n)` is now
+the one glyph foreground for both codecs: gain `192 + coverage(n)·320/256`
+(Q8), each channel `min(255, v·gain >> 8)`. A colour keeps its hue until
+channels saturate, so only true highlights bleach, as in letters; the old
+common-channel gamut limit is gone. The shade rule and cap are unchanged;
+clipping only raises Y(fg), so it only loosens the 0.375 contrast cap. At
+256 colours a clipped highlight can quantize to white (skin at tone 255 →
+xterm 231), which the hue-family rule then limited to grays; `hue_near` now
+accepts any capped `SHADES_256` entry when the quantized glyph's OKLab chroma
+is below `SHADE_HUE_MIN_CHROMA` (a white glyph has no hue to clash with), so
+the nearest-to-ideal rule keeps letters' warm shade there (skin → 135,95,95)
+and gray sources keep gray. Chromatic glyphs are still hue-checked against
+what is on screen. This 256-colour rule is a McKay decision; the
+conservative alternative is gray shades under white glyphs. Glyph rows do
+not change; the two ascii goldens re-bless colour hashes only.
+Colour tone: edge, highlight and ramp cells take their foreground and
+shade from the cell's current tone `n` (letters' `paint(c, n)`), not the
+bright half's tone; deep shadow keeps tone 0 (0.75× stroke, no shade, as
+pinned in 7943758). Half variants use letters' non-block half rule,
+`tint(chroma or gray(lit), lit)`, with no `shade()` pre-brighten; their
+shade stays at the dim half's tone. `glyph_foreground_matches_letters_on
+_the_ascii_tier` pins exact fg equality (truecolor and 256) with
+`Letters::cell` on `GlyphTier::Ascii` for every non-space, non-deep-shadow
+cell in the same layer; the only differing branch is the highlight cut
+(letters 10 of 16 steps, ascii 11 of 18), where one side adds `boost`,
+and the near-white edge cut (ascii 228 on its 18-glyph ramp, letters 240
+on 16), where fg is the same.
+Floor: letters' `BLACK_FLOOR` 32 and `FLOOR_HOLD` 16, tier-independent
+(letters gates its hold on `bg_tint`; ascii must not, glyph and colour are
+the same on every tier). A cell with no lit history needs tone ≥ 32; a lit
+one (held tone `s.idx ≥ 32`, letters' own predicate) showing `.` keeps it
+down to 16, a denser one settles toward its tone (slow path, up to 64 frames),
+and one whose held tone settles below 32 blanks within the four-frame floor
+settle rather than holding `.` indefinitely; `held_tone`'s crossing predicate
+is on `FLOOR_HOLD`, so blanking still settles within four frames and a
+blank cell does not re-arm below 32. The ramp origin is the separate
+`INK_FROM` 24 (`unit()`, saturating; `step_table()` fills from 16, where
+tones 16..31 map to `.`), so STEP is unchanged for tones ≥ 32 and `@`
+still starts at 225. Held cells at 16..31 draw their held glyph (`.` for
+held tones below 58) at letters' 0.75× ink with no shade. Goldens: only the
+floor band's blank/`.` cells change.
+`ascii_glyph_brightness_range_matches_letters_on_the_ascii_tier` checks
+architect-motion at 200x56 after 40 warm frames against letters on the
+ascii tier: non-space fg luma p5/p50/p95 within max(5%, 2), spread95 within
+5%, ≥240 fraction within 0.02.
+Shadow ramp: `step_table()` drops e55fdde's lift below mid-gray
+(`want = u`); it was added when ascii had no shade to carry tone, and the
+shade (8143b4e) and 6a82056's removal of the matching colour lift left it
+without a reason. Ascii's shadow glyphs now sit on letters' positions
+(about 48 `.`, 64 `:`, 80 `;`, 96 `+`); tones ≥ 128 and `@` at 225 are
+unchanged. Foreground percentiles cannot see this (it changes ink, not
+colour); it was judged by the toggle gates (all pass, real asset 1.08×
+pixels), the settle tests and side-by-side crops for McKay under
+`compare/ascii-range/`. Goldens: shadow-band glyph rows re-blessed.

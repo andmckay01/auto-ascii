@@ -148,10 +148,12 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   (0.375) of the glyph's relative luminance, spaces unshaded (`SHADE_BLANK_CEIL` 0);
   scaled down (hue kept) to fit, dropped if its brightest channel ends below `SHADE_FLOOR` (1).
   The exact letters curve starts at tone 32 with gain 154/256; no neutralization.
-  Foreground uses letters' gain with uniform gamut limiting, preserving colour.
+  Foreground is letters' own `tint` (192..512 Q8 gain, each channel clipped at 255), so
+  highlights bleach where channels saturate, as in letters.
   Truecolor sends that shade; 256-color sends the nearest (OKLab, chroma plane weighted 2x) of
   `SHADES_256` (grays 8-148 and cube levels 0/95/135) that passes the cap against the
-  quantized glyph color and is `in_hue_family` with it (gray, or within 30° of its hue).
+  quantized glyph color and is `in_hue_family` with it (gray, or within 30° of its hue; any
+  capped entry under a near-neutral glyph, OKLab chroma below 0.03).
   16-color and mono paint no shade. Unshaded cells are flagged `attrs::DEFAULT_BG`, so the painter emits SGR 49 (the
   terminal's own background); pads, gaps and everything else the player draws while `ascii` is
   active follow that rule (flow 10). Glyphs use an 18-step ramp ordered by JetBrains Mono
@@ -160,7 +162,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   (narrowing to `idx_hyst_q8 / 4` in busy cells)
   the glyph follows a smoothed tone: a steady change settles within 41 frames past
   `idx_hyst_q8 / 8`, or within 74 when it lies at least 4 units inside another ramp step;
-  floor crossings take at most four. The half, edge and orientation gates retain hysteresis. The player's black
+  letters' floor applies (blank below `BLACK_FLOOR` 32, a lit cell held down to `FLOOR_HOLD`
+  16, on every tier), and floor crossings take at most four. The half, edge and orientation gates retain hysteresis. The player's black
   backdrop (flow 7) puts the unshaded cells on black in any terminal theme.
 - **User:** `/` cycles codecs while playing (`pixels` → `letters` → `ascii`), `--codec
   pixels|letters|ascii` picks one at startup, and `s` saves it for this video (flow 9).

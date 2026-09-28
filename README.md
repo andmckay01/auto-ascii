@@ -122,7 +122,8 @@ on a dim tint of its cell's colour, so faces and midtones hold their shape;
 `ascii` is letters with only printable ASCII and no blocks in the picture
 (the controls overlay is the same as in the other codecs). Behind each
 character it paints a dim shade of the character's own colour, the way
-letters does, with its exact current-tone tint curve and colour preserved.
+letters does, with letters' exact current-tone foreground: each channel is
+clipped at 255, so highlights bleach toward white exactly where letters' do.
 “Not a full pixel” means printable ASCII ink, unshaded spaces, background
 channels at most 154/255, and background linear luminance at most 0.375 times
 the foreground as sent. The character stays clearly brighter than its shade.
@@ -137,7 +138,9 @@ switch the glyph at once (sooner in busy, fast-changing areas); otherwise it
 follows a smoothed tone. A steady change of more than 16 tone units settles
 within 41 frames; a smaller one within 74, unless the tone sits within 4
 units of the boundary to the neighbouring glyph, which may then stay.
-Black-floor crossings take at most four frames.
+As in letters, a cell lights at tone 32; once lit, a cell showing the lightest
+ink keeps it down to tone 16, and crossings of that floor take at most four
+frames.
 
 **Black backdrop.** While it plays, the player sets your terminal's default
 background to black (OSC 11). `ascii` needs it: its unshaded cells (shadows,
