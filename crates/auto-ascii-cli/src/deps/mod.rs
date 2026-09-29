@@ -33,7 +33,7 @@ pub const CA_BUNDLES: [&str; 4] = [
 
 const DAY_SECS: u64 = 24 * 60 * 60;
 
-pub type Update = Arc<dyn Fn() -> Result<Option<String>, String> + Send + Sync>;
+pub type Update = Arc<dyn Fn(fetch::Cancel<'_>) -> Result<Option<String>, String> + Send + Sync>;
 
 pub struct Ctx {
     pub yes: bool,
@@ -128,7 +128,7 @@ impl Provider for Live {
 
     fn update_ytdlp(&mut self, bin: &Path) -> Result<Option<String>, String> {
         let asset = self.asset.as_ref().ok_or("no standalone builds for this platform")?;
-        fetch::update_ytdlp(bin, asset, self.noise, None)
+        fetch::update_ytdlp(bin, asset, self.noise, None, &fetch::never)
     }
 }
 
@@ -301,15 +301,50 @@ pub fn ytdlp_updater(ctx: &Ctx, resolved: &Resolved) -> Option<Update> {
     }
     let bin = ctx.bin()?.to_path_buf();
     let asset = ctx.asset?;
-    if consent(ctx.yes, ctx.json, ctx.interactive) == Consent::Refused {
-        let why = format!(
-            "{} never downloads without --yes: re-run with --yes (or {YES_ENV}=1) to let auto-ascii update it",
-            if ctx.json { "--json" } else { "a non-interactive run" }
-        );
-        return Some(Arc::new(move || Err(why.clone())));
+    match consent(ctx.yes, ctx.json, ctx.interactive) {
+        Consent::Granted => {}
+        Consent::Ask => return None,
+        Consent::Refused => {
+            let why = format!(
+                "{} never downloads without --yes: re-run with --yes (or {YES_ENV}=1) to let auto-ascii update it",
+                if ctx.json { "--json" } else { "a non-interactive run" }
+            );
+            return Some(Arc::new(move |_| Err(why.clone())));
+        }
     }
     let ran_with = Manifest::read(&bin).entry(Tool::YtDlp).map(|e| e.version.clone());
-    Some(Arc::new(move || fetch::update_ytdlp(&bin, &asset, Noise { quiet: true }, ran_with.as_deref())))
+    Some(Arc::new(move |cancel| fetch::update_ytdlp(&bin, &asset, Noise { quiet: true }, ran_with.as_deref(), cancel)))
+}
+
+pub fn offer_update(ctx: &Ctx, resolved: &Resolved, err: &str, provider: &mut dyn Provider) -> Option<String> {
+    let asking = consent(ctx.yes, ctx.json, ctx.interactive) == Consent::Ask;
+    let cached = resolved.origin(Tool::YtDlp) == Some(Origin::Cache);
+    if !asking || !cached || ctx.no_download || !crate::stream::ytdlp::failed_itself(err) {
+        return None;
+    }
+    let (bin, asset) = (ctx.bin()?, ctx.asset?);
+    let prompt = format!(
+        "the cached yt-dlp failed ({err}). Download the latest yt-dlp (~{} MB) and try again?",
+        asset.download_mb(&[Tool::YtDlp])
+    );
+    if !provider.ask(&prompt) {
+        return None;
+    }
+    let noise = ctx.noise();
+    match provider.update_ytdlp(bin) {
+        Ok(Some(version)) => {
+            noise.say(&format!("updated the cached yt-dlp to {version}; trying again"));
+            Some(version)
+        }
+        Ok(None) => {
+            noise.say("the cached yt-dlp is already the latest release");
+            None
+        }
+        Err(e) => {
+            noise.say(&format!("could not update the cached yt-dlp: {e}"));
+            None
+        }
+    }
 }
 
 fn listing(tools: &[Tool]) -> String {
@@ -686,6 +721,31 @@ mod tests {
     }
 
     #[test]
+    fn an_interactive_run_asks_after_the_failure_instead_of_updating_in_the_background() {
+        let env = Env::new();
+        cached_ytdlp(&env, 1);
+        let ctx = env.ctx(false, false, true);
+        let got = ensure(&ctx, &[Tool::YtDlp], &mut Fake::default()).unwrap();
+        assert!(ytdlp_updater(&ctx, &got).is_none(), "no update without asking");
+
+        let broke = "yt-dlp: Unable to extract initial player response";
+        let mut declined = Fake::default();
+        assert_eq!(offer_update(&ctx, &got, broke, &mut declined), None);
+        assert_eq!(declined.asked.len(), 1);
+        assert!(declined.asked[0].starts_with(&format!("the cached yt-dlp failed ({broke}). Download the latest yt-dlp (~54 MB)")));
+        assert_eq!(declined.updates, 0);
+
+        let mut accepted = Fake { answer: true, ..Fake::default() };
+        assert_eq!(offer_update(&ctx, &got, broke, &mut accepted).as_deref(), Some("2099.01.01"));
+        assert_eq!(accepted.updates, 1);
+
+        let mut untouched = Fake { answer: true, ..Fake::default() };
+        assert_eq!(offer_update(&ctx, &got, "no videos found for \"x\"", &mut untouched), None);
+        assert_eq!(offer_update(&env.ctx(true, false, true), &got, broke, &mut untouched), None, "--yes updated in-run");
+        assert!(untouched.asked.is_empty() && untouched.updates == 0);
+    }
+
+    #[test]
     fn without_consent_a_failing_cached_ytdlp_is_not_updated() {
         let env = Env::new();
         cached_ytdlp(&env, 1);
@@ -693,7 +753,7 @@ mod tests {
             let ctx = env.ctx(false, json, json);
             let got = ensure(&ctx, &[Tool::YtDlp], &mut Fake::default()).unwrap();
             let update = ytdlp_updater(&ctx, &got).expect("an explanation, not a download");
-            let err = update().unwrap_err();
+            let err = update(&fetch::never).unwrap_err();
             assert!(err.contains("never downloads without --yes") && err.contains("AUTO_ASCII_YES=1"), "{err}");
         }
     }

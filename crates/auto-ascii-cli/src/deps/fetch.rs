@@ -20,6 +20,14 @@ use super::platform::{self, Asset, FfmpegBuild, YtdlpBuild};
 
 pub const MANIFEST: &str = "manifest.json";
 
+pub const STOPPED: &str = "stopped before the download finished";
+
+pub type Cancel<'a> = &'a dyn Fn() -> bool;
+
+pub fn never() -> bool {
+    false
+}
+
 pub const FOLDERS: &str = "yt-dlp";
 
 const LOCK: &str = ".lock";
@@ -140,7 +148,7 @@ pub struct Lock {
 }
 
 impl Lock {
-    pub fn acquire(bin: &Path, noise: Noise) -> Result<Lock, String> {
+    pub fn acquire(bin: &Path, noise: Noise, cancel: Cancel<'_>) -> Result<Lock, String> {
         let path = bin.join(LOCK);
         let file = OpenOptions::new()
             .create(true)
@@ -148,15 +156,23 @@ impl Lock {
             .write(true)
             .open(&path)
             .map_err(|e| format!("opening {}: {e}", path.display()))?;
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(fs::TryLockError::WouldBlock) => {
-                noise.say("waiting for another auto-ascii download to finish");
-                file.lock().map_err(|e| format!("locking {}: {e}", path.display()))?;
+        let mut said = false;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Lock { _file: file }),
+                Err(fs::TryLockError::WouldBlock) => {
+                    if cancel() {
+                        return Err(STOPPED.into());
+                    }
+                    if !said {
+                        noise.say("waiting for another auto-ascii download to finish");
+                        said = true;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(fs::TryLockError::Error(e)) => return Err(format!("locking {}: {e}", path.display())),
             }
-            Err(fs::TryLockError::Error(e)) => return Err(format!("locking {}: {e}", path.display())),
         }
-        Ok(Lock { _file: file })
     }
 }
 
@@ -166,6 +182,7 @@ pub fn save_verified(
     mut body: impl Read,
     expected_sha256: &str,
     progress: &ProgressBar,
+    cancel: Cancel<'_>,
 ) -> Result<(Temp, u64), String> {
     let temp = Temp::new(dir, label);
     let mut file = File::create(temp.path()).map_err(|e| format!("creating {}: {e}", temp.path().display()))?;
@@ -173,6 +190,9 @@ pub fn save_verified(
     let mut buf = vec![0u8; 256 * 1024];
     let mut bytes = 0u64;
     loop {
+        if cancel() {
+            return Err(STOPPED.into());
+        }
         let n = match body.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => n,
@@ -420,7 +440,15 @@ struct Download {
     bytes: u64,
 }
 
-fn download(http: &Http, bin: &Path, url: &str, sha256: &str, label: &str, noise: Noise) -> Result<Download, String> {
+fn download(
+    http: &Http,
+    bin: &Path,
+    url: &str,
+    sha256: &str,
+    label: &str,
+    noise: Noise,
+    cancel: Cancel<'_>,
+) -> Result<Download, String> {
     let response = http.follow.get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
     let total = response.body().content_length();
     noise.say(&format!(
@@ -429,7 +457,7 @@ fn download(http: &Http, bin: &Path, url: &str, sha256: &str, label: &str, noise
     ));
     let bar = progress(noise, total, label);
     let body = response.into_body().into_reader();
-    let result = save_verified(bin, label, body, sha256, &bar);
+    let result = save_verified(bin, label, body, sha256, &bar, cancel);
     bar.finish_and_clear();
     let (temp, bytes) = result?;
     Ok(Download { temp, url: url.to_string(), sha256: sha256.to_string(), bytes })
@@ -437,14 +465,17 @@ fn download(http: &Http, bin: &Path, url: &str, sha256: &str, label: &str, noise
 
 pub fn install(bin: &Path, asset: &Asset, tools: &[Tool], noise: Noise) -> Result<Vec<Tool>, String> {
     fs::create_dir_all(bin).map_err(|e| format!("creating {}: {e}", bin.display()))?;
-    let _lock = Lock::acquire(bin, noise)?;
+    let _lock = Lock::acquire(bin, noise, &never)?;
+    let tools: Vec<Tool> =
+        tools.iter().copied().filter(|t| !auto_ascii::tools::is_executable(&bin.join(t.file_name()))).collect();
+    let tools = tools.as_slice();
     let http = Http::new();
     let before = Manifest::read(bin);
     let mut manifest = before.clone();
     let result = (|| {
         if tools.contains(&Tool::YtDlp) {
             let tag = latest_ytdlp_tag(&http)?;
-            install_ytdlp(&http, bin, asset, &tag, noise, &mut manifest)?;
+            install_ytdlp(&http, bin, asset, &tag, noise, &mut manifest, &never)?;
         }
         let programs: Vec<Tool> = tools.iter().copied().filter(|t| *t != Tool::YtDlp).collect();
         if !programs.is_empty() {
@@ -464,9 +495,10 @@ pub fn update_ytdlp(
     asset: &Asset,
     noise: Noise,
     failed_with: Option<&str>,
+    cancel: Cancel<'_>,
 ) -> Result<Option<String>, String> {
     fs::create_dir_all(bin).map_err(|e| format!("creating {}: {e}", bin.display()))?;
-    let _lock = Lock::acquire(bin, noise)?;
+    let _lock = Lock::acquire(bin, noise, cancel)?;
     let mut manifest = Manifest::read(bin);
     let current = manifest.entry(Tool::YtDlp).map(|e| e.version.clone());
     if let (Some(failed), Some(now)) = (failed_with, current.as_deref())
@@ -484,7 +516,10 @@ pub fn update_ytdlp(
         manifest.write(bin)?;
         return Ok(None);
     }
-    install_ytdlp(&http, bin, asset, &tag, noise, &mut manifest)?;
+    if cancel() {
+        return Err(STOPPED.into());
+    }
+    install_ytdlp(&http, bin, asset, &tag, noise, &mut manifest, cancel)?;
     manifest.write(bin)?;
     Ok(Some(tag))
 }
@@ -502,13 +537,14 @@ fn install_ytdlp(
     tag: &str,
     noise: Noise,
     manifest: &mut Manifest,
+    cancel: Cancel<'_>,
 ) -> Result<(), String> {
     let base = format!("{}/{tag}", platform::YTDLP_RELEASES);
     let file = asset.ytdlp.asset();
     let sums = text(http, &format!("{base}/{}", platform::YTDLP_SUMS))?;
     let sha = platform::sums_entry(&sums, file)
         .ok_or_else(|| format!("yt-dlp {tag}'s {} lists no {file}", platform::YTDLP_SUMS))?;
-    let got = download(http, bin, &format!("{base}/{file}"), &sha, "yt-dlp", noise)?;
+    let got = download(http, bin, &format!("{base}/{file}"), &sha, "yt-dlp", noise, cancel)?;
     let check = |p: &Path| version_of(p, Tool::YtDlp);
     let (path, version) = match asset.ytdlp {
         YtdlpBuild::File(_) => place(got.temp, bin, Tool::YtDlp, &check)?,
@@ -540,7 +576,7 @@ fn install_ffmpeg(
                 let url = format!("{dir}/{}.zip", tool.name());
                 let sha = platform::single_sum(&text(http, &format!("{url}.sha256"))?)
                     .ok_or_else(|| format!("{url}.sha256 holds no SHA-256 digest"))?;
-                let got = download(http, bin, &url, &sha, tool.name(), noise)?;
+                let got = download(http, bin, &url, &sha, tool.name(), noise, &never)?;
                 let unzipped = extract(got.temp.path(), bin, tool)?;
                 finish(unzipped, bin, tool, &version, &got, noise, manifest)?;
             }
@@ -548,7 +584,7 @@ fn install_ffmpeg(
         FfmpegBuild::Gyan => {
             let sha = platform::single_sum(&text(http, &format!("{resolved}.sha256"))?)
                 .ok_or_else(|| format!("{resolved}.sha256 holds no SHA-256 digest"))?;
-            let got = download(http, bin, &resolved, &sha, "ffmpeg", noise)?;
+            let got = download(http, bin, &resolved, &sha, "ffmpeg", noise, &never)?;
             for &tool in tools {
                 let unzipped = extract(got.temp.path(), bin, tool)?;
                 finish(unzipped, bin, tool, &version, &got, noise, manifest)?;
@@ -628,7 +664,7 @@ mod tests {
         let scratch = ScratchDir::new().unwrap();
         let bin = scratch.path();
         let body = b"#!/bin/sh\necho 2026.08.19\n".to_vec();
-        let (temp, bytes) = save_verified(bin, "yt-dlp", &body[..], &sha_hex(&body), &ProgressBar::hidden()).unwrap();
+        let (temp, bytes) = save_verified(bin, "yt-dlp", &body[..], &sha_hex(&body), &ProgressBar::hidden(), &never).unwrap();
         assert_eq!(bytes, body.len() as u64);
         let (path, version) = place(temp, bin, Tool::YtDlp, &|p| version_of(p, Tool::YtDlp)).unwrap();
         assert_eq!(path, bin.join(Tool::YtDlp.file_name()));
@@ -641,7 +677,7 @@ mod tests {
     fn a_checksum_mismatch_installs_nothing() {
         let scratch = ScratchDir::new().unwrap();
         let wrong = sha_hex(b"something else");
-        let err = save_verified(scratch.path(), "ffmpeg", &b"payload"[..], &wrong, &ProgressBar::hidden())
+        let err = save_verified(scratch.path(), "ffmpeg", &b"payload"[..], &wrong, &ProgressBar::hidden(), &never)
             .err()
             .unwrap();
         assert!(err.starts_with("checksum mismatch for ffmpeg: expected sha256 "), "{err}");
@@ -652,7 +688,7 @@ mod tests {
     #[test]
     fn a_broken_connection_leaves_no_partial_file() {
         let scratch = ScratchDir::new().unwrap();
-        let err = save_verified(scratch.path(), "yt-dlp", Broken(300_000), &sha_hex(b""), &ProgressBar::hidden())
+        let err = save_verified(scratch.path(), "yt-dlp", Broken(300_000), &sha_hex(b""), &ProgressBar::hidden(), &never)
             .err()
             .unwrap();
         assert_eq!(err, "downloading yt-dlp: connection reset");
@@ -665,7 +701,7 @@ mod tests {
         let bin = scratch.path();
         let old = bin.join(Tool::Ffmpeg.file_name());
         fs::write(&old, "old").unwrap();
-        let (temp, _) = save_verified(bin, "ffmpeg", &b"new"[..], &sha_hex(b"new"), &ProgressBar::hidden()).unwrap();
+        let (temp, _) = save_verified(bin, "ffmpeg", &b"new"[..], &sha_hex(b"new"), &ProgressBar::hidden(), &never).unwrap();
         let err = place(temp, bin, Tool::Ffmpeg, &|_| Err("exec format error".into())).err().unwrap();
         assert_eq!(err, "the downloaded ffmpeg does not run: exec format error");
         assert_eq!(fs::read(&old).unwrap(), b"old", "the previous install survives");
@@ -787,7 +823,7 @@ mod tests {
         record(&mut manifest, Tool::YtDlp, "2026.08.19", "https://x", &sha_hex(b"new"), 3);
         manifest.write(bin).unwrap();
         let asset = platform::asset_for("linux", "x86_64").unwrap();
-        let got = update_ytdlp(bin, &asset, Noise { quiet: true }, Some("2026.01.01")).unwrap();
+        let got = update_ytdlp(bin, &asset, Noise { quiet: true }, Some("2026.01.01"), &never).unwrap();
         assert_eq!(got.as_deref(), Some("2026.08.19"));
     }
 
@@ -805,19 +841,49 @@ mod tests {
     fn a_second_lock_waits_for_the_first() {
         let scratch = ScratchDir::new().unwrap();
         let bin = scratch.path().to_path_buf();
-        let first = Lock::acquire(&bin, Noise { quiet: true }).unwrap();
+        let first = Lock::acquire(&bin, Noise { quiet: true }, &never).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let waiter = {
             let bin = bin.clone();
             std::thread::spawn(move || {
-                let _second = Lock::acquire(&bin, Noise { quiet: true }).unwrap();
+                let _second = Lock::acquire(&bin, Noise { quiet: true }, &never).unwrap();
                 tx.send(()).unwrap();
             })
         };
         assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "the lock is exclusive");
+        let stopped = Lock::acquire(&bin, Noise { quiet: true }, &|| true).err();
+        assert_eq!(stopped.as_deref(), Some(STOPPED), "a cancelled wait gives up");
         drop(first);
         assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok(), "released on drop");
         waiter.join().unwrap();
+    }
+
+    #[test]
+    fn a_cancelled_download_leaves_no_partial_file() {
+        let scratch = ScratchDir::new().unwrap();
+        let err = save_verified(scratch.path(), "yt-dlp", &b"bytes"[..], &sha_hex(b"bytes"), &ProgressBar::hidden(), &|| true)
+            .err()
+            .unwrap();
+        assert_eq!(err, STOPPED);
+        assert!(listing(scratch.path()).is_empty());
+    }
+
+    #[test]
+    fn install_skips_tools_another_run_already_installed() {
+        let scratch = ScratchDir::new().unwrap();
+        let bin = scratch.path();
+        for tool in Tool::ALL {
+            let path = bin.join(tool.file_name());
+            fs::write(&path, "#!/bin/sh\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let asset = platform::asset_for("linux", "x86_64").unwrap();
+        let done = install(bin, &asset, &Tool::ALL, Noise { quiet: true }).unwrap();
+        assert!(done.is_empty(), "nothing downloaded: {done:?}");
     }
 
     #[test]
@@ -828,7 +894,7 @@ mod tests {
         let done = install(scratch.path(), &asset, &[Tool::YtDlp], Noise { quiet: false }).unwrap();
         assert_eq!(done, [Tool::YtDlp]);
         assert!(Manifest::read(scratch.path()).entry(Tool::YtDlp).is_some());
-        assert_eq!(update_ytdlp(scratch.path(), &asset, Noise { quiet: false }, None).unwrap(), None);
+        assert_eq!(update_ytdlp(scratch.path(), &asset, Noise { quiet: false }, None, &never).unwrap(), None);
     }
 
     #[test]

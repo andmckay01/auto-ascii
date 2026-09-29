@@ -859,7 +859,7 @@ fn cmd_stream(cli: &Cli, input: &[String], opts: &StreamOpts<'_>) -> Result<(), 
         ytdlp: found.path(Tool::YtDlp),
         ytdlp_update: deps::ytdlp_updater(&ctx, &found),
     };
-    stream::run(&programs, &stream::StreamArgs {
+    let args = stream::StreamArgs {
         input,
         style: opts.style,
         palette: opts.palette.into(),
@@ -868,7 +868,15 @@ fn cmd_stream(cli: &Cli, input: &[String], opts: &StreamOpts<'_>) -> Result<(), 
         sim,
         sim_dump: opts.sim_dump.map(Path::to_path_buf),
         cookies_from_browser: opts.cookies_from_browser.map(str::to_string),
-    })
+    };
+    let Err(e) = stream::run(&programs, &args) else { return Ok(()) };
+    if args.sim.is_none() {
+        stream::default_signals();
+        if deps::offer_update(&ctx, &found, &e.to_string(), &mut ctx.live()).is_some() {
+            return stream::run(&programs, &args);
+        }
+    }
+    Err(e)
 }
 
 fn ensure_tools(cli: &Cli, tools: &[Tool]) -> Result<(deps::Ctx, deps::Resolved), BoxErr> {

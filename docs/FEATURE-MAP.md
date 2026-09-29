@@ -648,11 +648,14 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - `stream` gives only the *cached* ffmpeg `SSL_CERT_FILE` (the system CA bundle,
     `deps::ca_file`), unless the variable is already set. On macOS the cached yt-dlp is the
     one-folder build behind a `bin/yt-dlp` symlink.
-  - A yt-dlp from PATH or env is never updated. A cached one is refreshed when a run fails
-    (once, only if a newer release exists or another run already replaced it, and only with
-    `--yes` or in an interactive run; `--json` and non-interactive runs say to re-run with
-    `--yes`), or when it is `STALE_DAYS` (30) old and `--yes` is given. Otherwise a stale copy
-    only prints a note. Downloads time out after 20 minutes of body transfer.
+  - A yt-dlp from PATH or env is never updated. When a cached one fails, it is updated once
+    (only if a newer release exists, or another run already replaced it) and retried: in the
+    background with `--yes` (`ytdlp_updater`; a quit cancels the lock wait and the download),
+    or, in an interactive run, after the terminal is restored and a `[Y/n]` (`offer_update`).
+    `--json` and non-interactive runs only say to re-run with `--yes`. With `--yes`, a copy
+    `STALE_DAYS` (30) old is also refreshed before use; otherwise that only prints a note. The
+    installer re-checks what is missing once it holds the lock. Downloads time out after 20
+    minutes of body transfer.
 
 ## Data & wire
 
