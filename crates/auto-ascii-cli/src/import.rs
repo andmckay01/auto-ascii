@@ -1,7 +1,9 @@
 //! `import`: build a video into a `.ascii` asset, either into the library
 //! (with a provenance sidecar) or, with `-o`, to exactly the path given.
-//! Both modes share one BuildOptions -> BuildRequest adapter.
+//! Both modes share one BuildOptions -> BuildRequest adapter, which `add`
+//! also drives with the defaults.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use auto_ascii::tools::Tool;
@@ -40,6 +42,7 @@ impl Build {
         opts: &BuildOptions,
         video: &Path,
         output: &Path,
+        info: &mut dyn Write,
     ) -> Result<BuildReport, BoxErr> {
         let (_, found) = crate::ensure_tools(cli, &[Tool::Ffmpeg, Tool::Ffprobe])?;
         let programs =
@@ -55,9 +58,19 @@ impl Build {
                 res: self.res,
                 programs: &programs,
             },
-            &mut std::io::stderr(),
+            info,
         )
     }
+}
+
+pub fn build_with_defaults(
+    cli: &Cli,
+    video: &Path,
+    output: &Path,
+    info: &mut dyn Write,
+) -> Result<BuildReport, BoxErr> {
+    let opts = BuildOptions::default();
+    Build::parse(&opts)?.run(cli, &opts, video, output, info)
 }
 
 pub fn run(cli: &Cli, args: &ImportArgs) -> Result<(), BoxErr> {
@@ -77,7 +90,7 @@ fn to_library(cli: &Cli, home: &Home, args: &ImportArgs) -> Result<(), BoxErr> {
     let asset = home.clip_path(&name);
     refuse_existing(&name, &asset, args.force)?;
 
-    let report = build.run(cli, &args.build, &args.video, &asset)?;
+    let report = build.run(cli, &args.build, &args.video, &asset, &mut std::io::stderr())?;
 
     library::remove_sidecar(&asset)?;
     let (sidecar, sidecar_path) = record_import(&name, &args.video, &asset, &report)
@@ -104,7 +117,7 @@ fn to_path(cli: &Cli, args: &ImportArgs, output: &Path) -> Result<(), BoxErr> {
         return Err(format!("output folder {} does not exist", parent.display()).into());
     }
 
-    let report = build.run(cli, &args.build, &args.video, output)?;
+    let report = build.run(cli, &args.build, &args.video, output, &mut std::io::stderr())?;
     if replacing {
         retire_stale_provenance(output)?;
     }
@@ -143,7 +156,7 @@ fn retire_stale_provenance(asset: &Path) -> Result<(), BoxErr> {
     }
 }
 
-fn record_import(
+pub fn record_import(
     name: &str,
     video: &Path,
     asset: &Path,

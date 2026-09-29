@@ -8,7 +8,7 @@ use auto_ascii::Style;
 use auto_ascii_term::ColorTier;
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
-pub const ROOT_AFTER_HELP: &str = "Start with: auto-ascii play <file-or-name>\n\
+pub const ROOT_AFTER_HELP: &str = "Start with: auto-ascii add <link-or-file>, then auto-ascii play <name>\n\
                                    More options: auto-ascii play --help-all";
 
 pub const PLAY_AFTER_HELP: &str = "Exit status: 0 when playback reaches the end, 3 when the \
@@ -54,6 +54,19 @@ pub enum Cmd {
                       Keys: q / Esc / Ctrl-C quit (also while loading), / cycles the glyph style."
     )]
     Stream(StreamArgs),
+    #[command(
+        about = "Add a YouTube link or a video file to the library, ready to play",
+        after_help = "A link is downloaded with yt-dlp (best video up to 1080p plus AAC audio; \
+                      a 403, stall or timeout is retried, then tried at 720p; never with browser \
+                      cookies) into \
+                      `<folder>/source.mp4`; a local file is used where it lies. The folder \
+                      (`library/<slug>/`, or under --library) then gets `<Title>.ascii` (480x270 \
+                      @ 30 fps), its soundtrack `<Title>.m4a`, a `<Title>.json` sidecar, a \
+                      `play.command` launcher and download/distill logs, after an integrity \
+                      check and a length check against the source. Needs ffmpeg and ffprobe, \
+                      plus yt-dlp for links (downloaded on first use if missing)."
+    )]
+    Add(AddArgs),
     #[command(
         about = "Turn a video into a .ascii asset",
         after_help = "Without -o the asset lands in the library as `library/<name>.ascii` plus a \
@@ -609,6 +622,26 @@ pub struct StreamArgs {
 }
 
 #[derive(Args)]
+pub struct AddArgs {
+    #[arg(value_name = "URL|FILE", help = "A video link, or a local video file (mp4, mov, mkv, ...)")]
+    pub input: String,
+    #[arg(
+        long,
+        help = "Title for the clip file; its kebab-case names the folder. Default: the video's \
+                title, or the file name"
+    )]
+    pub title: Option<String>,
+    #[arg(
+        long,
+        value_name = "DIR",
+        help = "Folder to put the clip's folder in (default: the library, ~/auto-ascii/library)"
+    )]
+    pub library: Option<PathBuf>,
+    #[arg(long, help = "Replace an existing clip folder of the same name")]
+    pub force: bool,
+}
+
+#[derive(Args)]
 pub struct ImportArgs {
     #[arg(help = "Source video (any ffmpeg-readable container)")]
     pub video: PathBuf,
@@ -631,7 +664,7 @@ pub struct ImportArgs {
     pub force: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Default)]
 pub struct BuildOptions {
     #[arg(
         long,

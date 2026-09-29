@@ -39,7 +39,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   from `params.toml [build]`).
 - **User:** `auto-ascii import clip.mp4 -o intro.ascii [--ss T] [--t T] [--fps N]
   [--res WxH] [--params F] [--force]` (`T` is `SS`, `MM:SS` or `HH:MM:SS`; `-o` never
-  replaces a file without `--force`). Without `-o` the clip lands in the library (flow 12).
+  replaces a file without `--force`). Without `-o` the clip lands in the library (flow 12);
+  `auto-ascii add` runs the same build with the defaults for its clip folders (flow 12).
 - **Code:** `crates/auto-ascii-cli/src/args.rs` (clap surface) →
   `crates/auto-ascii-cli/src/import.rs` `run` (library or `-o`) →
   `crates/auto-ascii-factory/src/lib.rs` `build` / `BuildRequest` / `effective_params` →
@@ -375,19 +376,28 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 ### 12. The `auto-ascii` CLI and the library folder
 - **Does:** imports videos into a visible home folder, lists and describes them, cuts and
   stitches them, plays them. Commands other than `play` and `compose play` have a `--json` mode.
-- **User:** `auto-ascii home | import | list | info | cut | compose … | play | stream |
+- **User:** `auto-ascii home | add | import | list | info | cut | compose … | play | stream |
   doctor | agent-guide | dev …` (`stream` is flow 17, `doctor` and the global `--yes` flow 18,
   `dev` the developer tools of flows 2, 14 and 15).
   The home is `~/auto-ascii` or `$AUTO_ASCII_HOME`, holding `library/`, `compositions/` and
-  `exports/`.
+  `exports/`. `add <link | file> [--title T] [--library DIR] [--force]` is the one-step import:
+  it makes `library/<kebab title>/` (or `DIR/<kebab title>/`) holding `<Title>.ascii`,
+  `<Title>.m4a`, `<Title>.json`, an executable `play.command`, `distill.log` and, for a link,
+  `source.mp4` plus `download.log`.
 - **Code:** `crates/auto-ascii-cli/src/main.rs` `run` / `compose` dispatch.
   `crates/auto-ascii-cli/src/args.rs` `Cli`, `Cmd`, `ComposeCmd`, `DevCmd`.
   `crates/auto-ascii-cli/src/import.rs` `run` → `auto_ascii_factory::build`.
+  `crates/auto-ascii-cli/src/add.rs` `run` (stage, build via `import::build_with_defaults`,
+  `extract_soundtrack`, `verify` via `dev::inspect::collect` plus an ffprobe length check,
+  `write_launcher`) over `crates/auto-ascii-cli/src/source.rs` `resolve` / `Source::fetch` and
+  the `Downloader` trait (`YtDlpDownloader`: `stream/ytdlp.rs` `Input::classify` and
+  `resolve_or_update` for the title, then one yt-dlp download run).
   `crates/auto-ascii-cli/src/commands.rs` `cut`, `list`, `info`, `compose_*`, `home`,
   `agent_guide`. `crates/auto-ascii-cli/src/play/mod.rs` `play`, `play_composition`.
   `crates/auto-ascii-cli/src/output.rs` `emit` / `emit_err` / `fail`.
   `crates/auto-ascii-cli/src/home.rs` `Home` (`resolve`, `create`,
-  `resolve_clip`, `resolve_playable`), plus free functions `kebab_case` and `cut_name`.
+  `resolve_clip`, `resolve_playable`), plus free functions `kebab_case`, `cut_name` and
+  `folder_clip` (a folder's `.ascii`, so `play`, `info` and `list` see `add`'s folders).
   `crates/auto-ascii-cli/src/library.rs` `Sidecar`, `Provenance`, `list`, `describe`,
   `write_sidecar`. `crates/auto-ascii-cli/src/composition.rs` `create`, `append_clip`, `report`.
   `docs/AGENT-GUIDE.md` is embedded and printed by `agent-guide`.
@@ -400,6 +410,21 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     strict.
   - `import` records the source's SHA-256 (`auto_ascii_factory::sha256_file`, streamed) in the
     `<name>.json` sidecar.
+  - `add` never downloads inside import: `source.rs` turns the input into a local file (a path
+    as is, but never an `.ascii`; a link through the `Downloader`, best video up to 1080p plus
+    AAC audio, never browser cookies). Only a transient yt-dlp error (`HTTP Error 403`, `timed
+    out`, `stalled`, `connection reset`, `fragment`, matched on the one error line it reports)
+    earns a 1080p retry and then a 720p try; any other error fails at once. Everything after works on that local file. The folder is built in
+    `<slug>.partial` and renamed into place only after the build, the soundtrack copy
+    (re-encoded to AAC if the codec cannot be copied), the `dev inspect` integrity walk (frame
+    count, trailer and every chunk CRC, which the build always writes) and a length match within
+    1 s or 1 % pass. Any failure removes `<slug>.partial`, keeping its logs as
+    `<slug>.failed.log`; `folder_clip` ignores `*.partial` folders, so `list` and `play` never
+    see one. A folder or a flat `<slug>.ascii` of the same name is refused without `--force`,
+    and replaced (the flat clip with its sidecar) only after everything passed. An input inside
+    the folder or its staging folder is refused. The launcher `cd`s to its own folder and execs
+    `current_exe()` on `./<Title>.ascii --loop "$@"`, single-quoted for `sh`, so the folder can
+    move but the binary cannot.
   - `play` refuses `--json` unless `--sim` or `--bench-seek` is given (flow 14); those headless
     runs print exactly one JSON line on stdout with or without `--json`.
     `stream` refuses `--json` the same way unless `--sim` is given.
@@ -659,7 +684,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   Sources and licensing: [NOTES.md](NOTES.md) "Standalone tool downloads".
 - **Invariants:**
   - An env override always wins, even if it does not exist. PATH beats the cache. Only
-    `import`, `stream`, `dev eval` and `dev sweep` download; `play` only looks.
+    `import`, `add`, `stream`, `dev eval` and `dev sweep` download; `play` only looks.
   - One prompt per command, on stderr, before anything is created on disk and before `stream`
     takes over the terminal. `--yes` or `AUTO_ASCII_YES` skips it. `--json` or a non-terminal
     stdin/stderr without `--yes` fails with an error naming `--yes`, `AUTO_ASCII_YES=1` and
@@ -794,7 +819,7 @@ values = [
 | Fuzz / perf | `crates/auto-ascii/tests/resize_fuzz.rs`, `crates/auto-ascii/tests/perf_fps.rs`, `crates/auto-ascii/benches/pipeline.rs` |
 | Factory | `crates/auto-ascii-cli/tests/build_e2e.rs`, `crates/auto-ascii-cli/tests/m2_params_eval.rs` (params plumbing, byte pin, eval/sweep) |
 | Metrics | `crates/auto-ascii-eval/tests/metrics.rs` |
-| CLI | `crates/auto-ascii-cli/tests/cli.rs` (`stream_*`: help, the `--json` refusal, an offline end-to-end `--sim` run over a fake yt-dlp and a local file, a clean yt-dlp error) |
+| CLI | `crates/auto-ascii-cli/tests/cli.rs` (`stream_*`: help, the `--json` refusal, an offline end-to-end `--sim` run over a fake yt-dlp and a local file, a clean yt-dlp error; `add_*`: a generated local video to a playable folder, a link through a fake yt-dlp with no cookies, and the collision, staging and failure-cleanup guards), unit tests in `crates/auto-ascii-cli/src/source.rs` (URL vs path with a fake `Downloader`, `.ascii` refusal, which errors are retried) and `add.rs` (soundtrack, launcher quoting, relocation and exec bit) |
 | Streaming | unit tests in `crates/auto-ascii-cli/src/stream/`:<br>- `loader.rs`: snapshots, brightness and shimmer, stage mapping.<br>- `ytdlp.rs`: fake-yt-dlp resolution; config isolation and cookies.<br>- `clock.rs`: sync and stale-frame dropping.<br>- `procs.rs`: cleanup, including a cancellable reap and panic unwind.<br>- `audio.rs`, `decode.rs`, `video.rs`.<br>- `mod.rs`: session tests that drive the real loop against `SimBackend` with a fake yt-dlp and local ffmpeg media (A/V sync to the end, empty audio or video tracks, a brief picture-only stall, the 100% loader frame, no retained sim output), plus the stall rule and tail deadline.<br><br>Also `crates/auto-ascii-factory/src/live.rs`, and the `stream_*` / signal tests in `crates/auto-ascii-cli/tests/cli.rs`. |
 
 ## Related docs

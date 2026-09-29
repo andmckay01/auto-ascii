@@ -28,21 +28,19 @@ git clone https://github.com/andmckay01/auto-ascii && cd auto-ascii
 cargo install --path crates/auto-ascii-cli       # the auto-ascii command
 ```
 
-`import` needs `ffmpeg` and `ffprobe`; `stream` needs `yt-dlp` and `ffmpeg`.
-If they are not on `PATH`, the CLI offers once to download checksum-verified
-standalone builds into its cache on first use (`--yes` skips the question;
-`auto-ascii doctor` shows what it found). `brew install ffmpeg` or `apt install
-ffmpeg` works too. Playing needs none of them, except to decode a soundtrack.
+`add` and `import` need `ffmpeg` and `ffprobe`; links also need `yt-dlp`. If
+one is not on `PATH`, the CLI offers once to download a checksum-verified build
+into its cache (`--yes` skips the question; `auto-ascii doctor` shows what it
+found), or `brew install ffmpeg yt-dlp`. Playing needs none, except for sound.
 
 ## Use
 
 ```bash
-ffmpeg -f lavfi -i testsrc2=size=640x360:rate=30 -t 6 clip.mp4   # any video will do
-
-auto-ascii import clip.mp4                  # -> ~/auto-ascii/library/clip.ascii
-auto-ascii play clip                        # q quits
-auto-ascii stream "https://youtu.be/jNQXAC9IVRw"   # a YouTube link, with sound, downloads nothing
-auto-ascii stream me at the zoo             # or search terms: the first result plays
+auto-ascii add "https://youtu.be/jNQXAC9IVRw"   # a YouTube link -> library/me-at-the-zoo/
+auto-ascii add ~/Movies/clip.mp4                # an mp4 -> library/clip/
+auto-ascii add trip.mov --title "Road Trip"     # any video ffmpeg reads (.mov, .mkv, ...)
+auto-ascii play me-at-the-zoo                   # q quits; or open its play.command
+auto-ascii stream me at the zoo                 # play the first result live, saving nothing
 
 auto-ascii list                             # what the library holds
 auto-ascii cut clip --in 0:01 --out 0:04    # -> library/clip-0m01s-0m04s.ascii
@@ -50,19 +48,21 @@ auto-ascii compose new demo                 # -> compositions/demo.toml
 auto-ascii compose add demo clip --at 0:10  # black until 0:10, then the clip
 auto-ascii compose play demo                # compose export demo flattens it to exports/demo.ascii
 
-auto-ascii import in.mp4 -o in.ascii        # or keep the asset anywhere
+auto-ascii import in.mp4 -o in.ascii        # just the asset, anywhere
 auto-ascii play in.ascii --loop --seek 1:30 --style letters
 ```
+
+`add` gives each clip a folder named after its title: `<Title>.ascii` (480×270,
+30 fps), its soundtrack `<Title>.m4a`, a `play.command` launcher, logs and, for
+a link, `source.mp4` (up to 1080p, never your browser cookies), all checked for
+integrity and length. `play` uses a soundtrack beside any asset (`clip.m4a`,
+`clip.mp4` or another container, then the folder's `source.mp4`) if its length
+matches. `--mute` starts silent; `--no-audio` skips it.
 
 The library is `~/auto-ascii` (`AUTO_ASCII_HOME` overrides it). `auto-ascii
 --help` lists the everyday commands, `--help-all` every command and flag;
 `play --help-all` shows the advanced player flags. Every command except the
 interactive ones takes `--json`.
-
-`play` plays a soundtrack file beside the asset (`clip.m4a`, `clip.mp4`, other
-common containers, then the folder's `source.mp4`) when its length matches.
-`--mute` starts silent; `--no-audio` never looks for one. A library clip has
-sound only if you put a track beside it.
 
 ## Keys
 

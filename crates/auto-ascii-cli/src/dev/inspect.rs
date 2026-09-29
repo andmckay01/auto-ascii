@@ -70,7 +70,9 @@ pub fn collect(
     dump_dir: Option<&Path>,
     frames: &[u32],
 ) -> Result<Report, BoxErr> {
-    let bytes = std::fs::read(asset).map_err(|e| format!("read {}: {e}", asset.display()))?;
+    let file = std::fs::File::open(asset).map_err(|e| format!("open {}: {e}", asset.display()))?;
+    let bytes = unsafe { memmap2::Mmap::map(&file) }
+        .map_err(|e| format!("mmap {}: {e}", asset.display()))?;
     let reader = AsciiReader::open(&bytes)?;
     let h = reader.header().clone();
     let duration_secs = if h.fps_num > 0 {

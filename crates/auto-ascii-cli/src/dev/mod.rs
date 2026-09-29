@@ -2,7 +2,7 @@
 //! is a thin adapter over the factory library, printing human text or, with
 //! --json, exactly one JSON value on stdout.
 
-mod inspect;
+pub mod inspect;
 
 use std::path::Path;
 

@@ -16,6 +16,7 @@ Usage: auto-ascii [OPTIONS] <COMMAND>
 Commands:
   play         Play a file, library clip, or composition
   stream       Stream a video link or search with sound
+  add          Add a YouTube link or a video file to the library, ready to play
   import       Turn a video into a .ascii asset
   list         List library clips
   info         Show clip details
@@ -34,7 +35,7 @@ Options:
   -h, --help      Print help
   -V, --version   Print version
 
-Start with: auto-ascii play <file-or-name>
+Start with: auto-ascii add <link-or-file>, then auto-ascii play <name>
 More options: auto-ascii play --help-all
 ";
 

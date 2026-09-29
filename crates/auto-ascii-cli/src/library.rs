@@ -5,7 +5,7 @@ use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 
 use crate::BoxErr;
-use crate::home::{Home, sidecar_path};
+use crate::home::{Home, folder_clip, sidecar_path};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Sidecar {
@@ -195,19 +195,23 @@ pub fn list(home: &Home) -> Result<Vec<Sidecar>, BoxErr> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("read {}: {e}", dir.display()).into()),
     };
-    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut paths: Vec<(PathBuf, PathBuf)> = Vec::new();
     for entry in entries {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
         if path.extension().is_some_and(|e| e == "ascii") {
-            paths.push(path);
+            paths.push((path.with_extension(""), path));
+        } else if path.is_dir()
+            && let Some(clip) = folder_clip(&path)
+        {
+            paths.push((path, clip));
         }
     }
     paths.sort();
     Ok(paths
         .iter()
-        .map(|path| {
-            let stem = path.file_stem().unwrap_or_default();
+        .map(|(named, path)| {
+            let stem = named.file_name().unwrap_or_default();
             match stem.to_str() {
                 Some(name) => describe_lenient(name, path),
                 None => Sidecar {
@@ -244,6 +248,15 @@ pub fn clip_ref(home: &Home, path: &Path) -> String {
     let in_library =
         path.extension().is_some_and(|e| e == "ascii") && same_dir(path.parent(), &home.library());
     if in_library { crate::home::stem_of(path) } else { absolute(path) }
+}
+
+pub fn clip_name(home: &Home, path: &Path) -> String {
+    match path.parent() {
+        Some(folder) if same_dir(folder.parent(), &home.library()) => {
+            folder.file_name().unwrap_or_default().to_string_lossy().into_owned()
+        }
+        _ => crate::home::stem_of(path),
+    }
 }
 
 fn same_dir(dir: Option<&Path>, other: &Path) -> bool {

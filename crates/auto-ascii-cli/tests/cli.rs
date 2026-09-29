@@ -1586,3 +1586,177 @@ fn help_all_needs_no_target_and_no_home() {
     assert!(text.contains("--bench-seek") && text.contains("--sim-audio"), "{text}");
     assert!(!s.home().exists(), "--help-all touched the home folder");
 }
+
+fn media_tools() -> Option<auto_ascii::audio::source::Tools> {
+    auto_ascii::audio::source::Tools::find().ok().or_else(|| {
+        eprintln!("skipping: ffmpeg/ffprobe not found");
+        None
+    })
+}
+
+fn sounding_video(tools: &auto_ascii::audio::source::Tools, path: &Path) {
+    let status = Command::new(&tools.ffmpeg)
+        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=30:duration=2"])
+        .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=2"])
+        .args(["-c:a", "aac", "-pix_fmt", "yuv420p", "-shortest"])
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "ffmpeg could not make {}", path.display());
+}
+
+fn launch(folder: &Path, extra: &str) -> Output {
+    Command::new(folder.join("play.command")).args(extra.split_whitespace()).current_dir("/").output().unwrap()
+}
+
+#[test]
+fn add_turns_a_local_file_into_a_playable_folder() {
+    let Some(tools) = media_tools() else { return };
+    let s = Scratch::new("addfile");
+    let video = s.0.join("src").join("Kiki's Clip.mkv");
+    sounding_video(&tools, &video);
+    let arg = video.to_str().unwrap();
+    let lib = s.0.join("run");
+    let lib_arg = lib.to_str().unwrap();
+
+    let v = json_of(&cli(&s, &["--json", "add", arg, "--library", lib_arg]));
+    let folder = lib.join("kiki-s-clip");
+    assert_eq!(v["name"], "kiki-s-clip", "{v}");
+    assert_eq!(v["title"], "Kiki's Clip");
+    assert!(v["url"].is_null());
+    for name in ["Kiki's Clip.ascii", "Kiki's Clip.m4a", "Kiki's Clip.json", "play.command", "distill.log"] {
+        assert!(folder.join(name).is_file(), "{name} missing from {}", folder.display());
+    }
+    assert!(!folder.join("source.mp4").exists(), "a local file is not copied");
+    assert!(!lib.join("kiki-s-clip.partial").exists(), "the staging folder was moved into place");
+    assert!(matches!(v["asset"]["frames"].as_u64(), Some(60 | 61)), "{v}");
+    assert_eq!((v["asset"]["base_w"].as_u64(), v["asset"]["base_h"].as_u64()), (Some(480), Some(270)));
+    assert!((v["source_duration_secs"].as_f64().unwrap() - 2.0).abs() < 0.1, "{v}");
+    assert!(v["source"]["path"].as_str().unwrap().ends_with("Kiki's Clip.mkv"), "{v}");
+    assert!(v["soundtrack"].as_str().unwrap().ends_with("kiki-s-clip/Kiki's Clip.m4a"), "{v}");
+    assert!(std::fs::read_to_string(folder.join("distill.log")).unwrap().contains("pass 1/2:"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(folder.join("play.command")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111, "the launcher is executable");
+    }
+
+    let played = launch(&folder, "--sim 40x12:5 --no-audio");
+    assert!(played.status.success(), "{}", stderr_of(&played));
+    let stats: serde_json::Value = serde_json::from_slice(&played.stdout).unwrap();
+    assert_eq!(stats["frames"], 5, "{stats}");
+
+    let again = cli(&s, &["add", arg, "--library", lib_arg]);
+    assert_eq!(again.status.code(), Some(1));
+    assert!(stderr_of(&again).contains("already exists — pass --force to replace it"), "{}", stderr_of(&again));
+    let text = ok(&cli(&s, &["add", arg, "--library", lib_arg, "--force"]));
+    assert!(text.starts_with("added Kiki's Clip\n"), "{text}");
+    assert!(text.contains("integrity OK, length matches the source"), "{text}");
+    assert!(!text.contains("play:"), "a custom library is not the home library: {text}");
+
+    let text = ok(&cli(&s, &["add", arg, "--title", "Demo Reel"]));
+    assert!(text.contains("auto-ascii play demo-reel\n"), "{text}");
+    assert!(s.library().join("demo-reel").join("Demo Reel.ascii").is_file());
+    let listed = json_of(&cli(&s, &["--json", "list"]));
+    let row = listed.as_array().unwrap().iter().find(|c| c["name"] == "demo-reel").expect("listed");
+    assert!(matches!(row["asset"]["frames"].as_u64(), Some(60 | 61)), "{row}");
+    let out = cli(&s, &["play", "Demo Reel", "--sim", "40x12:5", "--no-audio"]);
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    assert_eq!(json_of(&cli(&s, &["--json", "info", "demo-reel"]))["name"], "demo-reel");
+}
+
+#[test]
+fn add_downloads_a_link_through_ytdlp_without_cookies() {
+    let Some(tools) = media_tools() else { return };
+    let s = Scratch::new("addlink");
+    let fixture = s.0.join("src").join("fixture.mp4");
+    sounding_video(&tools, &fixture);
+    let log = s.0.join("argv.log");
+    let meta = serde_json::json!({
+        "_type": "video", "id": "fixture", "title": "Fake: Movie/Clip", "duration": 2,
+        "url": "https://v.example/18", "format_id": "18", "vcodec": "avc1", "acodec": "mp4a", "height": 90,
+    });
+    let body = format!(
+        r#"out=""
+prev=""
+for a in "$@"; do printf '%s\n' "$a" >> '{log}'; [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+printf 'END_CALL\n' >> '{log}'
+case "$*" in *--simulate*) cat <<'JSON'
+{meta}
+JSON
+exit 0;; esac
+echo "[download] Destination: $out"
+cp '{fixture}' "$(printf '%s' "$out" | sed 's/%(ext)s/mp4/')""#,
+        log = log.display(),
+        fixture = fixture.display(),
+    );
+    let ytdlp = fake_ytdlp(&s, &body);
+    let lib = s.0.join("run");
+    let url = "https://www.youtube.com/watch?v=fixture";
+    let out = stream_cli(&s, &ytdlp, &["--json", "add", url, "--library", lib.to_str().unwrap()]);
+    let v = json_of(&out);
+    let folder = lib.join("fake-movie-clip");
+    assert_eq!(v["title"], "Fake- Movie-Clip", "{v}");
+    assert_eq!(v["url"], url);
+    for name in ["source.mp4", "download.log", "Fake- Movie-Clip.ascii", "Fake- Movie-Clip.m4a", "play.command"] {
+        assert!(folder.join(name).is_file(), "{name} missing from {}", folder.display());
+    }
+    assert!(v["source"]["path"].as_str().unwrap().ends_with("fake-movie-clip/source.mp4"), "{v}");
+    assert!(std::fs::read_to_string(folder.join("download.log")).unwrap().contains("[download] Destination: "));
+
+    let logged = std::fs::read_to_string(&log).unwrap();
+    let calls: Vec<Vec<&str>> =
+        logged.split("END_CALL\n").filter(|c| !c.is_empty()).map(|c| c.lines().collect()).collect();
+    assert_eq!(calls.len(), 2, "one metadata call, one download: {calls:?}");
+    assert!(calls[0].contains(&"--simulate"), "{:?}", calls[0]);
+    assert!(calls[1].contains(&"--no-playlist") && !calls[1].contains(&"--simulate"), "{:?}", calls[1]);
+    for call in &calls {
+        assert_eq!(call[0], "--ignore-config", "{call:?}");
+        assert!(!call.iter().any(|a| a.contains("cookies")), "never browser cookies: {call:?}");
+        assert_eq!(call[call.len() - 2..], ["--", url], "{call:?}");
+    }
+}
+
+#[test]
+fn add_refuses_what_it_would_clobber_and_leaves_nothing_behind_on_failure() {
+    let Some(tools) = media_tools() else { return };
+    let s = Scratch::new("addguard");
+    let video = s.0.join("src").join("clip.mp4");
+    sounding_video(&tools, &video);
+    let arg = video.to_str().unwrap();
+
+    ok(&cli(&s, &["import", arg, "--name", "flat"]));
+    let out = cli(&s, &["add", arg, "--title", "flat"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr_of(&out).contains("flat.ascii already exists — pass --force"), "{}", stderr_of(&out));
+    ok(&cli(&s, &["add", arg, "--title", "flat", "--force"]));
+    assert!(!s.library().join("flat.ascii").exists() && !s.library().join("flat.json").exists());
+    let listed = json_of(&cli(&s, &["--json", "list"]));
+    let names: Vec<&str> = listed.as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["flat"], "{listed}");
+
+    let clip = s.library().join("flat").join("flat.ascii");
+    let out = cli(&s, &["add", clip.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr_of(&out).contains("is already a clip: auto-ascii play "), "{}", stderr_of(&out));
+
+    let staged = s.library().join("inside.partial");
+    std::fs::create_dir_all(&staged).unwrap();
+    std::fs::copy(&video, staged.join("source.mp4")).unwrap();
+    std::fs::copy(&clip, staged.join("ghost.ascii")).unwrap();
+    let out = cli(&s, &["add", staged.join("source.mp4").to_str().unwrap(), "--title", "inside"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr_of(&out).contains("which add replaces; move it out first"), "{}", stderr_of(&out));
+    assert!(staged.join("source.mp4").is_file(), "the input was not deleted");
+    let listed = json_of(&cli(&s, &["--json", "list"]));
+    assert_eq!(listed.as_array().unwrap().len(), 1, "a staging folder is not a clip: {listed}");
+    assert_eq!(cli(&s, &["play", "inside.partial", "--sim", "40x12:5", "--no-audio"]).status.code(), Some(1));
+
+    let broken = s.0.join("src").join("broken.mp4");
+    std::fs::write(&broken, b"not a video").unwrap();
+    let out = cli(&s, &["add", broken.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!s.library().join("broken.partial").exists(), "a failed add removes its staging folder");
+    assert!(!s.library().join("broken").exists());
+}

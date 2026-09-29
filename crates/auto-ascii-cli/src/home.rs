@@ -5,6 +5,8 @@ use auto_ascii::{Composition, timecode};
 
 use crate::BoxErr;
 
+pub const STAGING_SUFFIX: &str = ".partial";
+
 pub struct Home {
     root: PathBuf,
 }
@@ -54,6 +56,18 @@ impl Home {
         self.library().join(format!("{name}.ascii"))
     }
 
+    fn find_clip(&self, name: &str) -> Option<PathBuf> {
+        let flat = self.clip_path(name);
+        if flat.is_file() {
+            return Some(flat);
+        }
+        let mut parts = Path::new(name).components();
+        match (parts.next(), parts.next()) {
+            (Some(std::path::Component::Normal(_)), None) => folder_clip(&self.library().join(name)),
+            _ => None,
+        }
+    }
+
     pub fn resolve_clip(&self, spec: &str) -> Result<PathBuf, BoxErr> {
         let as_path = Path::new(spec);
         if as_path.is_file() {
@@ -61,15 +75,8 @@ impl Home {
         }
         let name = library_name(spec, "ascii");
         let in_library = self.clip_path(name);
-        if in_library.is_file() {
-            return Ok(in_library);
-        }
-        let kebab = kebab_case(name);
-        if !kebab.is_empty() && kebab != name {
-            let kebabbed = self.clip_path(&kebab);
-            if kebabbed.is_file() {
-                return Ok(kebabbed);
-            }
+        if let Some(found) = self.find_clip(name).or_else(|| self.find_clip(&kebab_case(name))) {
+            return Ok(found);
         }
         Err(format!(
             "no clip {spec:?}: not a file here, and {} does not exist \
@@ -128,17 +135,14 @@ impl Home {
         let (clip_kebab, comp_kebab) = (kebab_case(clip_name), kebab_case(comp_name));
         let kebabbed = (!clip_kebab.is_empty()
             && (clip_kebab != clip_name || comp_kebab != comp_name))
-            .then(|| (self.clip_path(&clip_kebab), self.composition_path(&comp_kebab)));
-        for (clip, composition) in
-            std::iter::once((&in_library, &in_compositions)).chain(
-                kebabbed.iter().map(|(c, k)| (c, k)),
-            )
-        {
-            if clip.is_file() {
-                return Ok(Target::Clip(clip.clone()));
+            .then_some((clip_kebab.as_str(), comp_kebab.as_str()));
+        for (clip, composition) in std::iter::once((clip_name, comp_name)).chain(kebabbed) {
+            if let Some(found) = self.find_clip(clip) {
+                return Ok(Target::Clip(found));
             }
+            let composition = self.composition_path(composition);
             if composition.is_file() {
-                return Ok(Target::Composition(composition.clone()));
+                return Ok(Target::Composition(composition));
             }
         }
         Err(format!(
@@ -154,6 +158,19 @@ impl Home {
 pub enum Target {
     Clip(PathBuf),
     Composition(PathBuf),
+}
+
+pub fn folder_clip(dir: &Path) -> Option<PathBuf> {
+    if dir.to_string_lossy().ends_with(STAGING_SUFFIX) {
+        return None;
+    }
+    let mut clips: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.is_file() && path.extension().is_some_and(|e| e == "ascii"))
+        .collect();
+    clips.sort();
+    clips.into_iter().next()
 }
 
 pub fn sidecar_path(asset: &Path) -> PathBuf {
