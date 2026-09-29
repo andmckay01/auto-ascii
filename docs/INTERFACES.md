@@ -48,7 +48,13 @@ crates/
                         sets default-features=false), auto-ascii-factory(path,
                         the lib), auto-ascii-format, clap, memmap2, serde,
                         serde_json; dev: auto-ascii-eval (AVI fixtures).
-                        No new external dependency entered the workspace.
+                        No new external dependency entered the workspace
+                        at M7. The first-use tool downloader (FEATURE-MAP
+                        flow 18) added indicatif (workspace), ureq 3
+                        (rustls + ring + webpki-roots, no native-tls, no
+                        gzip) and zip 8 (deflate read via flate2/zlib-rs
+                        only) — CLI-only; the published facade gained just
+                        the network-free hidden `tools` lookup.
                         It is a THIRD crate because the factory already
                         depends on the facade, so the binary needing both
                         cannot live in either.

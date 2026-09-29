@@ -149,6 +149,60 @@ results are not guaranteed bit-identical across platforms, and the render
 goldens are byte-compared. Both terms are monotonic in `n`, so the ramp
 never inverts, and 0 and 255 are fixed points.
 
+### Standalone tool downloads
+
+When ffmpeg, ffprobe or yt-dlp is missing, the `auto-ascii` CLI downloads a
+separate, prebuilt executable into `<cache>/bin` and runs it as a
+subprocess, exactly like one on PATH. Nothing is linked into or bundled
+with auto-ascii's binaries, and auto-ascii does not redistribute them: the
+user's machine fetches each one from its publisher, after consent.
+
+- **yt-dlp:** the release builds on `github.com/yt-dlp/yt-dlp/releases`:
+  `yt-dlp_linux`, `yt-dlp_linux_aarch64` and `yt-dlp.exe`. On macOS it is the
+  one-folder `yt-dlp_macos.zip` (universal), not the one-file `yt-dlp_macos`.
+  The one-file build unpacks itself into a fresh temp folder on every run,
+  and macOS scans those new files each time, so every call took about 7.4 s
+  instead of 0.17 s. The folder lives in `<cache>/yt-dlp/<tag>-<n>/`, and
+  `<cache>/bin/yt-dlp` is a symlink swapped atomically on update; the
+  previous folder is kept for a run still using it. `releases/latest` is
+  resolved to its tag first, so the build and `SHA2-256SUMS` come from the
+  same release. yt-dlp is Unlicense; its PyInstaller builds bundle Python
+  and other components under their own licenses.
+- **ffmpeg and ffprobe on macOS and Linux:** Martin Riedl's build server
+  (`ffmpeg.martin-riedl.de`), release channel. It is the only source found
+  that covers macOS arm64 and x86_64 and Linux x86_64 and arm64 with one
+  stable scripting URL scheme, publishes a `.sha256` beside every file, ships
+  ffmpeg and ffprobe as separate zips of about 30 MB each, and signs its
+  macOS binaries. Its builds include OpenSSL, which `stream` needs for HTTPS
+  inputs. That static OpenSSL looks for CA certificates under the builder's
+  prefix, and ffmpeg 9 verifies peers by default, so `stream` sets
+  `SSL_CERT_FILE` to the system bundle (`/etc/ssl/cert.pem` or the usual
+  Linux paths) for the cached ffmpeg only, and only when the variable is not
+  already set. The `redirect/latest/.../ffmpeg.zip` URL is resolved once
+  (its redirect is read without following it; the server answers HEAD with
+  404), and both programs come from that build folder. Intel macOS release builds
+  are announced to stop in January 2027; after that, x86_64 Macs will need
+  another source or `brew install ffmpeg`.
+- **ffmpeg and ffprobe on Windows x86_64:** gyan.dev's release essentials
+  zip (about 115 MB). This is the Windows build that ffmpeg.org links to,
+  and it publishes a `.sha256` beside the versioned package.
+- **Rejected:** the `ffmpeg-sidecar` crate's downloader, which verifies no
+  checksum and fetches no ffprobe on macOS. It uses an unversioned
+  osxexperts.net zip on Apple Silicon and pulls a full ffmpeg wrapper plus
+  tar/xz/zip stacks. BtbN's FFmpeg-Builds is Windows/Linux only, at 120–200
+  MB per archive. evermeet.cx is Intel-only, and johnvansickle.com is
+  Linux-only with md5 sums.
+
+Both ffmpeg sources build with `--enable-gpl --enable-version3`, so the
+downloaded executables are GPLv3; their license and source offer come from
+their publishers. auto-ascii stays MIT because it only runs them as separate
+programs. Every download is HTTPS-only, SHA-256 checked before anything is
+installed, unzipped when needed, test-run (`-version` / `--version`), and
+renamed into place under `<cache>/bin/.lock`. `manifest.json` records each
+tool's URL, version, digest and dates. A cached yt-dlp that fails is
+updated once (only if a newer release exists) and the lookup is retried. A
+yt-dlp from PATH or `AUTO_ASCII_YTDLP` is never touched.
+
 ### Overlay size rationale
 
 At 240 columns, one-cell text is one-third of its apparent 80-column size;
