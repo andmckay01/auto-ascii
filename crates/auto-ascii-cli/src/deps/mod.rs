@@ -100,7 +100,7 @@ pub fn accepts(answer: &str) -> bool {
 pub trait Provider {
     fn ask(&mut self, prompt: &str) -> bool;
     fn install(&mut self, bin: &Path, tools: &[Tool]) -> Result<(), String>;
-    fn update_ytdlp(&mut self, bin: &Path) -> Result<Option<String>, String>;
+    fn update_ytdlp(&mut self, bin: &Path, failed_with: Option<&str>) -> Result<Option<String>, String>;
 }
 
 pub struct Live {
@@ -126,9 +126,9 @@ impl Provider for Live {
         fetch::install(bin, asset, tools, self.noise).map(|_| ())
     }
 
-    fn update_ytdlp(&mut self, bin: &Path) -> Result<Option<String>, String> {
+    fn update_ytdlp(&mut self, bin: &Path, failed_with: Option<&str>) -> Result<Option<String>, String> {
         let asset = self.asset.as_ref().ok_or("no standalone builds for this platform")?;
-        fetch::update_ytdlp(bin, asset, self.noise, None, &fetch::never)
+        fetch::update_ytdlp(bin, asset, self.noise, failed_with, &fetch::never)
     }
 }
 
@@ -242,7 +242,7 @@ pub fn provide(ctx: &Ctx, tools: &[Tool], refresh: bool, provider: &mut dyn Prov
         provider.install(bin, &missing)?;
     }
     if refresh_now {
-        provider.update_ytdlp(bin)?;
+        provider.update_ytdlp(bin, None)?;
     }
     let found = resolved(ctx, tools);
     if let Some(tool) = tools.iter().find(|t| found.origin(**t).is_none()) {
@@ -272,7 +272,7 @@ fn refresh_ytdlp(ctx: &Ctx, age: u64, provider: &mut dyn Provider) {
     let Some(bin) = ctx.bin() else { return };
     let noise = ctx.noise();
     noise.say(&format!("the cached yt-dlp was last checked for updates {age} days ago; checking now"));
-    match provider.update_ytdlp(bin) {
+    match provider.update_ytdlp(bin, None) {
         Ok(Some(version)) => noise.say(&format!("updated the cached yt-dlp to {version}")),
         Ok(None) => noise.say("the cached yt-dlp is already the latest release"),
         Err(e) => noise.say(&format!("could not update the cached yt-dlp ({e}); using it as it is")),
@@ -312,11 +312,21 @@ pub fn ytdlp_updater(ctx: &Ctx, resolved: &Resolved) -> Option<Update> {
             return Some(Arc::new(move |_| Err(why.clone())));
         }
     }
-    let ran_with = Manifest::read(&bin).entry(Tool::YtDlp).map(|e| e.version.clone());
+    let ran_with = cached_version(ctx);
     Some(Arc::new(move |cancel| fetch::update_ytdlp(&bin, &asset, Noise { quiet: true }, ran_with.as_deref(), cancel)))
 }
 
-pub fn offer_update(ctx: &Ctx, resolved: &Resolved, err: &str, provider: &mut dyn Provider) -> Option<String> {
+pub fn cached_version(ctx: &Ctx) -> Option<String> {
+    Manifest::read(ctx.bin()?).entry(Tool::YtDlp).map(|e| e.version.clone())
+}
+
+pub fn offer_update(
+    ctx: &Ctx,
+    resolved: &Resolved,
+    ran_with: Option<&str>,
+    err: &str,
+    provider: &mut dyn Provider,
+) -> Option<String> {
     let asking = consent(ctx.yes, ctx.json, ctx.interactive) == Consent::Ask;
     let cached = resolved.origin(Tool::YtDlp) == Some(Origin::Cache);
     if !asking || !cached || ctx.no_download || !crate::stream::ytdlp::failed_itself(err) {
@@ -331,7 +341,7 @@ pub fn offer_update(ctx: &Ctx, resolved: &Resolved, err: &str, provider: &mut dy
         return None;
     }
     let noise = ctx.noise();
-    match provider.update_ytdlp(bin) {
+    match provider.update_ytdlp(bin, ran_with) {
         Ok(Some(version)) => {
             noise.say(&format!("updated the cached yt-dlp to {version}; trying again"));
             Some(version)
@@ -415,7 +425,7 @@ pub fn report(ctx: &Ctx) -> Report {
         .map(|tool| {
             let found = ctx.lookup.find(tool);
             let (version, error) = match &found {
-                Some(f) => match fetch::version_of(&f.path, tool) {
+                Some(f) => match fetch::version_of(&f.path, tool, &fetch::never) {
                     Ok(v) => (Some(v), None),
                     Err(e) => (None, Some(e)),
                 },
@@ -496,7 +506,7 @@ mod tests {
             Ok(())
         }
 
-        fn update_ytdlp(&mut self, _: &Path) -> Result<Option<String>, String> {
+        fn update_ytdlp(&mut self, _: &Path, _: Option<&str>) -> Result<Option<String>, String> {
             self.updates += 1;
             Ok(Some("2099.01.01".into()))
         }
@@ -730,18 +740,18 @@ mod tests {
 
         let broke = "yt-dlp: Unable to extract initial player response";
         let mut declined = Fake::default();
-        assert_eq!(offer_update(&ctx, &got, broke, &mut declined), None);
+        assert_eq!(offer_update(&ctx, &got, Some("2026.01.01"), broke, &mut declined), None);
         assert_eq!(declined.asked.len(), 1);
         assert!(declined.asked[0].starts_with(&format!("the cached yt-dlp failed ({broke}). Download the latest yt-dlp (~54 MB)")));
         assert_eq!(declined.updates, 0);
 
         let mut accepted = Fake { answer: true, ..Fake::default() };
-        assert_eq!(offer_update(&ctx, &got, broke, &mut accepted).as_deref(), Some("2099.01.01"));
+        assert_eq!(offer_update(&ctx, &got, Some("2026.01.01"), broke, &mut accepted).as_deref(), Some("2099.01.01"));
         assert_eq!(accepted.updates, 1);
 
         let mut untouched = Fake { answer: true, ..Fake::default() };
-        assert_eq!(offer_update(&ctx, &got, "no videos found for \"x\"", &mut untouched), None);
-        assert_eq!(offer_update(&env.ctx(true, false, true), &got, broke, &mut untouched), None, "--yes updated in-run");
+        assert_eq!(offer_update(&ctx, &got, None, "no videos found for \"x\"", &mut untouched), None);
+        assert_eq!(offer_update(&env.ctx(true, false, true), &got, None, broke, &mut untouched), None, "--yes updated in-run");
         assert!(untouched.asked.is_empty() && untouched.updates == 0);
     }
 
