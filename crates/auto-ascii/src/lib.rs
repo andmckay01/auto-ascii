@@ -33,7 +33,7 @@ pub use session::RenderSession;
 #[cfg(feature = "terminal")]
 pub use player::{Dial, MIN_FPS_CAP, Player, PlayerBuilder, RepaintMode, SCRUB_STEP_SECS, Stopped};
 
-pub use auto_ascii_core::{Cell, Grid, Rgb};
+pub use auto_ascii_core::{Cell, ComposeParams, Grid, Rgb};
 pub use auto_ascii_core::Style;
 pub use auto_ascii_core::style::Style as Codec;
 #[cfg(feature = "terminal")]

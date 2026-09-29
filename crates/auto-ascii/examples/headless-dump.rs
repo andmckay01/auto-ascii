@@ -2,12 +2,13 @@
 
 use std::io::Write;
 
-use auto_ascii::{Cell, Grid, PaletteChoice, RenderSession, Style};
+use auto_ascii::{Cell, ComposeParams, Grid, PaletteChoice, RenderSession, Style};
 
 fn usage() -> String {
     format!(
         "usage: headless-dump <asset.ascii | composition.toml> [FRAMES] [COLSxROWS] \
-         [--style {}] [--palette ascii|unicode|braille] [--from FRAME]",
+         [--style {}] [--palette ascii|unicode|braille] [--from FRAME] \
+         [--settings PLAYER.toml]",
         Style::names("|")
     )
 }
@@ -53,16 +54,35 @@ fn parse_palette(s: &str) -> PaletteChoice {
     }
 }
 
+#[cfg(feature = "terminal")]
+fn load_settings(path: &str) -> (Style, ComposeParams) {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let saved = auto_ascii::settings::VideoSettings::parse(&text)
+        .unwrap_or_else(|e| panic!("{path}: {e}"));
+    (saved.style, saved.compose)
+}
+
+#[cfg(not(feature = "terminal"))]
+fn load_settings(path: &str) -> (Style, ComposeParams) {
+    panic!("--settings {path} needs the `terminal` feature")
+}
+
 fn main() -> Result<(), auto_ascii::Error> {
-    let (mut style, mut palette, mut from) = (Style::default(), PaletteChoice::Ascii, None);
+    let (mut style, mut palette, mut from) = (None, PaletteChoice::Ascii, None);
+    let mut compose = None;
     let mut positional = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| bad());
         match arg.as_str() {
-            "--style" | "--codec" => style = Style::from_name(&value()).unwrap_or_else(|| bad()),
+            "--style" | "--codec" => style = Some(Style::from_name(&value()).unwrap_or_else(|| bad())),
             "--palette" => palette = parse_palette(&value()),
             "--from" => from = Some(value().parse::<u32>().unwrap_or_else(|_| bad())),
+            "--settings" => {
+                let (saved_style, saved_compose) = load_settings(&value());
+                style = style.or(Some(saved_style));
+                compose = Some(saved_compose);
+            }
             _ => positional.push(arg),
         }
     }
@@ -73,7 +93,10 @@ fn main() -> Result<(), auto_ascii::Error> {
 
     let mut session = open(&path)?;
     session.set_palette(palette);
-    session.set_style(style);
+    session.set_style(style.unwrap_or_default());
+    if let Some(params) = compose {
+        session.set_compose_params(params);
+    }
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();

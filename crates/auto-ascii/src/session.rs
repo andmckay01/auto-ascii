@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use auto_ascii_core::{Cell, ColorDepth, FontTable, Grid, Style};
+use auto_ascii_core::{Cell, ColorDepth, ComposeParams, FontTable, Grid, Style};
 
 use crate::composition::Composition;
 use crate::deck::{ClipDeck, DeckConfig};
@@ -134,6 +134,10 @@ impl RenderSession {
 
     pub fn style(&self) -> Style {
         self.deck.style()
+    }
+
+    pub fn set_compose_params(&mut self, params: ComposeParams) {
+        self.deck.set_compose_params(params);
     }
 
     #[deprecated(note = "renamed to `set_style`")]
