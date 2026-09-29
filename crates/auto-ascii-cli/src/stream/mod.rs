@@ -67,6 +67,13 @@ pub fn parse_sim(spec: &str) -> Result<SimSpec, String> {
     Ok(SimSpec { cols, rows, secs })
 }
 
+pub struct Programs {
+    pub ffmpeg: PathBuf,
+    pub ffmpeg_ca_file: Option<PathBuf>,
+    pub ytdlp: PathBuf,
+    pub ytdlp_update: Option<crate::deps::Update>,
+}
+
 pub struct StreamArgs {
     pub input: String,
     pub style: Style,
@@ -196,7 +203,9 @@ struct Shared {
     stop: Arc<AtomicBool>,
     cwd: PathBuf,
     ffmpeg: PathBuf,
+    ca_file: Option<PathBuf>,
     ytdlp: PathBuf,
+    ytdlp_update: Option<crate::deps::Update>,
 }
 
 enum AudioPlan {
@@ -256,7 +265,7 @@ fn next_style(style: Style, presses: u32) -> Style {
     Style::ALL[(at + presses as usize) % Style::ALL.len()]
 }
 
-pub fn run(args: &StreamArgs) -> Result<(), BoxErr> {
+pub fn run(programs: &Programs, args: &StreamArgs) -> Result<(), BoxErr> {
     let scratch = ScratchDir::new().map_err(|e| format!("creating a private temp dir: {e}"))?;
     let scratch_path = scratch.path().to_path_buf();
     let procs = Procs::new();
@@ -265,8 +274,10 @@ pub fn run(args: &StreamArgs) -> Result<(), BoxErr> {
         procs: procs.clone(),
         stop: Arc::new(AtomicBool::new(false)),
         cwd: scratch_path.clone(),
-        ffmpeg: decode::program_from_env(),
-        ytdlp: YtDlp::program_from_env(),
+        ffmpeg: programs.ffmpeg.clone(),
+        ca_file: programs.ffmpeg_ca_file.clone(),
+        ytdlp: programs.ytdlp.clone(),
+        ytdlp_update: programs.ytdlp_update.clone(),
     };
     let t0 = Instant::now();
     let plan = open_audio(args.no_audio, args.sim.is_some());
@@ -325,13 +336,23 @@ fn spawn_resolver(args: &StreamArgs, shared: &Shared, tx: Sender<Msg>) -> JoinHa
     let ytdlp = YtDlp::new(shared.ytdlp.clone(), shared.procs.clone(), &shared.cwd)
         .cookies_from_browser(args.cookies_from_browser.as_deref());
     let stop = shared.stop.clone();
+    let update = shared.ytdlp_update.clone();
     std::thread::spawn(move || {
-        let result = ytdlp.resolve(&input, max_height, &mut |e| {
-            let _ = tx.send(match e {
-                Event::Started => Msg::YtdlpStarted,
-                Event::EntryFound(url) => Msg::EntryFound(url),
-            });
-        });
+        let notes = tx.clone();
+        let result = ytdlp.resolve_or_update(
+            &input,
+            max_height,
+            &mut |e| {
+                let _ = tx.send(match e {
+                    Event::Started => Msg::YtdlpStarted,
+                    Event::EntryFound(url) => Msg::EntryFound(url),
+                });
+            },
+            update.as_deref(),
+            &mut |note| {
+                let _ = notes.send(Msg::Fallback(note));
+            },
+        );
         if stop.load(Ordering::SeqCst) {
             return;
         }
@@ -399,6 +420,7 @@ fn start_audio(
             procs: shared.procs.clone(),
             cwd: shared.cwd.clone(),
             ffmpeg: shared.ffmpeg.clone(),
+            ca_file: shared.ca_file.clone(),
             stop: shared.stop.clone(),
         },
         tracks: media.audio.clone(),
@@ -432,6 +454,7 @@ fn start_video(media: &Media, shared: &Shared, tx: &Sender<Msg>, stats: &mut Sta
             procs: shared.procs.clone(),
             cwd: shared.cwd.clone(),
             ffmpeg: shared.ffmpeg.clone(),
+            ca_file: shared.ca_file.clone(),
             stop: shared.stop.clone(),
         },
         tracks: media.video.clone(),
@@ -1062,7 +1085,7 @@ mod tests {
 
         fn media(&self, secs: u32, with_audio: bool) -> PathBuf {
             let path = self.dir().join(if with_audio { "av.mkv" } else { "v.mkv" });
-            let mut cmd = std::process::Command::new(decode::program_from_env());
+            let mut cmd = std::process::Command::new(real_ffmpeg());
             cmd.args(["-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i"])
                 .arg(format!("testsrc2=size=160x90:rate=30:duration={secs}"));
             if with_audio {
@@ -1100,7 +1123,9 @@ mod tests {
                 stop: Arc::new(AtomicBool::new(false)),
                 cwd: self.dir().to_path_buf(),
                 ffmpeg,
+                ca_file: None,
                 ytdlp,
+                ytdlp_update: None,
             };
             let args = StreamArgs {
                 input: "https://www.youtube.com/watch?v=localfixture".into(),
@@ -1123,7 +1148,7 @@ mod tests {
     }
 
     fn real_ffmpeg() -> PathBuf {
-        decode::program_from_env()
+        auto_ascii::tools::Lookup::from_env().program(auto_ascii::tools::Tool::Ffmpeg)
     }
 
     #[test]
@@ -1232,7 +1257,7 @@ mod tests {
     impl Local {
         fn media_split(&self, video_secs: u32, audio_secs: u32) -> PathBuf {
             let path = self.dir().join(format!("split-{video_secs}-{audio_secs}.mkv"));
-            let mut cmd = std::process::Command::new(decode::program_from_env());
+            let mut cmd = std::process::Command::new(real_ffmpeg());
             cmd.args(["-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i"])
                 .arg(format!("testsrc2=size=160x90:rate=30:duration={video_secs}"))
                 .args(["-f", "lavfi", "-i"])

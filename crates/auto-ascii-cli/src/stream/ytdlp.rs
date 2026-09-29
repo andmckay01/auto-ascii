@@ -1,7 +1,7 @@
 //! yt-dlp in one place: classify the input, walk a playlist, channel or
 //! search down to its first video, then read that video's stream URLs and
 //! metadata. The program path is injectable (`AUTO_ASCII_YTDLP`) so tests
-//! can stand in a fake script.
+//! can stand in a fake script; a failing cached copy is updated and retried.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -10,8 +10,6 @@ use std::process::Command;
 use serde_json::Value;
 
 use super::procs::Procs;
-
-pub const PROGRAM_ENV: &str = "AUTO_ASCII_YTDLP";
 
 const PREFIX: [&str; 5] = ["--ignore-config", "--no-cache-dir", "--simulate", "--skip-download", "--no-warnings"];
 
@@ -147,12 +145,6 @@ impl YtDlp {
         args
     }
 
-    pub fn program_from_env() -> PathBuf {
-        std::env::var_os(PROGRAM_ENV)
-            .filter(|p| !p.is_empty())
-            .map_or_else(|| PathBuf::from("yt-dlp"), PathBuf::from)
-    }
-
     pub fn selector(max_height: u32) -> String {
         format!("b[height<={max_height}][vcodec!=none][acodec!=none]/bv*[height<={max_height}]+ba/b")
     }
@@ -171,6 +163,32 @@ impl YtDlp {
         on(Event::EntryFound(video_url.clone()));
         let json = self.run_json(&["--no-playlist", "-f", &Self::selector(max_height), "-J", "--", &video_url])?;
         media_from_json(&json, max_height)
+    }
+
+    pub fn resolve_or_update(
+        &self,
+        input: &Input,
+        max_height: u32,
+        on: &mut dyn FnMut(Event),
+        update: Option<&(dyn Fn() -> Result<Option<String>, String> + Send + Sync)>,
+        note: &mut dyn FnMut(String),
+    ) -> Result<Media, String> {
+        let first = self.resolve(input, max_height, on);
+        let (Err(e), Some(update)) = (&first, update) else { return first };
+        if !failed_itself(e) {
+            return first;
+        }
+        match update() {
+            Ok(Some(version)) => {
+                note(format!("the cached yt-dlp failed ({e}); updated it to {version} and retried"));
+                self.resolve(input, max_height, on)
+            }
+            Ok(None) => first,
+            Err(u) => {
+                note(format!("the cached yt-dlp failed; updating it failed too: {u}"));
+                first
+            }
+        }
     }
 
     fn first_entry(&self, target: &str, input: &Input, depth: usize) -> Result<String, String> {
@@ -237,6 +255,10 @@ fn entry_url(entry: &Value) -> Option<String> {
         Some("Youtube") | None => Some(format!("https://www.youtube.com/watch?v={id}")),
         Some(_) => None,
     }
+}
+
+pub fn failed_itself(err: &str) -> bool {
+    (err.starts_with("yt-dlp") && err != "yt-dlp was stopped") || err.starts_with("failed to run yt-dlp")
 }
 
 pub fn clean_error(stderr: &str, code: Option<i32>) -> String {
@@ -444,19 +466,49 @@ mod tests {
             let scratch = ScratchDir::new().unwrap();
             let dir = scratch.path().to_path_buf();
             let log = dir.join("argv.log");
-            let program = dir.join("yt-dlp");
+            let fake = Fake { _scratch: scratch, dir, log };
+            fake.rewrite(script_body);
+            fake
+        }
+
+        fn rewrite(&self, script_body: &str) {
+            let program = self.dir.join("yt-dlp");
             let script = format!(
                 "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> '{}'; done\nprintf 'END_CALL\\n' >> '{}'\nargs=\"$*\"\n{script_body}\n",
-                log.display(),
-                log.display()
+                self.log.display(),
+                self.log.display()
             );
-            std::fs::write(&program, script).unwrap();
+            let temp = self.dir.join("yt-dlp.new");
+            std::fs::write(&temp, script).unwrap();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+                std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
-            Fake { _scratch: scratch, dir, log }
+            std::fs::rename(&temp, &program).unwrap();
+        }
+
+        fn calls(&self) -> usize {
+            std::fs::read_to_string(&self.log).unwrap_or_default().matches("END_CALL").count()
+        }
+
+        fn resolve_updating(
+            &self,
+            input: &str,
+            update: &(dyn Fn() -> Result<Option<String>, String> + Send + Sync),
+        ) -> (Result<Media, String>, Vec<String>) {
+            let procs = Procs::new();
+            let ytdlp = YtDlp::new(self.dir.join("yt-dlp"), procs.clone(), &self.dir);
+            let mut notes = Vec::new();
+            let result = ytdlp.resolve_or_update(
+                &Input::classify(input),
+                480,
+                &mut |_| {},
+                Some(update),
+                &mut |n| notes.push(n),
+            );
+            assert_eq!(procs.running(), 0);
+            (result, notes)
         }
 
         fn resolve(&self, input: &str) -> (Result<Media, String>, Vec<Vec<String>>, Vec<String>) {
@@ -683,6 +735,65 @@ mod tests {
             "yt-dlp: Sign in to confirm your age. This video may be inappropriate for some users."
         );
         assert_eq!(events.len(), 2);
+    }
+
+    const EXTRACTOR_BROKE: &str =
+        "echo 'ERROR: [youtube] jNQXAC9IVRw: Unable to extract player response; please report this issue' >&2\nexit 1";
+
+    #[test]
+    fn a_failing_cached_ytdlp_is_updated_once_and_retried() {
+        let fake = Fake::new(EXTRACTOR_BROKE);
+        let updates = std::sync::atomic::AtomicUsize::new(0);
+        let url = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
+        let (result, notes) = fake.resolve_updating(url, &|| {
+            updates.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            fake.rewrite(&video_branch());
+            Ok(Some("2099.01.01".into()))
+        });
+        assert_zoo(result);
+        assert_eq!(updates.into_inner(), 1);
+        assert_eq!(fake.calls(), 2, "one failed run, one retry");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].starts_with("the cached yt-dlp failed (yt-dlp: Unable to extract player response"), "{notes:?}");
+        assert!(notes[0].ends_with("updated it to 2099.01.01 and retried"), "{notes:?}");
+    }
+
+    #[test]
+    fn the_retry_happens_once_even_if_the_update_did_not_help() {
+        let fake = Fake::new(EXTRACTOR_BROKE);
+        let updates = std::sync::atomic::AtomicUsize::new(0);
+        let (result, notes) = fake.resolve_updating("https://youtu.be/jNQXAC9IVRw", &|| {
+            updates.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some("2099.01.01".into()))
+        });
+        assert!(result.unwrap_err().starts_with("yt-dlp: Unable to extract player response"));
+        assert_eq!((updates.into_inner(), fake.calls(), notes.len()), (1, 2, 1));
+    }
+
+    #[test]
+    fn no_retry_when_already_latest_or_when_the_update_fails() {
+        let fake = Fake::new(EXTRACTOR_BROKE);
+        let (result, notes) = fake.resolve_updating("https://youtu.be/jNQXAC9IVRw", &|| Ok(None));
+        assert!(result.unwrap_err().starts_with("yt-dlp: Unable to extract"));
+        assert_eq!((fake.calls(), notes.len()), (1, 0), "already the latest release: nothing to retry");
+
+        let fake = Fake::new(EXTRACTOR_BROKE);
+        let (result, notes) = fake.resolve_updating("https://youtu.be/jNQXAC9IVRw", &|| Err("offline".into()));
+        assert!(result.unwrap_err().starts_with("yt-dlp: Unable to extract"));
+        assert_eq!(fake.calls(), 1);
+        assert_eq!(notes, ["the cached yt-dlp failed; updating it failed too: offline"]);
+    }
+
+    #[test]
+    fn answers_about_the_video_are_not_a_reason_to_update() {
+        let fake = Fake::new(&format!("cat <<'JSON'\n{}\nJSON", flat("")));
+        let (result, notes) = fake.resolve_updating("zzqqxx nothing", &|| panic!("no update for an empty search"));
+        assert_eq!(result.unwrap_err(), "no videos found for \"zzqqxx nothing\"");
+        assert!(notes.is_empty());
+        assert!(failed_itself("failed to run yt-dlp (is it installed and on PATH?): Exec format error"));
+        assert!(failed_itself("yt-dlp printed unparseable JSON: EOF"));
+        assert!(!failed_itself("yt-dlp was stopped"));
+        assert!(!failed_itself("live streams are not supported (only finished videos)"));
     }
 
     #[test]

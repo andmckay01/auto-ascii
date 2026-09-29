@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use super::output::{Pcm, Track};
+use crate::tools::{Lookup, Tool};
 
 pub const SIDECAR_EXTS: [&str; 12] =
     ["m4a", "mp4", "aac", "mp3", "wav", "flac", "ogg", "opus", "mov", "m4v", "mkv", "webm"];
@@ -22,8 +23,6 @@ pub const PCM_BUDGET_BYTES: usize = 512 << 20;
 pub const MISMATCH_MIN_SECS: f64 = 3.0;
 
 pub const MISMATCH_FRACTION: f64 = 0.1;
-
-const TOOL_DIRS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TrackSource {
@@ -65,13 +64,17 @@ pub fn find_tool_in(name: &str, dirs: impl IntoIterator<Item = PathBuf>) -> Opti
 
 impl Tools {
     pub fn find() -> Result<Tools, String> {
-        let dirs = || {
-            let path = std::env::var_os("PATH").unwrap_or_default();
-            std::env::split_paths(&path).chain(TOOL_DIRS.map(PathBuf::from)).collect::<Vec<_>>()
+        let lookup = Lookup::from_env().with_extra_dirs();
+        let find = |tool: Tool| {
+            lookup.find(tool).map(|found| found.path).ok_or_else(|| {
+                format!(
+                    "{} not found on PATH, in /opt/homebrew/bin or in the auto-ascii cache \
+                     (`auto-ascii doctor --fetch` downloads it)",
+                    tool.name()
+                )
+            })
         };
-        let ffmpeg = find_tool_in("ffmpeg", dirs()).ok_or("ffmpeg not found on PATH or in /opt/homebrew/bin")?;
-        let ffprobe = find_tool_in("ffprobe", dirs()).ok_or("ffprobe not found on PATH or in /opt/homebrew/bin")?;
-        Ok(Tools { ffmpeg, ffprobe })
+        Ok(Tools { ffmpeg: find(Tool::Ffmpeg)?, ffprobe: find(Tool::Ffprobe)? })
     }
 }
 
