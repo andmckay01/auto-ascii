@@ -412,9 +412,9 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     `<name>.json` sidecar.
   - `add` never downloads inside import: `source.rs` turns the input into a local file (a path
     as is, but never an `.ascii`; a link through the `Downloader`, best video up to 1080p plus
-    AAC audio, never browser cookies). Only a transient yt-dlp error (`403`, `timed out`,
-    `stall`, `connection reset`, `fragment`) earns a 1080p retry and then a 720p try; any other
-    error fails at once. Everything after works on that local file. The folder is built in
+    AAC audio, never browser cookies). Only a transient yt-dlp error (`HTTP Error 403`, `timed
+    out`, `stalled`, `connection reset`, `fragment`, matched on the one error line it reports)
+    earns a 1080p retry and then a 720p try; any other error fails at once. Everything after works on that local file. The folder is built in
     `<slug>.partial` and renamed into place only after the build, the soundtrack copy
     (re-encoded to AAC if the codec cannot be copied), the `dev inspect` integrity walk (frame
     count, trailer and every chunk CRC, which the build always writes) and a length match within

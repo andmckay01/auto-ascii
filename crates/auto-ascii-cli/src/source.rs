@@ -23,15 +23,15 @@ pub const DOWNLOAD_LOG: &str = "download.log";
 
 pub const HEIGHTS: [u32; 3] = [1080, 1080, 720];
 
-pub const TRANSIENT: [&str; 5] = ["403", "timed out", "stall", "connection reset", "fragment"];
+pub const TRANSIENT: [&str; 5] = ["http error 403", "timed out", "stalled", "connection reset", "fragment"];
 
 pub struct Failure {
     pub message: String,
     pub transient: bool,
 }
 
-pub fn transient(text: &str) -> bool {
-    let text = text.to_lowercase();
+pub fn transient(message: &str) -> bool {
+    let text = message.to_lowercase();
     TRANSIENT.iter().any(|pattern| text.contains(pattern))
 }
 
@@ -240,7 +240,8 @@ fn run_logged(cmd: &mut Command, log: &Path, echo: bool) -> Result<(), Failure> 
     if status.success() {
         return Ok(());
     }
-    Err(Failure { message: clean_error(&errors, status.code()), transient: transient(&errors) })
+    let message = clean_error(&errors, status.code());
+    Err(Failure { transient: transient(&message), message })
 }
 
 fn copy_lines(from: impl Read, mut log: &File, echo: bool) -> String {
@@ -342,17 +343,26 @@ mod tests {
 
     #[test]
     fn only_transient_errors_are_retried() {
-        for text in [
+        let retried = |stderr: &str| transient(&clean_error(stderr, Some(1)));
+        for stderr in [
             "ERROR: unable to download video data: HTTP Error 403: Forbidden",
             "ERROR: Read timed out.",
             "ERROR: The download stalled",
             "ERROR: [Errno 54] Connection reset by peer",
             "ERROR: fragment 3 not found, unable to continue",
+            "WARNING: [youtube] ab403cdEFgh: Private video\nERROR: [youtube] ab403cdEFgh: HTTP Error 403: Forbidden",
         ] {
-            assert!(transient(text), "{text}");
+            assert!(retried(stderr), "{stderr}");
         }
-        for text in ["ERROR: [youtube] x: Private video", "ERROR: [youtube] x: Video unavailable"] {
-            assert!(!transient(text), "{text}");
+        for stderr in [
+            "ERROR: [youtube] x: Private video",
+            "ERROR: [youtube] x: Video unavailable",
+            "ERROR: [youtube] ab403cdEFgh: Video unavailable",
+            "ERROR: Unsupported URL: https://example.com/watch/403",
+            "ERROR: ffmpeg not found. Please install or provide the path using --ffmpeg-location",
+            "WARNING: HTTP Error 403: Forbidden, retrying\nERROR: [youtube] x: Sign in to confirm your age",
+        ] {
+            assert!(!retried(stderr), "{stderr}");
         }
     }
 

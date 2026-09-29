@@ -55,13 +55,14 @@ pub fn run(cli: &Cli, args: &AddArgs) -> Result<(), BoxErr> {
     let folder = library.join(&slug);
     let flat = library.join(format!("{slug}.ascii"));
     let staging = library.join(format!("{slug}{STAGING_SUFFIX}"));
+    let aside = library.join(format!("{slug}.old"));
     for taken in [&folder, &flat] {
         if taken.exists() && !args.force {
             return Err(format!("{} already exists — pass --force to replace it", taken.display()).into());
         }
     }
     if let source::Source::File(path) = &source {
-        for dir in [&folder, &staging] {
+        for dir in [&folder, &staging, &aside] {
             if dir.exists() && Path::new(&absolute(path)).starts_with(absolute(dir)) {
                 return Err(format!(
                     "{} lies inside {}, which add replaces; move it out first",
@@ -82,9 +83,8 @@ pub fn run(cli: &Cli, args: &AddArgs) -> Result<(), BoxErr> {
     let failed_log = library.join(format!("{slug}{FAILED_LOG}"));
     let staged = source.fetch(&staging, &downloader).and_then(|video| {
         let built = build(cli, &programs, &video, &staging, &title)?;
-        replace(&[&folder, &flat, &sidecar_path(&flat)])?;
-        std::fs::rename(&staging, &folder)
-            .map_err(|e| format!("move {} to {}: {e}", staging.display(), folder.display()))?;
+        swap(&staging, &folder, &aside)?;
+        replace(&[&aside, &flat, &sidecar_path(&flat)])?;
         Ok((video, built))
     });
     let (video, built) = staged.map_err(|e| abandon(&staging, &failed_log, e))?;
@@ -151,14 +151,34 @@ fn replace(old: &[&Path]) -> Result<(), BoxErr> {
     Ok(())
 }
 
+fn swap(staging: &Path, folder: &Path, aside: &Path) -> Result<(), BoxErr> {
+    replace(&[aside])?;
+    if folder.exists() {
+        std::fs::rename(folder, aside)
+            .map_err(|e| format!("move {} to {}: {e}", folder.display(), aside.display()))?;
+    }
+    std::fs::rename(staging, folder).map_err(|e| {
+        let _ = std::fs::rename(aside, folder);
+        format!("move {} to {}: {e}", staging.display(), folder.display()).into()
+    })
+}
+
 fn abandon(staging: &Path, failed_log: &Path, e: BoxErr) -> BoxErr {
-    let log: Vec<u8> = [source::DOWNLOAD_LOG, BUILD_LOG]
-        .iter()
-        .filter_map(|name| std::fs::read(staging.join(name)).ok())
-        .flatten()
-        .collect();
+    let mut log = Vec::new();
+    for name in [source::DOWNLOAD_LOG, BUILD_LOG] {
+        if let Ok(text) = std::fs::read(staging.join(name))
+            && !text.is_empty()
+        {
+            log.extend(format!("==> {name} <==\n").into_bytes());
+            log.extend(text);
+        }
+    }
     let _ = std::fs::remove_dir_all(staging);
-    if log.is_empty() || std::fs::write(failed_log, log).is_err() {
+    if log.is_empty() {
+        let _ = std::fs::remove_file(failed_log);
+        return e;
+    }
+    if std::fs::write(failed_log, log).is_err() {
         return e;
     }
     format!("{e} (log: {})", failed_log.display()).into()
@@ -270,7 +290,7 @@ pub fn sh_quote(text: &str) -> String {
 
 pub fn launcher(exe: &Path, clip_name: &str) -> String {
     format!(
-        "#!/bin/sh\ncd \"$(dirname \"$0\")\" || exit 1\nexec {} play {} --loop \"$@\"\n",
+        "#!/bin/sh\ncd -- \"$(dirname -- \"$0\")\" || exit 1\nexec {} play {} --loop \"$@\"\n",
         sh_quote(&exe.to_string_lossy()),
         sh_quote(&format!("./{clip_name}"))
     )
@@ -302,6 +322,39 @@ mod tests {
         assert_eq!(file_title("  ..hidden\n"), "hidden-");
         assert_eq!(file_title(&"x".repeat(300)).chars().count(), TITLE_MAX_CHARS);
         assert_eq!(kebab_case(&file_title("Mad Max: Fury Road (2015)")), "mad-max-fury-road-2015");
+    }
+
+    #[test]
+    fn a_forced_swap_moves_the_old_folder_aside_until_the_new_one_is_in() {
+        let scratch = ScratchDir::new().unwrap();
+        let [staging, folder, aside] = ["kiki.partial", "kiki", "kiki.old"].map(|n| scratch.path().join(n));
+        for (dir, text) in [(&staging, "new"), (&folder, "old"), (&aside, "stale")] {
+            std::fs::create_dir(dir).unwrap();
+            std::fs::write(dir.join("clip"), text).unwrap();
+        }
+        swap(&staging, &folder, &aside).unwrap();
+        assert!(!staging.exists());
+        assert_eq!(std::fs::read_to_string(folder.join("clip")).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(aside.join("clip")).unwrap(), "old");
+    }
+
+    #[test]
+    fn a_failed_add_keeps_both_logs_under_headers_or_clears_a_stale_one() {
+        let scratch = ScratchDir::new().unwrap();
+        let staging = scratch.path().join("kiki.partial");
+        let failed_log = scratch.path().join(format!("kiki{FAILED_LOG}"));
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::write(staging.join(source::DOWNLOAD_LOG), "fetched\n").unwrap();
+        std::fs::write(staging.join(BUILD_LOG), "built\n").unwrap();
+        let err = abandon(&staging, &failed_log, "boom".into()).to_string();
+        assert_eq!(err, format!("boom (log: {})", failed_log.display()));
+        assert!(!staging.exists());
+        let text = std::fs::read_to_string(&failed_log).unwrap();
+        assert_eq!(text, "==> download.log <==\nfetched\n==> distill.log <==\nbuilt\n");
+
+        std::fs::create_dir(&staging).unwrap();
+        assert_eq!(abandon(&staging, &failed_log, "boom".into()).to_string(), "boom");
+        assert!(!failed_log.exists());
     }
 
     #[test]
@@ -342,12 +395,12 @@ mod tests {
         assert_eq!(path, folder.join("play.command"));
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text, launcher(&exe, name));
-        assert!(text.starts_with("#!/bin/sh\ncd \"$(dirname \"$0\")\" || exit 1\nexec '"), "{text}");
+        assert!(text.starts_with("#!/bin/sh\ncd -- \"$(dirname -- \"$0\")\" || exit 1\nexec '"), "{text}");
         assert!(text.ends_with(" --loop \"$@\"\n"), "{text}");
         assert!(!text.contains(&*scratch.path().join("Kiki").to_string_lossy()), "{text}");
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o111, 0o111);
 
-        let moved = scratch.path().join("moved folder");
+        let moved = scratch.path().join("-moved folder");
         std::fs::rename(&folder, &moved).unwrap();
         let status = Command::new(moved.join("play.command"))
             .args(["--sim", "120x40:30"])
