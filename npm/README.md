@@ -1,48 +1,60 @@
-# auto-ascii
+# npm distribution (maintainer notes)
 
-Realtime ASCII-art video for terminals — and a library you can draw the cells
-with yourself.
+The `auto-ascii` command ships on npm the way esbuild and Biome ship theirs:
+a main package whose only code is a launcher, plus one package per platform
+holding the prebuilt binary. The main package lists every platform package in
+`optionalDependencies`, and each platform package declares `os` and `cpu`, so
+npm installs exactly the one that matches. There is no postinstall script and
+no install-time download. Every package publishes at the same version, equal
+to the release tag.
 
-An offline factory distills a reference video into a resolution-independent
-feature asset (`.ascii`: luma, edge magnitude and orientation, highlights,
-chroma — never glyphs). A runtime player maps that asset onto whatever cell
-grid you have right now: glyph ramps, directional edge strokes, highlights and
-half-blocks, letterboxed, reflowing live on resize, with temporal hysteresis so
-nothing flickers. Because glyph choice happens at render time, one asset looks
-right at 80x24 in a Linux console and at 320x90 in a GPU terminal.
+```
+npm/
+  auto-ascii/            the main package, committed and published as-is
+    bin/auto-ascii.js    finds @auto-ascii/<os>-<cpu> and runs its binary
+  scripts/
+    targets.mjs          Rust target triple -> platform package table
+    set-version.mjs      stamps a version into auto-ascii/package.json
+    make-platform-packages.mjs  generates the platform packages from binaries
+    smoke.sh             end-to-end local check with a fake binary
+```
 
-Project: **https://github.com/andmckay01/auto-ascii**
+`scripts/targets.mjs` is the single source of truth for which targets ship.
+The launcher keeps its own copy of the `os`/`cpu` -> package part, and
+`set-version.mjs` fails if `optionalDependencies` drifts from the table.
+Linux accepts either the `-gnu` or the `-musl` triple for a CPU, not both.
 
-## This npm package is a placeholder
+## Release flow
 
-**It contains no code.** Installing it gives you this README and the license,
-nothing else — there is no entry point, no binary, and `require("auto-ascii")`
-will not resolve.
+The release workflow builds one binary per target and lays them out as
 
-The name is reserved here for a planned npm distribution of the player: either
-prebuilt platform binaries selected at install time (the way `esbuild` ships
-them) or a WebAssembly build of the render pipeline for use in Node and the
-browser. Neither exists yet. When one does, it will ship under this name at
-`0.1.0` or later, and this README will be replaced with real usage docs.
+```
+<artifacts>/<target-triple>/auto-ascii        # auto-ascii.exe on Windows
+```
 
-Version `0.0.x` means exactly that: not yet a working package.
+for example `artifacts/aarch64-apple-darwin/auto-ascii`. It then runs, from
+the repository root:
 
-## What works today
+```bash
+node npm/scripts/set-version.mjs "$TAG"      # v0.3.0 or 0.3.0
+node npm/scripts/make-platform-packages.mjs --version "$TAG" --artifacts artifacts --out npm-dist
+# publish every npm-dist/<platform>/ first, then npm/auto-ascii
+```
 
-The implementation is Rust, in the repository linked above:
+`make-platform-packages.mjs` refuses a version that differs from
+`auto-ascii/package.json` (run `set-version.mjs` first), fails on an unknown
+target directory or a target directory with no binary, and warns about
+platforms with no artifacts. Publish the platform packages before the main
+package, so its pins resolve the moment it is live.
 
-- **`auto-ascii`** — the library crate (the terminal `Player`, and a
-  terminal-free `RenderSession` that hands back a grid of glyphs and RGB colors
-  for your own renderer).
-- **the `auto-ascii` command** — plays, streams and imports video into
-  `.ascii` assets (import runs ffmpeg as a subprocess).
+## Checking it locally
 
-Prebuilt Linux (glibc and static musl) and cross-built Windows `auto-ascii` binaries
-are produced by the repository's `scripts/release.sh`; macOS builds from
-source. See the repository README for the quickstart, the palette table and the
-embedding API.
+```bash
+bash npm/scripts/smoke.sh
+```
 
-## License
-
-MIT. See the bundled `LICENSE` file, or `LICENSE` at the root of the
-repository.
+Needs Node 18+ and npm, macOS or Linux, and no network. It packs and installs
+the main package plus a platform package for this machine whose binary is a
+shell script, runs `npx auto-ascii`, checks the arguments and exit code pass
+through, and restores `auto-ascii/package.json`. Temporary files go under
+`$TMPDIR` and are removed on exit.
