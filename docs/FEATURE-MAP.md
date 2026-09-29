@@ -605,7 +605,11 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
       If the sound stays starved for `STALL_SECS` (0.35 s), both tracks re-buffer behind the
       loader.
     - **Video-only stall:** the sound keeps playing and the picture holds its last frame. It
-      then catches up by dropping late frames.
+      then catches up by dropping late frames. The loop publishes its clock as a playhead, and
+      the video thread skips feature extraction for any frame whose slot the playhead has
+      already passed, marking it `late` so the loop counts it as dropped. Catch-up therefore
+      runs at pipe speed, not extraction speed. On a CPU that extracts at or below real time,
+      the picture would otherwise never close the gap and would drift into a re-buffer.
     - **Long video stall:** only when the newest decoded frame falls `VIDEO_BEHIND_SECS` (2 s)
       behind the audio clock does the stream pause the sound and re-buffer both. While
       re-buffering it discards frames the clock has already passed.

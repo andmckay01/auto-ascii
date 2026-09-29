@@ -5,7 +5,7 @@
 use std::cell::Cell;
 use std::io::Read;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::thread::JoinHandle;
 
@@ -88,6 +88,7 @@ pub struct Frame {
     pub c: Vec<u8>,
     pub levels: Option<PlaneLevels>,
     pub shot_start: u32,
+    pub late: bool,
 }
 
 impl Frame {
@@ -103,6 +104,7 @@ impl Frame {
             c: Vec::new(),
             levels: None,
             shot_start: 0,
+            late: false,
         }
     }
 
@@ -148,11 +150,12 @@ pub struct VideoJob {
     pub frames: SyncSender<Frame>,
     pub recycle: Receiver<Frame>,
     pub queued: Arc<AtomicUsize>,
+    pub playhead: Arc<AtomicU64>,
 }
 
 pub fn spawn(job: VideoJob) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        let VideoJob { ctx, tracks, w, h, fps, params, tx, frames, recycle, queued } = job;
+        let VideoJob { ctx, tracks, w, h, fps, params, tx, frames, recycle, queued, playhead } = job;
         let frame_size = usize::from(w) * usize::from(h) * 3;
         let mut rgb = vec![0u8; frame_size];
         let mut live = LiveExtractor::new(w, h, &params);
@@ -177,20 +180,23 @@ pub fn spawn(job: VideoJob) -> JoinHandle<()> {
                         Err(e) => return Err(e.to_string()),
                     }
                 }
-                let info = live.push(&rgb);
-                let f = live.features();
                 let mut frame = recycle.try_recv().unwrap_or_else(|_| Frame::blank());
                 let idx = out.get();
                 frame.idx = idx;
                 frame.pts = fps.pts(idx);
-                copy(&mut frame.y, f.y());
-                copy(&mut frame.e, f.e());
-                copy(&mut frame.ex, f.ex());
-                copy(&mut frame.ey, f.ey());
-                copy(&mut frame.h, f.h());
-                copy(&mut frame.c, f.c());
-                frame.levels = info.levels;
-                frame.shot_start = info.shot_start;
+                frame.late = fps.pts(idx + 1) <= f64::from_bits(playhead.load(Ordering::SeqCst));
+                if !frame.late {
+                    let info = live.push(&rgb);
+                    let f = live.features();
+                    copy(&mut frame.y, f.y());
+                    copy(&mut frame.e, f.e());
+                    copy(&mut frame.ex, f.ex());
+                    copy(&mut frame.ey, f.ey());
+                    copy(&mut frame.h, f.h());
+                    copy(&mut frame.c, f.c());
+                    frame.levels = info.levels;
+                    frame.shot_start = info.shot_start;
+                }
                 if idx == 0 {
                     let _ = tx.send(Msg::FirstVideo);
                 }

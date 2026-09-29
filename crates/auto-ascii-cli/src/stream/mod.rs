@@ -14,7 +14,7 @@ pub mod ytdlp;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -257,6 +257,7 @@ struct Pipes {
     frames: Receiver<Frame>,
     recycle: Sender<Frame>,
     queued: Arc<AtomicUsize>,
+    playhead: Arc<AtomicU64>,
     video_thread: Option<JoinHandle<()>>,
     target_frames: usize,
     period: f64,
@@ -462,6 +463,7 @@ fn start_video(media: &Media, shared: &Shared, tx: &Sender<Msg>, stats: &mut Sta
     let (frame_tx, frame_rx) = mpsc::sync_channel(capacity);
     let (recycle_tx, recycle_rx) = mpsc::channel();
     let queued = Arc::new(AtomicUsize::new(0));
+    let playhead = Arc::new(AtomicU64::new(0));
     let thread = video::spawn(video::VideoJob {
         ctx: DecodeCtx {
             procs: shared.procs.clone(),
@@ -479,6 +481,7 @@ fn start_video(media: &Media, shared: &Shared, tx: &Sender<Msg>, stats: &mut Sta
         frames: frame_tx,
         recycle: recycle_rx,
         queued: queued.clone(),
+        playhead: playhead.clone(),
     });
     stats.plane = Some((w, h));
     stats.fps = Some(fps);
@@ -489,6 +492,7 @@ fn start_video(media: &Media, shared: &Shared, tx: &Sender<Msg>, stats: &mut Sta
             frames: frame_rx,
             recycle: recycle_tx,
             queued,
+            playhead,
             video_thread: Some(thread),
             target_frames,
             period: 1.0 / fps.value(),
@@ -754,7 +758,7 @@ fn session<B: Backend + Discard>(
                                     p.queued.fetch_sub(1, Ordering::SeqCst);
                                     lp.stats.frames_decoded += 1;
                                     lp.newest_pts = Some(f.pts);
-                                    if f.pts + 1e-9 < now {
+                                    if f.late || f.pts + 1e-9 < now {
                                         lp.stats.frames_dropped += 1;
                                         lp.recycle(p, f);
                                     } else {
@@ -787,13 +791,21 @@ fn session<B: Backend + Discard>(
                     continue;
                 };
                 let now = c.now(now_i);
+                if now > 0.0 {
+                    p.playhead.fetch_max(now.to_bits(), Ordering::SeqCst);
+                }
                 while lp.pending.back().is_none_or(|f| f.pts <= now) {
                     match p.frames.try_recv() {
                         Ok(f) => {
                             p.queued.fetch_sub(1, Ordering::SeqCst);
                             lp.stats.frames_decoded += 1;
                             lp.newest_pts = Some(f.pts);
-                            lp.pending.push_back(f);
+                            if f.late {
+                                lp.stats.frames_dropped += 1;
+                                lp.recycle(p, f);
+                            } else {
+                                lp.pending.push_back(f);
+                            }
                         }
                         Err(_) => break,
                     }
