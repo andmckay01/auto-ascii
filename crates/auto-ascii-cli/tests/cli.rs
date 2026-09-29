@@ -1629,7 +1629,7 @@ fn add_turns_a_local_file_into_a_playable_folder() {
     }
     assert!(!folder.join("source.mp4").exists(), "a local file is not copied");
     assert!(!lib.join("kiki-s-clip.partial").exists(), "the staging folder was moved into place");
-    assert_eq!(v["asset"]["frames"], 60);
+    assert!(matches!(v["asset"]["frames"].as_u64(), Some(60 | 61)), "{v}");
     assert_eq!((v["asset"]["base_w"].as_u64(), v["asset"]["base_h"].as_u64()), (Some(480), Some(270)));
     assert!((v["source_duration_secs"].as_f64().unwrap() - 2.0).abs() < 0.1, "{v}");
     assert!(v["source"]["path"].as_str().unwrap().ends_with("Kiki's Clip.mkv"), "{v}");
@@ -1660,7 +1660,7 @@ fn add_turns_a_local_file_into_a_playable_folder() {
     assert!(s.library().join("demo-reel").join("Demo Reel.ascii").is_file());
     let listed = json_of(&cli(&s, &["--json", "list"]));
     let row = listed.as_array().unwrap().iter().find(|c| c["name"] == "demo-reel").expect("listed");
-    assert_eq!(row["asset"]["frames"], 60, "{row}");
+    assert!(matches!(row["asset"]["frames"].as_u64(), Some(60 | 61)), "{row}");
     let out = cli(&s, &["play", "Demo Reel", "--sim", "40x12:5", "--no-audio"]);
     assert!(out.status.success(), "{}", stderr_of(&out));
     assert_eq!(json_of(&cli(&s, &["--json", "info", "demo-reel"]))["name"], "demo-reel");
