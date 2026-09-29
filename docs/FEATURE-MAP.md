@@ -407,9 +407,10 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 ### 13. Embedding: `Player` and `RenderSession`
 - **Does:** the published library API.
 - **Code:** `crates/auto-ascii/src/lib.rs` (re-exports `Player`, `PlayerBuilder`,
-  `RenderSession`, `Composition`, `Style`, `Dial`, `Error`, `Cell`, `Grid`, `Rgb`).
-  `crates/auto-ascii/src/session.rs` `RenderSession` (`open`, `open_composition`, `render`,
-  `set_palette`, `set_font_table`, `set_style`, `set_cell_aspect`).
+  `RenderSession`, `Composition`, `Style`, `Dial`, `Error`, `Cell`, `Grid`, `Rgb`,
+  `ComposeParams`). `crates/auto-ascii/src/session.rs` `RenderSession` (`open`,
+  `open_composition`, `render`, `set_palette`, `set_font_table`, `set_style`,
+  `set_compose_params`, `set_cell_aspect`).
   `crates/auto-ascii/src/error.rs` `Error`. Examples:
   `crates/auto-ascii/examples/simple-play.rs`, `crates/auto-ascii/examples/embedded-loop.rs`,
   `crates/auto-ascii/examples/headless-dump.rs`.
@@ -432,7 +433,9 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   `auto-ascii dev sim <asset> --sim COLSxROWS:N` and `auto-ascii dev bench-seek <asset>
   --bench-seek N` are the same runs, with every flag in their `--help`.
   `cargo run --release -p auto-ascii --example headless-dump -- <asset|comp.toml> [FRAMES]
-  [COLSxROWS] [--style C] [--palette P] [--from F]` prints frames as text.
+  [COLSxROWS] [--style S] [--palette P] [--from F] [--settings PLAYER.toml]` prints frames as
+  text. `--settings` applies a video's saved `<stem>.player.toml` (its `style` and dials);
+  an explicit `--style` still wins.
 - **Code:** `crates/auto-ascii-cli/src/play/sim.rs` `run` (the `--sim` harness drives
   `ClipDeck` against `SimBackend`; `play/bench.rs` is `--bench-seek`) and
   `crates/auto-ascii/examples/headless-dump.rs`.
