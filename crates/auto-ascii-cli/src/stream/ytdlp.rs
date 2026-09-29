@@ -11,7 +11,9 @@ use serde_json::Value;
 
 use super::procs::Procs;
 
-const PREFIX: [&str; 5] = ["--ignore-config", "--no-cache-dir", "--simulate", "--skip-download", "--no-warnings"];
+pub const BASE: [&str; 3] = ["--ignore-config", "--no-cache-dir", "--no-warnings"];
+
+const SIMULATE: [&str; 2] = ["--simulate", "--skip-download"];
 
 const MAX_DEPTH: usize = 3;
 
@@ -136,7 +138,7 @@ impl YtDlp {
     }
 
     fn metadata_args(&self, rest: &[&str]) -> Vec<String> {
-        let mut args: Vec<String> = PREFIX.map(String::from).to_vec();
+        let mut args: Vec<String> = BASE.iter().chain(&SIMULATE).map(|a| a.to_string()).collect();
         if let Some(browser) = &self.cookies_from_browser {
             args.push("--cookies-from-browser".into());
             args.push(browser.clone());
@@ -582,7 +584,7 @@ mod tests {
     }
 
     fn with_prefix(rest: &[&str]) -> Vec<String> {
-        PREFIX.iter().chain(rest).map(|a| a.to_string()).collect()
+        BASE.iter().chain(&SIMULATE).chain(rest).map(|a| a.to_string()).collect()
     }
 
     #[test]

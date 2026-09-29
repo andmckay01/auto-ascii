@@ -14,7 +14,7 @@ use auto_ascii::tools::Tool;
 use crate::deps::{self, Resolved};
 use crate::home::stem_of;
 use crate::stream::procs::{Procs, missing};
-use crate::stream::ytdlp::{Event, Input, YtDlp, clean_error};
+use crate::stream::ytdlp::{BASE, Event, Input, YtDlp, clean_error};
 use crate::{BoxErr, Cli};
 
 pub const DOWNLOAD_NAME: &str = "source.mp4";
@@ -22,6 +22,18 @@ pub const DOWNLOAD_NAME: &str = "source.mp4";
 pub const DOWNLOAD_LOG: &str = "download.log";
 
 pub const HEIGHTS: [u32; 3] = [1080, 1080, 720];
+
+pub const TRANSIENT: [&str; 5] = ["403", "timed out", "stall", "connection reset", "fragment"];
+
+pub struct Failure {
+    pub message: String,
+    pub transient: bool,
+}
+
+pub fn transient(text: &str) -> bool {
+    let text = text.to_lowercase();
+    TRANSIENT.iter().any(|pattern| text.contains(pattern))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Remote {
@@ -42,6 +54,9 @@ pub trait Downloader {
 
 pub fn resolve(raw: &str, downloader: &dyn Downloader) -> Result<Source, BoxErr> {
     let path = Path::new(raw);
+    if path.is_file() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ascii")) {
+        return Err(format!("{raw} is already a clip: auto-ascii play {raw}").into());
+    }
     if path.is_file() {
         return Ok(Source::File(path.to_path_buf()));
     }
@@ -152,19 +167,34 @@ impl Downloader for YtDlpDownloader<'_> {
         let (_, found) = self.tools()?;
         let log = dir.join(DOWNLOAD_LOG);
         let target = dir.join(DOWNLOAD_NAME);
-        let mut last = String::new();
-        for (attempt, height) in HEIGHTS.iter().enumerate() {
+        with_retries(|attempt, height| {
             let tried = if attempt == 0 { "downloading" } else { "retrying" };
             self.say(&format!("{tried} {} (up to {height}p)", remote.url));
-            let args = download_args(&found.path(Tool::Ffmpeg), dir, *height, &remote.url);
-            match run_logged(Command::new(found.path(Tool::YtDlp)).args(&args), &log, !self.cli.json) {
-                Ok(()) if target.is_file() => return Ok(target),
-                Ok(()) => last = format!("yt-dlp finished but wrote no {}", target.display()),
-                Err(e) => last = e,
+            let args = download_args(&found.path(Tool::Ffmpeg), dir, height, &remote.url);
+            run_logged(Command::new(found.path(Tool::YtDlp)).args(&args), &log, !self.cli.json)?;
+            if target.is_file() {
+                return Ok(target.clone());
             }
-        }
-        Err(format!("{last} (details in {})", log.display()).into())
+            Err(Failure {
+                message: format!("yt-dlp finished but wrote no {}", target.display()),
+                transient: false,
+            })
+        })
     }
+}
+
+pub fn with_retries(
+    mut attempt: impl FnMut(usize, u32) -> Result<PathBuf, Failure>,
+) -> Result<PathBuf, BoxErr> {
+    let mut last = String::new();
+    for (n, height) in HEIGHTS.iter().enumerate() {
+        match attempt(n, *height) {
+            Ok(path) => return Ok(path),
+            Err(failure) if failure.transient => last = failure.message,
+            Err(failure) => return Err(failure.message.into()),
+        }
+    }
+    Err(last.into())
 }
 
 pub fn download_args(ffmpeg: &Path, dir: &Path, height: u32, url: &str) -> Vec<String> {
@@ -172,11 +202,9 @@ pub fn download_args(ffmpeg: &Path, dir: &Path, height: u32, url: &str) -> Vec<S
         "bv*[height<={height}]+ba[acodec^=mp4a]/bv*[height<={height}]+ba/b[height<={height}]"
     );
     let template = dir.join("source.%(ext)s");
-    [
-        "--ignore-config",
-        "--no-cache-dir",
+    BASE.iter()
+        .chain(&[
         "--no-playlist",
-        "--no-warnings",
         "--newline",
         "--retries",
         "10",
@@ -185,8 +213,7 @@ pub fn download_args(ffmpeg: &Path, dir: &Path, height: u32, url: &str) -> Vec<S
         "--socket-timeout",
         "30",
         "--ffmpeg-location",
-    ]
-    .iter()
+    ])
     .map(|a| a.to_string())
     .chain([ffmpeg.display().to_string(), "-f".into(), format])
     .chain(["--merge-output-format", "mp4", "--remux-video", "mp4", "-o"].map(String::from))
@@ -194,25 +221,26 @@ pub fn download_args(ffmpeg: &Path, dir: &Path, height: u32, url: &str) -> Vec<S
     .collect()
 }
 
-fn run_logged(cmd: &mut Command, log: &Path, echo: bool) -> Result<(), String> {
+fn run_logged(cmd: &mut Command, log: &Path, echo: bool) -> Result<(), Failure> {
+    let fatal = |message: String| Failure { message, transient: false };
     let file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(log)
-        .map_err(|e| format!("open {}: {e}", log.display()))?;
+        .map_err(|e| fatal(format!("open {}: {e}", log.display())))?;
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| missing("yt-dlp", &e))?;
+    let mut child = cmd.spawn().map_err(|e| fatal(missing("yt-dlp", &e)))?;
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
     let errors = std::thread::scope(|scope| {
         scope.spawn(|| copy_lines(stdout, &file, echo));
         copy_lines(stderr, &file, echo)
     });
-    let status = child.wait().map_err(|e| format!("yt-dlp: {e}"))?;
+    let status = child.wait().map_err(|e| fatal(format!("yt-dlp: {e}")))?;
     if status.success() {
         return Ok(());
     }
-    Err(clean_error(&errors, status.code()))
+    Err(Failure { message: clean_error(&errors, status.code()), transient: transient(&errors) })
 }
 
 fn copy_lines(from: impl Read, mut log: &File, echo: bool) -> String {
@@ -300,6 +328,62 @@ mod tests {
         let err = resolve(scratch.path().to_str().unwrap(), &fake).unwrap_err().to_string();
         assert!(err.ends_with("is a folder; give a video file or a link"), "{err}");
         assert!(fake.identified.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_ascii_file_is_already_a_clip() {
+        let scratch = ScratchDir::new().unwrap();
+        let clip = scratch.path().join("done.ASCII");
+        std::fs::write(&clip, b"clip").unwrap();
+        let fake = Fake::default();
+        let err = resolve(clip.to_str().unwrap(), &fake).unwrap_err().to_string();
+        assert_eq!(err, format!("{0} is already a clip: auto-ascii play {0}", clip.display()));
+    }
+
+    #[test]
+    fn only_transient_errors_are_retried() {
+        for text in [
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+            "ERROR: Read timed out.",
+            "ERROR: The download stalled",
+            "ERROR: [Errno 54] Connection reset by peer",
+            "ERROR: fragment 3 not found, unable to continue",
+        ] {
+            assert!(transient(text), "{text}");
+        }
+        for text in ["ERROR: [youtube] x: Private video", "ERROR: [youtube] x: Video unavailable"] {
+            assert!(!transient(text), "{text}");
+        }
+    }
+
+    fn fail(message: &str, transient: bool) -> Failure {
+        Failure { message: message.into(), transient }
+    }
+
+    #[test]
+    fn a_lasting_error_fails_fast_and_a_transient_one_falls_back_to_720p() {
+        let mut heights = Vec::new();
+        let err = with_retries(|_, h| {
+            heights.push(h);
+            Err(fail("private", false))
+        })
+        .unwrap_err();
+        assert_eq!((err.to_string().as_str(), heights.as_slice()), ("private", [1080].as_slice()));
+
+        let mut heights = Vec::new();
+        let got = with_retries(|n, h| {
+            heights.push(h);
+            if n == 0 { Err(fail("403", true)) } else { Ok(PathBuf::from("ok")) }
+        });
+        assert_eq!((got.unwrap(), heights.as_slice()), (PathBuf::from("ok"), [1080, 1080].as_slice()));
+
+        let mut heights = Vec::new();
+        let err = with_retries(|n, h| {
+            heights.push(h);
+            Err(fail(&format!("stall {n}"), true))
+        })
+        .unwrap_err();
+        assert_eq!((err.to_string().as_str(), heights.as_slice()), ("stall 2", [1080, 1080, 720].as_slice()));
     }
 
     #[test]

@@ -14,7 +14,7 @@ use auto_ascii_factory::{BuildReport, Programs};
 
 use crate::args::AddArgs;
 use crate::commands::print_clip_body;
-use crate::home::{Home, kebab_case};
+use crate::home::{Home, STAGING_SUFFIX, kebab_case, sidecar_path};
 use crate::import::{build_with_defaults, record_import};
 use crate::library::absolute;
 use crate::source::{self, YtDlpDownloader};
@@ -24,7 +24,7 @@ pub const LAUNCHER: &str = "play.command";
 
 pub const BUILD_LOG: &str = "distill.log";
 
-pub const STAGING_SUFFIX: &str = ".partial";
+pub const FAILED_LOG: &str = ".failed.log";
 
 pub const LENGTH_SLACK_SECS: f64 = 1.0;
 
@@ -53,43 +53,49 @@ pub fn run(cli: &Cli, args: &AddArgs) -> Result<(), BoxErr> {
         return Err(format!("cannot name a folder after {title:?}: pass --title").into());
     }
     let folder = library.join(&slug);
-    if folder.exists() && !args.force {
-        return Err(format!("{} already exists — pass --force to replace it", folder.display()).into());
+    let flat = library.join(format!("{slug}.ascii"));
+    let staging = library.join(format!("{slug}{STAGING_SUFFIX}"));
+    for taken in [&folder, &flat] {
+        if taken.exists() && !args.force {
+            return Err(format!("{} already exists — pass --force to replace it", taken.display()).into());
+        }
     }
-    if let source::Source::File(path) = &source
-        && folder.exists()
-        && Path::new(&absolute(path)).starts_with(absolute(&folder))
-    {
-        return Err(format!(
-            "{} lies inside {}, which --force would replace; move it out first",
-            path.display(),
-            folder.display()
-        )
-        .into());
+    if let source::Source::File(path) = &source {
+        for dir in [&folder, &staging] {
+            if dir.exists() && Path::new(&absolute(path)).starts_with(absolute(dir)) {
+                return Err(format!(
+                    "{} lies inside {}, which add replaces; move it out first",
+                    path.display(),
+                    dir.display()
+                )
+                .into());
+            }
+        }
     }
     let (_, found) = crate::ensure_tools(cli, &[Tool::Ffmpeg, Tool::Ffprobe])?;
     let programs = Programs { ffmpeg: found.path(Tool::Ffmpeg), ffprobe: found.path(Tool::Ffprobe) };
-    let staging = library.join(format!("{slug}{STAGING_SUFFIX}"));
     if staging.exists() {
         std::fs::remove_dir_all(&staging).map_err(|e| format!("remove {}: {e}", staging.display()))?;
     }
     std::fs::create_dir_all(&staging).map_err(|e| format!("create {}: {e}", staging.display()))?;
 
-    let video = source.fetch(&staging, &downloader)?;
-    let built = build(cli, &programs, &video, &staging, &title)?;
-
-    if folder.exists() {
-        std::fs::remove_dir_all(&folder).map_err(|e| format!("remove {}: {e}", folder.display()))?;
-    }
-    std::fs::rename(&staging, &folder)
-        .map_err(|e| format!("move {} to {}: {e}", staging.display(), folder.display()))?;
+    let failed_log = library.join(format!("{slug}{FAILED_LOG}"));
+    let staged = source.fetch(&staging, &downloader).and_then(|video| {
+        let built = build(cli, &programs, &video, &staging, &title)?;
+        replace(&[&folder, &flat, &sidecar_path(&flat)])?;
+        std::fs::rename(&staging, &folder)
+            .map_err(|e| format!("move {} to {}: {e}", staging.display(), folder.display()))?;
+        Ok((video, built))
+    });
+    let (video, built) = staged.map_err(|e| abandon(&staging, &failed_log, e))?;
+    let _ = std::fs::remove_file(&failed_log);
     let video = match video.strip_prefix(&staging) {
         Ok(inside) => folder.join(inside),
         Err(_) => video,
     };
     let clip = folder.join(format!("{title}.ascii"));
     let exe = std::env::current_exe().map_err(|e| format!("cannot find the auto-ascii binary: {e}"))?;
-    let launcher = write_launcher(&folder, &exe, &clip)?;
+    let launcher = write_launcher(&folder, &exe, &format!("{title}.ascii"))?;
     let (sidecar, _) = record_import(&slug, &video, &clip, &built.report)?;
     let soundtrack = built.soundtrack.then(|| absolute(&folder.join(format!("{title}.m4a"))));
 
@@ -130,6 +136,32 @@ pub fn run(cli: &Cli, args: &AddArgs) -> Result<(), BoxErr> {
         outln!("  {:<14}auto-ascii play {slug}", "play:");
     }
     Ok(())
+}
+
+fn replace(old: &[&Path]) -> Result<(), BoxErr> {
+    for path in old {
+        let removed = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+        match removed {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(format!("remove {}: {e}", path.display()).into());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn abandon(staging: &Path, failed_log: &Path, e: BoxErr) -> BoxErr {
+    let log: Vec<u8> = [source::DOWNLOAD_LOG, BUILD_LOG]
+        .iter()
+        .filter_map(|name| std::fs::read(staging.join(name)).ok())
+        .flatten()
+        .collect();
+    let _ = std::fs::remove_dir_all(staging);
+    if log.is_empty() || std::fs::write(failed_log, log).is_err() {
+        return e;
+    }
+    format!("{e} (log: {})", failed_log.display()).into()
 }
 
 fn build(
@@ -236,17 +268,17 @@ pub fn sh_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-pub fn launcher(exe: &Path, clip: &Path) -> String {
+pub fn launcher(exe: &Path, clip_name: &str) -> String {
     format!(
-        "#!/bin/sh\nexec {} play {} --loop\n",
+        "#!/bin/sh\ncd \"$(dirname \"$0\")\" || exit 1\nexec {} play {} --loop \"$@\"\n",
         sh_quote(&exe.to_string_lossy()),
-        sh_quote(&clip.to_string_lossy())
+        sh_quote(&format!("./{clip_name}"))
     )
 }
 
-pub fn write_launcher(folder: &Path, exe: &Path, clip: &Path) -> Result<PathBuf, BoxErr> {
+pub fn write_launcher(folder: &Path, exe: &Path, clip_name: &str) -> Result<PathBuf, BoxErr> {
     let path = folder.join(LAUNCHER);
-    std::fs::write(&path, launcher(exe, Path::new(&absolute(clip))))
+    std::fs::write(&path, launcher(exe, clip_name))
         .map_err(|e| format!("write {}: {e}", path.display()))?;
     #[cfg(unix)]
     {
@@ -289,32 +321,44 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn the_launcher_execs_the_binary_on_the_clip_and_is_executable() {
+    fn the_launcher_plays_the_clip_beside_it_from_anywhere_and_is_executable() {
         use std::os::unix::fs::PermissionsExt;
         let scratch = ScratchDir::new().unwrap();
         let folder = scratch.path().join("Kiki's $HOME `x` folder");
         std::fs::create_dir_all(&folder).unwrap();
-        let clip = folder.join("Kiki's \"Delivery\" Service.ascii");
-        std::fs::write(&clip, b"clip").unwrap();
+        let name = "-Kiki's \"Delivery\" $(Service).ascii";
+        std::fs::write(folder.join(name), b"clip").unwrap();
         let exe = scratch.path().join("bin dir's").join("auto ascii");
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
         let argv = scratch.path().join("argv.txt");
-        std::fs::write(&exe, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", sh_quote(&argv.to_string_lossy())))
-            .unwrap();
+        let script = format!(
+            "#!/bin/sh\n{{ pwd -P; printf '%s\\n' \"$@\"; }} > {}\n",
+            sh_quote(&argv.to_string_lossy())
+        );
+        std::fs::write(&exe, script).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let path = write_launcher(&folder, &exe, &clip).unwrap();
+        let path = write_launcher(&folder, &exe, name).unwrap();
         assert_eq!(path, folder.join("play.command"));
         let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(text, launcher(&exe, Path::new(&absolute(&clip))));
-        assert!(text.starts_with("#!/bin/sh\nexec '"), "{text}");
-        assert!(text.ends_with(" --loop\n"), "{text}");
+        assert_eq!(text, launcher(&exe, name));
+        assert!(text.starts_with("#!/bin/sh\ncd \"$(dirname \"$0\")\" || exit 1\nexec '"), "{text}");
+        assert!(text.ends_with(" --loop \"$@\"\n"), "{text}");
+        assert!(!text.contains(&*scratch.path().join("Kiki").to_string_lossy()), "{text}");
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o111, 0o111);
 
-        let status = Command::new(&path).env("HOME", "/elsewhere").status().unwrap();
+        let moved = scratch.path().join("moved folder");
+        std::fs::rename(&folder, &moved).unwrap();
+        let status = Command::new(moved.join("play.command"))
+            .args(["--sim", "120x40:30"])
+            .current_dir("/")
+            .env("HOME", "/elsewhere")
+            .status()
+            .unwrap();
         assert!(status.success());
         let args = std::fs::read_to_string(&argv).unwrap();
-        assert_eq!(args, format!("play\n{}\n--loop\n", absolute(&clip)));
+        let here = std::fs::canonicalize(&moved).unwrap();
+        assert_eq!(args, format!("{}\nplay\n./{name}\n--loop\n--sim\n120x40:30\n", here.display()));
     }
 
     fn tools() -> Option<Programs> {

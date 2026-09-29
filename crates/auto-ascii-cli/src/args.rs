@@ -56,8 +56,9 @@ pub enum Cmd {
     Stream(StreamArgs),
     #[command(
         about = "Add a YouTube link or a video file to the library, ready to play",
-        after_help = "A link is downloaded with yt-dlp (best video up to 1080p plus AAC audio, \
-                      else 720p; retried once; never with browser cookies) into \
+        after_help = "A link is downloaded with yt-dlp (best video up to 1080p plus AAC audio; \
+                      a 403, stall or timeout is retried, then tried at 720p; never with browser \
+                      cookies) into \
                       `<folder>/source.mp4`; a local file is used where it lies. The folder \
                       (`library/<slug>/`, or under --library) then gets `<Title>.ascii` (480x270 \
                       @ 30 fps), its soundtrack `<Title>.m4a`, a `<Title>.json` sidecar, a \

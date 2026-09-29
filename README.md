@@ -28,11 +28,10 @@ git clone https://github.com/andmckay01/auto-ascii && cd auto-ascii
 cargo install --path crates/auto-ascii-cli       # the auto-ascii command
 ```
 
-`add` and `import` need `ffmpeg` and `ffprobe`; links (`add`, `stream`) also
-need `yt-dlp`. If they are not on `PATH`, the CLI offers once to download
-checksum-verified standalone builds into its cache on first use (`--yes` skips
-the question; `auto-ascii doctor` shows what it found). `brew install ffmpeg
-yt-dlp` works too. Playing needs none of them, except to decode a soundtrack.
+`add` and `import` need `ffmpeg` and `ffprobe`; links also need `yt-dlp`. If
+one is not on `PATH`, the CLI offers once to download a checksum-verified build
+into its cache (`--yes` skips the question; `auto-ascii doctor` shows what it
+found), or `brew install ffmpeg yt-dlp`. Playing needs none, except for sound.
 
 ## Use
 
@@ -55,18 +54,15 @@ auto-ascii play in.ascii --loop --seek 1:30 --style letters
 
 `add` gives each clip a folder named after its title: `<Title>.ascii` (480×270,
 30 fps), its soundtrack `<Title>.m4a`, a `play.command` launcher, logs and, for
-a link, `source.mp4` (best up to 1080p, else 720p; never your browser cookies),
-after checking the clip's integrity and length. `--title` renames it and
-`--library DIR` puts the folder somewhere other than the library.
+a link, `source.mp4` (up to 1080p, never your browser cookies), all checked for
+integrity and length. `play` uses a soundtrack beside any asset (`clip.m4a`,
+`clip.mp4` or another container, then the folder's `source.mp4`) if its length
+matches. `--mute` starts silent; `--no-audio` skips it.
 
 The library is `~/auto-ascii` (`AUTO_ASCII_HOME` overrides it). `auto-ascii
 --help` lists the everyday commands, `--help-all` every command and flag;
 `play --help-all` shows the advanced player flags. Every command except the
 interactive ones takes `--json`.
-
-`play` plays a soundtrack beside the asset (`clip.m4a`, `clip.mp4`, other
-containers, then the folder's `source.mp4`) when its length matches; `add`
-writes one. `--mute` starts silent; `--no-audio` never looks for one.
 
 ## Keys
 

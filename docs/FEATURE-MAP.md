@@ -411,12 +411,20 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - `import` records the source's SHA-256 (`auto_ascii_factory::sha256_file`, streamed) in the
     `<name>.json` sidecar.
   - `add` never downloads inside import: `source.rs` turns the input into a local file (a path
-    as is; a link through the `Downloader`, best video up to 1080p plus AAC audio, a 1080p retry,
-    then 720p, never browser cookies), and everything after works on that file. The folder is
-    built in `<slug>.partial` and renamed into place only after the build, the soundtrack copy
-    (re-encoded to AAC if the codec cannot be copied), the CRC walk and a length match within
-    1 s or 1 % pass; `--force` replaces an old folder only then. The launcher execs
-    `current_exe()` on the clip's absolute path, both single-quoted for `sh`.
+    as is, but never an `.ascii`; a link through the `Downloader`, best video up to 1080p plus
+    AAC audio, never browser cookies). Only a transient yt-dlp error (`403`, `timed out`,
+    `stall`, `connection reset`, `fragment`) earns a 1080p retry and then a 720p try; any other
+    error fails at once. Everything after works on that local file. The folder is built in
+    `<slug>.partial` and renamed into place only after the build, the soundtrack copy
+    (re-encoded to AAC if the codec cannot be copied), the `dev inspect` integrity walk (frame
+    count, trailer and every chunk CRC, which the build always writes) and a length match within
+    1 s or 1 % pass. Any failure removes `<slug>.partial`, keeping its logs as
+    `<slug>.failed.log`; `folder_clip` ignores `*.partial` folders, so `list` and `play` never
+    see one. A folder or a flat `<slug>.ascii` of the same name is refused without `--force`,
+    and replaced (the flat clip with its sidecar) only after everything passed. An input inside
+    the folder or its staging folder is refused. The launcher `cd`s to its own folder and execs
+    `current_exe()` on `./<Title>.ascii --loop "$@"`, single-quoted for `sh`, so the folder can
+    move but the binary cannot.
   - `play` refuses `--json` unless `--sim` or `--bench-seek` is given (flow 14); those headless
     runs print exactly one JSON line on stdout with or without `--json`.
     `stream` refuses `--json` the same way unless `--sim` is given.
@@ -811,7 +819,7 @@ values = [
 | Fuzz / perf | `crates/auto-ascii/tests/resize_fuzz.rs`, `crates/auto-ascii/tests/perf_fps.rs`, `crates/auto-ascii/benches/pipeline.rs` |
 | Factory | `crates/auto-ascii-cli/tests/build_e2e.rs`, `crates/auto-ascii-cli/tests/m2_params_eval.rs` (params plumbing, byte pin, eval/sweep) |
 | Metrics | `crates/auto-ascii-eval/tests/metrics.rs` |
-| CLI | `crates/auto-ascii-cli/tests/cli.rs` (`stream_*`: help, the `--json` refusal, an offline end-to-end `--sim` run over a fake yt-dlp and a local file, a clean yt-dlp error; `add_*`: a generated local video to a playable folder, and a link through a fake yt-dlp with no cookies), unit tests in `crates/auto-ascii-cli/src/source.rs` (URL vs path with a fake `Downloader`) and `add.rs` (soundtrack, launcher quoting and exec bit) |
+| CLI | `crates/auto-ascii-cli/tests/cli.rs` (`stream_*`: help, the `--json` refusal, an offline end-to-end `--sim` run over a fake yt-dlp and a local file, a clean yt-dlp error; `add_*`: a generated local video to a playable folder, a link through a fake yt-dlp with no cookies, and the collision, staging and failure-cleanup guards), unit tests in `crates/auto-ascii-cli/src/source.rs` (URL vs path with a fake `Downloader`, `.ascii` refusal, which errors are retried) and `add.rs` (soundtrack, launcher quoting, relocation and exec bit) |
 | Streaming | unit tests in `crates/auto-ascii-cli/src/stream/`:<br>- `loader.rs`: snapshots, brightness and shimmer, stage mapping.<br>- `ytdlp.rs`: fake-yt-dlp resolution; config isolation and cookies.<br>- `clock.rs`: sync and stale-frame dropping.<br>- `procs.rs`: cleanup, including a cancellable reap and panic unwind.<br>- `audio.rs`, `decode.rs`, `video.rs`.<br>- `mod.rs`: session tests that drive the real loop against `SimBackend` with a fake yt-dlp and local ffmpeg media (A/V sync to the end, empty audio or video tracks, a brief picture-only stall, the 100% loader frame, no retained sim output), plus the stall rule and tail deadline.<br><br>Also `crates/auto-ascii-factory/src/live.rs`, and the `stream_*` / signal tests in `crates/auto-ascii-cli/tests/cli.rs`. |
 
 ## Related docs

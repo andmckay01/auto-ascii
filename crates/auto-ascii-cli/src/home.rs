@@ -5,6 +5,8 @@ use auto_ascii::{Composition, timecode};
 
 use crate::BoxErr;
 
+pub const STAGING_SUFFIX: &str = ".partial";
+
 pub struct Home {
     root: PathBuf,
 }
@@ -159,6 +161,9 @@ pub enum Target {
 }
 
 pub fn folder_clip(dir: &Path) -> Option<PathBuf> {
+    if dir.to_string_lossy().ends_with(STAGING_SUFFIX) {
+        return None;
+    }
     let mut clips: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
