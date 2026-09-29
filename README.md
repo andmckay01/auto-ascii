@@ -2,10 +2,9 @@
 
 Turn any video into realtime ASCII-art. 
 
-An offline **factory** distills a video into a resolution-independent feature
-asset (`.ascii`). The asset holds luma, edge magnitude and orientation,
-highlights and chroma. A runtime **player** maps that asset
-onto whatever cell grid you have. It picks glyph ramps, directional
+Use the **factory** to distill any video into a .ascii file. This holds luma,
+edge magnitude and orientation, highlights and chroma. A runtime **player** maps 
+that asset onto whatever terminal cell grid you have. It picks glyph ramps, directional 
 edge strokes, highlights and half-blocks, letterboxes to the video's aspect,
 reflows live on resize, and applies temporal hysteresis so nothing flickers.
 Because every glyph is chosen at render time, one asset looks right at 80×24
