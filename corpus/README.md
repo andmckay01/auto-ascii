@@ -1,6 +1,6 @@
 # corpus/ — local reference videos
 
-`auto-ascii-factory eval` measures the renderer against whatever video files
+`auto-ascii dev eval` measures the renderer against whatever video files
 sit directly in this directory (mp4, m4v, mov, mkv, webm or avi; subdirectories are
 not scanned). Nothing here is committed except this file: reference videos
 are large and rarely redistributable, and every committed test, golden and
@@ -20,8 +20,8 @@ perf gate is reproducible without them (the synthetic fixtures live in
 3. Record a baseline once, then compare every change against it:
 
    ```bash
-   auto-ascii-factory eval --corpus corpus/ --out runs/base.json --html runs/base.html
-   auto-ascii-factory eval --corpus corpus/ --baseline runs/base.json \
+   auto-ascii dev eval --corpus corpus/ --out runs/base.json --html runs/base.html
+   auto-ascii dev eval --corpus corpus/ --baseline runs/base.json \
        --out runs/latest.json --html runs/latest.html
    ```
 

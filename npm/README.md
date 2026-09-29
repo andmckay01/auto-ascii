@@ -33,11 +33,11 @@ The implementation is Rust, in the repository linked above:
 
 - **`auto-ascii`** — the library crate (the terminal `Player`, and a
   terminal-free `RenderSession` that hands back a grid of glyphs and RGB colors
-  for your own renderer), plus the `auto-ascii-player` CLI binary.
-- **`auto-ascii-factory`** — the offline factory that turns video into `.ascii`
-  assets (uses ffmpeg as a subprocess).
+  for your own renderer).
+- **the `auto-ascii` command** — plays, streams and imports video into
+  `.ascii` assets (import runs ffmpeg as a subprocess).
 
-Prebuilt Linux (glibc and static musl) and cross-built Windows player binaries
+Prebuilt Linux (glibc and static musl) and cross-built Windows `auto-ascii` binaries
 are produced by the repository's `scripts/release.sh`; macOS builds from
 source. See the repository README for the quickstart, the palette table and the
 embedding API.
