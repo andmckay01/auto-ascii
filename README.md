@@ -11,7 +11,7 @@ reflows live on resize, and applies temporal hysteresis so nothing flickers.
 Because every glyph is chosen at render time, one asset looks right at 80×24
 in a Linux console, at 320×90 in a GPU terminal, and inside your own renderer.
 
-![Twelve seconds of The Matrix Reloaded's Architect scene, 2:14 to 2:26, playing as colored ASCII art in a terminal](docs/assets/architect-2m14s.gif)
+![Ten seconds of The Matrix Reloaded's Architect scene, 2:14 to 2:24, playing as colored ASCII art in a terminal](docs/assets/architect-2m14s.gif)
 
 One command, `auto-ascii`, imports, plays, streams and stitches video, and
 keeps your clips in a library folder. It runs ffmpeg as a subprocess and links
