@@ -214,7 +214,7 @@ pub struct FixtureRenderer<'a> {
 
 impl<'a> FixtureRenderer<'a> {
     pub fn new(asset: &'a [u8], palette: GoldenPalette) -> FixtureRenderer<'a> {
-        let reader = AsciiReader::open(asset).expect("fixture asset must be a valid ASCI");
+        let reader = AsciiReader::open(asset).expect("fixture asset must be a valid .ascii asset");
         let (src_w, src_h) = reader.plane_dims(plane_id::Y).expect("fixture has a Y plane");
         let frame_count = reader.frame_count();
         assert!(frame_count > 0, "fixture asset has zero frames");

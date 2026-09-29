@@ -1,7 +1,7 @@
 .PHONY: build release dist test eval comments lint clean
 
 build:
-	cargo build --release -p auto-ascii --features bin
+	cargo build --release -p auto-ascii-cli
 
 dist release:
 	./scripts/release.sh

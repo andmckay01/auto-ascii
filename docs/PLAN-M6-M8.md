@@ -91,8 +91,8 @@ strength / hysteresis, `[`/`]` turn it; hidden after 2500 ms). Keys: `q`,
 
 New crate `crates/auto-ascii-cli`, binary name `auto-ascii`, depending on the
 facade (`auto-ascii`, default features), `auto-ascii-format`, and the factory
-as a **library**: `auto-ascii-factory` becomes lib + thin bin (`src/lib.rs`
-owns the modules; `main.rs` keeps the clap surface and calls into the lib).
+as a **library**: `auto-ascii-factory` becomes a library (`src/lib.rs` owns
+the modules; the clap surface lives in the CLI's `src/args.rs`).
 The facade cannot host the CLI because the factory already depends on the
 facade. The factory stays unpublished.
 
@@ -103,9 +103,9 @@ JSON object on stdout; errors are `{"error": …}` on stderr with exit 1)
 |---|---|
 | `auto-ascii import <video> [--name N] [--ss T] [--t T] [--fps N] [--res WxH] [--force]` | ffmpeg-ingests via the factory into `library/<name>.ascii` and writes `library/<name>.json` (source path, source sha256, frames, fps, duration_s, bytes, created). `<name>` defaults to the kebab-cased file stem; a collision errors unless `--force`. |
 | `auto-ascii list` | library clips: name, duration, fps, frames, bytes, source. |
-| `auto-ascii info <clip>` | header + sidecar for one clip (`inspect` stays in the factory). |
+| `auto-ascii info <clip>` | header + sidecar for one clip (`inspect` stays a dev tool, `auto-ascii dev inspect`). |
 | `auto-ascii cut <clip> --in T --out T [--name N]` | new library clip = the slice, via the M8 export path (single-clip composition). Lands in M8, declared here. |
-| `auto-ascii play <clip \| composition.toml>` | interactive player (`Player::builder()`), same keys as `auto-ascii-player`. |
+| `auto-ascii play <clip \| composition.toml>` | interactive player (`Player::builder()`), with the player's keys. |
 | `auto-ascii compose …` | M8, §3. |
 | `auto-ascii agent-guide` | prints the embedded agent guide (below). |
 | `auto-ascii home` | prints the resolved home folder and creates it. |
@@ -169,7 +169,7 @@ resolution and errors otherwise (say which clip differs and suggest
   `pipeline::Player` per distinct (base res, plane set, fps) shape; at every
   clip boundary and every backward jump: `reset_temporal_state`; the NORM
   levels come from the active clip's own tables.
-- `Player::builder().composition(path)`; the player binary and `auto-ascii
+- `Player::builder().composition(path)`; `auto-ascii play` and `compose
   play` treat a `.toml` argument as a composition. Overlays show composition
   time; the progress row's time block gets ` c/N ` (current clip / count) when
   `cols >= 64`.
@@ -195,7 +195,7 @@ resolution and errors otherwise (say which clip differs and suggest
   (visually distinct, e.g. GradientMotion + HardCut) → composition →
   `RenderSession` frames provably come from the right clip at the boundary;
   export → reopen → `frame_count`, NORM shot count and cut flags as expected;
-  `auto-ascii-player composition.toml --sim 120x40:60` prints the stats line;
+  `auto-ascii play composition.toml --sim 120x40:60` prints the stats line;
   `--seek` and `0-9` on a composition land on the composition timeline.
 - `cut` round-trip: slice frames equal the source's frames at the offset.
 - Existing goldens and parity tests unchanged. Workspace tests and clippy

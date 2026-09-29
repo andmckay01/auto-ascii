@@ -12,26 +12,26 @@ with `library/` (the `<name>.ascii` clips, each with a `<name>.json` sidecar),
 
 ## The loop
 
-1. **import** — `auto-ascii import ~/Desktop/clip.mp4` ingests into `library/clip.ascii`.
-   Flags `--name N`, `--ss T`, `--t T`, `--fps N`, `--res WxH`, `--force` (replaces a clip only
-   if the rebuild succeeds); times are `SS`/`MM:SS`/`HH:MM:SS`.
+1. **import** — `auto-ascii import ~/Desktop/clip.mp4` ingests into `library/clip.ascii`
+   (`-o out.ascii` writes just that file). Flags `--name N`, `--ss T`, `--t T`, `--fps N`,
+   `--res WxH`, `--params F`, `--force` (replaces only if the rebuild succeeds); times `SS`/`MM:SS`.
 2. **list / info** — `list`; `info <clip>`, where `<clip>` is a path, else `library/<clip>.ascii`.
 3. **cut** — `auto-ascii cut <clip> --in T --out T [--name N] [--force]` slices
    one clip into a new one (default name `<clip>-0m05s-0m20s`, nothing re-encoded).
-4. **compose** — `compose new <name>` starts a timeline, `compose add <name>
-   <clip> [--in T] [--out T] [--at T]` appends one clip, `compose show <name>`
-   prints the resolved timeline with gaps and overlaps; `<name>` may be a path.
-5. **play / export** — `auto-ascii play <clip | composition>` and `compose play
-   <name>` are interactive (no `--json`, no re-encode, black backdrop until exit):
-   `q` quits, `v` hides the controls (up at start), `/` style (default `ascii`), `s` saves
-   dials + style as `<clip>.player.toml`. A bare name is the library clip first (a `.toml`
-   path forces a composition); `compose export <name> [-o path]` writes `exports/<name>.ascii`.
+4. **compose** — `compose new <name>` starts a timeline, `compose add <name> <clip> [--in T] [--out T]
+   [--at T]` appends one clip, `compose show <name>` prints the timeline with gaps and overlaps.
+5. **play / export** — `auto-ascii play <clip | composition>` and `compose play <name>` are
+   interactive (no `--json`; exit 0 at the end, 3 on quit): `q` quits, `v` hides the controls, `/`
+   style (default `ascii`), `s` saves dials + style as `<clip>.player.toml`. `--sim COLSxROWS:NFRAMES`
+   runs headless and prints one JSON stats line; `--help-all` shows every flag. A bare name is the
+   library clip first (a `.toml` path is a composition); `compose export <name> [-o path]` flattens.
 6. **stream** — `auto-ascii stream <youtube-url | search terms>` plays the first
    video live, with sound, saving nothing (needs `yt-dlp` + `ffmpeg`). Interactive
    like `play`; `--sim COLSxROWS:SECS` runs it headless and prints one JSON line.
 7. **tools** — `import` needs ffmpeg + ffprobe, `stream` yt-dlp + ffmpeg (`AUTO_ASCII_FFMPEG`,
    `_FFPROBE`, `_YTDLP`, then PATH, then a cache). A missing one downloads after a stderr
    prompt: pass `--yes` / `AUTO_ASCII_YES=1` or `--json` fails. `doctor [--fetch]` checks/fetches.
+   `auto-ascii dev …` (inspect, params, eval, sweep, font-table, sim, bench-seek) is for developers.
 
 ## Composition schema
 

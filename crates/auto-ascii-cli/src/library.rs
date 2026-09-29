@@ -129,7 +129,7 @@ pub fn asset_info(path: &Path) -> Result<AssetInfo, BoxErr> {
     let bytes = file.metadata().map_err(|e| format!("stat {}: {e}", path.display()))?.len();
     let mmap = unsafe { Mmap::map(&file) }.map_err(|e| format!("mmap {}: {e}", path.display()))?;
     let reader = AsciiReader::open(&mmap)
-        .map_err(|e| format!("{} is not a valid ASCI asset: {e}", path.display()))?;
+        .map_err(|e| format!("{} is not a valid .ascii asset: {e}", path.display()))?;
     let h = reader.header();
     let fps = if h.fps_den == 0 { 0.0 } else { f64::from(h.fps_num) / f64::from(h.fps_den) };
     Ok(AssetInfo {

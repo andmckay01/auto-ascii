@@ -98,7 +98,8 @@ tools/soak.py --asset PATH --outdir DIR [--duration SECS=3600] [--seed N]
               [--player PATH]
 ```
 
-Build the player first: `cargo build --release -p auto-ascii --features bin`.
+Build the player first: `cargo build --release -p auto-ascii-cli` (the soak
+runs `target/release/auto-ascii play`).
 
 Continuously: drains the pty into a rotation-capped log (**first 2 MB** →
 `head.log`, **last 10 MB** ring → `tail.log`, flushed every 30 s — both
@@ -123,10 +124,10 @@ diff-baseline desync the player *survives*, which the exit code cannot see.
 an arbitrary ring cut (the parser resyncs to the first ESC) and must end on
 a complete sequence.
 
-Harness exits 0 iff the player survived the full duration, exited 0 on
-`q`, emitted the restore bytes, **and both logs pass the structural
-check**; the RSS-slope acceptance (< 1 MB/h after warmup) is reported for
-review, not gated.
+Harness exits 0 iff the player survived the full duration, exited 3 (the
+quit status) on `q`, emitted the restore bytes, **and both logs pass the
+structural check**; the RSS-slope acceptance (< 1 MB/h after warmup) is
+reported for review, not gated.
 
 Standalone: `tools/soak.py --check-logs DIR` re-runs the structural check
 over an existing outdir (exit 1 on errors); `tools/soak.py --self-test`

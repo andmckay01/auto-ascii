@@ -519,11 +519,6 @@ impl PlayerBuilder {
         self
     }
 
-    #[deprecated(note = "renamed to `style`")]
-    pub fn codec(self, codec: Style) -> Self {
-        self.style(codec)
-    }
-
     pub fn mute(mut self, mute: bool) -> Self {
         self.mute = mute;
         self
@@ -816,10 +811,10 @@ impl Player {
         let sound_notes = clock.finish();
         backend.shutdown();
         for problem in &live.problems {
-            eprintln!("auto-ascii-player: settings: {problem}");
+            eprintln!("auto-ascii: settings: {problem}");
         }
         for note in opening.notes.iter().chain(&sound_notes) {
-            eprintln!("auto-ascii-player: sound: {note}");
+            eprintln!("auto-ascii: sound: {note}");
         }
         stopped
     }
@@ -885,7 +880,7 @@ mod tests {
     #[test]
     fn build_resolves_font_table_before_the_terminal() {
         let mut path = std::env::temp_dir();
-        path.push(format!("auto-ascii-player-font-{}.ascii", std::process::id()));
+        path.push(format!("auto-ascii-play-font-{}.ascii", std::process::id()));
         std::fs::write(
             &path,
             auto_ascii_eval::fixtures::build_fixture(auto_ascii_eval::fixtures::Fixture::GradientMotion),
@@ -923,7 +918,7 @@ mod tests {
     #[test]
     fn build_rejects_a_truncated_asset() {
         let mut path = std::env::temp_dir();
-        path.push(format!("auto-ascii-player-truncated-{}.ascii", std::process::id()));
+        path.push(format!("auto-ascii-play-truncated-{}.ascii", std::process::id()));
         let bytes = auto_ascii_eval::fixtures::build_fixture(
             auto_ascii_eval::fixtures::Fixture::GradientMotion,
         );

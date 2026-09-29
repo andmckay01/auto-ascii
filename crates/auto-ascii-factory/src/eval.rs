@@ -51,6 +51,7 @@ pub struct EvalArgs {
     pub cache_dir: PathBuf,
     pub truecolor_only: bool,
     pub font_table: Option<String>,
+    pub programs: Programs,
 }
 
 pub(crate) fn resolve_font_table(spec: Option<&str>) -> Result<CoverageTable, BoxErr> {
@@ -225,7 +226,7 @@ pub(crate) fn eval_clip(
                 ss: None,
                 t: None,
                 params: params.clone(),
-                programs: Programs::lookup(),
+                programs: args.programs.clone(),
             },
             &mut std::io::stderr(),
         )?;
@@ -296,14 +297,14 @@ pub(crate) fn eval_clip(
                     );
                     if !cache.contains_key(&key) {
                         let masks = source_edge_truth(
-                            input, src_w, src_h, params.build.fps, &wanted, vp.cols, vp.rows,
+                            &args.programs.ffmpeg, input, (src_w, src_h), params.build.fps, &wanted, vp.cols, vp.rows,
                         )?;
                         cache.insert(key.clone(), masks);
                     }
                     &cache[&key]
                 }
                 None => truth_owned.insert(source_edge_truth(
-                    input, src_w, src_h, params.build.fps, &wanted, vp.cols, vp.rows,
+                    &args.programs.ffmpeg, input, (src_w, src_h), params.build.fps, &wanted, vp.cols, vp.rows,
                 )?),
             }
         }
@@ -468,9 +469,9 @@ pub(crate) fn eval_clip(
     }
 
     for snap in &mut snaps {
-        snap.render_png = png_from_gray(&snap.raster)?;
+        snap.render_png = png_from_gray(&args.programs.ffmpeg, &snap.raster)?;
         snap.src_png =
-            png_source_frame(input, src_w, src_h, params.build.fps, snap.frame)?;
+            png_source_frame(&args.programs.ffmpeg, input, src_w, src_h, params.build.fps, snap.frame)?;
     }
 
     let reel_clip = if reel_on {
@@ -482,8 +483,8 @@ pub(crate) fn eval_clip(
                 ssim: p.ssim,
                 edge: p.edge,
                 flicker_to_date: p.flicker_to_date,
-                src_png: png_source_frame(input, src_w, src_h, params.build.fps, p.frame)?,
-                render_png: png_from_gray(&p.raster)?,
+                src_png: png_source_frame(&args.programs.ffmpeg, input, src_w, src_h, params.build.fps, p.frame)?,
+                render_png: png_from_gray(&args.programs.ffmpeg, &p.raster)?,
             });
         }
         let (gif, gif_w, gif_h) = if gif_rasters.is_empty() {
@@ -557,9 +558,9 @@ fn render_raster(
 }
 
 fn source_edge_truth(
+    ffmpeg: &Path,
     input: &Path,
-    src_w: u16,
-    src_h: u16,
+    (src_w, src_h): (u16, u16),
     fps: u16,
     wanted: &BTreeSet<u32>,
     grid_w: u16,
@@ -571,7 +572,7 @@ fn source_edge_truth(
     let vf = format!("scale={src_w}:{src_h}:flags=area,fps={fps},format=gray");
     let frames_arg = (u64::from(max_frame) + 1).to_string();
     let input_s = input.to_string_lossy();
-    let mut cmd = Command::new(Programs::lookup().ffmpeg);
+    let mut cmd = Command::new(ffmpeg);
     cmd.args([
         "-nostdin", "-hide_banner", "-v", "error", "-i", &input_s, "-map", "0:v:0",
         "-vf", &vf, "-frames:v", &frames_arg, "-f", "rawvideo", "-",
@@ -654,8 +655,8 @@ fn reference_levels(luma: &[u8]) -> Option<auto_ascii_format::PlaneLevels> {
     Some(auto_ascii_format::PlaneLevels { p2: rank(SSIM_REF_LO_PCT), p98: rank(SSIM_REF_HI_PCT) })
 }
 
-fn ffmpeg_capture(extra_args: &[&str], stdin_data: Option<&[u8]>) -> Result<Vec<u8>, BoxErr> {
-    let mut cmd = Command::new(Programs::lookup().ffmpeg);
+fn ffmpeg_capture(ffmpeg: &Path, extra_args: &[&str], stdin_data: Option<&[u8]>) -> Result<Vec<u8>, BoxErr> {
+    let mut cmd = Command::new(ffmpeg);
     cmd.args(["-v", "error"]);
     cmd.args(extra_args);
     cmd.stdin(if stdin_data.is_some() { Stdio::piped() } else { Stdio::null() });
@@ -702,9 +703,10 @@ fn ffmpeg_capture(extra_args: &[&str], stdin_data: Option<&[u8]>) -> Result<Vec<
     Ok(out)
 }
 
-fn png_from_gray(img: &GrayImage) -> Result<Vec<u8>, BoxErr> {
+fn png_from_gray(ffmpeg: &Path, img: &GrayImage) -> Result<Vec<u8>, BoxErr> {
     let size = format!("{}x{}", img.w(), img.h());
     ffmpeg_capture(
+        ffmpeg,
         &[
             "-f", "rawvideo", "-pixel_format", "gray", "-video_size", &size, "-i", "-",
             "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-",
@@ -714,6 +716,7 @@ fn png_from_gray(img: &GrayImage) -> Result<Vec<u8>, BoxErr> {
 }
 
 fn png_source_frame(
+    ffmpeg: &Path,
     input: &Path,
     w: u16,
     h: u16,
@@ -723,6 +726,7 @@ fn png_source_frame(
     let vf = format!("scale={w}:{h}:flags=area,fps={fps},select=eq(n\\,{frame_idx})");
     let input = input.to_string_lossy();
     ffmpeg_capture(
+        ffmpeg,
         &[
             "-nostdin", "-i", &input, "-map", "0:v:0", "-vf", &vf,
             "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-",

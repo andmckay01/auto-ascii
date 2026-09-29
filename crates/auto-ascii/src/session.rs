@@ -136,16 +136,6 @@ impl RenderSession {
         self.deck.style()
     }
 
-    #[deprecated(note = "renamed to `set_style`")]
-    pub fn set_codec(&mut self, codec: Style) {
-        self.set_style(codec);
-    }
-
-    #[deprecated(note = "renamed to `style`")]
-    pub fn codec(&self) -> Style {
-        self.style()
-    }
-
     pub fn set_cell_aspect(&mut self, cell_aspect: f64) -> Result<(), Error> {
         if !cell_aspect.is_finite() || cell_aspect <= 0.0 {
             return Err(Error::Config(format!(

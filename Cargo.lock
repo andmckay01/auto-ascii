@@ -122,17 +122,14 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
- "anyhow",
  "auto-ascii-core",
  "auto-ascii-eval",
  "auto-ascii-format",
  "auto-ascii-term",
- "clap",
  "cpal",
  "criterion",
- "libc",
  "memmap2",
  "proptest",
  "toml",
@@ -140,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "auto-ascii",
  "auto-ascii-core",
@@ -155,13 +152,14 @@ dependencies = [
  "memmap2",
  "serde",
  "serde_json",
+ "toml",
  "ureq",
  "zip",
 ]
 
 [[package]]
 name = "auto-ascii-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proptest",
 ]
@@ -190,7 +188,6 @@ dependencies = [
  "auto-ascii-eval",
  "auto-ascii-format",
  "auto-ascii-term",
- "clap",
  "gif",
  "indicatif",
  "memmap2",

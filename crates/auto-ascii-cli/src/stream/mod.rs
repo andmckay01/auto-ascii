@@ -323,7 +323,7 @@ pub fn run(programs: &Programs, args: &StreamArgs) -> Result<(), BoxErr> {
 
     if args.sim.is_some() {
         let line = sim_json(&stats, reason, error.as_deref(), alive, procs.spawned(), removed, scratch_entries, t0);
-        crate::emit(&format!("{line}\n"));
+        crate::output::emit(&format!("{line}\n"));
         if let Some(path) = &args.sim_dump {
             write_dump(path, &stats)?;
         }

@@ -1,4 +1,4 @@
-#![cfg(all(unix, feature = "bin"))]
+#![cfg(unix)]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -16,16 +16,16 @@ impl Stage {
         let codes: String = statuses.iter().map(|c| format!("{c}\n")).collect();
         fs::write(dir.join("codes"), codes).unwrap();
         script(
-            &dir.join("player"),
+            &dir.join("cli"),
             &format!(
-                "if [ \"$1\" = --help ]; then exec \"{real}\" --help; fi\n\
+                "if [ \"$1 $2\" = \"play --help\" ]; then exec \"{real}\" play --help; fi\n\
                  d=\"{dir}\"\n\
                  echo \"$*\" >> \"$d/runs\"\n\
                  code=$(head -n 1 \"$d/codes\")\n\
                  tail -n +2 \"$d/codes\" > \"$d/codes.next\" && mv \"$d/codes.next\" \"$d/codes\"\n\
                  if [ \"$code\" = 101 ]; then echo \"thread 'main' panicked at player.rs\" >&2; fi\n\
                  exit \"$code\"\n",
-                real = env!("CARGO_BIN_EXE_auto-ascii-player"),
+                real = env!("CARGO_BIN_EXE_auto-ascii"),
                 dir = dir.display(),
             ),
         );
@@ -33,14 +33,9 @@ impl Stage {
     }
 
     fn launch(&self) -> Output {
-        self.launch_with(&[])
-    }
-
-    fn launch_with(&self, before_flags: &[&str]) -> Output {
         Command::new("bash")
             .arg(launcher())
-            .args([self.0.join("player"), "clip.ascii".into()])
-            .args(before_flags)
+            .args([self.0.join("cli"), "clip.ascii".into()])
             .args(["--style", "ascii"])
             .env("LOG", self.0.join("launcher.log"))
             .stdin(Stdio::null())
@@ -77,19 +72,18 @@ fn reaching_the_end_restarts_and_only_a_quit_stops() {
     let stage = Stage::new("loop", &[0, 0, 3]);
     let out = stage.launch();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    assert_eq!(stage.read("runs").lines().collect::<Vec<_>>(), ["clip.ascii --style ascii"; 3]);
+    assert_eq!(stage.read("runs").lines().collect::<Vec<_>>(), ["play clip.ascii --style ascii"; 3]);
     assert_eq!(exits(&stage.read("launcher.log")), ["exit=0", "exit=0", "exit=3"]);
 }
 
 #[test]
-fn the_launcher_starts_no_audio_player_and_drops_the_old_audio_argument() {
+fn the_launcher_starts_no_audio_player_and_runs_play() {
     let text = fs::read_to_string(launcher()).unwrap();
     assert!(!text.contains("afplay") && !text.contains("AFPLAY"), "the player plays its own sound");
-    let stage = Stage::new("legacy", &[3]);
-    let out = stage.launch_with(&["clip.m4a"]);
+    let stage = Stage::new("play", &[3]);
+    let out = stage.launch();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    assert_eq!(stage.read("runs").lines().collect::<Vec<_>>(), ["clip.ascii --style ascii"]);
-    assert!(stage.read("launcher.log").contains("ignoring audio argument clip.m4a"), "{}", stage.read("launcher.log"));
+    assert_eq!(stage.read("runs").lines().collect::<Vec<_>>(), ["play clip.ascii --style ascii"]);
 }
 
 #[test]
@@ -108,7 +102,7 @@ fn an_unexpected_exit_is_logged_and_held_open() {
 #[test]
 fn a_player_without_the_quit_status_is_refused() {
     let stage = Stage::new("old", &[0]);
-    script(&stage.0.join("player"), "echo 'Play ASCI assets in the terminal'\nexit 0\n");
+    script(&stage.0.join("cli"), "echo 'Play a file, library clip, or composition'\nexit 0\n");
     let out = stage.launch();
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert!(stage.read("runs").is_empty(), "an old player must not start");

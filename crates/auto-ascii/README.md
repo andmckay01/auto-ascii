@@ -21,8 +21,8 @@ and RGB colors for your renderer, game engine or test.
 
 | feature | default | provides |
 |---|---|---|
-| `bin` | **on** | the `auto-ascii-player` CLI binary (implies `terminal`) |
-| `terminal` | via `bin` | `Player` / `PlayerBuilder` — the blocking terminal session (implies `compose`) |
+| `terminal` | **on** | `Player` / `PlayerBuilder` — the blocking terminal session (implies `compose`) |
+| `audio` | **on** | plays an asset's soundtrack through the audio device (cpal) |
 | `compose` | **on** | `Composition` TOML timelines (stitched clips) |
 | *(none)* | | `RenderSession` only: no crossterm, no clap (`default-features = false`) |
 
@@ -30,9 +30,10 @@ Examples: `simple-play` (the whole player in one call), `embedded-loop`
 (`RenderSession` in a hand-rolled loop with a mid-run resize), `headless-dump`
 (frames to stdout as text, no terminal at all).
 
-Producing assets is the separate `auto-ascii-factory` binary's job — the repository
-README (`README.md` at the workspace root) covers the factory workflow, the
-eight shipped palettes and the eval harness.
+This crate is a library only. Producing assets, and playing them from a shell,
+is the job of the `auto-ascii` command (`auto-ascii import`, `auto-ascii play`)
+built from the repository — its README (`README.md` at the workspace root)
+covers that workflow, the eight shipped palettes and the eval harness.
 
 ## License
 

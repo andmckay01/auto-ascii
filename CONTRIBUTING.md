@@ -10,22 +10,19 @@ registry, milestone by milestone.
 ## Build and run
 
 ```bash
-cargo build --release -p auto-ascii --features bin   # the player (or: make build)
-cargo build --release -p auto-ascii-factory          # the factory; ffmpeg on PATH to ingest
-cargo build --release -p auto-ascii-cli              # the `auto-ascii` CLI
-cargo test --workspace                               # or: make test
+cargo build --release -p auto-ascii-cli   # the one `auto-ascii` binary (or: make build)
+cargo test --workspace                    # or: make test
 ```
 
 macOS builds from source on Apple Silicon and Intel; there is no cross build
-for it. The player needs only crossterm and POSIX termios, and the factory
-needs `ffmpeg` on PATH (`brew install ffmpeg`) for ingest only.
+for it. Playback needs only crossterm and POSIX termios; `auto-ascii import`
+needs `ffmpeg` and `ffprobe` (from `PATH`, or downloaded on first use).
 
 `scripts/release.sh` (or `make dist`) is Linux-hosted. It builds stripped
-player binaries into `dist/` for `x86_64-unknown-linux-gnu` (native),
+`auto-ascii` binaries into `dist/` for `x86_64-unknown-linux-gnu` (native),
 `x86_64-unknown-linux-musl` (fully static, checked with `ldd`) and
 `x86_64-pc-windows-gnu` (MinGW cross; smoke-tested under wine only when wine
-is installed), and gates each under 5 MB. It also reports the factory's size,
-ungated. Missing toolchains are installed with `rustup target add` and
+is installed), and gates each under 5 MB. Missing toolchains are installed with `rustup target add` and
 `sudo -n apt-get install` (musl-tools, mingw-w64); `NO_APT=1` forbids apt and
 fails instead.
 
@@ -44,10 +41,10 @@ fails instead.
    `perf/thresholds.toml`);
 6. a corpus eval, only when `corpus/` holds local videos
    ([corpus/README.md](corpus/README.md)). It runs a release build of
-   `auto-ascii-factory eval` against `runs/base.json` when that file exists
+   `auto-ascii dev eval` against `runs/base.json` when that file exists
    (`EVAL_BASELINE=path` points it elsewhere), writing
    `runs/latest.{json,html}` and caching assets under `runs/cache`. Record a
-   baseline once with `auto-ascii-factory eval --corpus corpus --out
+   baseline once with `auto-ascii dev eval --corpus corpus --out
    runs/base.json`.
 
 The script aborts on the first failing section and prints each section's
@@ -177,9 +174,9 @@ existing eval gate.
 
 | path | what |
 |---|---|
-| `crates/auto-ascii` | the public library + the `auto-ascii-player` binary |
-| `crates/auto-ascii-cli` | the `auto-ascii` CLI (unpublished; depends on the factory) |
-| `crates/auto-ascii-factory` | offline factory, eval and sweep drivers (unpublished; lib + bin) |
+| `crates/auto-ascii` | the public library (the terminal `Player` and `RenderSession`) |
+| `crates/auto-ascii-cli` | the `auto-ascii` binary: everyday commands plus `dev` (unpublished) |
+| `crates/auto-ascii-factory` | offline factory library, eval and sweep drivers (unpublished) |
 | `crates/auto-ascii-core` / `-format` / `-term` | engine, container, terminal backend |
 | `crates/auto-ascii-eval` | metrics, fixtures, report schema (unpublished) |
 | `crates/auto-ascii-lint` | comment policy checker and fixtures (unpublished) |

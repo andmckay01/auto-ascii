@@ -270,7 +270,7 @@ impl Params {
         }
         if !(1..=255).contains(&b.keyframe_ivl) {
             return Err(
-                "params: build.keyframe_ivl must be in 1..=255 (the ASCI header stores it \
+                "params: build.keyframe_ivl must be in 1..=255 (the .ascii header stores it \
                  as u8, PLAN §4)"
                     .into(),
             );

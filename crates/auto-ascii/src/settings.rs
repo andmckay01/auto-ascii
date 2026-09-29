@@ -75,7 +75,7 @@ impl VideoSettings {
                 return Err(err(format!("expected `key = value`, got {line:?}")));
             };
             let (key, val) = (key.trim(), val.trim());
-            if key == "style" || key == "codec" {
+            if key == "style" {
                 let name = val.trim_matches(['"', '\'']);
                 out.style = Style::from_name(name).unwrap_or_default();
             } else if let Some(dial) = Dial::ALL.into_iter().find(|d| d.param_key() == key) {
@@ -169,12 +169,11 @@ mod tests {
     }
 
     #[test]
-    fn files_saved_with_the_old_codec_key_still_load() {
-        assert_eq!(VideoSettings::parse("codec = \"letters\"\n").unwrap().style, Style::Letters);
-        assert_eq!(VideoSettings::parse("codec = 'ascii' # old build").unwrap().style, Style::Ascii);
+    fn a_codec_key_is_just_an_unknown_key() {
+        assert_eq!(VideoSettings::parse("codec = \"letters\"\n").unwrap().style, Style::Ascii);
         let old = VideoSettings::parse("codec = \"letters\"\nshadow_lift = 64\n").unwrap();
-        assert_eq!((old.style, old.compose.shadow_lift), (Style::Letters, 64));
-        assert!(!old.to_toml().contains("codec"), "new writes use `style`: {}", old.to_toml());
+        assert_eq!((old.style, old.compose.shadow_lift), (Style::Ascii, 64));
+        assert!(!old.to_toml().contains("codec"), "writes use `style`: {}", old.to_toml());
         assert_eq!(VideoSettings::parse(&old.to_toml()), Ok(old));
     }
 

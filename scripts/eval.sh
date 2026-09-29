@@ -59,7 +59,7 @@ if (( ${#corpus_clips[@]} > 0 )); then
     else
         echo "NOTICE: $baseline missing — running eval without baseline compare"
     fi
-    cargo run --quiet --release -p auto-ascii-factory -- eval \
+    cargo run --quiet --release -p auto-ascii-cli --bin auto-ascii -- dev eval \
         --corpus corpus ${baseline_args[@]+"${baseline_args[@]}"} \
         --out runs/latest.json --html runs/latest.html --cache-dir runs/cache
     section_done

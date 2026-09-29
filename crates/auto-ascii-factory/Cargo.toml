@@ -1,10 +1,11 @@
 [package]
 name = "auto-ascii-factory"
-description = "auto-ascii offline factory: ffmpeg ingest -> feature planes -> ASCI asset"
+description = "auto-ascii offline factory library: ffmpeg ingest -> feature planes -> .ascii asset"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 
 [lints]
 workspace = true
@@ -15,7 +16,6 @@ auto-ascii-core = { workspace = true }
 auto-ascii-term = { workspace = true }
 auto-ascii-eval = { workspace = true }
 auto-ascii = { workspace = true }
-clap = { workspace = true }
 indicatif = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -23,7 +23,3 @@ toml = { workspace = true }
 memmap2 = { workspace = true }
 gif = { workspace = true }
 ab_glyph = { workspace = true }
-
-[[bin]]
-name = "auto-ascii-factory"
-path = "src/main.rs"

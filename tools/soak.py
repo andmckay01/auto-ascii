@@ -358,7 +358,7 @@ def spawn_player(player: Path, asset: Path) -> tuple[int, int]:
             for k in ("COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
                       "TMUX", "SSH_CONNECTION", "SSH_TTY"):
                 env.pop(k, None)
-            os.execve(str(player), [str(player), str(asset), "--loop", "--no-cache"], env)
+            os.execve(str(player), [str(player), "play", str(asset), "--loop", "--no-cache"], env)
         except Exception:
             os._exit(127)
     os.set_blocking(master, False)
@@ -370,7 +370,8 @@ def main() -> int:
     ap.add_argument("--duration", type=float, default=3600.0,
                     help="soak length in seconds (default 3600; 60 = smoke mode)")
     ap.add_argument("--asset", type=Path, help="the .ascii asset to loop")
-    ap.add_argument("--player", type=Path, default=REPO / "target/release/auto-ascii-player")
+    ap.add_argument("--player", type=Path, default=REPO / "target/release/auto-ascii",
+                    help="the auto-ascii binary; the soak runs its `play`")
     ap.add_argument("--outdir", type=Path,
                     help="directory for head.log/tail.log/rss.csv/resizes.csv/summary.json")
     ap.add_argument("--seed", type=int, default=None,
@@ -394,8 +395,8 @@ def main() -> int:
     if args.outdir is None:
         ap.error("--outdir is required (unless --check-logs/--self-test)")
     if not args.player.is_file():
-        sys.exit(f"player binary not found: {args.player}\n"
-                 f"build it: cargo build --release -p auto-ascii --features bin")
+        sys.exit(f"auto-ascii binary not found: {args.player}\n"
+                 f"build it: cargo build --release -p auto-ascii-cli")
     if not args.asset.is_file():
         sys.exit(f"asset not found: {args.asset}")
 
@@ -536,8 +537,8 @@ def main() -> int:
         fail_reasons.append("harness aborted by signal")
     if kill_used:
         fail_reasons.append(f"player ignored 'q' ({kill_used} used)")
-    if exitcode != 0:
-        fail_reasons.append(f"player exit code {exitcode!r} (want 0)")
+    if exitcode != 3:
+        fail_reasons.append(f"player exit code {exitcode!r} (want 3, the quit status)")
     if RESTORE_SEQ not in tail:
         fail_reasons.append("RESTORE_SEQ not found in output tail")
 
