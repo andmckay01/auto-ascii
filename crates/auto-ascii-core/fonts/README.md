@@ -55,11 +55,11 @@ and why every builtin table vetoes `BrailleVerified` down to unicode.
 Regenerate all five:
 
 ```sh
-cargo run --release -p auto-ascii-cli -- dev font-table --conservative -o fonts/conservative.toml
-cargo run --release -p auto-ascii-cli -- dev font-table /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf        --name dejavu-sans-mono  -o fonts/dejavu-sans-mono.toml
-cargo run --release -p auto-ascii-cli -- dev font-table /usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf --name liberation-mono -o fonts/liberation-mono.toml
-cargo run --release -p auto-ascii-cli -- dev font-table /usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf          --name ubuntu-mono       -o fonts/ubuntu-mono.toml
-cargo run --release -p auto-ascii-cli -- dev font-table /usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf    --name noto-sans-mono    -o fonts/noto-sans-mono.toml
+cargo run --release -p auto-ascii -- dev font-table --conservative -o fonts/conservative.toml
+cargo run --release -p auto-ascii -- dev font-table /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf        --name dejavu-sans-mono  -o fonts/dejavu-sans-mono.toml
+cargo run --release -p auto-ascii -- dev font-table /usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf --name liberation-mono -o fonts/liberation-mono.toml
+cargo run --release -p auto-ascii -- dev font-table /usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf          --name ubuntu-mono       -o fonts/ubuntu-mono.toml
+cargo run --release -p auto-ascii -- dev font-table /usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf    --name noto-sans-mono    -o fonts/noto-sans-mono.toml
 ```
 
 (`sudo apt-get install fonts-dejavu-core fonts-liberation fonts-ubuntu

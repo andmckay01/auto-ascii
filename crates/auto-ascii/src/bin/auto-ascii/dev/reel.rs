@@ -2,8 +2,9 @@
 
 use auto_ascii_eval::{EdgeScore, GrayImage};
 
-use crate::eval::{base64, html_escape};
-use crate::ffmpeg::BoxErr;
+use auto_ascii_factory::ffmpeg::BoxErr;
+
+use super::eval::{base64, html_escape};
 
 const MIN_SIGN_OFF_ROWS: u32 = 4;
 pub const REEL_ROWS: u32 = 6;

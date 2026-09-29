@@ -24,31 +24,34 @@ crates/
                         dev: insta, proptest   (NEW at M2; auto-ascii-format added
                         at item C for the synthetic fixture builders)
   auto-ascii-factory lib   deps: auto-ascii-format, auto-ascii-core,
-                        auto-ascii-term, auto-ascii-eval,
-                        auto-ascii(default-features=false — pipeline only),
+                        auto-ascii-eval,
                         indicatif, serde, serde_json,
-                        toml, memmap2               (M2 item B additions)
+                        toml                        (M2 item B additions)
                         Library only since 0.3.0 (its clap bin and `inspect`
-                        moved into auto-ascii-cli as `import -o` and `dev`).
-                        Unpublished (`publish = false`; ffmpeg subprocess).
+                        moved into the `auto-ascii` binary as `import -o` and
+                        `dev`; its eval, sweep, reel and font-table code followed,
+                        so it no longer depends on auto-ascii).
+                        Published since 0.3.0 (ffmpeg subprocess).
   auto-ascii      lib      THE public facade (M4 item A; absorbed the old
-                        player crate — pipeline, tests, benches). 0.3.0: no
-                        binary (the player's argv surface is `auto-ascii
-                        play`, below).
+                        player crate — pipeline, tests, benches). 0.3.0:
+                        also carries the `auto-ascii` binary, below, behind
+                        the `cli` feature.
                         deps: auto-ascii-core, auto-ascii-format, memmap2,
                         auto-ascii-term(default-features=false)
-                        features: default = ["terminal", "audio", "compose"];
+                        features: default = ["terminal", "audio", "compose", "cli"];
                           terminal = auto-ascii-term/session (Player/PlayerBuilder);
-                          audio = cpal (the soundtrack device sink).
+                          audio = cpal (the soundtrack device sink);
+                          cli = the binary and its deps, below.
                         --no-default-features = pure embedder: RenderSession
                         only; dep tree has NO clap/anyhow/crossterm
                         (M4 acceptance 4)
-  auto-ascii-cli      bin   the `auto-ascii` binary (NEW at M7; unpublished),
+  auto-ascii          bin   the `auto-ascii` binary (NEW at M7; package
+                        `auto-ascii` since 0.3.0, src/bin/auto-ascii/,
+                        required-features = ["cli"]),
                         the ONLY product binary since 0.3.0.
-                        deps: auto-ascii(path, default-features=false +
-                        terminal + compose; the CLI's own `audio` feature
-                        turns on auto-ascii/audio and cpal), auto-ascii-factory(path,
-                        the lib), auto-ascii-format, clap, memmap2, serde,
+                        deps (feature `cli`, which also turns on terminal +
+                        compose; on top of the lib's): auto-ascii-factory,
+                        auto-ascii-eval, ab_glyph, gif, clap, libc, serde,
                         serde_json; dev: auto-ascii-eval (AVI fixtures), toml.
                         No new external dependency entered the workspace
                         at M7. The first-use tool downloader (FEATURE-MAP
@@ -57,9 +60,8 @@ crates/
                         gzip) and zip 8 (deflate read via flate2/zlib-rs
                         only) — CLI-only; the published facade gained just
                         the network-free hidden `tools` lookup.
-                        It is a THIRD crate because the factory already
-                        depends on the facade, so the binary needing both
-                        cannot live in either.
+                        It lives in the facade package because the factory
+                        no longer depends on the facade.
   auto-ascii-lint     lib+bin source comment policy checker (unpublished).
                         bin: check-comments; developer tooling only, with no
                         runtime dependency edge into the player or factory.
@@ -1282,7 +1284,7 @@ facade surface + this hidden module.)
 ## Binaries
 
 - The factory commands (PLAN §5), since 0.3.0 part of `auto-ascii` (the
-  old factory binary is gone; `crates/auto-ascii-cli/src/import.rs` and
+  old factory binary is gone; `crates/auto-ascii/src/bin/auto-ascii/import.rs` and
   `src/dev/`), surface as of M3 (+ M5 item B):
   `import <in> -o <out> [--ss T] [--t T] [--fps N] [--res WxH] [--params F]
   [--force]` (was `build`; `-o` refuses an existing file without `--force`
@@ -1385,7 +1387,7 @@ facade surface + this hidden module.)
   compression ratio vs raw planes, and per-plane value stats over sampled
   frames (E nonzero %, Ex/Ey bias deviation, H flag rates).
 - `auto-ascii play` (PLAN §3) — the player's argv surface. Since 0.3.0 it
-  lives in `crates/auto-ascii-cli/src/play/` (the old standalone player
+  lives in `crates/auto-ascii/src/bin/auto-ascii/play/` (the old standalone player
   binary and the facade's `bin` feature are gone). It is a thin argv shim:
   interactive flags map 1:1 onto `PlayerBuilder` and `play()` (no logic
   fork); `--sim` (`play/sim.rs`) and `--bench-seek` (`play/bench.rs`) drive
@@ -1444,8 +1446,8 @@ facade surface + this hidden module.)
   `Event::Resize` at frame NFRAMES/2 through the same event path the
   interactive loop uses, proving next-frame reflow.
 - `auto-ascii` (PLAN-M6-M8 §2) — M7, the agent-first CLI, built from
-  `crates/auto-ascii-cli` (package `auto-ascii-cli`, binary `auto-ascii`;
-  unpublished, like the factory it depends on). CLI as of 0.3.0:
+  `crates/auto-ascii/src/bin/auto-ascii/` (package `auto-ascii`, binary
+  `auto-ascii`, feature `cli`). CLI as of 0.3.0:
   `[--json] [--yes] [--help-all] play <clip | composition> [play flags] |
   stream <URL|TERMS>... | import <video> [--name N | -o PATH] [--ss T]
   [--t T] [--fps N] [--res WxH] [--params F] [--force] | list | info <clip> |
@@ -2292,11 +2294,13 @@ facade surface + this hidden module.)
     compose + present @300×80, seeded xorshift frame sequence): on the
     856 MB sheep asset, 100 seeks → p50 8.6 ms / p95 20.3 ms / max 32.3 ms
     (accept < 50 ms).
-    (c) **Ship** (item E): `scripts/release.sh` — native gnu + musl
-    (static-pie, `ldd` "statically linked", gated) + windows-gnu cross
-    (mingw-w64), all stripped and gated < 5 MB (measured 1.66 / 1.77 /
-    2.99 MiB; factory native 3.61 MiB, informational); wine smoke only if
-    wine exists, else the .exe ships documented as UNTESTED-CROSS. The
+    (c) **Ship** (item E): `.github/workflows/release.yml` builds six
+    targets (aarch64/x86_64-apple-darwin, x86_64/aarch64-unknown-linux-gnu,
+    x86_64/aarch64-pc-windows-msvc) on a `vX.Y.Z` tag and publishes the
+    GitHub Release, crates.io, npm and the Homebrew tap, with the helpers
+    `scripts/package-archive.sh`, `install.sh`, `install.ps1`,
+    `homebrew-formula.sh` and `publish-crates.sh`; see docs/RELEASING.md.
+    (It replaced `scripts/release.sh`, now deleted.) The
     windows-gnu build required cfg-splitting auto-ascii-term's session layer:
     libc is now a `[target.'cfg(unix)']` dependency; windows halves of
     ansi/restore/probe go through crossterm's WinAPI layer (raw mode,
@@ -2867,7 +2871,7 @@ facade surface + this hidden module.)
     hold `/` or `..`, so no `--name` can write outside `library/`. Readers
     report the file stem verbatim, and `resolve_clip` falls back to the
     kebab form, so an agent can ask for `My Clip` and get `my-clip`.
-    (f) **Tests:** `crates/auto-ascii-cli/tests/cli.rs` runs the real binary
+    (f) **Tests:** `crates/auto-ascii/tests/cli.rs` runs the real binary
     with `AUTO_ASCII_HOME` pointed at a per-test temp dir — `home` creates
     the three folders; `import` of a 12-frame 160x90 30 fps AVI produces the
     clip and a sidecar with every field checked (human AND `--json`, with
@@ -2987,7 +2991,7 @@ facade surface + this hidden module.)
     slice is the source's own planes, and it points straight at
     `library/` because `export` is itself atomic (sub-item (i)), so a
     failed `--force` leaves the clip already there intact. The `compose` subcommands are TEXT operations on
-    the TOML (`crates/auto-ascii-cli/src/composition.rs`): `new` writes a
+    the TOML (`crates/auto-ascii/src/bin/auto-ascii/composition.rs`): `new` writes a
     header and a commented clip table, `add` appends one `[[clip]]` and
     nothing re-serializes the file, so an agent's comments and ordering
     survive every edit — the file is the source of truth (§0.3), and these
@@ -3016,7 +3020,7 @@ facade surface + this hidden module.)
     export knobs come from `auto_ascii_factory::effective_params` instead
     of a third hard-coded 60/15; and the four steps `import` and `cut`
     share are one set of functions rather than two copies.
-    **Tests:** seventeen cases added to `crates/auto-ascii-cli/tests/cli.rs`
+    **Tests:** seventeen cases added to `crates/auto-ascii/tests/cli.rs`
     (31 in the suite), over
     `auto_ascii_eval` fixture clips written straight into `library/` with
     no sidecars (no ffmpeg anywhere in the M8 half) — `cut` writes frames =

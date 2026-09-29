@@ -124,22 +124,7 @@ dependencies = [
 name = "auto-ascii"
 version = "0.3.0"
 dependencies = [
- "auto-ascii-core",
- "auto-ascii-eval",
- "auto-ascii-format",
- "auto-ascii-term",
- "cpal",
- "criterion",
- "memmap2",
- "proptest",
- "toml",
-]
-
-[[package]]
-name = "auto-ascii-cli"
-version = "0.2.0"
-dependencies = [
- "auto-ascii",
+ "ab_glyph",
  "auto-ascii-core",
  "auto-ascii-eval",
  "auto-ascii-factory",
@@ -147,9 +132,12 @@ dependencies = [
  "auto-ascii-term",
  "clap",
  "cpal",
+ "criterion",
+ "gif",
  "indicatif",
  "libc",
  "memmap2",
+ "proptest",
  "serde",
  "serde_json",
  "toml",
@@ -159,14 +147,14 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "auto-ascii-eval"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "auto-ascii-core",
  "auto-ascii-format",
@@ -180,17 +168,12 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii-factory"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
- "ab_glyph",
- "auto-ascii",
  "auto-ascii-core",
  "auto-ascii-eval",
  "auto-ascii-format",
- "auto-ascii-term",
- "gif",
  "indicatif",
- "memmap2",
  "serde",
  "serde_json",
  "toml",
@@ -198,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii-format"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "ciborium",
  "crc32fast",
@@ -209,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii-lint"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "ra-ap-rustc_lexer",
@@ -223,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii-term"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "auto-ascii-core",
  "auto-ascii-eval",

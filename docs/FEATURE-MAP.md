@@ -29,8 +29,9 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   live dials are `[compose]` fields, so turning one re-renders the asset in memory and never
   rebuilds it.
 - **Crates:** `auto-ascii-core` (engine), `auto-ascii-format` (container), `auto-ascii-term`
-  (terminal backend), `auto-ascii` (facade library) are published. `auto-ascii-factory` (library),
-  `auto-ascii-eval` and `auto-ascii-cli` (the `auto-ascii` command) are workspace-only.
+  (terminal backend), `auto-ascii-eval`, `auto-ascii-factory` (library) and `auto-ascii` (facade
+  library) are published. The `auto-ascii` command ships from the `auto-ascii` crate behind its
+  default-on `cli` feature.
 
 ## Features / flows
 
@@ -41,8 +42,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   [--res WxH] [--params F] [--force]` (`T` is `SS`, `MM:SS` or `HH:MM:SS`; `-o` never
   replaces a file without `--force`). Without `-o` the clip lands in the library (flow 12);
   `auto-ascii add` runs the same build with the defaults for its clip folders (flow 12).
-- **Code:** `crates/auto-ascii-cli/src/args.rs` (clap surface) →
-  `crates/auto-ascii-cli/src/import.rs` `run` (library or `-o`) →
+- **Code:** `crates/auto-ascii/src/bin/auto-ascii/args.rs` (clap surface) →
+  `crates/auto-ascii/src/bin/auto-ascii/import.rs` `run` (library or `-o`) →
   `crates/auto-ascii-factory/src/lib.rs` `build` / `BuildRequest` / `effective_params` →
   `crates/auto-ascii-factory/src/build.rs` `run`:
   1. **Ingest:** `crates/auto-ascii-factory/src/ffmpeg.rs` `probe` (ffprobe JSON) and
@@ -69,7 +70,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Invariants:**
   - Byte-deterministic: LUT and integer pixel math, a fixed zstd level, no timestamps. The
     default-params output is byte-pinned in
-    `crates/auto-ascii-cli/tests/m2_params_eval.rs`.
+    `crates/auto-ascii/tests/m2_params_eval.rs`.
   - The asset is written to `<out>.part` and renamed only after `finish()`, so a killed build
     never leaves a truncated `.ascii`.
   - Memory is O(plane): planes stream to the writer and are never accumulated.
@@ -273,7 +274,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   `--seek T`, `--duration-secs S`, `--repaint full|diff`, `--cell-aspect R`, `--no-backdrop`,
   `--mute`, `--no-audio` (feature 16). `play --help` hides the advanced terminal, headless and
   benchmark flags; `play --help-all` lists them.
-- **Code:** `crates/auto-ascii-cli/src/play/mod.rs` (clap in `args.rs`; argv maps 1:1 onto
+- **Code:** `crates/auto-ascii/src/bin/auto-ascii/play/mod.rs` (clap in `args.rs`; argv maps 1:1 onto
   `PlayerBuilder`) → `crates/auto-ascii/src/player.rs` `PlayerBuilder::build` (validates before
   touching the terminal) → `Player::run`, the event loop over `ClipDeck`
   (`crates/auto-ascii/src/deck.rs`). Keys are decoded in
@@ -290,7 +291,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - Held keys coalesce: `v`, space, `s` and `m` are flags. `/`, `d` and arrows are counted.
   - Quit wins and stops the drain.
   - `play` exits 0 when playback reaches the end, 3 when the viewer quits (`q`, `Esc`, Ctrl-C)
-    and 1 on an error (`crates/auto-ascii-cli/tests/pty_exit_status.rs`).
+    and 1 on an error (`crates/auto-ascii/tests/pty_exit_status.rs`).
 
 ### 9. Live dials and per-video settings
 - **Does:** retunes the renderer during playback and remembers the result per video.
@@ -384,23 +385,24 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   it makes `library/<kebab title>/` (or `DIR/<kebab title>/`) holding `<Title>.ascii`,
   `<Title>.m4a`, `<Title>.json`, an executable `play.command`, `distill.log` and, for a link,
   `source.mp4` plus `download.log`.
-- **Code:** `crates/auto-ascii-cli/src/main.rs` `run` / `compose` dispatch.
-  `crates/auto-ascii-cli/src/args.rs` `Cli`, `Cmd`, `ComposeCmd`, `DevCmd`.
-  `crates/auto-ascii-cli/src/import.rs` `run` → `auto_ascii_factory::build`.
-  `crates/auto-ascii-cli/src/add.rs` `run` (stage, build via `import::build_with_defaults`,
+- **Code:** `crates/auto-ascii/src/bin/auto-ascii/main.rs` `run` / `compose` dispatch.
+  `crates/auto-ascii/src/bin/auto-ascii/args.rs` `Cli`, `Cmd`, `ComposeCmd`, `DevCmd`.
+  `crates/auto-ascii/src/bin/auto-ascii/import.rs` `run` → `auto_ascii_factory::build`.
+  `crates/auto-ascii/src/bin/auto-ascii/add.rs` `run` (stage, build via `import::build_with_defaults`,
   `extract_soundtrack`, `verify` via `dev::inspect::collect` plus an ffprobe length check,
-  `write_launcher`) over `crates/auto-ascii-cli/src/source.rs` `resolve` / `Source::fetch` and
+  `write_launcher`) over `crates/auto-ascii/src/bin/auto-ascii/source.rs` `resolve` / `Source::fetch` and
   the `Downloader` trait (`YtDlpDownloader`: `stream/ytdlp.rs` `Input::classify` and
   `resolve_or_update` for the title, then one yt-dlp download run).
-  `crates/auto-ascii-cli/src/commands.rs` `cut`, `list`, `info`, `compose_*`, `home`,
-  `agent_guide`. `crates/auto-ascii-cli/src/play/mod.rs` `play`, `play_composition`.
-  `crates/auto-ascii-cli/src/output.rs` `emit` / `emit_err` / `fail`.
-  `crates/auto-ascii-cli/src/home.rs` `Home` (`resolve`, `create`,
+  `crates/auto-ascii/src/bin/auto-ascii/commands.rs` `cut`, `list`, `info`, `compose_*`, `home`,
+  `agent_guide`. `crates/auto-ascii/src/bin/auto-ascii/play/mod.rs` `play`, `play_composition`.
+  `crates/auto-ascii/src/bin/auto-ascii/output.rs` `emit` / `emit_err` / `fail`.
+  `crates/auto-ascii/src/bin/auto-ascii/home.rs` `Home` (`resolve`, `create`,
   `resolve_clip`, `resolve_playable`), plus free functions `kebab_case`, `cut_name` and
   `folder_clip` (a folder's `.ascii`, so `play`, `info` and `list` see `add`'s folders).
-  `crates/auto-ascii-cli/src/library.rs` `Sidecar`, `Provenance`, `list`, `describe`,
-  `write_sidecar`. `crates/auto-ascii-cli/src/composition.rs` `create`, `append_clip`, `report`.
-  `docs/AGENT-GUIDE.md` is embedded and printed by `agent-guide`.
+  `crates/auto-ascii/src/bin/auto-ascii/library.rs` `Sidecar`, `Provenance`, `list`, `describe`,
+  `write_sidecar`. `crates/auto-ascii/src/bin/auto-ascii/composition.rs` `create`, `append_clip`, `report`.
+  `crates/auto-ascii/AGENT-GUIDE.md` is embedded and printed by `agent-guide`; `cli.rs`
+  `agent_guide_prints_the_committed_file` pins it byte-for-byte to `docs/AGENT-GUIDE.md`.
 - **Invariants:**
   - `--json` puts exactly one JSON value on stdout. Errors, including a mistyped command line,
     are `{"error": "..."}` on stderr with exit 1. ffmpeg and factory chatter always go to stderr.
@@ -461,7 +463,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   [COLSxROWS] [--style S] [--palette P] [--from F] [--settings PLAYER.toml]` prints frames as
   text. `--settings` applies a video's saved `<stem>.player.toml` (its `style` and dials);
   an explicit `--style` still wins.
-- **Code:** `crates/auto-ascii-cli/src/play/sim.rs` `run` (the `--sim` harness drives
+- **Code:** `crates/auto-ascii/src/bin/auto-ascii/play/sim.rs` `run` (the `--sim` harness drives
   `ClipDeck` against `SimBackend`; `play/bench.rs` is `--bench-seek`) and
   `crates/auto-ascii/examples/headless-dump.rs`.
 
@@ -471,7 +473,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **User:** `auto-ascii dev eval --corpus DIR [--params F] [--baseline B.json] --out X.json
   [--html X.html] [--reel R.html] [--cache-dir D] [--font-table NAME|PATH]`.
   `auto-ascii dev sweep --corpus DIR --grid G.toml --out DIR`. `scripts/eval.sh`.
-- **Code:** `crates/auto-ascii-factory/src/eval.rs` `run` / `eval_clip` builds or reuses each
+- **Code:** `crates/auto-ascii/src/bin/auto-ascii/dev/eval.rs` `run` / `eval_clip` builds or reuses each
   asset (`asset_cache_name`: input sha + `Params::build_fingerprint` + `PIPELINE_FINGERPRINT`
   from `crates/auto-ascii-factory/build.rs`). It drives `pipeline::Player` against `SimBackend`
   and scores:
@@ -483,7 +485,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - asset structure.
   The report is `crates/auto-ascii-eval/src/report.rs` `EvalReport`, and the baseline compare is
   `crates/auto-ascii-eval/src/compare.rs`. The review reel is
-  `crates/auto-ascii-factory/src/reel.rs`. Sweeps are `crates/auto-ascii-factory/src/sweep.rs`
+  `crates/auto-ascii/src/bin/auto-ascii/dev/reel.rs`. Sweeps are `crates/auto-ascii/src/bin/auto-ascii/dev/sweep.rs`
   `run`, `enumerate_combos`, `score_of`, `rank`. Synthetic fixtures are
   `crates/auto-ascii-eval/src/fixtures.rs` (`Fixture`, `FixtureRenderer`, `snapshot`,
   `write_bgr24_avi`).
@@ -506,7 +508,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   `m sound`. Problems (no device, no ffmpeg, a different cut, a failed decode, a lost device)
   print as `auto-ascii: sound: …` on stderr after exit.
 - **Code:** `crates/auto-ascii/src/audio/` (`#[doc(hidden)]`, like `pipeline`), adapted from the
-  `yt-stream` branch's `crates/auto-ascii-cli/src/stream/{clock,audio}.rs` with the same names so
+  `yt-stream` branch's `crates/auto-ascii/src/bin/auto-ascii/stream/{clock,audio}.rs` with the same names so
   the two can merge. `source.rs`: `discover` (`TrackSource`, `SIDECAR_EXTS`, `FOLDER_SOURCE`),
   `Tools::find` (flow 18's `Lookup` plus the Homebrew prefixes; never downloads), `probe`/`parse_probe`, `duration_mismatch`, `PCM_BUDGET_BYTES`, `ffmpeg_args`,
   `spawn`/`Decoder`. `output.rs`: `Pcm` (lock-free i16 slab), `Track`, `Output::fill`,
@@ -514,7 +516,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   `clock.rs`: `Clock`, `MonotonicClock`, `AudioShared`, `AudioClock`. `mod.rs`: `Soundtrack`
   (`open`, `now_secs`, `seek`, `set_running`, `toggle_mute`, `poll`, `finish`), `Sound`,
   `SinkChoice`. The player wires it through `MediaClock` in `crates/auto-ascii/src/player.rs`;
-  `--sim-audio` in `crates/auto-ascii-cli/src/play/sim.rs` `run`.
+  `--sim-audio` in `crates/auto-ascii/src/bin/auto-ascii/play/sim.rs` `run`.
 - **Invariants:**
   - Discovery order: an embedded audio plane would go first (not in the format yet; it would be a
     new optional plane ID old players skip), then `<stem>.m4a`, `<stem>.mp4`, the other
@@ -578,8 +580,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   network, real ffmpeg, audio into a real-time null sink) against `SimBackend` and prints one JSON
   stats line: id, title, fps, frames rendered and dropped, max drift, samples consumed, loader
   stages, children alive, temp dir removed, exit reason.
-- **Code:** `crates/auto-ascii-cli/src/main.rs` `Cmd::Stream` → `commands.rs` `stream` →
-  `crates/auto-ascii-cli/src/stream/mod.rs` `run` / `session`:
+- **Code:** `crates/auto-ascii/src/bin/auto-ascii/main.rs` `Cmd::Stream` → `commands.rs` `stream` →
+  `crates/auto-ascii/src/bin/auto-ascii/stream/mod.rs` `run` / `session`:
   1. **Resolve** (`stream/ytdlp.rs`): `Input::classify` sorts the input by URL route.
      `YtDlp::resolve` uses `--flat-playlist -I 1 -J` for lists (following nested tab playlists at
      most `MAX_DEPTH` levels down) and then `--no-playlist -f <selector> -J` for the video.
@@ -675,7 +677,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   `/usr/local/bin` for the player's soundtrack), `cache_dir`, `platform_cache_dir`.
   `crates/auto-ascii-factory/src/ffmpeg.rs` `Programs` (always resolved paths: the CLI passes
   them in `BuildRequest::programs`, `eval::EvalArgs` and `sweep::SweepArgs`).
-  `crates/auto-ascii-cli/src/deps/mod.rs` `Ctx`, `consent`, `ensure` / `provide`, `Provider`
+  `crates/auto-ascii/src/bin/auto-ascii/deps/mod.rs` `Ctx`, `consent`, `ensure` / `provide`, `Provider`
   (`Live` in production, a fake in tests), `ytdlp_updater`, `report`.
   `deps/platform.rs` `asset_for(os, arch)` (the per-platform download table), `ytdlp_tag`,
   `sums_entry`, `single_sum`. `deps/fetch.rs` `install`, `update_ytdlp`, `save_verified`,
@@ -739,13 +741,14 @@ idx_hyst_q8 = 128
 ```
 
 **Library sidecar and composition schema:** `docs/AGENT-GUIDE.md` (JSON shapes, `schema = 1`
-TOML) and `crates/auto-ascii-cli/src/library.rs` `Sidecar`.
+TOML) and `crates/auto-ascii/src/bin/auto-ascii/library.rs` `Sidecar`.
 
-**`params.toml`** (repo root; embedded into the factory by
-`crates/auto-ascii-factory/src/params.rs` `EMBEDDED_PARAMS`):
+**`params.toml`** (repo root; the factory embeds its copy, `crates/auto-ascii-factory/params.toml`,
+as `crates/auto-ascii-factory/src/params.rs` `EMBEDDED_PARAMS`, and `m2_params_eval.rs`
+`factory_embeds_the_committed_params_file` pins that copy byte-for-byte to the root file):
 - `--params FILE` overrides any subset, unknown keys are errors, and `dev params --dump` prints
   the merged config.
-- `crates/auto-ascii-cli/tests/m2_params_eval.rs` pins the file to the in-code defaults, and
+- `crates/auto-ascii/tests/m2_params_eval.rs` pins the file to the in-code defaults, and
   `[compose]` to `ComposeParams::default()`.
 - Editing `[build]`, `[shots]`, `[levels]`, `[edges]`, `[highlights]` or `[temporal]` changes
   asset bytes and moves the byte pin.
@@ -781,7 +784,7 @@ TOML) and `crates/auto-ascii-cli/src/library.rs` `Sidecar`.
 | `eval.contact_frames` | 3 | contact-sheet snapshots per clip |
 | `eval.tolerances.*` | see file | baseline-compare tolerances: `ssim_max_drop`, `flicker_max_increase`, `edge_f1_max_drop`, `bytes_frac_max_increase`, `damage_rate_max_increase`, `stage_ms_frac_max_increase` (informational only), `shot_structure_max_delta`, `keyframes_frac_max_drop`, `asset_bytes_frac_max_increase` |
 
-**Sweep grid** (`--grid G.toml`, `crates/auto-ascii-factory/src/sweep.rs` `SweepSpec`): values
+**Sweep grid** (`--grid G.toml`, `crates/auto-ascii/src/bin/auto-ascii/dev/sweep.rs` `SweepSpec`): values
 within one `[[axes]]` entry travel together, and axes cross. Combos that fail validation are
 recorded as skipped. The default score is
 `0.4·mean(ssim) + 0.4·mean(edge_f1) − 0.2·mean(flicker / 2.0)`. Outputs are `combo-NN.json`,
@@ -813,14 +816,14 @@ values = [
 | Container | `crates/auto-ascii-format/tests/container.rs` (byte golden), `crates/auto-ascii-format/tests/m1_format.rs` (delta, seek, NORM, hostile input) |
 | Terminal | `crates/auto-ascii-term/tests/m1_tiers.rs`, `crates/auto-ascii-term/tests/tier_goldens.rs`, `crates/auto-ascii-term/tests/sim_diff.rs`, `crates/auto-ascii-term/tests/probe_parser.rs`, `crates/auto-ascii-term/tests/pty_probe.rs`, `crates/auto-ascii-term/tests/pty_restore.rs`, `crates/auto-ascii-term/tests/terminal_identity.rs` |
 | Cell-grid goldens | `crates/auto-ascii-eval/tests/golden_grids.rs` (36 insta snapshots), `crates/auto-ascii/tests/linux_console_golden.rs`, `crates/auto-ascii/tests/pipeline_parity.rs`, `crates/auto-ascii/tests/styles.rs` (`letters` and `ascii` goldens, the `ascii` escape-stream check) |
-| Sound | `crates/auto-ascii-cli/tests/sound.rs` (`--sim-audio` end to end), unit tests in `crates/auto-ascii/src/audio/` (`tests.rs`, `clock.rs`, `output.rs`, `source.rs`) and the `MediaClock` sync tests in `crates/auto-ascii/src/player.rs`, `crates/auto-ascii-cli/tests/play_with_sound.rs` (the launcher) |
-| Player | `crates/auto-ascii-cli/tests/m1_sim.rs`, `crates/auto-ascii/tests/m3_layers.rs`, `crates/auto-ascii-cli/tests/sim_e2e.rs`, `crates/auto-ascii/tests/scrub_overlay.rs`, `crates/auto-ascii/tests/zoom_overlay.rs`, `crates/auto-ascii/tests/dials.rs`, `crates/auto-ascii/tests/render_session.rs` |
-| Compositions | `crates/auto-ascii/tests/composition.rs`, `crates/auto-ascii-cli/tests/play_composition.rs` (`--sim` on a `.toml`), unit tests in `crates/auto-ascii/src/deck.rs` and `crates/auto-ascii/src/composition.rs` |
+| Sound | `crates/auto-ascii/tests/sound.rs` (`--sim-audio` end to end), unit tests in `crates/auto-ascii/src/audio/` (`tests.rs`, `clock.rs`, `output.rs`, `source.rs`) and the `MediaClock` sync tests in `crates/auto-ascii/src/player.rs`, `crates/auto-ascii/tests/play_with_sound.rs` (the launcher) |
+| Player | `crates/auto-ascii/tests/m1_sim.rs`, `crates/auto-ascii/tests/m3_layers.rs`, `crates/auto-ascii/tests/sim_e2e.rs`, `crates/auto-ascii/tests/scrub_overlay.rs`, `crates/auto-ascii/tests/zoom_overlay.rs`, `crates/auto-ascii/tests/dials.rs`, `crates/auto-ascii/tests/render_session.rs` |
+| Compositions | `crates/auto-ascii/tests/composition.rs`, `crates/auto-ascii/tests/play_composition.rs` (`--sim` on a `.toml`), unit tests in `crates/auto-ascii/src/deck.rs` and `crates/auto-ascii/src/composition.rs` |
 | Fuzz / perf | `crates/auto-ascii/tests/resize_fuzz.rs`, `crates/auto-ascii/tests/perf_fps.rs`, `crates/auto-ascii/benches/pipeline.rs` |
-| Factory | `crates/auto-ascii-cli/tests/build_e2e.rs`, `crates/auto-ascii-cli/tests/m2_params_eval.rs` (params plumbing, byte pin, eval/sweep) |
+| Factory | `crates/auto-ascii/tests/build_e2e.rs`, `crates/auto-ascii/tests/m2_params_eval.rs` (params plumbing, byte pin, eval/sweep) |
 | Metrics | `crates/auto-ascii-eval/tests/metrics.rs` |
-| CLI | `crates/auto-ascii-cli/tests/cli.rs` (`stream_*`: help, the `--json` refusal, an offline end-to-end `--sim` run over a fake yt-dlp and a local file, a clean yt-dlp error; `add_*`: a generated local video to a playable folder, a link through a fake yt-dlp with no cookies, and the collision, staging and failure-cleanup guards), unit tests in `crates/auto-ascii-cli/src/source.rs` (URL vs path with a fake `Downloader`, `.ascii` refusal, which errors are retried) and `add.rs` (soundtrack, launcher quoting, relocation and exec bit) |
-| Streaming | unit tests in `crates/auto-ascii-cli/src/stream/`:<br>- `loader.rs`: snapshots, brightness and shimmer, stage mapping.<br>- `ytdlp.rs`: fake-yt-dlp resolution; config isolation and cookies.<br>- `clock.rs`: sync and stale-frame dropping.<br>- `procs.rs`: cleanup, including a cancellable reap and panic unwind.<br>- `audio.rs`, `decode.rs`, `video.rs`.<br>- `mod.rs`: session tests that drive the real loop against `SimBackend` with a fake yt-dlp and local ffmpeg media (A/V sync to the end, empty audio or video tracks, a brief picture-only stall, the 100% loader frame, no retained sim output), plus the stall rule and tail deadline.<br><br>Also `crates/auto-ascii-factory/src/live.rs`, and the `stream_*` / signal tests in `crates/auto-ascii-cli/tests/cli.rs`. |
+| CLI | `crates/auto-ascii/tests/cli.rs` (`stream_*`: help, the `--json` refusal, an offline end-to-end `--sim` run over a fake yt-dlp and a local file, a clean yt-dlp error; `add_*`: a generated local video to a playable folder, a link through a fake yt-dlp with no cookies, and the collision, staging and failure-cleanup guards), unit tests in `crates/auto-ascii/src/bin/auto-ascii/source.rs` (URL vs path with a fake `Downloader`, `.ascii` refusal, which errors are retried) and `add.rs` (soundtrack, launcher quoting, relocation and exec bit) |
+| Streaming | unit tests in `crates/auto-ascii/src/bin/auto-ascii/stream/`:<br>- `loader.rs`: snapshots, brightness and shimmer, stage mapping.<br>- `ytdlp.rs`: fake-yt-dlp resolution; config isolation and cookies.<br>- `clock.rs`: sync and stale-frame dropping.<br>- `procs.rs`: cleanup, including a cancellable reap and panic unwind.<br>- `audio.rs`, `decode.rs`, `video.rs`.<br>- `mod.rs`: session tests that drive the real loop against `SimBackend` with a fake yt-dlp and local ffmpeg media (A/V sync to the end, empty audio or video tracks, a brief picture-only stall, the 100% loader frame, no retained sim output), plus the stall rule and tail deadline.<br><br>Also `crates/auto-ascii-factory/src/live.rs`, and the `stream_*` / signal tests in `crates/auto-ascii/tests/cli.rs`. |
 
 ## Related docs
 
@@ -850,7 +853,7 @@ values = [
   tunable, never an asset change. Expect insta snapshots, `.ansi` tier goldens, the console
   golden and `pipeline_parity` to move for `pixels`. Re-pin deliberately (`CONTRIBUTING.md`).
 - **Changing the factory** moves `FIXTURE_ASSET_SHA` in
-  `crates/auto-ascii-cli/tests/m2_params_eval.rs` and invalidates every eval cache entry.
+  `crates/auto-ascii/tests/m2_params_eval.rs` and invalidates every eval cache entry.
 - **Two players:** `pipeline::Player` (per-clip frame pipeline, no clock, no tty) is not
   `auto_ascii::Player` (the blocking terminal session that owns a `ClipDeck` of them).
 - **Styles are not codecs:** `auto_ascii_core::Style` (glyph styles, render time) was `Codec`

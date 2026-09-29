@@ -21,18 +21,18 @@ use auto_ascii_format::AsciiReader;
 use auto_ascii_format::header::plane_id;
 use auto_ascii_term::{Backend, ColorTier, SimBackend};
 
-use crate::build::{self, BuildArgs};
-use crate::ffmpeg::{BoxErr, Programs};
-use crate::params::Params;
-use crate::reel::{GIF_FPS, GIF_SECS, REEL_ROWS, ReelClip, ReelRow, encode_gray_gif, render_reel_html};
-use crate::sha256::{sha256_file, sha256_hex};
+use auto_ascii_factory::PIPELINE_FINGERPRINT;
+use auto_ascii_factory::build::{self, BuildArgs};
+use auto_ascii_factory::ffmpeg::{BoxErr, Programs};
+use auto_ascii_factory::params::Params;
+use auto_ascii_factory::sha256::{sha256_file, sha256_hex};
+
+use super::reel::{GIF_FPS, GIF_SECS, REEL_ROWS, ReelClip, ReelRow, encode_gray_gif, render_reel_html};
 
 const VIDEO_EXTS: &[&str] = &["mp4", "mov", "mkv", "webm", "avi", "m4v"];
 
 const TIERS: &[(ColorTier, &str)] =
     &[(ColorTier::True, "truecolor"), (ColorTier::C256, "256"), (ColorTier::Mono, "mono")];
-
-const PIPELINE_FINGERPRINT: &str = env!("ASCII_PIPELINE_FINGERPRINT");
 
 fn asset_cache_name(name: &str, input_sha: &str, params_sha: &str) -> String {
     format!("{name}-{}-{}-{PIPELINE_FINGERPRINT}.ascii", &input_sha[..12], &params_sha[..12])

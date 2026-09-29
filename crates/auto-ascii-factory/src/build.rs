@@ -17,6 +17,7 @@ use crate::ffmpeg::{BoxErr, DecodeParams, FrameStream, Programs, probe};
 use crate::params::Params;
 use crate::shots::{Shot, ShotDetector, luma_histogram};
 use crate::temporal::EmaPlane;
+use crate::PIPELINE_VERSION;
 
 pub struct BuildArgs {
     pub input: PathBuf,
@@ -214,7 +215,7 @@ fn encode_pass(
         ..WriterOptions::default()
     };
     let meta = Meta {
-        factory_version: env!("CARGO_PKG_VERSION").to_string(),
+        factory_version: PIPELINE_VERSION.to_string(),
         source: args
             .input
             .file_name()

@@ -6,6 +6,9 @@ fn main() {
 
     let mut files: Vec<(String, PathBuf)> = Vec::new();
     for (tag, dir) in ["auto-ascii-factory", "auto-ascii-format"].iter().zip(&dirs) {
+        if !dir.is_dir() {
+            continue;
+        }
         let start = files.len();
         collect_rs(dir, dir, &mut files);
         for (rel, _) in &mut files[start..] {

@@ -1,3 +1,5 @@
+#![cfg(feature = "cli")]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -55,6 +57,12 @@ fn sha256_of(path: &Path) -> String {
 
 fn repo_params_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../params.toml")
+}
+
+#[test]
+fn factory_embeds_the_committed_params_file() {
+    let committed = std::fs::read_to_string(repo_params_path()).unwrap();
+    assert_eq!(auto_ascii_factory::params::EMBEDDED_PARAMS, committed);
 }
 
 #[test]
