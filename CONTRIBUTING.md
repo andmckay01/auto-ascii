@@ -16,7 +16,8 @@ cargo test --workspace                    # or: make test
 
 macOS builds from source on Apple Silicon and Intel; there is no cross build
 for it. Playback needs only crossterm and POSIX termios; `auto-ascii import`
-needs `ffmpeg` and `ffprobe` (from `PATH`, or downloaded on first use).
+and `add` need `ffmpeg` and `ffprobe`, and `add <link>` and `stream` `yt-dlp`
+(from `PATH`, or downloaded on first use).
 
 `scripts/release.sh` (or `make dist`) is Linux-hosted. It builds stripped
 `auto-ascii` binaries into `dist/` for `x86_64-unknown-linux-gnu` (native),

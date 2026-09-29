@@ -4,6 +4,7 @@
 
 #[macro_use]
 mod output;
+mod add;
 mod args;
 mod commands;
 mod composition;
@@ -14,6 +15,7 @@ mod home;
 mod import;
 mod library;
 mod play;
+mod source;
 mod stream;
 
 use std::ffi::OsString;
@@ -81,6 +83,7 @@ fn run(cli: &Cli) -> Result<Stopped, BoxErr> {
     match &cli.cmd {
         Cmd::Play(a) => play::play(&a.target, &Request::of(&a.opts), cli.json),
         Cmd::Stream(a) => done(commands::stream(cli, a)),
+        Cmd::Add(a) => done(add::run(cli, a)),
         Cmd::Import(a) => done(import::run(cli, a)),
         Cmd::List => done(commands::list(cli, &Home::resolve()?)),
         Cmd::Info { clip } => done(commands::info(cli, &Home::resolve()?, clip)),

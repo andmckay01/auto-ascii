@@ -147,7 +147,7 @@ pub fn list(cli: &Cli, home: &Home) -> Result<(), BoxErr> {
     }
     if clips.is_empty() {
         outln!(
-            "no clips in {} (import one: auto-ascii import <video>)",
+            "no clips in {} (add one: auto-ascii add <link-or-file>)",
             home.library().display()
         );
         return Ok(());
@@ -179,7 +179,7 @@ pub fn list(cli: &Cli, home: &Home) -> Result<(), BoxErr> {
 
 pub fn info(cli: &Cli, home: &Home, clip: &str) -> Result<(), BoxErr> {
     let path = home.resolve_clip(clip)?;
-    let sidecar = library::describe(&stem_of(&path), &path)?;
+    let sidecar = library::describe(&library::clip_name(home, &path), &path)?;
     if cli.json {
         outln!("{}", serde_json::to_string(&sidecar)?);
     } else {
@@ -521,7 +521,7 @@ fn print_timeline(report: &composition::Report) {
     }
 }
 
-fn print_clip_body(sidecar: &Sidecar) {
+pub fn print_clip_body(sidecar: &Sidecar) {
     if let Some(a) = &sidecar.asset {
         outln!("  {:<14}{}", "asset:", a.path);
         outln!("  {:<14}{} ({})", "bytes:", a.bytes, human_bytes(a.bytes));
