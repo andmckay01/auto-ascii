@@ -12,10 +12,10 @@ reflows live on resize, and applies temporal hysteresis so nothing flickers.
 Because every glyph is chosen at render time, one asset looks right at 80×24
 in a Linux console, at 320×90 in a GPU terminal, and inside your own renderer.
 
-![Ten seconds of The Matrix Reloaded's Architect scene, 2:14 to 2:24, playing as colored ASCII art in a terminal](docs/assets/architect-2m14s.gif)
+![Twelve seconds of The Matrix Reloaded's Architect scene, 2:14 to 2:26, playing as colored ASCII art in a terminal](docs/assets/architect-2m14s.gif)
 
 <sub>Terminal playback of The Matrix Reloaded's Architect scene from 2:14 to
-2:24: 10 s on a 120×34 grid (letterbox rows trimmed), `ascii` style with the
+2:26: 12 s on a 120×34 grid (letterbox rows trimmed), `ascii` style with the
 video's saved dials, each cell's truecolor drawn on the player's black
 backdrop in Menlo. The GIF drops to 12 fps to stay small; the player runs
 at the source's 30.</sub>
