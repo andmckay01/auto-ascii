@@ -181,7 +181,7 @@ existing eval gate.
 | `crates/auto-ascii-eval` | metrics, fixtures, report schema (unpublished) |
 | `crates/auto-ascii-lint` | comment policy checker and fixtures (unpublished) |
 | `params.toml`, `perf/thresholds.toml` | the tunables and the perf gates |
-| `scripts/` | `eval.sh` (the gate), `perf-gate.sh`, `release.sh` |
+| `scripts/` | `eval.sh` (the gate), `perf-gate.sh`, `release.sh`, `play-with-sound.command` (a launcher that restarts `auto-ascii play` at each clip end and logs every exit) |
 | `tools/` | `prep_video.py`, `soak.py` |
 | `corpus/`, `runs/` | local videos and eval output; both gitignored |
 | `docs/` | feature map, plans, API registry, agent guide, terminal checklist, research digests |
