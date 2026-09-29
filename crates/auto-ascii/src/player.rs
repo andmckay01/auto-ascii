@@ -519,11 +519,6 @@ impl PlayerBuilder {
         self
     }
 
-    #[deprecated(note = "renamed to `style`")]
-    pub fn codec(self, codec: Style) -> Self {
-        self.style(codec)
-    }
-
     pub fn mute(mut self, mute: bool) -> Self {
         self.mute = mute;
         self

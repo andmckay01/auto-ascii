@@ -60,7 +60,7 @@ fn main() -> Result<(), auto_ascii::Error> {
     while let Some(arg) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| bad());
         match arg.as_str() {
-            "--style" | "--codec" => style = Style::from_name(&value()).unwrap_or_else(|| bad()),
+            "--style" => style = Style::from_name(&value()).unwrap_or_else(|| bad()),
             "--palette" => palette = parse_palette(&value()),
             "--from" => from = Some(value().parse::<u32>().unwrap_or_else(|_| bad())),
             _ => positional.push(arg),
