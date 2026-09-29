@@ -3,12 +3,13 @@
 use std::io::Write;
 
 use auto_ascii::{Cell, ComposeParams, Grid, PaletteChoice, RenderSession, Style};
+use auto_ascii_core::cell::attrs;
 
 fn usage() -> String {
     format!(
         "usage: headless-dump <asset.ascii | composition.toml> [FRAMES] [COLSxROWS] \
-         [--style {}] [--palette ascii|unicode|braille] [--from FRAME] \
-         [--settings PLAYER.toml]",
+         [--style {}] [--palette ascii|unicode|braille] [--from FRAME] [--warm N] \
+         [--settings PLAYER.toml] [--cells]",
         Style::names("|")
     )
 }
@@ -36,13 +37,28 @@ fn dump_frame(
     grid: &Grid<Cell>,
     frame: u32,
     total: u32,
+    cells: bool,
 ) -> std::io::Result<()> {
     writeln!(out, "--- frame {frame}/{total} at {}x{} ---", grid.cols(), grid.rows())?;
     for row in 0..grid.rows() {
-        let line: String = grid.row(row).iter().map(|cell| cell.glyph()).collect();
+        let line: String = if cells {
+            grid.row(row).iter().map(cell_hex).collect()
+        } else {
+            grid.row(row).iter().map(|cell| cell.glyph()).collect()
+        };
         writeln!(out, "{}", line.trim_end())?;
     }
     Ok(())
+}
+
+fn cell_hex(cell: &Cell) -> String {
+    let Cell { ch, fg, bg, attrs: flags } = *cell;
+    let bg = if flags & attrs::DEFAULT_BG != 0 {
+        "------".to_string()
+    } else {
+        format!("{:02x}{:02x}{:02x}", bg.r, bg.g, bg.b)
+    };
+    format!("{ch:08x}{:02x}{:02x}{:02x}{bg}", fg.r, fg.g, fg.b)
 }
 
 fn parse_palette(s: &str) -> PaletteChoice {
@@ -69,7 +85,7 @@ fn load_settings(path: &str) -> (Style, ComposeParams) {
 
 fn main() -> Result<(), auto_ascii::Error> {
     let (mut style, mut palette, mut from) = (None, PaletteChoice::Ascii, None);
-    let mut compose = None;
+    let (mut compose, mut warm, mut cells) = (None, 0, false);
     let mut positional = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -78,6 +94,8 @@ fn main() -> Result<(), auto_ascii::Error> {
             "--style" => style = Some(Style::from_name(&value()).unwrap_or_else(|| bad())),
             "--palette" => palette = parse_palette(&value()),
             "--from" => from = Some(value().parse::<u32>().unwrap_or_else(|_| bad())),
+            "--warm" => warm = value().parse::<u32>().unwrap_or_else(|_| bad()),
+            "--cells" => cells = true,
             "--settings" => {
                 let (saved_style, saved_compose) = load_settings(&value());
                 style = style.or(Some(saved_style));
@@ -91,7 +109,7 @@ fn main() -> Result<(), auto_ascii::Error> {
     let path = positional.next().unwrap_or_else(|| bad());
     let frames: u32 = positional.next().map_or(3, |s| s.parse().unwrap_or_else(|_| bad()));
     let (cols, rows) = positional.next().map_or((100, 28), |s| parse_dims(&s));
-    if positional.next().is_some() {
+    if positional.next().is_some() || (warm > 0 && from.is_none()) {
         bad();
     }
 
@@ -109,6 +127,9 @@ fn main() -> Result<(), auto_ascii::Error> {
         Some(f) => (f.min(session.frame_count() - 1), 1),
         None => (0, (session.frame_count() / count).max(1)),
     };
+    for frame in start.saturating_sub(warm)..start {
+        session.render(frame, cols, rows)?;
+    }
     for n in 0..count {
         let frame = start + n * stride;
         if frame >= session.frame_count() {
@@ -116,7 +137,7 @@ fn main() -> Result<(), auto_ascii::Error> {
         }
         let total = session.frame_count();
         let grid = session.render(frame, cols, rows)?;
-        match dump_frame(&mut out, grid, frame, total) {
+        match dump_frame(&mut out, grid, frame, total, cells) {
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
             other => other.expect("write to stdout"),
         }
