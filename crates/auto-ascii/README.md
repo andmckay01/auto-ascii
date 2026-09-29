@@ -33,7 +33,8 @@ Examples: `simple-play` (the whole player in one call), `embedded-loop`
 This crate is a library only. Producing assets, and playing them from a shell,
 is the job of the `auto-ascii` command (`auto-ascii import`, `auto-ascii play`)
 built from the repository — its README (`README.md` at the workspace root)
-covers that workflow, the eight shipped palettes and the eval harness.
+covers that workflow, and `docs/FEATURE-MAP.md` the glyph styles, the eight
+shipped palettes and the eval harness.
 
 ## License
 
