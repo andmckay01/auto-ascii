@@ -63,6 +63,7 @@ fn main() -> Result<(), auto_ascii::Error> {
             "--style" => style = Style::from_name(&value()).unwrap_or_else(|| bad()),
             "--palette" => palette = parse_palette(&value()),
             "--from" => from = Some(value().parse::<u32>().unwrap_or_else(|_| bad())),
+            _ if arg.starts_with("--") => bad(),
             _ => positional.push(arg),
         }
     }
@@ -70,6 +71,9 @@ fn main() -> Result<(), auto_ascii::Error> {
     let path = positional.next().unwrap_or_else(|| bad());
     let frames: u32 = positional.next().map_or(3, |s| s.parse().unwrap_or_else(|_| bad()));
     let (cols, rows) = positional.next().map_or((100, 28), |s| parse_dims(&s));
+    if positional.next().is_some() {
+        bad();
+    }
 
     let mut session = open(&path)?;
     session.set_palette(palette);

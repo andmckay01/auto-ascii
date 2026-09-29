@@ -380,9 +380,13 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   `dev` the developer tools of flows 2, 14 and 15).
   The home is `~/auto-ascii` or `$AUTO_ASCII_HOME`, holding `library/`, `compositions/` and
   `exports/`.
-- **Code:** `crates/auto-ascii-cli/src/main.rs` (`Cli`, `Cmd`, `ComposeCmd`, `cmd_import` →
-  `auto_ascii_factory::build`, `cmd_cut`, `cmd_list`, `cmd_info`, `cmd_compose_*`, `cmd_play`,
-  `emit` / `emit_err`). `crates/auto-ascii-cli/src/home.rs` `Home` (`resolve`, `create`,
+- **Code:** `crates/auto-ascii-cli/src/main.rs` `run` / `compose` dispatch.
+  `crates/auto-ascii-cli/src/args.rs` `Cli`, `Cmd`, `ComposeCmd`, `DevCmd`.
+  `crates/auto-ascii-cli/src/import.rs` `run` → `auto_ascii_factory::build`.
+  `crates/auto-ascii-cli/src/commands.rs` `cut`, `list`, `info`, `compose_*`, `home`,
+  `agent_guide`. `crates/auto-ascii-cli/src/play/mod.rs` `play`, `play_composition`.
+  `crates/auto-ascii-cli/src/output.rs` `emit` / `emit_err` / `fail`.
+  `crates/auto-ascii-cli/src/home.rs` `Home` (`resolve`, `create`,
   `resolve_clip`, `resolve_playable`), plus free functions `kebab_case` and `cut_name`.
   `crates/auto-ascii-cli/src/library.rs` `Sidecar`, `Provenance`, `list`, `describe`,
   `write_sidecar`. `crates/auto-ascii-cli/src/composition.rs` `create`, `append_clip`, `report`.
@@ -546,7 +550,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   network, real ffmpeg, audio into a real-time null sink) against `SimBackend` and prints one JSON
   stats line: id, title, fps, frames rendered and dropped, max drift, samples consumed, loader
   stages, children alive, temp dir removed, exit reason.
-- **Code:** `crates/auto-ascii-cli/src/main.rs` `Cmd::Stream` → `cmd_stream` →
+- **Code:** `crates/auto-ascii-cli/src/main.rs` `Cmd::Stream` → `commands.rs` `stream` →
   `crates/auto-ascii-cli/src/stream/mod.rs` `run` / `session`:
   1. **Resolve** (`stream/ytdlp.rs`): `Input::classify` sorts the input by URL route.
      `YtDlp::resolve` uses `--flat-playlist -I 1 -J` for lists (following nested tab playlists at
@@ -647,7 +651,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   (`Live` in production, a fake in tests), `ytdlp_updater`, `report`.
   `deps/platform.rs` `asset_for(os, arch)` (the per-platform download table), `ytdlp_tag`,
   `sums_entry`, `single_sum`. `deps/fetch.rs` `install`, `update_ytdlp`, `save_verified`,
-  `extract`, `place`, `Lock`, `Manifest`, `version_of`. `main.rs` `cmd_doctor`, `ensure_tools`.
+  `extract`, `place`, `Lock`, `Manifest`, `version_of`. `commands.rs` `doctor`, `main.rs`
+  `ensure_tools`.
   Sources and licensing: [NOTES.md](NOTES.md) "Standalone tool downloads".
 - **Invariants:**
   - An env override always wins, even if it does not exist. PATH beats the cache. Only

@@ -30,4 +30,3 @@ pub use resample::{Resampler, Tap1D};
 pub use viewport::{
     DEFAULT_CELL_ASPECT, MIN_COLS, MIN_ROWS, Viewport, compute_viewport, compute_viewport_for,
 };
-
