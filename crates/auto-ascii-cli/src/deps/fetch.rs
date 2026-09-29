@@ -372,12 +372,14 @@ pub fn version_of(program: &Path, tool: Tool, cancel: Cancel<'_>) -> Result<Stri
         .spawn()
         .map_err(|e| e.to_string())?;
     let mut stdout = child.stdout.take().expect("stdout was piped");
-    let reader = std::thread::spawn(move || {
+    let (tx, rx) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
         let mut out = Vec::new();
         let _ = stdout.by_ref().take(64 * 1024).read_to_end(&mut out);
-        out
+        let _ = tx.send(out);
     });
     let deadline = Instant::now() + VERSION_TIMEOUT;
+    let too_slow = || format!("`{} {flag}` took over {}s", tool.name(), VERSION_TIMEOUT.as_secs());
     let status = loop {
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) => break status,
@@ -389,12 +391,21 @@ pub fn version_of(program: &Path, tool: Tool, cancel: Cancel<'_>) -> Result<Stri
             None if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("`{} {flag}` took over {}s", tool.name(), VERSION_TIMEOUT.as_secs()));
+                return Err(too_slow());
             }
             None => std::thread::sleep(Duration::from_millis(25)),
         }
     };
-    let out = String::from_utf8_lossy(&reader.join().unwrap_or_default()).into_owned();
+    let out = loop {
+        match rx.recv_timeout(POLL) {
+            Ok(out) => break out,
+            Err(RecvTimeoutError::Disconnected) => break Vec::new(),
+            Err(RecvTimeoutError::Timeout) if cancel() => return Err(STOPPED.into()),
+            Err(RecvTimeoutError::Timeout) if Instant::now() >= deadline => return Err(too_slow()),
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    };
+    let out = String::from_utf8_lossy(&out).into_owned();
     if !status.success() {
         return Err(format!("`{} {flag}` exited with {status}", tool.name()));
     }
@@ -960,6 +971,12 @@ mod tests {
         let t0 = Instant::now();
         let err = version_of(&slow, Tool::YtDlp, &|| t0.elapsed() > Duration::from_millis(200)).unwrap_err();
         assert_eq!(err, STOPPED);
+        assert!(t0.elapsed() < Duration::from_secs(2));
+
+        fs::write(&slow, "#!/bin/sh\necho 2026.01.01\nsleep 3 &\n").unwrap();
+        let t0 = Instant::now();
+        let err = version_of(&slow, Tool::YtDlp, &|| t0.elapsed() > Duration::from_millis(200)).unwrap_err();
+        assert_eq!(err, STOPPED, "a child that keeps stdout open cannot hold the check");
         assert!(t0.elapsed() < Duration::from_secs(2));
     }
 
