@@ -128,7 +128,7 @@ impl Provider for Live {
 
     fn update_ytdlp(&mut self, bin: &Path) -> Result<Option<String>, String> {
         let asset = self.asset.as_ref().ok_or("no standalone builds for this platform")?;
-        fetch::update_ytdlp(bin, asset, self.noise)
+        fetch::update_ytdlp(bin, asset, self.noise, None)
     }
 }
 
@@ -301,7 +301,15 @@ pub fn ytdlp_updater(ctx: &Ctx, resolved: &Resolved) -> Option<Update> {
     }
     let bin = ctx.bin()?.to_path_buf();
     let asset = ctx.asset?;
-    Some(Arc::new(move || fetch::update_ytdlp(&bin, &asset, Noise { quiet: true })))
+    if consent(ctx.yes, ctx.json, ctx.interactive) == Consent::Refused {
+        let why = format!(
+            "{} never downloads without --yes: re-run with --yes (or {YES_ENV}=1) to let auto-ascii update it",
+            if ctx.json { "--json" } else { "a non-interactive run" }
+        );
+        return Some(Arc::new(move || Err(why.clone())));
+    }
+    let ran_with = Manifest::read(&bin).entry(Tool::YtDlp).map(|e| e.version.clone());
+    Some(Arc::new(move || fetch::update_ytdlp(&bin, &asset, Noise { quiet: true }, ran_with.as_deref())))
 }
 
 fn listing(tools: &[Tool]) -> String {
@@ -675,6 +683,19 @@ mod tests {
         let got = ensure(&ctx, &[Tool::YtDlp], &mut fake).unwrap();
         assert_eq!(got.origin(Tool::YtDlp), Some(Origin::Cache));
         assert!(ytdlp_updater(&ctx, &got).is_some(), "the cached copy may be updated");
+    }
+
+    #[test]
+    fn without_consent_a_failing_cached_ytdlp_is_not_updated() {
+        let env = Env::new();
+        cached_ytdlp(&env, 1);
+        for json in [true, false] {
+            let ctx = env.ctx(false, json, json);
+            let got = ensure(&ctx, &[Tool::YtDlp], &mut Fake::default()).unwrap();
+            let update = ytdlp_updater(&ctx, &got).expect("an explanation, not a download");
+            let err = update().unwrap_err();
+            assert!(err.contains("never downloads without --yes") && err.contains("AUTO_ASCII_YES=1"), "{err}");
+        }
     }
 
     #[test]

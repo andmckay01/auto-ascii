@@ -649,8 +649,10 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     `deps::ca_file`), unless the variable is already set. On macOS the cached yt-dlp is the
     one-folder build behind a `bin/yt-dlp` symlink.
   - A yt-dlp from PATH or env is never updated. A cached one is refreshed when a run fails
-    (once, and only if a newer release exists) or when it is `STALE_DAYS` (30) old and `--yes`
-    is given. Otherwise a stale copy only prints a note.
+    (once, only if a newer release exists or another run already replaced it, and only with
+    `--yes` or in an interactive run; `--json` and non-interactive runs say to re-run with
+    `--yes`), or when it is `STALE_DAYS` (30) old and `--yes` is given. Otherwise a stale copy
+    only prints a note. Downloads time out after 20 minutes of body transfer.
 
 ## Data & wire
 

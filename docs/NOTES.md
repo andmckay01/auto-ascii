@@ -200,8 +200,10 @@ programs. Every download is HTTPS-only, SHA-256 checked before anything is
 installed, unzipped when needed, test-run (`-version` / `--version`), and
 renamed into place under `<cache>/bin/.lock`. `manifest.json` records each
 tool's URL, version, digest and dates. A cached yt-dlp that fails is
-updated once (only if a newer release exists) and the lookup is retried. A
-yt-dlp from PATH or `AUTO_ASCII_YTDLP` is never touched.
+updated once (only if a newer release exists) and the lookup is retried,
+with `--yes` or in an interactive run; the cached copy was installed with
+the user's consent, and they see a note. A yt-dlp from PATH or
+`AUTO_ASCII_YTDLP` is never touched.
 
 ### Overlay size rationale
 

@@ -26,6 +26,8 @@ const LOCK: &str = ".lock";
 
 const VERSION_TIMEOUT: Duration = Duration::from_secs(120);
 
+const BODY_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Noise {
     pub quiet: bool,
@@ -354,6 +356,7 @@ fn agent(max_redirects: u32) -> ureq::Agent {
         .user_agent(concat!("auto-ascii/", env!("CARGO_PKG_VERSION"), " (+https://github.com/andmckay01/auto-ascii)"))
         .timeout_connect(Some(Duration::from_secs(20)))
         .timeout_recv_response(Some(Duration::from_secs(60)))
+        .timeout_recv_body(Some(BODY_TIMEOUT))
         .build()
         .into()
 }
@@ -436,33 +439,44 @@ pub fn install(bin: &Path, asset: &Asset, tools: &[Tool], noise: Noise) -> Resul
     fs::create_dir_all(bin).map_err(|e| format!("creating {}: {e}", bin.display()))?;
     let _lock = Lock::acquire(bin, noise)?;
     let http = Http::new();
-    let mut manifest = Manifest::read(bin);
-    let mut done = Vec::new();
+    let before = Manifest::read(bin);
+    let mut manifest = before.clone();
     let result = (|| {
         if tools.contains(&Tool::YtDlp) {
             let tag = latest_ytdlp_tag(&http)?;
             install_ytdlp(&http, bin, asset, &tag, noise, &mut manifest)?;
-            done.push(Tool::YtDlp);
         }
         let programs: Vec<Tool> = tools.iter().copied().filter(|t| *t != Tool::YtDlp).collect();
         if !programs.is_empty() {
-            done.extend(install_ffmpeg(&http, bin, asset, &programs, noise, &mut manifest)?);
+            install_ffmpeg(&http, bin, asset, &programs, noise, &mut manifest)?;
         }
         Ok(())
     })();
+    let done: Vec<Tool> = tools.iter().copied().filter(|t| manifest.entry(*t) != before.entry(*t)).collect();
     if !done.is_empty() {
         manifest.write(bin)?;
     }
     result.map(|()| done)
 }
 
-pub fn update_ytdlp(bin: &Path, asset: &Asset, noise: Noise) -> Result<Option<String>, String> {
+pub fn update_ytdlp(
+    bin: &Path,
+    asset: &Asset,
+    noise: Noise,
+    failed_with: Option<&str>,
+) -> Result<Option<String>, String> {
     fs::create_dir_all(bin).map_err(|e| format!("creating {}: {e}", bin.display()))?;
     let _lock = Lock::acquire(bin, noise)?;
-    let http = Http::new();
-    let tag = latest_ytdlp_tag(&http)?;
     let mut manifest = Manifest::read(bin);
     let current = manifest.entry(Tool::YtDlp).map(|e| e.version.clone());
+    if let (Some(failed), Some(now)) = (failed_with, current.as_deref())
+        && failed != now
+        && bin.join(Tool::YtDlp.file_name()).is_file()
+    {
+        return Ok(Some(now.to_string()));
+    }
+    let http = Http::new();
+    let tag = latest_ytdlp_tag(&http)?;
     if current.as_deref() == Some(tag.as_str()) && bin.join(Tool::YtDlp.file_name()).is_file() {
         if let Some(entry) = manifest.tools.get_mut(Tool::YtDlp.name()) {
             entry.checked_unix = now_unix();
@@ -512,14 +526,13 @@ fn install_ffmpeg(
     tools: &[Tool],
     noise: Noise,
     manifest: &mut Manifest,
-) -> Result<Vec<Tool>, String> {
+) -> Result<(), String> {
     let latest = asset.ffmpeg.latest_url();
     let resolved = redirect_target(http, &latest)?;
     let version = asset
         .ffmpeg
         .version_of(&resolved)
         .ok_or_else(|| format!("{latest} redirected to {resolved}, not a versioned build"))?;
-    let mut done = Vec::new();
     match asset.ffmpeg {
         FfmpegBuild::Riedl(_) => {
             let dir = resolved.rsplit_once('/').map_or(resolved.as_str(), |(dir, _)| dir);
@@ -530,7 +543,6 @@ fn install_ffmpeg(
                 let got = download(http, bin, &url, &sha, tool.name(), noise)?;
                 let unzipped = extract(got.temp.path(), bin, tool)?;
                 finish(unzipped, bin, tool, &version, &got, noise, manifest)?;
-                done.push(tool);
             }
         }
         FfmpegBuild::Gyan => {
@@ -540,11 +552,10 @@ fn install_ffmpeg(
             for &tool in tools {
                 let unzipped = extract(got.temp.path(), bin, tool)?;
                 finish(unzipped, bin, tool, &version, &got, noise, manifest)?;
-                done.push(tool);
             }
         }
     }
-    Ok(done)
+    Ok(())
 }
 
 fn finish(
@@ -768,6 +779,19 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_replaced_by_another_run_is_retried_without_the_network() {
+        let scratch = ScratchDir::new().unwrap();
+        let bin = scratch.path();
+        fs::write(bin.join(Tool::YtDlp.file_name()), "new").unwrap();
+        let mut manifest = Manifest::default();
+        record(&mut manifest, Tool::YtDlp, "2026.08.19", "https://x", &sha_hex(b"new"), 3);
+        manifest.write(bin).unwrap();
+        let asset = platform::asset_for("linux", "x86_64").unwrap();
+        let got = update_ytdlp(bin, &asset, Noise { quiet: true }, Some("2026.01.01")).unwrap();
+        assert_eq!(got.as_deref(), Some("2026.08.19"));
+    }
+
+    #[test]
     fn versions_parse_from_the_first_line() {
         let ff = "ffmpeg version 9.0.2-https://www.martin-riedl.de Copyright (c) 2000-2026\nbuilt with clang\n";
         assert_eq!(parse_version(ff, Tool::Ffmpeg).as_deref(), Some("9.0.2-https://www.martin-riedl.de"));
@@ -804,7 +828,7 @@ mod tests {
         let done = install(scratch.path(), &asset, &[Tool::YtDlp], Noise { quiet: false }).unwrap();
         assert_eq!(done, [Tool::YtDlp]);
         assert!(Manifest::read(scratch.path()).entry(Tool::YtDlp).is_some());
-        assert_eq!(update_ytdlp(scratch.path(), &asset, Noise { quiet: false }).unwrap(), None);
+        assert_eq!(update_ytdlp(scratch.path(), &asset, Noise { quiet: false }, None).unwrap(), None);
     }
 
     #[test]

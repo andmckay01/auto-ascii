@@ -336,7 +336,12 @@ fn spawn_resolver(args: &StreamArgs, shared: &Shared, tx: Sender<Msg>) -> JoinHa
     let ytdlp = YtDlp::new(shared.ytdlp.clone(), shared.procs.clone(), &shared.cwd)
         .cookies_from_browser(args.cookies_from_browser.as_deref());
     let stop = shared.stop.clone();
-    let update = shared.ytdlp_update.clone();
+    let update = shared.ytdlp_update.clone().map(|update| {
+        let stop = stop.clone();
+        let guarded: crate::deps::Update =
+            Arc::new(move || if stop.load(Ordering::SeqCst) { Ok(None) } else { update() });
+        guarded
+    });
     std::thread::spawn(move || {
         let notes = tx.clone();
         let result = ytdlp.resolve_or_update(
