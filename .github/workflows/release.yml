@@ -1,0 +1,398 @@
+name: release
+
+# A vX.Y.Z tag builds, packages and publishes everything: the GitHub release
+# (archives, SHA256SUMS, install scripts), crates.io, npm and the Homebrew tap.
+# Manual runs and PRs touching the release machinery build and package only.
+# docs/RELEASING.md is the maintainer guide.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'scripts/**'
+      - 'npm/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The single version every job uses. On a tag push the tag must name the
+  # Cargo workspace version, so a release can't ship binaries that report
+  # another one.
+  version:
+    name: version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_release: ${{ steps.version.outputs.is_release }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Read and check version
+        id: version
+        env:
+          IS_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="auto-ascii") | .version')
+          [ -n "$version" ] || { echo "::error::no auto-ascii package in cargo metadata"; exit 1; }
+          is_release=false
+          prerelease=false
+          if [ "$IS_TAG" = true ]; then
+            if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match the Cargo workspace version $version; bump [workspace.package] version or re-tag as v$version"
+              exit 1
+            fi
+            is_release=true
+            case "$GITHUB_REF_NAME" in *-*) prerelease=true ;; esac
+          fi
+          echo "version $version, release $is_release, prerelease $prerelease"
+          {
+            echo "version=$version"
+            echo "is_release=$is_release"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+  # One native build per target, smoke-tested on its own runner, packaged as
+  # archive-<target> (for the release) and bin-<target> (for npm).
+  build:
+    name: build (${{ matrix.target }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-15, archive: tar.gz }
+          - { target: x86_64-apple-darwin, os: macos-15-intel, archive: tar.gz }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, archive: tar.gz }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, archive: tar.gz }
+          - { target: x86_64-pc-windows-msvc, os: windows-2022, archive: zip }
+          - { target: aarch64-pc-windows-msvc, os: windows-11-arm, archive: zip }
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.version.outputs.version }}
+      ARCHIVE: ${{ matrix.archive }}
+      EXE: ${{ contains(matrix.target, '-windows-') && 'auto-ascii.exe' || 'auto-ascii' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # alsa-sys (cpal) links libasound via pkg-config.
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+
+      # ring (via ureq's rustls) compiles its C with clang on arm64 Windows.
+      - name: Check for clang
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        run: |
+          set -euo pipefail
+          command -v clang >/dev/null || { echo "::error::clang is not on PATH; ring needs it to build for $TARGET"; exit 1; }
+          clang --version
+
+      # A static CRT on MSVC, so the binary runs without the VC++ runtime.
+      - name: Build
+        env:
+          RUSTFLAGS: ${{ endsWith(matrix.target, '-pc-windows-msvc') && '-C target-feature=+crt-static' || '' }}
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p auto-ascii --target "$TARGET"
+
+      # package-archive.sh strips the binary in place, so npm gets it stripped too.
+      - name: Package
+        run: |
+          set -euo pipefail
+          bash scripts/package-archive.sh "$TARGET" "$VERSION" "$ARCHIVE"
+          mkdir -p "bin/$TARGET"
+          cp "target/$TARGET/release/$EXE" "bin/$TARGET/"
+
+      # Runs the stripped binary, the bits that ship.
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          out=$("bin/$TARGET/$EXE" --version)
+          echo "$out"
+          case "$out" in
+            *"$VERSION"*) ;;
+            *) echo "::error::$EXE --version printed '$out', expected it to contain $VERSION"; exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: |
+            dist/auto-ascii-${{ matrix.target }}.${{ matrix.archive }}
+            dist/auto-ascii-${{ matrix.target }}.${{ matrix.archive }}.sha256
+          if-no-files-found: error
+
+      # Uploading the bin/ directory keeps the <target>/ level, so downloading
+      # every bin-* artifact into one directory rebuilds <dir>/<target>/.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: bin/
+          if-no-files-found: error
+
+  # The GitHub release: every archive, SHA256SUMS and both install scripts.
+  # gh creates it as a draft, uploads, then publishes, so it never appears
+  # half-uploaded. Safe to re-run: an existing release just gets its assets
+  # re-uploaded.
+  release:
+    name: release
+    needs: [version, build]
+    if: needs.version.outputs.is_release == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.version.outputs.version }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: archive-*
+          path: dist
+          merge-multiple: true
+
+      - name: Assemble dist
+        run: |
+          set -euo pipefail
+          cat dist/*.sha256 > dist/SHA256SUMS
+          cp scripts/install.sh scripts/install.ps1 dist/
+          ls -l dist
+          cat dist/SHA256SUMS
+
+      # gh puts these notes above the generated ones.
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
+          ## Install
+
+          ```sh
+          # macOS, Linux
+          curl -fsSL https://github.com/andmckay01/auto-ascii/releases/latest/download/install.sh | sh
+          # Windows
+          powershell -c "irm https://github.com/andmckay01/auto-ascii/releases/latest/download/install.ps1 | iex"
+          # Homebrew
+          brew install andmckay01/tap/auto-ascii
+          # npm
+          npm i -g auto-ascii
+          # Rust
+          cargo install auto-ascii
+          ```
+
+          Every archive has a `.sha256` beside it; `SHA256SUMS` lists them all.
+          NOTES
+
+      - name: Create release and upload assets
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG exists; uploading assets only"
+            gh release upload "$TAG" dist/* --clobber
+          else
+            flags=()
+            if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+            gh release create "$TAG" dist/* --verify-tag --title "auto-ascii $VERSION" \
+              --generate-notes --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"
+          fi
+
+  # Crates in dependency order. Auth: a CARGO_REGISTRY_TOKEN secret if set
+  # (needed for the first release), else crates.io trusted publishing (OIDC).
+  publish-crates:
+    name: publish crates.io
+    needs: [version, release]
+    if: needs.version.outputs.is_release == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      HAS_CARGO_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+        if: env.HAS_CARGO_TOKEN != 'true'
+
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/publish-crates.sh
+
+  # The seven npm packages: the six platform packages first, so the launcher's
+  # pins resolve the moment it is live. Auth: an NPM_TOKEN secret if set
+  # (needed for the first release), else npm trusted publishing (OIDC).
+  publish-npm:
+    name: publish npm
+    needs: [version, release]
+    if: needs.version.outputs.is_release == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: artifacts
+          merge-multiple: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or later.
+      - name: Update npm
+        run: |
+          set -euo pipefail
+          npm install -g npm@latest
+          npm --version
+
+      - name: Generate packages
+        run: |
+          set -euo pipefail
+          node npm/scripts/set-version.mjs "$VERSION"
+          node npm/scripts/make-platform-packages.mjs --version "$VERSION" --artifacts artifacts --out npm-dist
+
+      - name: Publish
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$HAS_NPM_TOKEN" = true ]; then
+            export NODE_AUTH_TOKEN="$NPM_TOKEN"
+          fi
+          # npm refuses a prerelease without a dist-tag; keep it off latest.
+          flags=(--access public)
+          if [ "$PRERELEASE" = true ]; then flags+=(--tag next); fi
+          published=()
+          skipped=()
+          for dir in npm-dist/* npm/auto-ascii; do
+            name=$(node -p "require('./$dir/package.json').name")
+            # Read anonymously so the lookup never depends on the auth setup.
+            if [ -n "$(npm view "$name@$VERSION" version --userconfig /dev/null 2>/dev/null || true)" ]; then
+              echo "skip $name@$VERSION (already published)"
+              skipped+=("$name")
+              continue
+            fi
+            npm publish "./$dir" "${flags[@]}"
+            published+=("$name")
+          done
+          echo "npm $VERSION: published ${#published[@]} (${published[*]:-none}); skipped ${#skipped[@]} (${skipped[*]:-none})"
+
+  # Formula/auto-ascii.rb in andmckay01/homebrew-tap, for stable releases
+  # only. Without a HOMEBREW_TAP_TOKEN secret this warns and succeeds, so the
+  # rest of the release is unaffected.
+  publish-homebrew:
+    name: publish Homebrew tap
+    needs: [version, release]
+    if: needs.version.outputs.is_release == 'true' && needs.version.outputs.prerelease != 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    steps:
+      - name: Check for tap token
+        if: env.HAS_TAP_TOKEN != 'true'
+        run: |
+          set -euo pipefail
+          echo "::warning::HOMEBREW_TAP_TOKEN is not set; skipping the Homebrew tap update for $VERSION"
+
+      - uses: actions/checkout@v4
+        if: env.HAS_TAP_TOKEN == 'true'
+
+      - uses: actions/download-artifact@v4
+        if: env.HAS_TAP_TOKEN == 'true'
+        with:
+          pattern: archive-*
+          path: dist
+          merge-multiple: true
+
+      - name: Render formula
+        if: env.HAS_TAP_TOKEN == 'true'
+        run: |
+          set -euo pipefail
+          bash scripts/homebrew-formula.sh "$VERSION" dist > "$RUNNER_TEMP/auto-ascii.rb"
+          cat "$RUNNER_TEMP/auto-ascii.rb"
+
+      - uses: actions/checkout@v4
+        if: env.HAS_TAP_TOKEN == 'true'
+        with:
+          repository: andmckay01/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Commit and push formula
+        if: env.HAS_TAP_TOKEN == 'true'
+        working-directory: tap
+        run: |
+          set -euo pipefail
+          mkdir -p Formula
+          cp "$RUNNER_TEMP/auto-ascii.rb" Formula/auto-ascii.rb
+          git add Formula/auto-ascii.rb
+          # --cached so the first run, when the file is new, still counts.
+          if git diff --cached --quiet; then
+            echo "Formula/auto-ascii.rb already at $VERSION; nothing to push"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m "auto-ascii $VERSION"
+          git push
