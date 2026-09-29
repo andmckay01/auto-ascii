@@ -22,7 +22,7 @@ use auto_ascii_format::header::plane_id;
 use auto_ascii_term::{Backend, ColorTier, SimBackend};
 
 use crate::build::{self, BuildArgs};
-use crate::ffmpeg::BoxErr;
+use crate::ffmpeg::{BoxErr, Programs};
 use crate::params::Params;
 use crate::reel::{GIF_FPS, GIF_SECS, REEL_ROWS, ReelClip, ReelRow, encode_gray_gif, render_reel_html};
 use crate::sha256::{sha256_file, sha256_hex};
@@ -225,6 +225,7 @@ pub(crate) fn eval_clip(
                 ss: None,
                 t: None,
                 params: params.clone(),
+                programs: Programs::lookup(),
             },
             &mut std::io::stderr(),
         )?;
@@ -570,7 +571,7 @@ fn source_edge_truth(
     let vf = format!("scale={src_w}:{src_h}:flags=area,fps={fps},format=gray");
     let frames_arg = (u64::from(max_frame) + 1).to_string();
     let input_s = input.to_string_lossy();
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = Command::new(Programs::lookup().ffmpeg);
     cmd.args([
         "-nostdin", "-hide_banner", "-v", "error", "-i", &input_s, "-map", "0:v:0",
         "-vf", &vf, "-frames:v", &frames_arg, "-f", "rawvideo", "-",
@@ -654,7 +655,7 @@ fn reference_levels(luma: &[u8]) -> Option<auto_ascii_format::PlaneLevels> {
 }
 
 fn ffmpeg_capture(extra_args: &[&str], stdin_data: Option<&[u8]>) -> Result<Vec<u8>, BoxErr> {
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = Command::new(Programs::lookup().ffmpeg);
     cmd.args(["-v", "error"]);
     cmd.args(extra_args);
     cmd.stdin(if stdin_data.is_some() { Stdio::piped() } else { Stdio::null() });

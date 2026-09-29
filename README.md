@@ -52,10 +52,14 @@ video codecs (it runs ffmpeg too, only to decode an asset's soundtrack).
 
 ## Install
 
-You need a recent stable Rust toolchain (edition 2024). The factory also needs
-`ffmpeg` on `PATH` (`brew install ffmpeg`, `apt install ffmpeg`); the player
-does not. `auto-ascii stream` needs both `yt-dlp` and `ffmpeg` on `PATH`
-(`brew install yt-dlp ffmpeg`).
+You need a recent stable Rust toolchain (edition 2024). `auto-ascii import`
+needs `ffmpeg` and `ffprobe`, and `auto-ascii stream` needs `yt-dlp` and
+`ffmpeg`. If they are not on `PATH`, the CLI offers once to download
+checksum-verified standalone builds into its cache (`--yes` skips the
+question; `auto-ascii doctor` shows what it found). The standalone
+`auto-ascii-factory` never downloads: it uses `ffmpeg` from `PATH` or that
+cache (`brew install ffmpeg`, `apt install ffmpeg`). The player does not need
+them.
 
 ```bash
 git clone https://github.com/andmckay01/auto-ascii && cd auto-ascii

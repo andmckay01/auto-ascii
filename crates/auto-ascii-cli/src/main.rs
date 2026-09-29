@@ -1,4 +1,5 @@
 mod composition;
+mod deps;
 mod home;
 mod library;
 mod stream;
@@ -9,7 +10,8 @@ use std::process::ExitCode;
 
 use auto_ascii::compose::ExportOptions;
 use auto_ascii::timecode;
-use auto_ascii_factory::BuildRequest;
+use auto_ascii::tools::Tool;
+use auto_ascii_factory::{BuildRequest, Programs};
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 
@@ -69,6 +71,14 @@ struct Cli {
                 \"...\"}` on stderr with exit 1"
     )]
     json: bool,
+    #[arg(
+        short = 'y',
+        long,
+        global = true,
+        help = "Download a missing ffmpeg, ffprobe or yt-dlp without asking (same as \
+                AUTO_ASCII_YES=1)"
+    )]
+    yes: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -77,7 +87,7 @@ struct Cli {
 enum Cmd {
     #[command(
         about = "Ingest a video into `library/<name>.ascii` + a `<name>.json` provenance sidecar. \
-                 Needs ffmpeg on PATH"
+                 Needs ffmpeg and ffprobe (downloaded on first use if missing)"
     )]
     Import {
         #[arg(help = "Source video (any ffmpeg-readable container)")]
@@ -144,7 +154,7 @@ enum Cmd {
         target: String,
     },
     #[command(
-        about = "Play the first YouTube video behind a link (or search terms) as live ASCII with sound, streamed, never downloaded. Needs yt-dlp and ffmpeg on PATH",
+        about = "Play the first YouTube video behind a link (or search terms) as live ASCII with sound, streamed, never downloaded. Needs yt-dlp and ffmpeg (downloaded on first use if missing)",
         after_help = "Keys: q / Esc / Ctrl-C quit (also while loading), / cycles the glyph style."
     )]
     Stream {
@@ -174,6 +184,21 @@ enum Cmd {
     AgentGuide,
     #[command(about = "Print the resolved home folder, creating it and its subfolders")]
     Home,
+    #[command(
+        about = "Show where ffmpeg, ffprobe and yt-dlp resolve from (env, PATH or the auto-ascii \
+                 cache), their versions and the cache folder",
+        after_help = "Order: AUTO_ASCII_FFMPEG / AUTO_ASCII_FFPROBE / AUTO_ASCII_YTDLP, then PATH, \
+                      then the cache (AUTO_ASCII_CACHE_DIR overrides its location). \
+                      AUTO_ASCII_NO_DOWNLOAD=1 turns downloads off."
+    )]
+    Doctor {
+        #[arg(
+            long,
+            help = "Download whatever is missing (and refresh a stale cached yt-dlp) now; asks \
+                    first unless --yes"
+        )]
+        fetch: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -304,6 +329,7 @@ fn run(cli: &Cli) -> Result<(), BoxErr> {
         }
         Cmd::AgentGuide => cmd_agent_guide(cli),
         Cmd::Home => cmd_home(cli, &Home::resolve()?),
+        Cmd::Doctor { fetch } => cmd_doctor(cli, *fetch),
     }
 }
 
@@ -351,6 +377,8 @@ fn cmd_import(cli: &Cli, home: &Home, args: &ImportArgs<'_>) -> Result<(), BoxEr
     let ss = parse_time(args.ss, "--ss")?;
     let t = parse_time(args.t, "--t")?;
     let res = args.res.map(auto_ascii_factory::parse_res).transpose()?;
+    let (_, found) = ensure_tools(cli, &[Tool::Ffmpeg, Tool::Ffprobe])?;
+    let programs = Programs { ffmpeg: found.path(Tool::Ffmpeg), ffprobe: found.path(Tool::Ffprobe) };
 
     let report = auto_ascii_factory::build(
         &BuildRequest {
@@ -361,6 +389,7 @@ fn cmd_import(cli: &Cli, home: &Home, args: &ImportArgs<'_>) -> Result<(), BoxEr
             t,
             fps: args.fps,
             res,
+            programs: &programs,
         },
         &mut std::io::stderr(),
     )?;
@@ -823,7 +852,14 @@ fn cmd_stream(cli: &Cli, input: &[String], opts: &StreamOpts<'_>) -> Result<(), 
     if input.trim().is_empty() {
         return Err("stream needs a URL or search terms".into());
     }
-    stream::run(&stream::StreamArgs {
+    let (ctx, found) = ensure_tools(cli, &[Tool::YtDlp, Tool::Ffmpeg])?;
+    let programs = stream::Programs {
+        ffmpeg: found.path(Tool::Ffmpeg),
+        ffmpeg_ca_file: deps::ca_file(&found),
+        ytdlp: found.path(Tool::YtDlp),
+        ytdlp_update: deps::ytdlp_updater(&ctx, &found),
+    };
+    let args = stream::StreamArgs {
         input,
         style: opts.style,
         palette: opts.palette.into(),
@@ -832,7 +868,64 @@ fn cmd_stream(cli: &Cli, input: &[String], opts: &StreamOpts<'_>) -> Result<(), 
         sim,
         sim_dump: opts.sim_dump.map(Path::to_path_buf),
         cookies_from_browser: opts.cookies_from_browser.map(str::to_string),
-    })
+    };
+    let ran_with = deps::cached_version(&ctx);
+    let Err(e) = stream::run(&programs, &args) else { return Ok(()) };
+    if args.sim.is_none() {
+        stream::default_signals();
+        if deps::offer_update(&ctx, &found, ran_with.as_deref(), &e.to_string(), &mut ctx.live()).is_some() {
+            return stream::run(&programs, &args);
+        }
+    }
+    Err(e)
+}
+
+fn ensure_tools(cli: &Cli, tools: &[Tool]) -> Result<(deps::Ctx, deps::Resolved), BoxErr> {
+    let ctx = deps::Ctx::new(cli.yes, cli.json);
+    let found = deps::ensure(&ctx, tools, &mut ctx.live())?;
+    Ok((ctx, found))
+}
+
+fn cmd_doctor(cli: &Cli, fetch: bool) -> Result<(), BoxErr> {
+    let ctx = deps::Ctx::new(cli.yes, cli.json);
+    if fetch {
+        deps::provide(&ctx, &Tool::ALL, true, &mut ctx.live())?;
+    }
+    let report = deps::report(&ctx);
+    if cli.json {
+        outln!("{}", serde_json::to_string(&report)?);
+        return Ok(());
+    }
+    let unset = || "(none)".to_string();
+    outln!("{:<11}{}", "platform", report.platform);
+    outln!("{:<11}{}", "cache", report.bin_dir.clone().unwrap_or_else(unset));
+    outln!("{:<11}{}", "downloads", report.downloads);
+    for tool in &report.tools {
+        let detail = match (&tool.path, &tool.version, &tool.error) {
+            (None, _, _) => "not found".to_string(),
+            (Some(path), Some(version), _) => format!("{version}  {path}"),
+            (Some(path), None, error) => {
+                format!("{path} (does not run: {})", error.as_deref().unwrap_or("no version"))
+            }
+        };
+        outln!("{:<11}{:<9}{detail}", tool.name, tool.source);
+        if let Some(c) = &tool.cached {
+            outln!(
+                "{:<11}{:<9}{}, {}, checked {} day{} ago{}",
+                "",
+                "cached",
+                c.version,
+                human_bytes(c.bytes),
+                c.age_days,
+                if c.age_days == 1 { "" } else { "s" },
+                if c.stale { " (stale: `auto-ascii doctor --fetch` refreshes it)" } else { "" }
+            );
+        }
+    }
+    if report.tools.iter().any(|t| t.path.is_none()) {
+        outln!("missing tools download on first use, or now with `{}`", deps::FETCH_COMMAND);
+    }
+    Ok(())
 }
 
 fn cmd_agent_guide(cli: &Cli) -> Result<(), BoxErr> {

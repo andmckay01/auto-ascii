@@ -13,7 +13,7 @@ use auto_ascii_format::{
 
 use crate::extract::Extractor;
 use crate::features::FeatureExtractor;
-use crate::ffmpeg::{BoxErr, DecodeParams, FrameStream, probe};
+use crate::ffmpeg::{BoxErr, DecodeParams, FrameStream, Programs, probe};
 use crate::params::Params;
 use crate::shots::{Shot, ShotDetector, luma_histogram};
 use crate::temporal::EmaPlane;
@@ -24,6 +24,7 @@ pub struct BuildArgs {
     pub ss: Option<f64>,
     pub t: Option<f64>,
     pub params: Params,
+    pub programs: Programs,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -100,7 +101,7 @@ pub fn run(args: &BuildArgs, info: &mut dyn Write) -> Result<BuildReport, BoxErr
     let (w, h) = (args.params.build.base_w, args.params.build.base_h);
     let fps = args.params.build.fps;
 
-    let probed = probe(&args.input)?;
+    let probed = probe(&args.programs.ffprobe, &args.input)?;
     writeln!(
         info,
         "input: {} ({}x{}, {}) -> {}x{} @ {} fps, ASCI v1 Y+E+Ex+Ey+H+C (delta+zstd, NORM per-shot levels)",
@@ -113,7 +114,7 @@ pub fn run(args: &BuildArgs, info: &mut dyn Write) -> Result<BuildReport, BoxErr
         fps
     )?;
 
-    let params = DecodeParams { input: &args.input, ss: args.ss, t: args.t, fps, w, h };
+    let params = DecodeParams { ffmpeg: &args.programs.ffmpeg, input: &args.input, ss: args.ss, t: args.t, fps, w, h };
     let extractor = Extractor::new(w, h);
 
     let pb = spinner("pass 1/2: shot detection + per-shot levels");

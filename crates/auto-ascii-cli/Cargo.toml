@@ -18,10 +18,13 @@ auto-ascii-term = { workspace = true }
 auto-ascii-format = { workspace = true }
 clap = { workspace = true }
 cpal = { version = "0.18", optional = true }
+indicatif = { workspace = true }
 libc = { workspace = true }
 memmap2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [features]
 default = ["audio"]

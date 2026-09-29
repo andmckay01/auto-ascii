@@ -372,7 +372,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Does:** imports videos into a visible home folder, lists and describes them, cuts and
   stitches them, plays them. Commands other than `play` and `compose play` have a `--json` mode.
 - **User:** `auto-ascii home | import | list | info | cut | compose … | play | stream |
-  agent-guide` (`stream` is flow 17).
+  doctor | agent-guide` (`stream` is flow 17, `doctor` and the global `--yes` flow 18).
   The home is `~/auto-ascii` or `$AUTO_ASCII_HOME`, holding `library/`, `compositions/` and
   `exports/`.
 - **Code:** `crates/auto-ascii-cli/src/main.rs` (`Cli`, `Cmd`, `ComposeCmd`, `cmd_import` →
@@ -466,7 +466,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Code:** `crates/auto-ascii/src/audio/` (`#[doc(hidden)]`, like `pipeline`), adapted from the
   `yt-stream` branch's `crates/auto-ascii-cli/src/stream/{clock,audio}.rs` with the same names so
   the two can merge. `source.rs`: `discover` (`TrackSource`, `SIDECAR_EXTS`, `FOLDER_SOURCE`),
-  `Tools::find`, `probe`/`parse_probe`, `duration_mismatch`, `PCM_BUDGET_BYTES`, `ffmpeg_args`,
+  `Tools::find` (flow 18's `Lookup` plus the Homebrew prefixes; never downloads), `probe`/`parse_probe`, `duration_mismatch`, `PCM_BUDGET_BYTES`, `ffmpeg_args`,
   `spawn`/`Decoder`. `output.rs`: `Pcm` (lock-free i16 slab), `Track`, `Output::fill`,
   `NullSink`, `Sink`, and `device` (cpal, only under the `audio` feature, which `bin` turns on).
   `clock.rs`: `Clock`, `MonotonicClock`, `AudioShared`, `AudioClock`. `mod.rs`: `Soundtrack`
@@ -545,13 +545,14 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
      `clean_error` makes yt-dlp's `ERROR:` line the message. Every call starts with
      `--ignore-config --simulate --skip-download` (`metadata_args`), so no config file can turn
      a lookup into a download. Cookies are read only with `--cookies-from-browser`. The program
-     comes from `AUTO_ASCII_YTDLP`, else `yt-dlp`.
+     is resolved before the loader starts (flow 18). `YtDlp::resolve_or_update` updates a
+     *cached* yt-dlp once and retries when yt-dlp itself failed (`failed_itself`).
   2. **Decode** (`stream/decode.rs` `input_args` / `run_ffmpeg`, `stream/video.rs`,
      `stream/audio.rs`): one ffmpeg per track reads the URL with yt-dlp's headers. Video comes out
      as `rawvideo_filter` rgb24 at `plane_dims` (the factory's area, the source's shape) and
      `stream_fps`; audio as f32 at the device rate. HTTP 403 restarts that track on the next
-     candidate at the current position (`-ss`). ffmpeg comes from `AUTO_ASCII_FFMPEG`, else
-     `ffmpeg`, which lets the session tests wrap it. A video track that ends before its first
+     candidate at the current position (`-ss`). ffmpeg is resolved by flow 18
+     (`stream::Programs`), which lets the session tests wrap it. A video track that ends before its first
      frame is an error. An audio track that ends before its first sample drops to silent
      playback on a `MonotonicClock`.
   3. **Features:** `crates/auto-ascii-factory/src/live.rs` `LiveExtractor::push` runs the
@@ -617,6 +618,48 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     the fg colour and a `:-=+*#%@` density ramp.
   - Build output is unchanged: `LiveExtractor` reuses `FeatureExtractor` verbatim, and the
     ffmpeg helpers (`missing_tool`, `rawvideo_filter`) produce the same arguments as before.
+
+### 18. External tools: find or download ffmpeg, ffprobe, yt-dlp (`auto-ascii doctor`)
+- **Does:** finds each external program, and on first use downloads a standalone build of a
+  missing one into the auto-ascii cache after asking once. `doctor` reports where each resolves
+  from, and `doctor --fetch` pre-fetches.
+- **User:** `auto-ascii doctor [--fetch]`, global `--yes` / `-y`. Env: `AUTO_ASCII_FFMPEG`,
+  `AUTO_ASCII_FFPROBE`, `AUTO_ASCII_YTDLP` (explicit programs), `AUTO_ASCII_CACHE_DIR` (cache
+  root; default `~/Library/Caches/auto-ascii`, `$XDG_CACHE_HOME/auto-ascii` or
+  `~/.cache/auto-ascii`, `%LOCALAPPDATA%\auto-ascii`), `AUTO_ASCII_YES=1`,
+  `AUTO_ASCII_NO_DOWNLOAD=1`.
+- **Code:** `crates/auto-ascii/src/tools.rs` (hidden, network-free) `Tool`, `Lookup` (`find`:
+  env, then PATH, then `<cache>/bin`; `with_extra_dirs` adds `/opt/homebrew/bin` and
+  `/usr/local/bin` for the player's soundtrack), `cache_dir`, `platform_cache_dir`.
+  `crates/auto-ascii-factory/src/ffmpeg.rs` `Programs` (`lookup` for the factory binary; the
+  CLI passes resolved paths in `BuildRequest::programs`).
+  `crates/auto-ascii-cli/src/deps/mod.rs` `Ctx`, `consent`, `ensure` / `provide`, `Provider`
+  (`Live` in production, a fake in tests), `ytdlp_updater`, `report`.
+  `deps/platform.rs` `asset_for(os, arch)` (the per-platform download table), `ytdlp_tag`,
+  `sums_entry`, `single_sum`. `deps/fetch.rs` `install`, `update_ytdlp`, `save_verified`,
+  `extract`, `place`, `Lock`, `Manifest`, `version_of`. `main.rs` `cmd_doctor`, `ensure_tools`.
+  Sources and licensing: [NOTES.md](NOTES.md) "Standalone tool downloads".
+- **Invariants:**
+  - An env override always wins, even if it does not exist. PATH beats the cache. Only
+    `import` and `stream` download; `play` and the factory binary only look.
+  - One prompt per command, on stderr, before anything is created on disk and before `stream`
+    takes over the terminal. `--yes` or `AUTO_ASCII_YES` skips it. `--json` or a non-terminal
+    stdin/stderr without `--yes` fails with an error naming `--yes`, `AUTO_ASCII_YES=1` and
+    `auto-ascii doctor --fetch --yes`. `AUTO_ASCII_NO_DOWNLOAD` fails without network.
+  - Nothing unverified is installed: a download is hashed while it streams to a temp file in
+    `<cache>/bin`, compared with the publisher's SHA-256, unzipped, test-run, then renamed over
+    the destination under an exclusive `<cache>/bin/.lock`. Every failure removes its temp files.
+  - `stream` gives only the *cached* ffmpeg `SSL_CERT_FILE` (the system CA bundle,
+    `deps::ca_file`), unless the variable is already set. On macOS the cached yt-dlp is the
+    one-folder build behind a `bin/yt-dlp` symlink.
+  - A yt-dlp from PATH or env is never updated. When a cached one fails, it is updated once
+    (only if a newer release exists, or another run already replaced it) and retried: in the
+    background with `--yes` (`ytdlp_updater`; a quit cancels the lock wait and the download),
+    or, in an interactive run, after the terminal is restored and a `[Y/n]` (`offer_update`).
+    `--json` and non-interactive runs only say to re-run with `--yes`. With `--yes`, a copy
+    `STALE_DAYS` (30) old is also refreshed before use; otherwise that only prints a note. The
+    installer re-checks what is missing once it holds the lock. Downloads time out after 20
+    minutes of body transfer.
 
 ## Data & wire
 

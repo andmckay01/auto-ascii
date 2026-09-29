@@ -15,19 +15,12 @@ use super::ytdlp::{Media, Track};
 
 pub const STOPPED: &str = "stopped";
 
-pub const PROGRAM_ENV: &str = "AUTO_ASCII_FFMPEG";
-
-pub fn program_from_env() -> PathBuf {
-    std::env::var_os(PROGRAM_ENV)
-        .filter(|p| !p.is_empty())
-        .map_or_else(|| PathBuf::from("ffmpeg"), PathBuf::from)
-}
-
 #[derive(Clone)]
 pub struct DecodeCtx {
     pub procs: Procs,
     pub cwd: PathBuf,
     pub ffmpeg: PathBuf,
+    pub ca_file: Option<PathBuf>,
     pub stop: Arc<AtomicBool>,
 }
 
@@ -118,6 +111,9 @@ pub fn run_ffmpeg(
         }
         let mut cmd = Command::new(&ctx.ffmpeg);
         cmd.args(args(track, i)).current_dir(&ctx.cwd);
+        if let Some(ca_file) = &ctx.ca_file {
+            cmd.env("SSL_CERT_FILE", ca_file);
+        }
         let spawned = ctx.procs.spawn(&mut cmd, "ffmpeg")?;
         let _ = tx.send(Msg::DecoderSpawned);
         let mut stderr = spawned.stderr;
@@ -263,6 +259,7 @@ mod tests {
             procs: procs.clone(),
             cwd: scratch.path().to_path_buf(),
             ffmpeg: fake,
+            ca_file: None,
             stop: Arc::new(AtomicBool::new(false)),
         };
         let (tx, rx) = mpsc::channel();

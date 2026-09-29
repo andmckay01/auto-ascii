@@ -1370,3 +1370,90 @@ fn a_third_signal_forces_an_exit_that_still_leaves_nothing_behind() {
         .collect();
     assert!(left.is_empty(), "the forced exit left its scratch dir: {left:?}");
 }
+
+fn toolless(s: &Scratch, args: &[&str]) -> (Output, PathBuf) {
+    let empty = s.0.join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let cache = s.0.join("cache");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_auto-ascii"));
+    for var in ["AUTO_ASCII_FFMPEG", "AUTO_ASCII_FFPROBE", "AUTO_ASCII_YTDLP", "AUTO_ASCII_YES", "AUTO_ASCII_NO_DOWNLOAD"] {
+        cmd.env_remove(var);
+    }
+    let out = cmd
+        .env("AUTO_ASCII_HOME", s.home())
+        .env("AUTO_ASCII_CACHE_DIR", &cache)
+        .env("PATH", &empty)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run the auto-ascii binary");
+    (out, cache)
+}
+
+#[test]
+fn doctor_reports_every_tool_missing_without_creating_the_cache() {
+    let s = Scratch::new("doctor");
+    let (out, cache) = toolless(&s, &["--json", "doctor"]);
+    let v = json_of(&out);
+    assert_eq!(v["bin_dir"], cache.join("bin").display().to_string());
+    assert_eq!(v["cache_dir"], cache.display().to_string());
+    let tools = v["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["ffmpeg", "ffprobe", "yt-dlp"]);
+    for t in tools {
+        assert_eq!(t["source"], "missing", "{t}");
+        assert!(t["path"].is_null() && t["cached"].is_null(), "{t}");
+    }
+    assert!(!cache.exists(), "doctor only looks");
+
+    let (out, _) = toolless(&s, &["doctor"]);
+    let text = ok(&out);
+    assert!(text.contains("\nffmpeg     missing  not found\n"), "{text}");
+    assert!(text.contains("auto-ascii doctor --fetch --yes"), "{text}");
+}
+
+#[test]
+fn a_missing_tool_without_yes_fails_before_any_download() {
+    let s = Scratch::new("needyes");
+    let video = s.0.join("src").join("clip.mp4");
+    std::fs::write(&video, b"not really a video").unwrap();
+    let (out, cache) = toolless(&s, &["--json", "import", video.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let e: serde_json::Value = serde_json::from_str(stderr_of(&out).trim()).unwrap();
+    let msg = e["error"].as_str().unwrap();
+    assert!(msg.starts_with("ffmpeg and ffprobe not found; auto-ascii can download standalone builds"), "{msg}");
+    for needle in ["--json never prompts", "--yes", "AUTO_ASCII_YES=1", "auto-ascii doctor --fetch --yes"] {
+        assert!(msg.contains(needle), "{needle:?} missing from {msg}");
+    }
+    assert!(stdout_of(&out).is_empty());
+
+    let (out, _) = toolless(&s, &["stream", "me at the zoo", "--sim", "40x12:5"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr_of(&out);
+    assert!(err.starts_with("auto-ascii: yt-dlp and ffmpeg not found; "), "{err}");
+    assert!(err.contains("a non-interactive run never prompts"), "{err}");
+    assert!(stdout_of(&out).is_empty(), "no stats line: the stream never started");
+    assert!(!cache.exists(), "nothing downloaded without consent");
+}
+
+#[test]
+fn downloads_can_be_turned_off() {
+    let s = Scratch::new("nodownload");
+    let empty = s.0.join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
+        .env("AUTO_ASCII_HOME", s.home())
+        .env("AUTO_ASCII_CACHE_DIR", s.0.join("cache"))
+        .env("AUTO_ASCII_NO_DOWNLOAD", "1")
+        .env("AUTO_ASCII_YES", "1")
+        .env_remove("AUTO_ASCII_YTDLP")
+        .env_remove("AUTO_ASCII_FFMPEG")
+        .env("PATH", &empty)
+        .args(["stream", "zoo", "--sim", "40x12:5"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr_of(&out);
+    assert!(err.contains("AUTO_ASCII_NO_DOWNLOAD is set: install them yourself"), "{err}");
+    assert!(!s.0.join("cache").exists());
+}

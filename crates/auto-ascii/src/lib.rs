@@ -17,6 +17,9 @@ pub mod deck;
 
 pub mod timecode;
 
+#[doc(hidden)]
+pub mod tools;
+
 #[cfg(feature = "terminal")]
 mod player;
 

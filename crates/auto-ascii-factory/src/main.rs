@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use auto_ascii_factory::{build, effective_params, eval, font_table, parse_res, sweep};
+use auto_ascii_factory::{Programs, build, effective_params, eval, font_table, parse_res, sweep};
 use clap::{Parser, Subcommand};
 use auto_ascii_format::{
     CHUNK_HEADER_SIZE, ChunkHeader, AsciiHeader, AsciiReader, TAG_FRAM, frame_flags, header_flags,
@@ -190,7 +190,7 @@ fn main() -> ExitCode {
         Cmd::Build { input, output, ss, t, fps, res, params } => {
             effective_params(params.as_deref(), fps, res).and_then(|params| {
                 build::run(
-                    &build::BuildArgs { input, output, ss, t, params },
+                    &build::BuildArgs { input, output, ss, t, params, programs: Programs::lookup() },
                     &mut std::io::stderr(),
                 )
                 .map(|_report| ())

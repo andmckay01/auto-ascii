@@ -21,7 +21,7 @@ use std::io::Write;
 use std::path::Path;
 
 pub use build::BuildReport;
-pub use ffmpeg::BoxErr;
+pub use ffmpeg::{BoxErr, Programs};
 pub use sha256::{sha256, sha256_file, sha256_hex};
 
 pub struct BuildRequest<'a> {
@@ -32,6 +32,7 @@ pub struct BuildRequest<'a> {
     pub t: Option<f64>,
     pub fps: Option<u16>,
     pub res: Option<(u16, u16)>,
+    pub programs: &'a Programs,
 }
 
 pub fn build(req: &BuildRequest<'_>, info: &mut dyn Write) -> Result<BuildReport, BoxErr> {
@@ -43,6 +44,7 @@ pub fn build(req: &BuildRequest<'_>, info: &mut dyn Write) -> Result<BuildReport
             ss: req.ss,
             t: req.t,
             params,
+            programs: req.programs.clone(),
         },
         info,
     )

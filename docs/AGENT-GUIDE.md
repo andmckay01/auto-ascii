@@ -12,12 +12,10 @@ with `library/` (the `<name>.ascii` clips, each with a `<name>.json` sidecar),
 
 ## The loop
 
-1. **import** — `auto-ascii import ~/Desktop/clip.mp4` ffmpeg-ingests into
-   `library/clip.ascii` (needs `ffmpeg` on PATH). Flags `--name N`, `--ss T`,
-   `--t T`, `--fps N`, `--res WxH`, `--force`; times are `SS`/`MM:SS`/`HH:MM:SS`.
-   `--force` replaces a clip only if the rebuild succeeds.
-2. **list / info** — `auto-ascii list`, `auto-ascii info <clip>`. A `<clip>`
-   is a path if one exists, else `library/<clip>.ascii`.
+1. **import** — `auto-ascii import ~/Desktop/clip.mp4` ingests into `library/clip.ascii`.
+   Flags `--name N`, `--ss T`, `--t T`, `--fps N`, `--res WxH`, `--force` (replaces a clip only
+   if the rebuild succeeds); times are `SS`/`MM:SS`/`HH:MM:SS`.
+2. **list / info** — `list`; `info <clip>`, where `<clip>` is a path, else `library/<clip>.ascii`.
 3. **cut** — `auto-ascii cut <clip> --in T --out T [--name N] [--force]` slices
    one clip into a new one (default name `<clip>-0m05s-0m20s`, nothing re-encoded).
 4. **compose** — `compose new <name>` starts a timeline, `compose add <name>
@@ -31,6 +29,9 @@ with `library/` (the `<name>.ascii` clips, each with a `<name>.json` sidecar),
 6. **stream** — `auto-ascii stream <youtube-url | search terms>` plays the first
    video live, with sound, saving nothing (needs `yt-dlp` + `ffmpeg`). Interactive
    like `play`; `--sim COLSxROWS:SECS` runs it headless and prints one JSON line.
+7. **tools** — `import` needs ffmpeg + ffprobe, `stream` yt-dlp + ffmpeg (`AUTO_ASCII_FFMPEG`,
+   `_FFPROBE`, `_YTDLP`, then PATH, then a cache). A missing one downloads after a stderr
+   prompt: pass `--yes` / `AUTO_ASCII_YES=1` or `--json` fails. `doctor [--fetch]` checks/fetches.
 
 ## Composition schema
 
@@ -75,5 +76,4 @@ A cut's `source` is its slice; `compose show` the timeline (`overlaps` adds `und
 
 1. **Names are kebab-case.** `--name` and the file stem are lowercased with
    runs of non-alphanumerics collapsed to `-`: `My Clip (2).mp4` -> `my-clip-2`.
-2. **`at` places, `in`/`out` trim — all three optional.** `in`/`out` are
-   positions *inside the asset*; `at` is a position *on the timeline*.
+2. **`at` places, `in`/`out` trim** (all optional): `in`/`out` inside the asset, `at` on the timeline.
