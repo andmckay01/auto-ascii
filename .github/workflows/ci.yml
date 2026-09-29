@@ -42,7 +42,7 @@ jobs:
       # The stream tests play real-time media against stall thresholds and
       # flake when they compete for the runner's CPUs, so they run serially.
       - name: Test
-        run: cargo test --workspace -- --skip stream::
+        run: cargo test --workspace -- --skip 'stream::'
 
       - name: Test stream (serial)
-        run: cargo test -p auto-ascii-cli --bin auto-ascii stream:: -- --test-threads=1
+        run: cargo test -p auto-ascii-cli --bin auto-ascii 'stream::' -- --test-threads=1
