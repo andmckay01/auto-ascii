@@ -152,8 +152,8 @@ fn replace(old: &[&Path]) -> Result<(), BoxErr> {
 }
 
 fn swap(staging: &Path, folder: &Path, aside: &Path) -> Result<(), BoxErr> {
-    replace(&[aside])?;
     if folder.exists() {
+        replace(&[aside])?;
         std::fs::rename(folder, aside)
             .map_err(|e| format!("move {} to {}: {e}", folder.display(), aside.display()))?;
     }
@@ -402,9 +402,9 @@ mod tests {
 
         let moved = scratch.path().join("-moved folder");
         std::fs::rename(&folder, &moved).unwrap();
-        let status = Command::new(moved.join("play.command"))
-            .args(["--sim", "120x40:30"])
-            .current_dir("/")
+        let status = Command::new("/bin/sh")
+            .args(["--", "-moved folder/play.command", "--sim", "120x40:30"])
+            .current_dir(scratch.path())
             .env("HOME", "/elsewhere")
             .status()
             .unwrap();
