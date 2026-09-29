@@ -108,7 +108,6 @@ pub struct AnsiBackend {
 }
 
 impl AnsiBackend {
-    #[cfg(unix)]
     pub fn new(caps: Caps) -> io::Result<AnsiBackend> {
         Self::with_backdrop(caps, false)
     }
