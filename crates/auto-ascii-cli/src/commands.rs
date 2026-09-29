@@ -372,7 +372,7 @@ pub fn stream(cli: &Cli, args: &StreamArgs) -> Result<(), BoxErr> {
         ytdlp: found.path(Tool::YtDlp),
         ytdlp_update: deps::ytdlp_updater(&ctx, &found),
     };
-    stream::run(&programs, &stream::StreamArgs {
+    let args = stream::StreamArgs {
         input,
         style: args.style,
         palette: args.palette.into(),
@@ -381,7 +381,16 @@ pub fn stream(cli: &Cli, args: &StreamArgs) -> Result<(), BoxErr> {
         sim,
         sim_dump: args.sim_dump.clone(),
         cookies_from_browser: args.cookies_from_browser.clone(),
-    })
+    };
+    let ran_with = deps::cached_version(&ctx);
+    let Err(e) = stream::run(&programs, &args) else { return Ok(()) };
+    if args.sim.is_none() {
+        stream::default_signals();
+        if deps::offer_update(&ctx, &found, ran_with.as_deref(), &e.to_string(), &mut ctx.live()).is_some() {
+            return stream::run(&programs, &args);
+        }
+    }
+    Err(e)
 }
 
 pub fn doctor(cli: &Cli, fetch: bool) -> Result<(), BoxErr> {

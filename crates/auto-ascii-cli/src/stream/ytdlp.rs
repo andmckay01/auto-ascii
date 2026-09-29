@@ -185,7 +185,7 @@ impl YtDlp {
             }
             Ok(None) => first,
             Err(u) => {
-                note(format!("the cached yt-dlp failed; updating it failed too: {u}"));
+                note(format!("the cached yt-dlp failed and was not updated: {u}"));
                 first
             }
         }
@@ -781,7 +781,7 @@ mod tests {
         let (result, notes) = fake.resolve_updating("https://youtu.be/jNQXAC9IVRw", &|| Err("offline".into()));
         assert!(result.unwrap_err().starts_with("yt-dlp: Unable to extract"));
         assert_eq!(fake.calls(), 1);
-        assert_eq!(notes, ["the cached yt-dlp failed; updating it failed too: offline"]);
+        assert_eq!(notes, ["the cached yt-dlp failed and was not updated: offline"]);
     }
 
     #[test]

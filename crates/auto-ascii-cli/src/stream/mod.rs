@@ -130,6 +130,15 @@ fn emergency_exit(sig: libc::c_int) {
     }
 }
 
+pub fn default_signals() {
+    #[cfg(unix)]
+    unsafe {
+        for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            libc::signal(sig, libc::SIG_DFL);
+        }
+    }
+}
+
 fn install_signal_handlers(scratch: &Path) {
     SIGNALLED.store(0, Ordering::SeqCst);
     SIGNALS.store(0, Ordering::SeqCst);
@@ -339,6 +348,10 @@ fn spawn_resolver(args: &StreamArgs, shared: &Shared, tx: Sender<Msg>) -> JoinHa
     let update = shared.ytdlp_update.clone();
     std::thread::spawn(move || {
         let notes = tx.clone();
+        let stopped = || stop.load(Ordering::SeqCst);
+        let guarded = update.map(|update| {
+            move || if stopped() { Ok(None) } else { update(&stopped) }
+        });
         let result = ytdlp.resolve_or_update(
             &input,
             max_height,
@@ -348,7 +361,7 @@ fn spawn_resolver(args: &StreamArgs, shared: &Shared, tx: Sender<Msg>) -> JoinHa
                     Event::EntryFound(url) => Msg::EntryFound(url),
                 });
             },
-            update.as_deref(),
+            guarded.as_ref().map(|g| g as &(dyn Fn() -> Result<Option<String>, String> + Send + Sync)),
             &mut |note| {
                 let _ = notes.send(Msg::Fallback(note));
             },

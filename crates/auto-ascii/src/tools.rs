@@ -108,10 +108,18 @@ impl Lookup {
 }
 
 pub fn cache_dir() -> Option<PathBuf> {
-    if let Some(dir) = non_empty_var(CACHE_DIR_ENV) {
-        return Some(PathBuf::from(dir));
+    let dir = match non_empty_var(CACHE_DIR_ENV) {
+        Some(dir) => PathBuf::from(dir),
+        None => platform_cache_dir(std::env::consts::OS, &non_empty_var)?.join("auto-ascii"),
+    };
+    Some(absolute(dir))
+}
+
+pub fn absolute(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path;
     }
-    platform_cache_dir(std::env::consts::OS, &non_empty_var).map(|dir| dir.join("auto-ascii"))
+    std::env::current_dir().map_or(path.clone(), |cwd| cwd.join(path))
 }
 
 pub fn platform_cache_dir(os: &str, var: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
@@ -246,6 +254,13 @@ mod tests {
         assert_eq!(platform_cache_dir("windows", &win), Some(PathBuf::from(r"C:\Users\me\AppData\Local")));
         assert_eq!(platform_cache_dir("windows", &home), None);
         assert_eq!(platform_cache_dir("macos", &env(&[])), None);
+    }
+
+    #[test]
+    fn relative_cache_dirs_become_absolute() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(absolute(PathBuf::from("cache")), cwd.join("cache"));
+        assert_eq!(absolute(PathBuf::from("/abs/cache")), PathBuf::from("/abs/cache"));
     }
 
     #[test]
