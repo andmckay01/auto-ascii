@@ -39,7 +39,7 @@ fn spawn_harness_env(mode: &str, backdrop: bool, mono: bool) -> (Pty, Child) {
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut ws,
+            &raw mut ws,
         )
     };
     assert_eq!(rc, 0, "openpty failed: {}", io::Error::last_os_error());
