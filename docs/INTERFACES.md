@@ -1031,8 +1031,13 @@ impl RenderSession {
   pub fn set_style(&mut self, Style);   // note 27h: glyph style for later
   pub fn style(&self) -> Style;         // renders (default Ascii); a change
       // resets temporal state like set_palette
+  pub fn set_compose_params(&mut self, ComposeParams);  // the live dials
+      // a video's saved `.player.toml` carries (note 27g); defaults to the
+      // core defaults, a change resets temporal state, an equal value is a
+      // no-op (pipeline::Player::set_compose_params through the deck)
 }
 pub use auto_ascii_core::Style;         // note 27h — the registry enum
+pub use auto_ascii_core::ComposeParams; // RenderSession::set_compose_params
 
 // player.rs — feature "terminal" (in the default set)
 pub enum RepaintMode { Full /*default*/, Diff }
@@ -1403,7 +1408,10 @@ facade surface + this hidden module.)
   (default `ascii`, `Style::default()`); `--sim`
   never reads a video's saved settings. `examples/headless-dump.rs` takes
   `--style NAME`, `--palette ascii|unicode|braille` (default ascii) and
-  `--from FRAME` (FRAMES consecutive frames from FRAME) anywhere on the line.
+  `--from FRAME` (FRAMES consecutive frames from FRAME) anywhere on the line,
+  plus `--settings PLAYER.toml` (feature `terminal`): a video's saved
+  sidecar, parsed by `settings::VideoSettings::parse`, sets the style
+  (an explicit `--style` wins) and `RenderSession::set_compose_params`.
   M8: the positional argument may be a composition `.toml` instead of an
   asset (decided by the extension, the same rule `auto-ascii play` follows)
   — interactively it becomes `PlayerBuilder::composition`, and `--sim` /

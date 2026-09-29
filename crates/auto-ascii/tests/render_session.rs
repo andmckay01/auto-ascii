@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use auto_ascii_eval::fixtures::{FIXTURE_FRAMES, Fixture, build_fixture};
-use auto_ascii::{Cell, Error, Grid, PaletteChoice, RenderSession, Style};
+use auto_ascii::{Cell, ComposeParams, Error, Grid, PaletteChoice, RenderSession, Style};
 
 struct TmpFile(PathBuf);
 
@@ -59,6 +59,21 @@ fn backward_jump_resets_to_cold_render() {
     let mut cold = RenderSession::open(&f.0).unwrap();
     let cold_cells = cold.render(3, 100, 30).unwrap().as_slice().to_vec();
     assert_eq!(jumped, cold_cells, "post-jump frame == cold-start frame, cell for cell");
+}
+
+#[test]
+fn compose_params_reach_the_render() {
+    let f = TmpFile::with_fixture(Fixture::GradientMotion, "compose");
+    let mut plain = RenderSession::open(&f.0).unwrap();
+    let mut tuned = RenderSession::open(&f.0).unwrap();
+    tuned.set_compose_params(ComposeParams::default());
+    for idx in 0..4 {
+        let want = plain.render(idx, 80, 24).unwrap().as_slice().to_vec();
+        assert_eq!(tuned.render(idx, 80, 24).unwrap().as_slice(), want, "defaults are a no-op");
+    }
+    tuned.set_compose_params(ComposeParams { shadow_lift: 128, ..ComposeParams::default() });
+    let want = plain.render(4, 80, 24).unwrap().as_slice().to_vec();
+    assert_ne!(tuned.render(4, 80, 24).unwrap().as_slice(), want, "a turned dial changes the grid");
 }
 
 #[test]

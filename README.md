@@ -1,48 +1,17 @@
 # auto-ascii
 
-Realtime ASCII-art video for terminals, and a Rust library you can drop into
-your own renderer.
+Turn any video into realtime ASCII-art. 
 
 An offline **factory** distills a video into a resolution-independent feature
 asset (`.ascii`). The asset holds luma, edge magnitude and orientation,
-highlights and chroma, but never glyphs. A runtime **player** maps that asset
-onto whatever cell grid you have right now. It picks glyph ramps, directional
+highlights and chroma. A runtime **player** maps that asset
+onto whatever cell grid you have. It picks glyph ramps, directional
 edge strokes, highlights and half-blocks, letterboxes to the video's aspect,
 reflows live on resize, and applies temporal hysteresis so nothing flickers.
 Because every glyph is chosen at render time, one asset looks right at 80×24
 in a Linux console, at 320×90 in a GPU terminal, and inside your own renderer.
 
-```text
-|BBBBBMMMMMMMMMMMMMMBBBBBB8888DDDDGGSSSSSSSSSGGGGDDDDDDDDGGGSSeeeon
-|888888BBBBBMMMMBBMMMBBBBBB8888DDDGGGSSSSSSSSSSSGGDDDDDDDDGGGSSeeen
-|DGDDGDDDD88BBBBBBBBBBBBBBBBB88DDGGGGSSSSeeeeeSSSGGGGDDDGGGSSeeooon
-|GSSGSGDDDD8BBBBBBBBMMMMMMMBBBB88GPFTFPoSeeeeeeeeSSGGGGGGGGSeeoooon
-|GoeeeeSGGDBBBBBBBBBMMMMMMMMMMMMDo    .;oDeoooooeeeSGGGDDGGSeonnnnx
-|SooonoeooeG88DGMMPPPGBMMMMMMMMMDx     :cPooooooooeSGGGDGGSSonxxxxx
-|enonYTxeeeGDeT     :x8MMBMMMMMMBe,    .+uoxc".:xSeeSGSF" ;eonxxxnn
-|ennc  ;FeSSex      :+eeS88MMBMMMDn     ;nex;  .;oSeeeo:  .+xxT7TxF
-|Y.+c: .+onooc.     .;xGSG: .YD/"""    ,gee+   .:xoSSSSo,  ;o+   ;;
-|. ;:  ,*:;ccc:      .;nee;  :F;,,.,uaa+eeT.    :+x;Tnc: .:+;.   ..
- .:;c;:Txccx+":.     .,..7:.:++xeoc+PMGxcSa+au;+a+;.. .+xon;""++++:
-      ::cxc:;     .a+*;;  ..   .Fooc;.:ccFeen+++GSc.   .+xxc  :c+xc
-       .:xc:c:. :+cxoexnnwc:     .++:    :cn;: +oe++....:xc+  :;oo;
-       ..+;:cxx+;;xccnccnSn+   ...++.:.+anc++. +eGn;+c; .+:. :+:nec
-   .    ..  :;ncx+;+;;+oeno+:   :+u|.++xen:;+;.+eDeXX:  .;:  .c;++;
-    .   .;c:.  . : '  ;nGn+:;    .;cu;;*xc.;cc.7FGDSo;   ::  .++;;+
-          .+:  .  .   :+nc..+    ;xeex...:.:cnwa_-X;T+u ..;:.  ..:;
-          .      .:aaxcw+:.:c.    .+oea:.  :+xncoeSeX++a.   '.=.+..
-         .;+,     :FncSGx:.:x;     :nSSa.  .::;xc+cc:..""":.    ..
-         .+c"      .++SDn:.:x:      .7nSw,  ..:;;   ....    .   ..
-         .:;      .:x+xSo;.;x:        .;cY+u.. .:::,,   .      .:
-          .;.     .;eSeSSou;o+        . .,:;*.,    .;c+
-    .:;;+:        .:eSenSGeSSoc.         ."7+xx;     .;.
-     .:::.         "PPnnnooowxxc,             .".
-       .:               "7FPooeeSoa,
-```
-
-<sub>One frame of Apple's "1984" ad on a 90×26 grid, `letters` style, colors
-dropped (`headless-dump` example). In a terminal every cell also carries the
-source's color.</sub>
+![Twelve seconds of The Matrix Reloaded's Architect scene, 2:14 to 2:26, playing as colored ASCII art in a terminal](docs/assets/architect-2m14s.gif)
 
 The Rust workspace, supported by Python tools, has a library (`auto-ascii`)
 and one command, `auto-ascii`, which plays, streams and imports video, files
