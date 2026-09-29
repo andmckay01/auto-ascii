@@ -29,7 +29,7 @@ impl fmt::Display for Error {
         match self {
             Error::Io { path, .. } => write!(f, "cannot open {}", path.display()),
             Error::Format { path, .. } => {
-                write!(f, "{} is not a valid ASCI asset", path.display())
+                write!(f, "{} is not a valid .ascii asset", path.display())
             }
             Error::Asset(msg) => write!(f, "unplayable asset: {msg}"),
             Error::Decode { frame, plane, .. } => {

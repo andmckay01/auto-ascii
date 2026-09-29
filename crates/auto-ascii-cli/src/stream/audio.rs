@@ -193,6 +193,7 @@ impl Sink {
     }
 }
 
+#[cfg(feature = "audio")]
 pub struct DeviceFormat {
     pub rate: u32,
     pub channels: usize,

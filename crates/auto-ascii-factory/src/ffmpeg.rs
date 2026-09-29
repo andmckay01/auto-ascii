@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::thread::JoinHandle;
 
-use auto_ascii::tools::{Lookup, Tool};
 
 pub type BoxErr = Box<dyn std::error::Error>;
 
@@ -13,13 +12,6 @@ pub type BoxErr = Box<dyn std::error::Error>;
 pub struct Programs {
     pub ffmpeg: PathBuf,
     pub ffprobe: PathBuf,
-}
-
-impl Programs {
-    pub fn lookup() -> Programs {
-        let lookup = Lookup::from_env();
-        Programs { ffmpeg: lookup.program(Tool::Ffmpeg), ffprobe: lookup.program(Tool::Ffprobe) }
-    }
 }
 
 pub fn missing_tool(tool: &str, e: &std::io::Error) -> String {

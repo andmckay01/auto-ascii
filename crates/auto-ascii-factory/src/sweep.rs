@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use auto_ascii_eval::EvalReport;
 
 use crate::eval::{self, EvalArgs, TruthCache};
+use crate::ffmpeg::Programs;
 use crate::ffmpeg::BoxErr;
 use crate::params::Params;
 use crate::sha256::sha256_hex;
@@ -16,6 +17,7 @@ pub struct SweepArgs {
     pub grid: PathBuf,
     pub out_dir: PathBuf,
     pub cache_dir: PathBuf,
+    pub programs: Programs,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -241,6 +243,7 @@ pub fn run(args: &SweepArgs) -> Result<(), BoxErr> {
             cache_dir: args.cache_dir.clone(),
             truecolor_only: true,
             font_table: None,
+            programs: args.programs.clone(),
         };
 
         let mut report =

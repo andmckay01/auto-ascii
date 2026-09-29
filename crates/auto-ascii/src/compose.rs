@@ -1,4 +1,4 @@
-//! Composition-plane and NORM export into an ASCI asset.
+//! Composition-plane and NORM export into an .ascii asset.
 
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};

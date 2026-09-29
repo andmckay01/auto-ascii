@@ -57,7 +57,7 @@ fn build_synth_asset() -> Vec<u8> {
         ..WriterOptions::default()
     };
     let meta = Meta {
-        factory_version: "auto-ascii-player-perf-test".to_owned(),
+        factory_version: "auto-ascii-perf-test".to_owned(),
         source: "synthetic-480x270".to_owned(),
         palette_hints: Vec::new(),
     };

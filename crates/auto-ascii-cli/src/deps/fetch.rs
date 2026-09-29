@@ -422,7 +422,7 @@ fn download(http: &Http, bin: &Path, url: &str, sha256: &str, label: &str, noise
     let total = response.body().content_length();
     noise.say(&format!(
         "downloading {label}{} from {url}",
-        total.map_or_else(String::new, |n| format!(" ({})", crate::human_bytes(n)))
+        total.map_or_else(String::new, |n| format!(" ({})", crate::output::human_bytes(n)))
     ));
     let bar = progress(noise, total, label);
     let body = response.into_body().into_reader();

@@ -6,7 +6,7 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new(tag: &str) -> TempDir {
         let p =
-            std::env::temp_dir().join(format!("auto-ascii-factory-m2-{tag}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("auto-ascii-dev-m2-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         TempDir(p)
@@ -23,12 +23,12 @@ impl Drop for TempDir {
     }
 }
 
-fn factory(args: &[&dyn AsRef<std::ffi::OsStr>]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_auto-ascii-factory"));
+fn cli(args: &[&dyn AsRef<std::ffi::OsStr>]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_auto-ascii"));
     for a in args {
         cmd.arg(a.as_ref());
     }
-    cmd.output().expect("failed to run auto-ascii-factory binary")
+    cmd.output().expect("failed to run the auto-ascii binary")
 }
 
 fn stderr_of(out: &Output) -> String {
@@ -59,7 +59,7 @@ fn repo_params_path() -> PathBuf {
 
 #[test]
 fn params_dump_matches_committed_file_and_merges_overrides() {
-    let out = factory(&[&"params", &"--dump"]);
+    let out = cli(&[&"dev", &"params", &"--dump"]);
     assert!(out.status.success(), "params --dump failed:\n{}", stderr_of(&out));
     let dumped: toml::Value =
         toml::from_str(&String::from_utf8_lossy(&out.stdout)).expect("dump must be valid TOML");
@@ -74,7 +74,7 @@ fn params_dump_matches_committed_file_and_merges_overrides() {
     let p = dir.path("override.toml");
     std::fs::write(&p, "[build]\nkeyframe_ivl = 12\n\n[eval.tolerances]\nssim_max_drop = 0.5\n")
         .unwrap();
-    let out = factory(&[&"params", &"--dump", &"--params", &p]);
+    let out = cli(&[&"dev", &"params", &"--dump", &"--params", &p]);
     assert!(out.status.success(), "{}", stderr_of(&out));
     let merged: toml::Value =
         toml::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
@@ -83,7 +83,7 @@ fn params_dump_matches_committed_file_and_merges_overrides() {
     assert_eq!(merged["build"]["fps"], committed["build"]["fps"]);
     assert_eq!(merged["shots"], committed["shots"]);
 
-    let out = factory(&[&"params"]);
+    let out = cli(&[&"dev", &"params"]);
     assert!(!out.status.success());
     assert!(stderr_of(&out).contains("--dump"), "stderr:\n{}", stderr_of(&out));
 }
@@ -95,7 +95,7 @@ fn params_validation_rejects_degenerate_geometry() {
 
     let p = dir.path("bad.toml");
     std::fs::write(&p, "[build]\nbase_w = 1\n").unwrap();
-    let out = factory(&[&"build", &input, &"-o", &dir.path("x.ascii"), &"--params", &p]);
+    let out = cli(&[&"import", &input, &"-o", &dir.path("x.ascii"), &"--params", &p]);
     assert!(!out.status.success());
     assert!(
         stderr_of(&out).contains("even and >= 2"),
@@ -103,13 +103,13 @@ fn params_validation_rejects_degenerate_geometry() {
         stderr_of(&out)
     );
 
-    let out = factory(&[&"build", &input, &"-o", &dir.path("x.ascii"), &"--res", &"479x270"]);
+    let out = cli(&[&"import", &input, &"-o", &dir.path("x.ascii"), &"--res", &"479x270"]);
     assert!(!out.status.success());
     assert!(stderr_of(&out).contains("even"), "stderr:\n{}", stderr_of(&out));
 
     let p2 = dir.path("typo.toml");
     std::fs::write(&p2, "[build]\nfsp = 30\n").unwrap();
-    let out = factory(&[&"params", &"--dump", &"--params", &p2]);
+    let out = cli(&[&"dev", &"params", &"--dump", &"--params", &p2]);
     assert!(!out.status.success());
 }
 
@@ -237,7 +237,7 @@ fn default_params_build_is_byte_pinned() {
     );
 
     let out_default = dir.path("default.ascii");
-    let out = factory(&[&"build", &input, &"-o", &out_default]);
+    let out = cli(&[&"import", &input, &"-o", &out_default]);
     assert!(out.status.success(), "build failed:\n{}", stderr_of(&out));
     assert_eq!(
         sha256_of(&out_default),
@@ -250,7 +250,7 @@ fn default_params_build_is_byte_pinned() {
     let params_copy = dir.path("params-copy.toml");
     std::fs::copy(repo_params_path(), &params_copy).unwrap();
     let out_filed = dir.path("filed.ascii");
-    let out = factory(&[&"build", &input, &"-o", &out_filed, &"--params", &params_copy]);
+    let out = cli(&[&"import", &input, &"-o", &out_filed, &"--params", &params_copy]);
     assert!(out.status.success(), "build failed:\n{}", stderr_of(&out));
     assert_eq!(sha256_of(&out_filed), FIXTURE_ASSET_SHA, "--params file path diverged");
 }
@@ -297,8 +297,8 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     let out_html = dir.path("runs/run1.html");
     let out_reel = dir.path("runs/run1-reel.html");
 
-    let out = factory(&[
-        &"eval", &"--corpus", &corpus, &"--params", &params, &"--out", &out_json,
+    let out = cli(&[
+        &"dev", &"eval", &"--corpus", &corpus, &"--params", &params, &"--out", &out_json,
         &"--html", &out_html, &"--reel", &out_reel, &"--cache-dir", &cache,
     ]);
     assert!(out.status.success(), "eval failed:\n{}", stderr_of(&out));
@@ -370,8 +370,8 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     }
 
     let out2_json = dir.path("runs/run2.json");
-    let out = factory(&[
-        &"eval", &"--corpus", &corpus, &"--params", &params, &"--baseline", &out_json,
+    let out = cli(&[
+        &"dev", &"eval", &"--corpus", &corpus, &"--params", &params, &"--baseline", &out_json,
         &"--out", &out2_json, &"--cache-dir", &cache,
     ]);
     assert!(out.status.success(), "self-baseline compare must pass:\n{}", stderr_of(&out));
@@ -385,8 +385,8 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
         serde_json::json!(1000.0);
     let tampered_path = dir.path("runs/tampered.json");
     std::fs::write(&tampered_path, tampered.to_string()).unwrap();
-    let out = factory(&[
-        &"eval", &"--corpus", &corpus, &"--params", &params, &"--baseline", &tampered_path,
+    let out = cli(&[
+        &"dev", &"eval", &"--corpus", &corpus, &"--params", &params, &"--baseline", &tampered_path,
         &"--out", &dir.path("runs/run3.json"), &"--cache-dir", &cache,
     ]);
     assert!(!out.status.success(), "tolerance breach must exit nonzero");
@@ -403,8 +403,8 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
          [eval.tolerances]\nstage_ms_frac_max_increase = 1000.0\n",
     )
     .unwrap();
-    let out = factory(&[
-        &"eval", &"--corpus", &corpus, &"--params", &regressed, &"--baseline", &out_json,
+    let out = cli(&[
+        &"dev", &"eval", &"--corpus", &corpus, &"--params", &regressed, &"--baseline", &out_json,
         &"--out", &dir.path("runs/run4.json"), &"--cache-dir", &cache,
     ]);
     assert!(!out.status.success(), "param regression must trip the baseline compare");
@@ -413,8 +413,8 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
     assert!(err.contains("baseline compare FAILED"), "stderr:\n{err}");
     assert!(err.contains("cached asset"), "eval knobs must not rebuild assets:\n{err}");
 
-    let out = factory(&[
-        &"eval", &"--corpus", &corpus, &"--params", &params, &"--baseline", &out_json,
+    let out = cli(&[
+        &"dev", &"eval", &"--corpus", &corpus, &"--params", &params, &"--baseline", &out_json,
         &"--out", &dir.path("runs/run5.json"), &"--cache-dir", &cache,
     ]);
     assert!(out.status.success(), "reverted params must pass:\n{}", stderr_of(&out));
@@ -425,8 +425,8 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
         format!("{EVAL_PARAMS}\n[shots]\nsad_threshold_milli = 100000\n"),
     )
     .unwrap();
-    let out = factory(&[
-        &"eval", &"--corpus", &corpus, &"--params", &killed_cuts, &"--baseline", &out_json,
+    let out = cli(&[
+        &"dev", &"eval", &"--corpus", &corpus, &"--params", &killed_cuts, &"--baseline", &out_json,
         &"--out", &dir.path("runs/run6.json"), &"--cache-dir", &cache,
     ]);
     assert!(!out.status.success(), "killed cut detection must trip the baseline compare");
@@ -440,8 +440,8 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
         EVAL_PARAMS.replace("keyframe_ivl = 4", "keyframe_ivl = 200"),
     )
     .unwrap();
-    let out = factory(&[
-        &"eval", &"--corpus", &corpus, &"--params", &sparse_keys, &"--baseline", &out_json,
+    let out = cli(&[
+        &"dev", &"eval", &"--corpus", &corpus, &"--params", &sparse_keys, &"--baseline", &out_json,
         &"--out", &dir.path("runs/run7.json"), &"--cache-dir", &cache,
     ]);
     assert!(!out.status.success(), "keyframe cadence regression must trip the compare");
@@ -450,8 +450,8 @@ fn eval_emits_metrics_json_html_and_gates_on_baseline() {
 
     let kf600 = dir.path("p-kf600.toml");
     std::fs::write(&kf600, "[build]\nkeyframe_ivl = 600\n").unwrap();
-    let out = factory(&[
-        &"eval", &"--corpus", &corpus, &"--params", &kf600, &"--baseline", &out_json,
+    let out = cli(&[
+        &"dev", &"eval", &"--corpus", &corpus, &"--params", &kf600, &"--baseline", &out_json,
         &"--out", &dir.path("runs/run8.json"), &"--cache-dir", &cache,
     ]);
     assert!(!out.status.success());
@@ -477,8 +477,8 @@ fn sweep_ranks_combos_and_reuses_the_asset_cache() {
     )
     .unwrap();
 
-    let out = factory(&[
-        &"sweep", &"--corpus", &corpus, &"--params", &params, &"--grid", &grid,
+    let out = cli(&[
+        &"dev", &"sweep", &"--corpus", &corpus, &"--params", &params, &"--grid", &grid,
         &"--out", &out_dir, &"--cache-dir", &cache,
     ]);
     assert!(out.status.success(), "sweep failed:\n{}", stderr_of(&out));
@@ -529,8 +529,8 @@ fn sweep_ranks_combos_and_reuses_the_asset_cache() {
         "[[axes]]\nname = \"x\"\nvalues = [ { \"compose.edge_t_onn\" = 32 } ]\n",
     )
     .unwrap();
-    let out = factory(&[
-        &"sweep", &"--corpus", &corpus, &"--params", &params, &"--grid", &bad,
+    let out = cli(&[
+        &"dev", &"sweep", &"--corpus", &corpus, &"--params", &params, &"--grid", &bad,
         &"--out", &dir.path("sweeps/typo"), &"--cache-dir", &cache,
     ]);
     assert!(!out.status.success(), "typo'd path must fail");
