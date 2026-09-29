@@ -54,11 +54,11 @@ def main():
     p = argparse.ArgumentParser(description="Render the README demo GIF from a .ascii asset.")
     p.add_argument("asset")
     p.add_argument("--settings", help="saved player settings (default: <asset stem>.player.toml)")
-    p.add_argument("--start", type=int, default=4036, help="first frame (default: the first frame after the 2:14.5 cut)")
+    p.add_argument("--start", type=int, default=4038, help="first frame (default: two after the 2:14.5 cut)")
     p.add_argument("--end", type=int, default=4339)
     p.add_argument("--step", type=int, default=3)
     p.add_argument("--delay", type=int, default=10, help="GIF frame delay in centiseconds")
-    p.add_argument("--warm", type=int, default=0,
+    p.add_argument("--warm", type=int, default=2,
                    help="frames rendered before --start to settle hysteresis; keep them inside the shot")
     p.add_argument("--grid", default="120x34")
     p.add_argument("--trim", type=int, default=4)
@@ -66,6 +66,10 @@ def main():
     p.add_argument("--lossy", type=int, default=10)
     p.add_argument("--out", default="docs/assets/architect-2m14s.gif")
     args = p.parse_args()
+    if args.step < 1:
+        p.error("--step must be at least 1")
+    if args.end < args.start:
+        p.error("--end must not be before --start")
     args.settings = args.settings or os.path.splitext(args.asset)[0] + ".player.toml"
 
     font = ImageFont.truetype(FONT, args.font_size)

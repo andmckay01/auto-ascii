@@ -109,7 +109,7 @@ fn main() -> Result<(), auto_ascii::Error> {
     let path = positional.next().unwrap_or_else(|| bad());
     let frames: u32 = positional.next().map_or(3, |s| s.parse().unwrap_or_else(|_| bad()));
     let (cols, rows) = positional.next().map_or((100, 28), |s| parse_dims(&s));
-    if positional.next().is_some() {
+    if positional.next().is_some() || (warm > 0 && from.is_none()) {
         bad();
     }
 
@@ -127,10 +127,8 @@ fn main() -> Result<(), auto_ascii::Error> {
         Some(f) => (f.min(session.frame_count() - 1), 1),
         None => (0, (session.frame_count() / count).max(1)),
     };
-    if from.is_some() {
-        for frame in start.saturating_sub(warm)..start {
-            session.render(frame, cols, rows)?;
-        }
+    for frame in start.saturating_sub(warm)..start {
+        session.render(frame, cols, rows)?;
     }
     for n in 0..count {
         let frame = start + n * stride;

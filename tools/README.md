@@ -161,8 +161,8 @@ python3 -m venv /tmp/gifenv && /tmp/gifenv/bin/pip install pillow
 ```
 
 ```
-tools/readme_gif.py ASSET [--settings PLAYER.toml] [--start F=4036] [--end F=4339]
-                    [--step N=3] [--delay CS=10] [--warm N=0] [--grid 120x34]
+tools/readme_gif.py ASSET [--settings PLAYER.toml] [--start F=4038] [--end F=4339]
+                    [--step N=3] [--delay CS=10] [--warm N=2] [--grid 120x34]
                     [--trim 4] [--font-size 13] [--lossy 10]
                     [--out docs/assets/architect-2m14s.gif]
 ```
@@ -170,12 +170,15 @@ tools/readme_gif.py ASSET [--settings PLAYER.toml] [--start F=4036] [--end F=433
 `--settings` defaults to the asset's saved `<stem>.player.toml` (style and
 dials). Every source frame from `--start` to `--end` is rendered, so
 hysteresis runs as in the player; every `--step`-th one is kept and shown for
-`--delay` centiseconds. The defaults are one shot, cut to cut: frames
-4036–4339 (2:14.53 up to the cut at 2:24.70), step 3 at 10 cs (10 fps, real
-time, 102 frames, 10.2 s). The shot is a zoom, so no two frames 8 s or more
-apart match (the closest pair differs by about 23 mean abs RGB, against about
-8 between kept neighbours); the loop point is the film's own cut on both sides
-instead. `--warm` is 0 because 4036 is the first frame after a cut: warming up
-across the cut leaves pre-cut glyphs in 12.5% of the first frame's cells. The
+`--delay` centiseconds. The defaults are one shot, cut to cut: the zoom that
+starts at frame 4036 (2:14.53) and runs up to the cut at 2:24.70. `--warm 2`
+renders 4036 and 4037 to settle hysteresis, then 4038–4339 are kept at step 3,
+10 cs (10 fps, real time, 101 frames, 10.1 s). Starting at 4038 rather than
+4037 keeps every kept step under twice the median. The shot is a zoom, so no
+two frames 8 s or more apart match (the closest pair differs by about 24
+mean abs RGB, against about 8 between kept neighbours); the loop point is the
+film's own cut on both sides instead. Keep `--warm` inside the shot: warming
+up across the cut at 4036 leaves pre-cut glyphs in about an eighth of the
+first frame's cells, and a cold start inflates the first step. The
 committed file was made with Pillow 12.3.0, ffmpeg 9.0.2 and gifsicle 1.96;
 other versions can change the bytes.
