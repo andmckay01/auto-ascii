@@ -13,29 +13,28 @@ in a Linux console, at 320×90 in a GPU terminal, and inside your own renderer.
 
 ![Twelve seconds of The Matrix Reloaded's Architect scene, 2:14 to 2:26, playing as colored ASCII art in a terminal](docs/assets/architect-2m14s.gif)
 
-The Rust workspace, supported by Python tools, has a library (`auto-ascii`),
-two engine binaries (`auto-ascii-factory` and `auto-ascii-player`), and the `auto-ascii`
-CLI, which files clips in a library folder and stitches them into
-compositions. The factory runs ffmpeg as a subprocess; the player links no
+The Rust workspace, supported by Python tools, has a library (`auto-ascii`)
+and one command, `auto-ascii`, which plays, streams and imports video, files
+clips in a library folder and stitches them into compositions. The factory runs ffmpeg as a subprocess; the player links no
 video codecs (it runs ffmpeg too, only to decode an asset's soundtrack).
 
 ## Install
 
-You need a recent stable Rust toolchain (edition 2024). The factory also needs
-`ffmpeg` on `PATH` (`brew install ffmpeg`, `apt install ffmpeg`); the player
-does not. `auto-ascii stream` needs both `yt-dlp` and `ffmpeg` on `PATH`
-(`brew install yt-dlp ffmpeg`).
+You need a recent stable Rust toolchain (edition 2024). `auto-ascii import`
+needs `ffmpeg` and `ffprobe`, and `auto-ascii stream` needs `yt-dlp` and
+`ffmpeg`. If they are not on `PATH`, the CLI offers once to download
+checksum-verified standalone builds into its cache (`--yes` skips the
+question; `auto-ascii doctor` shows what it found). `brew install ffmpeg` or
+`apt install ffmpeg` works too. Playing does not need them.
 
 ```bash
 git clone https://github.com/andmckay01/auto-ascii && cd auto-ascii
-cargo install --path crates/auto-ascii           # auto-ascii-player
-cargo install --path crates/auto-ascii-factory   # auto-ascii-factory
-cargo install --path crates/auto-ascii-cli       # auto-ascii (the CLI)
+cargo install --path crates/auto-ascii-cli       # the auto-ascii command
 ```
 
 macOS (Apple Silicon or Intel) and Linux build from source. On Linux,
 `scripts/release.sh` builds stripped native, fully static musl and Windows
-cross player binaries into `dist/`, each under 5 MB. The static musl binary
+cross `auto-ascii` binaries into `dist/`, each gated under 5 MB. The static musl binary
 runs on any x86-64 Linux with nothing else installed.
 
 To use the library, add it as a dependency:
@@ -50,21 +49,25 @@ auto-ascii = "0.2"
 # a 6-second test clip (or use any video you have)
 ffmpeg -f lavfi -i testsrc2=size=640x360:rate=30 -t 6 clip.mp4
 
-# distill it into an asset (offline; seconds for short clips)
-auto-ascii-factory build clip.mp4 -o clip.ascii
+# distill it into an asset in your library (offline; seconds for short clips)
+auto-ascii import clip.mp4
 
 # play it (q quits)
-auto-ascii-player clip.ascii
+auto-ascii play clip
+
+# or keep the asset anywhere you like, and play it by path
+auto-ascii import clip.mp4 -o clip.ascii
+auto-ascii play clip.ascii
 
 # no terminal handy? render headlessly
-auto-ascii-player clip.ascii --sim 213x58:300        # one JSON stats line
+auto-ascii play clip --sim 213x58:300                # one JSON stats line
 cargo run --release -p auto-ascii --example headless-dump -- clip.ascii 3 100x28
 ```
 
-From a checkout without installing, use `cargo run --release -p
-auto-ascii-factory -- …` and `cargo run --release -p auto-ascii --bin
-auto-ascii-player -- …`. `auto-ascii-factory inspect clip.ascii` prints the
-container's header and chunks and verifies every CRC.
+`auto-ascii --help` shows the everyday commands; `auto-ascii --help-all` shows
+every command and flag. From a checkout without installing, use `cargo run
+--release -p auto-ascii-cli -- …`. `auto-ascii dev inspect clip.ascii` prints
+the container's header and chunks and verifies every CRC.
 
 ## Playing
 
@@ -208,16 +211,21 @@ default or a shade within the cap; block glyphs and full-strength backgrounds
 are allowed only in UI overlay cells (HUD text), which use the same big text as
 pixels/letters.
 
-Useful flags:
-- `--loop`, `--seek 1:30`, `--fps-cap 30`
-- `--style pixels|letters|ascii` (default `ascii`; `--codec` still works for one release)
+Useful `auto-ascii play` flags:
+- `--loop`, `--seek 1:30`
+- `--style pixels|letters|ascii` (default `ascii`)
 - `--mute` (start with the sound off), `--no-audio` (no sound at all)
-- `--palette ascii|unicode|braille`, `--tier truecolor|256|16|mono`
+- `--palette auto|ascii|unicode|braille`
+
+Advanced ones, hidden from `play --help` but always accepted:
+- `--fps-cap 30`, `--tier truecolor|256|16|mono`
 - `--no-query` (skip capability queries)
 - `--no-backdrop` (keep the terminal's own background)
 - `--font-table NAME|PATH` (tell the player which font your terminal uses)
+- `--sim COLSxROWS:NFRAMES` (headless, one JSON stats line), `--bench-seek N`
 
-`auto-ascii-player --help` lists everything.
+`auto-ascii play --help-all` lists everything. `play` exits 0 when the video
+ends, 3 when you quit, and 1 on an error.
 
 ## The `auto-ascii` CLI
 
@@ -227,6 +235,7 @@ beside it records where the video came from.
 
 ```bash
 auto-ascii import ~/Desktop/clip.mp4        # ffmpeg ingest -> library/clip.ascii
+auto-ascii import in.mp4 -o /tmp/in.ascii   # or just write the asset to a path
 auto-ascii list                             # name, duration, fps, frames, bytes, source
 auto-ascii info clip                        # one clip's header + sidecar
 auto-ascii play clip                        # the player, on a library clip
@@ -242,16 +251,18 @@ auto-ascii stream "https://youtu.be/jNQXAC9IVRw"  # stream a YouTube video, with
 ```
 
 `import` also takes `--name`, `--ss`/`--t` (times as `SS`, `MM:SS` or
-`HH:MM:SS`), `--fps`, `--res WxH` and `--force`. `home` prints the folder.
+`HH:MM:SS`), `--fps`, `--res WxH`, `--params FILE` and `--force` (needed to
+replace an existing clip or `-o` file). `home` prints the folder.
 
 A **composition** is a TOML file that stitches any number of clips on one
 timeline. Each clip is placed with `at` and trimmed with `in`/`out`; gaps are
 black and a later clip draws on top. The file is the source of truth, so you
-can write it by hand; `auto-ascii-player demo.toml` plays one directly.
+can write it by hand; `auto-ascii play demo.toml` plays one directly.
 
 Every command except interactive `play`, `compose play` and `stream` accepts
-`--json`, which makes stdout exactly one JSON value (`stream` takes it only
-with `--sim`).
+`--json`, which makes stdout exactly one JSON value (those three take it only
+with `--sim`). `auto-ascii dev` holds the developer tools: `inspect`, `params`,
+`eval`, `sweep`, `font-table`, `sim` and `bench-seek`.
 [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) (also printed by `auto-ascii
 agent-guide`) documents the folder layout, the JSON shapes and the composition
 schema.
@@ -388,9 +399,9 @@ runs against whatever reference videos you keep in `corpus/` (local and
 gitignored; see [corpus/README.md](corpus/README.md)):
 
 ```bash
-auto-ascii-factory eval --corpus corpus/ --params params.toml \
+auto-ascii dev eval --corpus corpus/ --params params.toml \
     --out runs/base.json --html runs/base.html          # once: record a baseline
-auto-ascii-factory eval --corpus corpus/ --params params.toml \
+auto-ascii dev eval --corpus corpus/ --params params.toml \
     --baseline runs/base.json --out runs/latest.json --html runs/latest.html
 ```
 
@@ -399,19 +410,19 @@ renders headlessly through the real player pipeline. It writes metrics JSON
 and a self-contained HTML contact sheet: SSIM, edge F1 against Canny on the
 source, flicker, damage rate, bytes per frame and per-stage frame times. It
 exits nonzero when a tolerance against the baseline breaks.
-`auto-ascii-factory sweep` runs the same eval over a grid of parameter
+`auto-ascii dev sweep` runs the same eval over a grid of parameter
 overrides and ranks the combinations; the grid format is in the feature map.
 
 ## How it's built
 
 | path | what |
 |---|---|
-| `crates/auto-ascii` | the public library + the `auto-ascii-player` binary |
+| `crates/auto-ascii` | the public library: the terminal `Player` and `RenderSession` |
 | `crates/auto-ascii-core` | pure engine: viewport, resampler, glyph styles, palettes, hysteresis |
 | `crates/auto-ascii-format` | the ASCI container (zstd + temporal delta, fast seek) |
 | `crates/auto-ascii-term` | `Backend` trait, ANSI backend, capability probe, simulator |
-| `crates/auto-ascii-factory` | the offline factory (lib + bin), eval and sweep drivers |
-| `crates/auto-ascii-cli` | the `auto-ascii` CLI, including `stream` (yt-dlp + ffmpeg + cpal) |
+| `crates/auto-ascii-factory` | the offline factory library, eval and sweep drivers |
+| `crates/auto-ascii-cli` | the `auto-ascii` command, including `stream` (yt-dlp + ffmpeg + cpal) and `dev` |
 | `crates/auto-ascii-eval` | metrics, synthetic fixtures, report schema |
 | `crates/auto-ascii-lint` | source comment policy checker (unpublished) |
 | `scripts/eval.sh` | the gate: tests, clippy, comment rule, resize fuzz, perf gates, corpus eval |

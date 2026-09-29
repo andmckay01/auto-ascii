@@ -22,8 +22,8 @@
       | ffmpeg subprocess                                                  |
       | rawvideo rgb24 @ 480x270, fps-normalized                           v
       v                                                          +--------------------+
- +-----------------------------+                                 |  auto-ascii-player     |
- |  auto-ascii-factory             |                                 |  event loop, pacing|
+ +-----------------------------+                                 |  auto-ascii play   |
+ |  factory (auto-ascii import)|                                 |  event loop, pacing|
  |  shot detect (hist delta)   |                                 |  downshift governor|
  |  L* luma + p2/p98 levels    |                                 +---------+----------+
  |  Scharr -> orient smooth    |                                           |
@@ -49,7 +49,7 @@
                                                           / ssh / Linux console
 ```
 
-Crates: `auto-ascii-format` (container, no I/O policy), `auto-ascii-core` (pure engine: viewport, resampler, compositor, palettes, hysteresis — no terminal, no clock, fully golden-testable), `auto-ascii-term` (Backend trait, `AnsiBackend`, `SimBackend`, capability probe), `auto-ascii-player` (bin), `auto-ascii-factory` (bin), `auto-ascii-eval` (metrics/harness).
+Crates: `auto-ascii-format` (container, no I/O policy), `auto-ascii-core` (pure engine: viewport, resampler, compositor, palettes, hysteresis — no terminal, no clock, fully golden-testable), `auto-ascii-term` (Backend trait, `AnsiBackend`, `SimBackend`, capability probe), `auto-ascii-cli` (the `auto-ascii` bin: `play`, `import`), `auto-ascii-factory` (lib), `auto-ascii-eval` (metrics/harness).
 
 ## 3. Runtime engine spec
 
@@ -214,10 +214,10 @@ CHUNKS (tag FourCC u32 | flags u8 (bit0=required) | pad u24 | size u64 | payload
 **CLI shape:**
 
 ```
-auto-ascii-factory build   <in.mp4> -o out.ascii --params params.toml
-auto-ascii-factory eval    --corpus clips/ --params params.toml --baseline runs/base.json
-auto-ascii-factory inspect <asset.ascii>          # header, chunks, sizes, CRC check
-auto-ascii-factory sweep   --params params.toml --grid sweeps/edge_thresholds.toml
+auto-ascii import      <in.mp4> -o out.ascii --params params.toml
+auto-ascii dev eval    --corpus clips/ --params params.toml --baseline runs/base.json
+auto-ascii dev inspect <asset.ascii>          # header, chunks, sizes, CRC check
+auto-ascii dev sweep   --params params.toml --grid sweeps/edge_thresholds.toml
 ```
 
 **Every tunable lives in `params.toml`** — edge thresholds, EMA constants, hysteresis δ, ramp definitions, highlight percentiles. **This is the agent socket:** an orchestrating agent runs `build → eval → read metrics JSON → edit params.toml → repeat`, hundreds of headless iterations with no terminal and no human in the loop; humans review only the HTML contact sheets. Palettes-as-TOML means taste iteration never touches code.
@@ -256,7 +256,7 @@ Built at **M2, before layer/quality work** — every subjective engineering deci
 - **M5 — hardening + ship.** 1 h resize-storm soak; 4 font coverage tables + conservative default; quirk table keyed on queried identity; scrub UX; docs; static musl/mac/Windows binaries. *Accept:* zero desync/leaks in soak; scrub <50 ms; fresh-machine install-to-playback <2 min; binaries <5 MB.
 - **M6 — key hints (PLAN-M6-M8 §1).** Arrow-hint block at the left of the progress row when the row is ≥64 columns; one-line key legend on `rows-2` (`q`, `0-9`, arrows, `d`, `[ ]`, `v`) shown with the transient overlays, for the first 3 s of playback, and sticky on `v`; whole items dropped from the right as the terminal narrows. *Accept:* legend content pinned at 80/64/40 columns; the progress row below 64 columns is the M5 layout to the byte; every overlay hide forces the full repaint (diff-stream replay); parity, console goldens and the insta snapshots pass unblessed.
 - **M7 — the agent-first `auto-ascii` CLI (PLAN-M6-M8 §2).** New `auto-ascii-cli` crate (binary `auto-ascii`) over the factory, which became lib + thin bin for it: `import` ffmpeg-ingests any video into `~/auto-ascii/library/<name>.ascii` (`AUTO_ASCII_HOME` overrides) with a JSON provenance sidecar, `list`/`info` read it back, `play` opens the terminal player, `agent-guide` prints the embedded `docs/AGENT-GUIDE.md`, `home` resolves and creates the folder. Global `--json` puts exactly one JSON value on stdout (errors `{"error": …}` on stderr, exit 1); timestamps everywhere go through one parser, `auto_ascii::timecode`, which the player's `--seek` now uses too. *Accept:* the factory's tests, including the `FIXTURE_AVI_SHA`/`FIXTURE_ASSET_SHA` byte pins, pass unchanged across the lib split and the AVI fixture writer's move into `auto_ascii_eval::fixtures`; CLI integration tests against a temp `AUTO_ASCII_HOME` cover import (human + JSON), name collision and `--force`, `list --json` including a sidecar-less asset, `info`, `agent-guide` and a rejected `--ss`.
-- **M8 — compositions (PLAN-M6-M8 §3).** `auto_ascii::Composition` is an ordered stitch of `.ascii` clips on one timeline — file order, `at` places, `in`/`out` trim, the later-listed clip wins an overlap, a gap plays black — written as a `schema = 1` TOML that is the source of truth (parsed under the default-on `compose` feature; the type and its timeline math are core tier, no deps). `locate(t_secs)` is the single time→frame function and a plain asset is a one-clip composition, so `RenderSession::open_composition`, `PlayerBuilder::composition`, `auto-ascii-player comp.toml` and `--sim` all run one mapping with one clip-switch implementation (`auto_ascii::deck::ClipDeck`). Clips play virtually — one mmap and one decode pipeline each, built on first use, switched at the boundary with a temporal reset and a full repaint, overlays and dials carried across; `auto_ascii::compose::export` flattens a composition into one asset (planes copied, never re-derived; one NORM record per clip slice ∩ source shot, rebased and cut-flagged at every clip boundary and gap edge; gaps written as black planes). *Accept:* `locate` unit-tested for sequential placement, explicit `at`, gaps, overlap, mixed fps, trims and the exclusive end; the frames either side of a boundary equal the clip played alone and gap frames are blank; an export reopens with the same frame count, the NORM table the report describes and the same pictures; a trimmed one-clip export is the source's frames at the offset; `--sim 120x40:60` on a `.toml` prints the stats line and `--seek` lands on the composition timeline; goldens, parity and the insta snapshots pass unblessed. CLI: `cut`, `compose new/add/show/play/export`.
+- **M8 — compositions (PLAN-M6-M8 §3).** `auto_ascii::Composition` is an ordered stitch of `.ascii` clips on one timeline — file order, `at` places, `in`/`out` trim, the later-listed clip wins an overlap, a gap plays black — written as a `schema = 1` TOML that is the source of truth (parsed under the default-on `compose` feature; the type and its timeline math are core tier, no deps). `locate(t_secs)` is the single time→frame function and a plain asset is a one-clip composition, so `RenderSession::open_composition`, `PlayerBuilder::composition`, `auto-ascii play comp.toml` and `--sim` all run one mapping with one clip-switch implementation (`auto_ascii::deck::ClipDeck`). Clips play virtually — one mmap and one decode pipeline each, built on first use, switched at the boundary with a temporal reset and a full repaint, overlays and dials carried across; `auto_ascii::compose::export` flattens a composition into one asset (planes copied, never re-derived; one NORM record per clip slice ∩ source shot, rebased and cut-flagged at every clip boundary and gap edge; gaps written as black planes). *Accept:* `locate` unit-tested for sequential placement, explicit `at`, gaps, overlap, mixed fps, trims and the exclusive end; the frames either side of a boundary equal the clip played alone and gap frames are blank; an export reopens with the same frame count, the NORM table the report describes and the same pictures; a trimmed one-clip export is the source's frames at the offset; `--sim 120x40:60` on a `.toml` prints the stats line and `--seek` lands on the composition timeline; goldens, parity and the insta snapshots pass unblessed. CLI: `cut`, `compose new/add/show/play/export`.
 - **Backlog (explicitly cut from v1):** motion plane (new plane ID, no version bump), braille polish, zstd dictionaries, kitty-graphics `PixelPresenter`. Audio via a `Clock` trait impl has since landed (`player-sound`, FEATURE-MAP feature 16): sidecar soundtracks decoded by ffmpeg into memory, a cpal-slaved `AudioClock` as the picture's master clock, `m` / `--mute` / `--no-audio`. Still backlog there: an embedded audio plane (a new optional plane ID) and per-clip sound for compositions.
 
 ## 8. Stack & dependencies
@@ -266,8 +266,8 @@ All-Rust workspace; ffmpeg strictly as CLI subprocess.
 - **`auto-ascii-format`:** `zstd`, `crc32fast`, `ciborium` (META only — frame payloads are hand-rolled fixed layout, not serde).
 - **`auto-ascii-core`:** no deps beyond `std` (pure, golden-testable).
 - **`auto-ascii-term`:** `crossterm` (raw mode/alt screen/events ONLY — never per-cell commands), `libc` (ioctl/termios/self-pipe).
-- **`auto-ascii-player`:** `memmap2`, `clap`, `anyhow`.
-- **`auto-ascii-factory`:** `image`, `imageproc`, `rayon`, `ndarray`, `clap`, `indicatif`, `serde_json` (ffprobe), `std::process::Command` (ffmpeg).
+- **`auto-ascii play`** (in `auto-ascii-cli`): `memmap2`, `clap`.
+- **`auto-ascii-factory`** (library): `image`, `imageproc`, `rayon`, `ndarray`, `indicatif`, `serde_json` (ffprobe), `std::process::Command` (ffmpeg).
 - **`auto-ascii-cli`** (M7, PLAN-M6-M8 §2): the `auto-ascii` binary over the facade + the factory-as-library — `clap`, `memmap2`, `serde`, `serde_json`. No new external dependency.
 - **`auto-ascii-eval` / dev:** `insta`, `proptest`, `criterion`.
 - Rejected: libav bindings (`ffmpeg-next`), OpenCV, flatbuffers/capnproto, SQLite, ratatui-for-video (optional HUD only), Python anywhere in the shipping path.

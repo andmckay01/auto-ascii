@@ -17,6 +17,9 @@ pub mod deck;
 
 pub mod timecode;
 
+#[doc(hidden)]
+pub mod tools;
+
 #[cfg(feature = "terminal")]
 mod player;
 
@@ -35,7 +38,6 @@ pub use player::{Dial, MIN_FPS_CAP, Player, PlayerBuilder, RepaintMode, SCRUB_ST
 
 pub use auto_ascii_core::{Cell, ComposeParams, Grid, Rgb};
 pub use auto_ascii_core::Style;
-pub use auto_ascii_core::style::Style as Codec;
 #[cfg(feature = "terminal")]
 pub use auto_ascii_term::ColorTier;
 

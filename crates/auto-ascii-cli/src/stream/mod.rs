@@ -14,7 +14,7 @@ pub mod ytdlp;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -65,6 +65,13 @@ pub fn parse_sim(spec: &str) -> Result<SimSpec, String> {
         return Err(format!("--sim {spec:?}: size and seconds must be positive"));
     }
     Ok(SimSpec { cols, rows, secs })
+}
+
+pub struct Programs {
+    pub ffmpeg: PathBuf,
+    pub ffmpeg_ca_file: Option<PathBuf>,
+    pub ytdlp: PathBuf,
+    pub ytdlp_update: Option<crate::deps::Update>,
 }
 
 pub struct StreamArgs {
@@ -120,6 +127,15 @@ fn emergency_exit(sig: libc::c_int) {
         }
         libc::signal(sig, libc::SIG_DFL);
         libc::raise(sig);
+    }
+}
+
+pub fn default_signals() {
+    #[cfg(unix)]
+    unsafe {
+        for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            libc::signal(sig, libc::SIG_DFL);
+        }
     }
 }
 
@@ -196,7 +212,9 @@ struct Shared {
     stop: Arc<AtomicBool>,
     cwd: PathBuf,
     ffmpeg: PathBuf,
+    ca_file: Option<PathBuf>,
     ytdlp: PathBuf,
+    ytdlp_update: Option<crate::deps::Update>,
 }
 
 enum AudioPlan {
@@ -239,6 +257,7 @@ struct Pipes {
     frames: Receiver<Frame>,
     recycle: Sender<Frame>,
     queued: Arc<AtomicUsize>,
+    playhead: Arc<AtomicU64>,
     video_thread: Option<JoinHandle<()>>,
     target_frames: usize,
     period: f64,
@@ -256,7 +275,7 @@ fn next_style(style: Style, presses: u32) -> Style {
     Style::ALL[(at + presses as usize) % Style::ALL.len()]
 }
 
-pub fn run(args: &StreamArgs) -> Result<(), BoxErr> {
+pub fn run(programs: &Programs, args: &StreamArgs) -> Result<(), BoxErr> {
     let scratch = ScratchDir::new().map_err(|e| format!("creating a private temp dir: {e}"))?;
     let scratch_path = scratch.path().to_path_buf();
     let procs = Procs::new();
@@ -265,8 +284,10 @@ pub fn run(args: &StreamArgs) -> Result<(), BoxErr> {
         procs: procs.clone(),
         stop: Arc::new(AtomicBool::new(false)),
         cwd: scratch_path.clone(),
-        ffmpeg: decode::program_from_env(),
-        ytdlp: YtDlp::program_from_env(),
+        ffmpeg: programs.ffmpeg.clone(),
+        ca_file: programs.ffmpeg_ca_file.clone(),
+        ytdlp: programs.ytdlp.clone(),
+        ytdlp_update: programs.ytdlp_update.clone(),
     };
     let t0 = Instant::now();
     let plan = open_audio(args.no_audio, args.sim.is_some());
@@ -302,7 +323,7 @@ pub fn run(args: &StreamArgs) -> Result<(), BoxErr> {
 
     if args.sim.is_some() {
         let line = sim_json(&stats, reason, error.as_deref(), alive, procs.spawned(), removed, scratch_entries, t0);
-        crate::emit(&format!("{line}\n"));
+        crate::output::emit(&format!("{line}\n"));
         if let Some(path) = &args.sim_dump {
             write_dump(path, &stats)?;
         }
@@ -325,13 +346,27 @@ fn spawn_resolver(args: &StreamArgs, shared: &Shared, tx: Sender<Msg>) -> JoinHa
     let ytdlp = YtDlp::new(shared.ytdlp.clone(), shared.procs.clone(), &shared.cwd)
         .cookies_from_browser(args.cookies_from_browser.as_deref());
     let stop = shared.stop.clone();
+    let update = shared.ytdlp_update.clone();
     std::thread::spawn(move || {
-        let result = ytdlp.resolve(&input, max_height, &mut |e| {
-            let _ = tx.send(match e {
-                Event::Started => Msg::YtdlpStarted,
-                Event::EntryFound(url) => Msg::EntryFound(url),
-            });
+        let notes = tx.clone();
+        let stopped = || stop.load(Ordering::SeqCst);
+        let guarded = update.map(|update| {
+            move || if stopped() { Ok(None) } else { update(&stopped) }
         });
+        let result = ytdlp.resolve_or_update(
+            &input,
+            max_height,
+            &mut |e| {
+                let _ = tx.send(match e {
+                    Event::Started => Msg::YtdlpStarted,
+                    Event::EntryFound(url) => Msg::EntryFound(url),
+                });
+            },
+            guarded.as_ref().map(|g| g as &(dyn Fn() -> Result<Option<String>, String> + Send + Sync)),
+            &mut |note| {
+                let _ = notes.send(Msg::Fallback(note));
+            },
+        );
         if stop.load(Ordering::SeqCst) {
             return;
         }
@@ -399,6 +434,7 @@ fn start_audio(
             procs: shared.procs.clone(),
             cwd: shared.cwd.clone(),
             ffmpeg: shared.ffmpeg.clone(),
+            ca_file: shared.ca_file.clone(),
             stop: shared.stop.clone(),
         },
         tracks: media.audio.clone(),
@@ -427,11 +463,13 @@ fn start_video(media: &Media, shared: &Shared, tx: &Sender<Msg>, stats: &mut Sta
     let (frame_tx, frame_rx) = mpsc::sync_channel(capacity);
     let (recycle_tx, recycle_rx) = mpsc::channel();
     let queued = Arc::new(AtomicUsize::new(0));
+    let playhead = Arc::new(AtomicU64::new(0));
     let thread = video::spawn(video::VideoJob {
         ctx: DecodeCtx {
             procs: shared.procs.clone(),
             cwd: shared.cwd.clone(),
             ffmpeg: shared.ffmpeg.clone(),
+            ca_file: shared.ca_file.clone(),
             stop: shared.stop.clone(),
         },
         tracks: media.video.clone(),
@@ -443,6 +481,7 @@ fn start_video(media: &Media, shared: &Shared, tx: &Sender<Msg>, stats: &mut Sta
         frames: frame_tx,
         recycle: recycle_rx,
         queued: queued.clone(),
+        playhead: playhead.clone(),
     });
     stats.plane = Some((w, h));
     stats.fps = Some(fps);
@@ -453,6 +492,7 @@ fn start_video(media: &Media, shared: &Shared, tx: &Sender<Msg>, stats: &mut Sta
             frames: frame_rx,
             recycle: recycle_tx,
             queued,
+            playhead,
             video_thread: Some(thread),
             target_frames,
             period: 1.0 / fps.value(),
@@ -718,7 +758,7 @@ fn session<B: Backend + Discard>(
                                     p.queued.fetch_sub(1, Ordering::SeqCst);
                                     lp.stats.frames_decoded += 1;
                                     lp.newest_pts = Some(f.pts);
-                                    if f.pts + 1e-9 < now {
+                                    if f.late || f.pts + 1e-9 < now {
                                         lp.stats.frames_dropped += 1;
                                         lp.recycle(p, f);
                                     } else {
@@ -751,13 +791,21 @@ fn session<B: Backend + Discard>(
                     continue;
                 };
                 let now = c.now(now_i);
+                if now > 0.0 {
+                    p.playhead.fetch_max(now.to_bits(), Ordering::SeqCst);
+                }
                 while lp.pending.back().is_none_or(|f| f.pts <= now) {
                     match p.frames.try_recv() {
                         Ok(f) => {
                             p.queued.fetch_sub(1, Ordering::SeqCst);
                             lp.stats.frames_decoded += 1;
                             lp.newest_pts = Some(f.pts);
-                            lp.pending.push_back(f);
+                            if f.late {
+                                lp.stats.frames_dropped += 1;
+                                lp.recycle(p, f);
+                            } else {
+                                lp.pending.push_back(f);
+                            }
                         }
                         Err(_) => break,
                     }
@@ -1062,7 +1110,7 @@ mod tests {
 
         fn media(&self, secs: u32, with_audio: bool) -> PathBuf {
             let path = self.dir().join(if with_audio { "av.mkv" } else { "v.mkv" });
-            let mut cmd = std::process::Command::new(decode::program_from_env());
+            let mut cmd = std::process::Command::new(real_ffmpeg());
             cmd.args(["-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i"])
                 .arg(format!("testsrc2=size=160x90:rate=30:duration={secs}"));
             if with_audio {
@@ -1100,7 +1148,9 @@ mod tests {
                 stop: Arc::new(AtomicBool::new(false)),
                 cwd: self.dir().to_path_buf(),
                 ffmpeg,
+                ca_file: None,
                 ytdlp,
+                ytdlp_update: None,
             };
             let args = StreamArgs {
                 input: "https://www.youtube.com/watch?v=localfixture".into(),
@@ -1123,7 +1173,7 @@ mod tests {
     }
 
     fn real_ffmpeg() -> PathBuf {
-        decode::program_from_env()
+        auto_ascii::tools::Lookup::from_env().program(auto_ascii::tools::Tool::Ffmpeg)
     }
 
     #[test]
@@ -1232,7 +1282,7 @@ mod tests {
     impl Local {
         fn media_split(&self, video_secs: u32, audio_secs: u32) -> PathBuf {
             let path = self.dir().join(format!("split-{video_secs}-{audio_secs}.mkv"));
-            let mut cmd = std::process::Command::new(decode::program_from_env());
+            let mut cmd = std::process::Command::new(real_ffmpeg());
             cmd.args(["-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i"])
                 .arg(format!("testsrc2=size=160x90:rate=30:duration={video_secs}"))
                 .args(["-f", "lavfi", "-i"])

@@ -1,5 +1,3 @@
-#![cfg(feature = "bin")]
-
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -12,7 +10,7 @@ impl TmpFile {
     fn new(name: &str) -> TmpFile {
         let mut p = std::env::temp_dir();
         p.push(format!(
-            "auto-ascii-player-test-{}-{name}",
+            "auto-ascii-play-test-{}-{name}",
             std::process::id()
         ));
         TmpFile(p)
@@ -49,10 +47,12 @@ fn write_test_asset(path: &PathBuf, frames: u32) {
 }
 
 fn run_player(args: &[&str]) -> (bool, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_auto-ascii-player"))
+    let out = Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
+        .env("AUTO_ASCII_HOME", std::env::temp_dir().join("auto-ascii-play-test-no-home"))
+        .arg("play")
         .args(args)
         .output()
-        .expect("spawn auto-ascii-player");
+        .expect("spawn auto-ascii play");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -179,14 +179,14 @@ fn diff_repaint_mode_emits_fewer_bytes_on_static_content() {
 fn invalid_inputs_fail_cleanly() {
     let (ok, _, stderr) = run_player(&["/nonexistent/nope.ascii", "--sim", "80x24:1"]);
     assert!(!ok);
-    assert!(stderr.contains("opening"), "unexpected stderr: {stderr}");
+    assert!(stderr.contains("no clip or composition"), "unexpected stderr: {stderr}");
 
     let junk = TmpFile::new("junk.ascii");
     fs::write(&junk.0, b"definitely not a ascii asset, but long enough to mmap")
         .unwrap();
     let (ok, _, stderr) = run_player(&[junk.0.to_str().unwrap(), "--sim", "80x24:1"]);
     assert!(!ok);
-    assert!(stderr.contains("not a valid ASCI asset"), "unexpected stderr: {stderr}");
+    assert!(stderr.contains("not a valid .ascii asset"), "unexpected stderr: {stderr}");
 
     let asset = TmpFile::new("spec.ascii");
     write_test_asset(&asset.0, 1);

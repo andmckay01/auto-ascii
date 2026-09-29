@@ -1,7 +1,7 @@
 [package]
 name = "auto-ascii-cli"
-description = "auto-ascii agent-first CLI: import video into a library of ASCI clips, cut and compose them, play them"
-version.workspace = true
+description = "The auto-ascii command: play, stream, import, cut and compose .ascii clips, plus the dev tools"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -11,24 +11,28 @@ publish = false
 workspace = true
 
 [dependencies]
-auto-ascii = { path = "../auto-ascii", version = "0.2.0" }
+auto-ascii = { path = "../auto-ascii", version = "0.3.0", default-features = false, features = ["terminal", "compose"] }
 auto-ascii-factory = { path = "../auto-ascii-factory" }
 auto-ascii-core = { workspace = true }
 auto-ascii-term = { workspace = true }
 auto-ascii-format = { workspace = true }
 clap = { workspace = true }
 cpal = { version = "0.18", optional = true }
+indicatif = { workspace = true }
 libc = { workspace = true }
 memmap2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [features]
 default = ["audio"]
-audio = ["dep:cpal"]
+audio = ["dep:cpal", "auto-ascii/audio"]
 
 [dev-dependencies]
 auto-ascii-eval = { workspace = true }
+toml = { workspace = true }
 
 [[bin]]
 name = "auto-ascii"

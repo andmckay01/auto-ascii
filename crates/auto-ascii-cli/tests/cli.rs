@@ -9,6 +9,9 @@ const FIX_H: u32 = 90;
 const FIX_FPS: u32 = 30;
 const FIX_FRAMES: u32 = 12;
 
+const PLAY_IS_INTERACTIVE: &str =
+    "play is interactive; run it without --json (or add --sim for one JSON stats line)";
+
 struct Scratch(PathBuf);
 
 impl Scratch {
@@ -346,7 +349,7 @@ fn list_survives_broken_entries() {
     let broken = by_name("broken");
     assert_eq!(broken["asset"], serde_json::Value::Null);
     assert!(
-        broken["error"].as_str().unwrap().contains("not a valid ASCI asset"),
+        broken["error"].as_str().unwrap().contains("not a valid .ascii asset"),
         "{broken}"
     );
 
@@ -459,14 +462,14 @@ fn play_refuses_json_up_front() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stdout_of(&out).is_empty(), "stdout:\n{}", stdout_of(&out));
     let v: serde_json::Value = serde_json::from_str(stderr_of(&out).trim()).unwrap();
-    assert_eq!(v["error"], "play is interactive; run it without --json");
+    assert_eq!(v["error"], PLAY_IS_INTERACTIVE);
     assert!(!s.home().exists(), "play --json touched the home folder");
 
     let out = cli(&s, &["--json", "compose", "play", "demo"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(stdout_of(&out).is_empty(), "stdout:\n{}", stdout_of(&out));
     let v: serde_json::Value = serde_json::from_str(stderr_of(&out).trim()).unwrap();
-    assert_eq!(v["error"], "play is interactive; run it without --json");
+    assert_eq!(v["error"], PLAY_IS_INTERACTIVE);
     assert!(!s.home().exists(), "compose play --json touched the home folder");
 }
 
@@ -803,7 +806,7 @@ fn add_validates_before_it_appends() {
     assert_eq!(out.status.code(), Some(1));
     let v: serde_json::Value = serde_json::from_str(stderr_of(&out).trim()).unwrap();
     assert!(
-        v["error"].as_str().unwrap().contains("not a valid ASCI asset"),
+        v["error"].as_str().unwrap().contains("not a valid .ascii asset"),
         "{v}"
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), sound, "the file was edited");
@@ -1116,17 +1119,20 @@ fn an_uppercase_toml_path_is_a_composition() {
     assert_eq!(out.status.code(), Some(1));
     let err = stderr_of(&out);
     assert!(err.contains("ghost"), "stderr:\n{err}");
-    assert!(!err.contains("not a valid ASCI asset"), "stderr:\n{err}");
+    assert!(!err.contains("not a valid .ascii asset"), "stderr:\n{err}");
 }
 
 #[test]
 fn stream_help_lists_its_flags() {
     let s = Scratch::new("streamhelp");
     let text = ok(&cli(&s, &["stream", "--help"]));
-    for flag in ["--style", "--palette", "--max-height", "--no-audio", "--sim", "--sim-dump", "--cookies-from-browser", "URL|TERMS"] {
+    for flag in ["--style", "--palette", "--max-height", "--no-audio", "--cookies-from-browser", "URL|TERMS"] {
         assert!(text.contains(flag), "{flag} missing from:\n{text}");
     }
     assert!(text.contains("yt-dlp"), "{text}");
+    assert!(!text.contains("--sim"), "the headless flags are advanced:\n{text}");
+    let all = ok(&cli(&s, &["stream", "--help-all"]));
+    assert!(all.contains("--sim <COLSxROWS:SECONDS>") && all.contains("--sim-dump"), "{all}");
 }
 
 #[test]
@@ -1369,4 +1375,214 @@ fn a_third_signal_forces_an_exit_that_still_leaves_nothing_behind() {
         .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
         .collect();
     assert!(left.is_empty(), "the forced exit left its scratch dir: {left:?}");
+}
+
+fn toolless(s: &Scratch, args: &[&str]) -> (Output, PathBuf) {
+    let empty = s.0.join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let cache = s.0.join("cache");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_auto-ascii"));
+    for var in ["AUTO_ASCII_FFMPEG", "AUTO_ASCII_FFPROBE", "AUTO_ASCII_YTDLP", "AUTO_ASCII_YES", "AUTO_ASCII_NO_DOWNLOAD"] {
+        cmd.env_remove(var);
+    }
+    let out = cmd
+        .env("AUTO_ASCII_HOME", s.home())
+        .env("AUTO_ASCII_CACHE_DIR", &cache)
+        .env("PATH", &empty)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run the auto-ascii binary");
+    (out, cache)
+}
+
+#[test]
+fn doctor_reports_every_tool_missing_without_creating_the_cache() {
+    let s = Scratch::new("doctor");
+    let (out, cache) = toolless(&s, &["--json", "doctor"]);
+    let v = json_of(&out);
+    assert_eq!(v["bin_dir"], cache.join("bin").display().to_string());
+    assert_eq!(v["cache_dir"], cache.display().to_string());
+    let tools = v["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["ffmpeg", "ffprobe", "yt-dlp"]);
+    for t in tools {
+        assert_eq!(t["source"], "missing", "{t}");
+        assert!(t["path"].is_null() && t["cached"].is_null(), "{t}");
+    }
+    assert!(!cache.exists(), "doctor only looks");
+
+    let (out, _) = toolless(&s, &["doctor"]);
+    let text = ok(&out);
+    assert!(text.contains("\nffmpeg     missing  not found\n"), "{text}");
+    assert!(text.contains("auto-ascii doctor --fetch --yes"), "{text}");
+}
+
+#[test]
+fn a_missing_tool_without_yes_fails_before_any_download() {
+    let s = Scratch::new("needyes");
+    let video = s.0.join("src").join("clip.mp4");
+    std::fs::write(&video, b"not really a video").unwrap();
+    let (out, cache) = toolless(&s, &["--json", "import", video.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let e: serde_json::Value = serde_json::from_str(stderr_of(&out).trim()).unwrap();
+    let msg = e["error"].as_str().unwrap();
+    assert!(msg.starts_with("ffmpeg and ffprobe not found; auto-ascii can download standalone builds"), "{msg}");
+    for needle in ["--json never prompts", "--yes", "AUTO_ASCII_YES=1", "auto-ascii doctor --fetch --yes"] {
+        assert!(msg.contains(needle), "{needle:?} missing from {msg}");
+    }
+    assert!(stdout_of(&out).is_empty());
+
+    let (out, _) = toolless(&s, &["stream", "me at the zoo", "--sim", "40x12:5"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr_of(&out);
+    assert!(err.starts_with("auto-ascii: yt-dlp and ffmpeg not found; "), "{err}");
+    assert!(err.contains("a non-interactive run never prompts"), "{err}");
+    assert!(stdout_of(&out).is_empty(), "no stats line: the stream never started");
+    assert!(!cache.exists(), "nothing downloaded without consent");
+}
+
+#[test]
+fn downloads_can_be_turned_off() {
+    let s = Scratch::new("nodownload");
+    let empty = s.0.join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
+        .env("AUTO_ASCII_HOME", s.home())
+        .env("AUTO_ASCII_CACHE_DIR", s.0.join("cache"))
+        .env("AUTO_ASCII_NO_DOWNLOAD", "1")
+        .env("AUTO_ASCII_YES", "1")
+        .env_remove("AUTO_ASCII_YTDLP")
+        .env_remove("AUTO_ASCII_FFMPEG")
+        .env("PATH", &empty)
+        .args(["stream", "zoo", "--sim", "40x12:5"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr_of(&out);
+    assert!(err.contains("AUTO_ASCII_NO_DOWNLOAD is set: install them yourself"), "{err}");
+    assert!(!s.0.join("cache").exists());
+}
+
+fn json_line(out: &Output) -> serde_json::Value {
+    let text = ok(out);
+    assert_eq!(text.lines().count(), 1, "exactly one stdout line:\n{text}");
+    serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("not JSON ({e}):\n{text}"))
+}
+
+#[test]
+fn import_to_a_path_writes_only_that_file() {
+    let s = Scratch::new("importpath");
+    let video = s.video("clip-a");
+    let arg = video.to_str().unwrap();
+    let dest = s.0.join("out.ascii");
+    let dest_arg = dest.to_str().unwrap();
+
+    let stdout = ok(&cli(&s, &["import", arg, "-o", dest_arg]));
+    assert!(stdout.starts_with(&format!("wrote {dest_arg}\n")), "stdout:\n{stdout}");
+    assert!(stdout.contains("frames:       12 (0.40s @ 30 fps)"), "stdout:\n{stdout}");
+    assert!(dest.is_file());
+    assert!(!s.0.join("out.json").exists(), "-o writes no sidecar");
+    assert!(!s.home().exists(), "-o must not create the library");
+
+    ok(&cli(&s, &["import", arg]));
+    assert_eq!(
+        std::fs::read(&dest).unwrap(),
+        std::fs::read(s.library().join("clip-a.ascii")).unwrap(),
+        "both destinations build the same bytes"
+    );
+
+    let out = cli(&s, &["import", arg, "-o", dest_arg, "--fps", "10"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr_of(&out).contains("already exists") && stderr_of(&out).contains("--force"));
+    assert!(!stderr_of(&out).contains("pass 1/2:"), "the build ran anyway");
+
+    let v = json_line(&cli(&s, &["--json", "import", arg, "-o", dest_arg, "--fps", "10", "--force"]));
+    assert_eq!(v["frames"], 4);
+    assert_eq!(v["fps"], 10.0);
+    assert_eq!((v["base_w"].as_u64(), v["base_h"].as_u64()), (Some(480), Some(270)));
+    assert_eq!(v["bytes"].as_u64().unwrap(), std::fs::metadata(&dest).unwrap().len());
+    assert!(std::path::Path::new(v["path"].as_str().unwrap()).is_absolute(), "{v}");
+    assert!(v["duration_secs"].as_f64().is_some(), "{v}");
+
+    let out = cli(&s, &["import", arg, "-o", s.0.join("no/such/dir/x.ascii").to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr_of(&out).contains("does not exist"), "{}", stderr_of(&out));
+
+    let out = cli(&s, &["import", arg, "-o", dest_arg, "--name", "x"]);
+    assert_eq!(out.status.code(), Some(2), "--name and -o conflict");
+    let out = cli(&s, &["import", arg, "-o", dest_arg, "--force", "--t", "0"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr_of(&out).contains("longer than zero"), "{}", stderr_of(&out));
+}
+
+#[test]
+fn headless_play_prints_one_json_line_with_or_without_json() {
+    let s = Scratch::new("playsim");
+    s.clip(Fixture::GradientMotion);
+    for args in [
+        &["play", "gradient-motion", "--sim", "80x24:5"][..],
+        &["--json", "play", "gradient-motion", "--sim", "80x24:5"],
+        &["dev", "sim", "gradient-motion", "--sim", "80x24:5"],
+    ] {
+        let v = json_line(&cli(&s, args));
+        assert_eq!(v["frames"], 5, "{args:?}");
+        assert_eq!(v["grid_after"], "80x24", "{args:?}");
+        assert_eq!(v["tier"], "truecolor", "{args:?}");
+    }
+    let v = json_line(&cli(&s, &["play", "gradient-motion", "--sim", "80x24:4", "--sim-tier", "mono", "--sim-resize"]));
+    assert_eq!((v["tier"].as_str(), v["grid_after"].as_str()), (Some("mono"), Some("100x40")));
+
+    for args in [
+        &["play", "gradient-motion", "--bench-seek", "3"][..],
+        &["dev", "bench-seek", "gradient-motion", "--bench-seek", "3"],
+    ] {
+        let v = json_line(&cli(&s, args));
+        assert_eq!(v["seeks"], 3, "{args:?}");
+        assert!(v["p95_ms"].as_f64().is_some(), "{args:?}: {v}");
+    }
+
+    s.demo();
+    let v = json_line(&cli(&s, &["compose", "play", "demo", "--sim", "60x20:3"]));
+    assert_eq!(v["frames"], 3);
+    let v = json_line(&cli(&s, &["play", "demo", "--sim", "60x20:2"]));
+    assert_eq!(v["frames"], 2);
+}
+
+#[test]
+fn dev_commands_answer_in_text_or_json() {
+    let s = Scratch::new("devjson");
+    let clip = s.0.join("hard-cut.ascii");
+    std::fs::write(&clip, build_fixture(Fixture::HardCut)).unwrap();
+    let clip = clip.to_str().unwrap();
+
+    let text = ok(&cli(&s, &["dev", "inspect", clip]));
+    assert!(text.contains("integrity:    OK"), "{text}");
+    let v = json_line(&cli(&s, &["--json", "dev", "inspect", clip, "--frame", "0"]));
+    assert_eq!(v["integrity"], "ok");
+    assert_eq!(v["sampled_frames"], serde_json::json!([0]));
+    assert!(v["plane_stats"].as_array().is_some_and(|p| !p.is_empty()), "{v}");
+
+    let text = ok(&cli(&s, &["dev", "params", "--dump"]));
+    assert!(text.contains("[build]"), "{text}");
+    let v = json_line(&cli(&s, &["dev", "params", "--dump", "--json"]));
+    assert_eq!(v["build"]["fps"], 30);
+
+    let table = s.0.join("t.toml");
+    let v = json_line(&cli(&s, &["--json", "dev", "font-table", "--conservative", "-o", table.to_str().unwrap()]));
+    assert_eq!(v["name"], "conservative");
+    assert!(table.is_file());
+    assert!(!s.home().exists(), "dev commands never touch the library");
+}
+
+#[test]
+fn help_all_needs_no_target_and_no_home() {
+    let s = Scratch::new("helpall");
+    for args in [&["--help-all"][..], &["play", "--help-all"], &["compose", "play", "--help-all"], &["dev", "--help-all"]] {
+        let text = ok(&cli(&s, args));
+        assert!(text.contains("Usage: auto-ascii"), "{args:?}:\n{text}");
+    }
+    let text = ok(&cli(&s, &["play", "--help-all"]));
+    assert!(text.contains("--bench-seek") && text.contains("--sim-audio"), "{text}");
+    assert!(!s.home().exists(), "--help-all touched the home folder");
 }

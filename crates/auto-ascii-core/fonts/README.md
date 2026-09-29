@@ -2,7 +2,7 @@
 
 Committed, deterministic coverage tables for the glyphs the 8 shipped
 palettes can emit — the data behind `--font-table NAME|PATH` (player,
-`RenderSession`, `auto-ascii-factory eval`) and the offline reference for ramp
+`RenderSession`, `auto-ascii dev eval`) and the offline reference for ramp
 work. Terminals cannot be queried for their font; these tables let the user
 *assert* one, giving the engine (a) a measured ink model for metrics and
 (b) the font's **repertoire**, which vetoes palette tiers the font cannot
@@ -27,7 +27,7 @@ and why every builtin table vetoes `BrailleVerified` down to unicode.
 
 ## Generation model (deterministic)
 
-`auto-ascii-factory font-table <font.ttf> --name NAME -o fonts/NAME.toml`
+`auto-ascii dev font-table <font.ttf> --name NAME -o fonts/NAME.toml`
 
 - Glyph set: `auto_ascii_core::palette::all_palette_glyphs()` — enumerated from
   the palette data (ramps, edge LUTs incl. junctions, subposition triplet,
@@ -45,7 +45,8 @@ and why every builtin table vetoes `BrailleVerified` down to unicode.
 - Missing glyph (`.notdef`): coverage 0 + `missing = [...]` entry + a WARN
   on stderr. `missing` is the repertoire-veto input.
 - Determinism: byte-identical output for identical font bytes
-  (unit-tested: `auto-ascii-factory font_table::generator_is_deterministic`;
+  (unit-tested in the `auto-ascii-factory` library:
+  `font_table::generator_is_deterministic`;
   re-running the commands above reproduces these files byte-for-byte, and
   `committed_conservative_table_regenerates_byte_for_byte` pins that for
   the conservative table).
@@ -54,11 +55,11 @@ and why every builtin table vetoes `BrailleVerified` down to unicode.
 Regenerate all five:
 
 ```sh
-cargo run --release -p auto-ascii-factory -- font-table --conservative -o fonts/conservative.toml
-cargo run --release -p auto-ascii-factory -- font-table /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf        --name dejavu-sans-mono  -o fonts/dejavu-sans-mono.toml
-cargo run --release -p auto-ascii-factory -- font-table /usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf --name liberation-mono -o fonts/liberation-mono.toml
-cargo run --release -p auto-ascii-factory -- font-table /usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf          --name ubuntu-mono       -o fonts/ubuntu-mono.toml
-cargo run --release -p auto-ascii-factory -- font-table /usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf    --name noto-sans-mono    -o fonts/noto-sans-mono.toml
+cargo run --release -p auto-ascii-cli -- dev font-table --conservative -o fonts/conservative.toml
+cargo run --release -p auto-ascii-cli -- dev font-table /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf        --name dejavu-sans-mono  -o fonts/dejavu-sans-mono.toml
+cargo run --release -p auto-ascii-cli -- dev font-table /usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf --name liberation-mono -o fonts/liberation-mono.toml
+cargo run --release -p auto-ascii-cli -- dev font-table /usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf          --name ubuntu-mono       -o fonts/ubuntu-mono.toml
+cargo run --release -p auto-ascii-cli -- dev font-table /usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf    --name noto-sans-mono    -o fonts/noto-sans-mono.toml
 ```
 
 (`sudo apt-get install fonts-dejavu-core fonts-liberation fonts-ubuntu
@@ -100,11 +101,11 @@ procedure) — the committed data is already sufficient.
 
 ## Wiring
 
-- Player/CLI: `auto-ascii-player --font-table NAME|PATH`, facade
+- Player/CLI: `auto-ascii play --font-table NAME|PATH`, facade
   `PlayerBuilder::font_table(..)` — resolved at `build()`; the repertoire
   veto applies after Caps-based palette resolution.
 - Embedders: `RenderSession::set_font_table(Some("NAME|PATH"))`.
-- Metrics: `auto-ascii-factory eval --font-table NAME|PATH` scores downscale-
+- Metrics: `auto-ascii dev eval --font-table NAME|PATH` scores downscale-
   SSIM through the chosen table (`auto_ascii_eval::CoverageTable::from_font_table`).
   The default remains `conservative`; absolute SSIM is only comparable within
   one table, so record a baseline with the table you will keep using.

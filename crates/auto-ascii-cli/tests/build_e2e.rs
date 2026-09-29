@@ -7,7 +7,7 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(tag: &str) -> TempDir {
-        let p = std::env::temp_dir().join(format!("auto-ascii-factory-e2e-{tag}-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("auto-ascii-import-e2e-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         TempDir(p)
@@ -37,16 +37,22 @@ fn synth_input(dir: &TempDir) -> PathBuf {
     input
 }
 
-fn factory(args: &[&dyn AsRef<std::ffi::OsStr>]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_auto-ascii-factory"));
+fn cli(args: &[&dyn AsRef<std::ffi::OsStr>]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_auto-ascii"));
     for a in args {
         cmd.arg(a.as_ref());
     }
-    cmd.output().expect("failed to run auto-ascii-factory binary")
+    cmd.output().expect("failed to run the auto-ascii binary")
 }
 
 fn build(input: &Path, output: &Path) -> Output {
-    factory(&[&"build", &input, &"-o", &output, &"--fps", &"10"])
+    cli(&[&"import", &input, &"-o", &output, &"--fps", &"10"])
+}
+
+fn factory_version() -> String {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    let workspace: toml::Value = toml::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+    workspace["workspace"]["package"]["version"].as_str().unwrap().to_string()
 }
 
 fn stderr_of(out: &Output) -> String {
@@ -124,7 +130,7 @@ fn full_build_roundtrip_and_determinism() {
     reader.verify().expect("CRC walk must pass on a fresh asset");
 
     let meta = reader.meta().unwrap();
-    assert_eq!(meta.factory_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(meta.factory_version, factory_version());
     assert_eq!(meta.source, "in.mp4");
 
     let shots = reader.shots().to_vec();
@@ -193,7 +199,7 @@ fn full_build_roundtrip_and_determinism() {
     let bytes2 = std::fs::read(&out2_path).unwrap();
     assert!(bytes == bytes2, "two builds of identical input differ (byte-determinism broken)");
 
-    let ins = factory(&[&"inspect", &out_path]);
+    let ins = cli(&[&"dev", &"inspect", &out_path]);
     assert!(ins.status.success(), "inspect failed:\n{}", stderr_of(&ins));
     let stdout = String::from_utf8_lossy(&ins.stdout);
     assert!(stdout.contains("frames:       20"), "inspect stdout:\n{stdout}");
@@ -265,7 +271,7 @@ fn zero_frames_is_a_clean_error() {
     let input = synth_input(&dir);
     let out_path = dir.path("out.ascii");
 
-    let out = factory(&[&"build", &input, &"-o", &out_path, &"--fps", &"10", &"--ss", &"100"]);
+    let out = cli(&[&"import", &input, &"-o", &out_path, &"--fps", &"10", &"--ss", &"100"]);
     assert!(!out.status.success(), "zero-frame build must fail");
     assert!(
         stderr_of(&out).contains("zero frames"),
@@ -280,7 +286,7 @@ fn zero_frames_is_a_clean_error() {
 fn missing_input_fails_before_writing() {
     let dir = TempDir::new("missing");
     let out_path = dir.path("out.ascii");
-    let out = factory(&[&"build", &dir.path("nope.mp4"), &"-o", &out_path]);
+    let out = cli(&[&"import", &dir.path("nope.mp4"), &"-o", &out_path]);
     assert!(!out.status.success());
     assert!(stderr_of(&out).contains("input not found"), "stderr:\n{}", stderr_of(&out));
     assert!(!out_path.exists());
@@ -292,8 +298,8 @@ fn ss_and_t_trim_the_stream() {
     let input = synth_input(&dir);
     let out_path = dir.path("trim.ascii");
 
-    let out = factory(&[
-        &"build", &input, &"-o", &out_path, &"--fps", &"10", &"--ss", &"0.5", &"--t", &"1",
+    let out = cli(&[
+        &"import", &input, &"-o", &out_path, &"--fps", &"10", &"--ss", &"0.5", &"--t", &"1",
     ]);
     assert!(out.status.success(), "trimmed build failed:\n{}", stderr_of(&out));
     let bytes = std::fs::read(&out_path).unwrap();
@@ -308,8 +314,8 @@ fn custom_res_is_honored() {
     let input = synth_input(&dir);
     let out_path = dir.path("res.ascii");
 
-    let out = factory(&[
-        &"build", &input, &"-o", &out_path, &"--fps", &"10", &"--res", &"320x180",
+    let out = cli(&[
+        &"import", &input, &"-o", &out_path, &"--fps", &"10", &"--res", &"320x180",
     ]);
     assert!(out.status.success(), "custom-res build failed:\n{}", stderr_of(&out));
     let bytes = std::fs::read(&out_path).unwrap();

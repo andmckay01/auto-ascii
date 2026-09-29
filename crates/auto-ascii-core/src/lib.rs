@@ -30,27 +30,3 @@ pub use resample::{Resampler, Tap1D};
 pub use viewport::{
     DEFAULT_CELL_ASPECT, MIN_COLS, MIN_ROWS, Viewport, compute_viewport, compute_viewport_for,
 };
-
-#[deprecated(note = "renamed to `style`")]
-pub mod codec {
-    pub use crate::style::*;
-    pub use crate::style::{GlyphStyle as GlyphCodec, Style as Codec, compose_frame_style as compose_frame_codec};
-}
-
-pub use style::{GlyphStyle as GlyphCodec, Style as Codec};
-
-#[deprecated(note = "renamed to `compose_frame_style`")]
-#[allow(clippy::too_many_arguments)]
-pub fn compose_frame_codec(
-    codec: Style,
-    planes: &FramePlanes<'_>,
-    vp: &Viewport,
-    lut: &[u8; 256],
-    set: &PaletteSet,
-    params: &ComposeParams,
-    state: &mut HysteresisState,
-    out: &mut Grid<Cell>,
-    mask: Option<&mut Grid<u8>>,
-) {
-    compose_frame_style(codec, planes, vp, lut, set, params, state, out, mask)
-}

@@ -1,4 +1,4 @@
-The `.bin` files are ASCI v1 test excerpts, not golden renders. Each is
+The `.bin` files are .ascii (ASCI v1) test excerpts, not golden renders. Each is
 a window of a supplied asset, area-resampled so normal workspace tests can
 exercise real playback without an external corpus or a video decoder:
 

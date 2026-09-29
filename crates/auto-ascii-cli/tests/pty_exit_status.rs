@@ -1,4 +1,4 @@
-#![cfg(all(unix, feature = "bin"))]
+#![cfg(unix)]
 
 use std::fs;
 use std::io;
@@ -67,8 +67,9 @@ impl Session {
         };
         assert_eq!(rc, 0, "openpty: {}", io::Error::last_os_error());
         let stdio = |fd: RawFd| unsafe { Stdio::from_raw_fd(libc::dup(fd)) };
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_auto-ascii-player"));
-        cmd.arg(asset)
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_auto-ascii"));
+        cmd.arg("play")
+            .arg(asset)
             .args(["--tier", "truecolor", "--no-cache", "--fps-cap", "10", "--no-audio"])
             .stdin(stdio(slave))
             .stdout(stdio(slave))
@@ -83,7 +84,7 @@ impl Session {
                 Ok(())
             });
         }
-        let child = cmd.spawn().expect("spawn auto-ascii-player");
+        let child = cmd.spawn().expect("spawn auto-ascii play");
         unsafe { libc::close(slave) };
         let out = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&out);

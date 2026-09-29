@@ -1,11 +1,18 @@
 //! FFmpeg and ffprobe subprocess and frame-stream plumbing.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::thread::JoinHandle;
 
+
 pub type BoxErr = Box<dyn std::error::Error>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Programs {
+    pub ffmpeg: PathBuf,
+    pub ffprobe: PathBuf,
+}
 
 pub fn missing_tool(tool: &str, e: &std::io::Error) -> String {
     format!("failed to run {tool} (is it installed and on PATH?): {e}")
@@ -22,8 +29,8 @@ pub struct ProbeInfo {
     pub duration_secs: Option<f64>,
 }
 
-pub fn probe(input: &Path) -> Result<ProbeInfo, BoxErr> {
-    let out = Command::new("ffprobe")
+pub fn probe(ffprobe: &Path, input: &Path) -> Result<ProbeInfo, BoxErr> {
+    let out = Command::new(ffprobe)
         .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
         .arg(input)
         .stdin(Stdio::null())
@@ -57,6 +64,7 @@ pub fn probe(input: &Path) -> Result<ProbeInfo, BoxErr> {
 
 #[derive(Clone, Debug)]
 pub struct DecodeParams<'a> {
+    pub ffmpeg: &'a Path,
     pub input: &'a Path,
     pub ss: Option<f64>,
     pub t: Option<f64>,
@@ -80,7 +88,7 @@ pub struct FrameStream {
 
 impl FrameStream {
     pub fn spawn(p: &DecodeParams<'_>) -> Result<FrameStream, BoxErr> {
-        let mut cmd = Command::new("ffmpeg");
+        let mut cmd = Command::new(p.ffmpeg);
         cmd.args(["-nostdin", "-hide_banner", "-v", "error"]);
         if let Some(ss) = p.ss {
             cmd.arg("-ss").arg(ss.to_string());

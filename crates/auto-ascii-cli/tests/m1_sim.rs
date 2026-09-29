@@ -1,5 +1,3 @@
-#![cfg(feature = "bin")]
-
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -12,7 +10,7 @@ struct TmpFile(PathBuf);
 impl TmpFile {
     fn new(name: &str) -> TmpFile {
         let mut p = std::env::temp_dir();
-        p.push(format!("auto-ascii-player-m1-{}-{name}", std::process::id()));
+        p.push(format!("auto-ascii-play-m1-{}-{name}", std::process::id()));
         TmpFile(p)
     }
 }
@@ -95,10 +93,12 @@ fn write_norm_asset(path: &PathBuf) {
 }
 
 fn run_player(args: &[&str]) -> (bool, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_auto-ascii-player"))
+    let out = Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
+        .env("AUTO_ASCII_HOME", std::env::temp_dir().join("auto-ascii-play-m1-no-home"))
+        .arg("play")
         .args(args)
         .output()
-        .expect("spawn auto-ascii-player");
+        .expect("spawn auto-ascii play");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -336,10 +336,10 @@ fn probe_flags_never_hang_headless() {
     let asset = TmpFile::new("probe.ascii");
     write_delta_asset(&asset.0, 3);
 
-    let (ok, stdout, _) = run_player(&["--help"]);
+    let (ok, stdout, _) = run_player(&["--help-all"]);
     assert!(ok);
     for flag in ["--tier", "--no-query", "--no-cache", "--seek", "--sim-tier", "--sim-dump"] {
-        assert!(stdout.contains(flag), "--help missing {flag}");
+        assert!(stdout.contains(flag), "--help-all missing {flag}");
     }
 
     let (ok, _, stderr) = run_player(&[asset.0.to_str().unwrap(), "--duration-secs", "0.1"]);
@@ -380,7 +380,7 @@ fn degenerate_base_dims_are_a_clean_player_error() {
         let (ok, _, stderr) = run_player(&[asset.0.to_str().unwrap(), "--sim", "80x24:1"]);
         assert!(!ok, "{what}: tampered asset must be rejected");
         assert!(
-            stderr.contains("not a valid ASCI asset"),
+            stderr.contains("not a valid .ascii asset"),
             "{what}: expected a clean reader error, got: {stderr}"
         );
         assert!(!stderr.contains("panicked"), "{what}: player panicked: {stderr}");

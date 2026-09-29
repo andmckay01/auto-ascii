@@ -1,7 +1,7 @@
 [package]
 name = "auto-ascii"
-description = "Realtime ASCII-art video: play ASCI feature assets in a terminal, or render them into your own cell grid"
-version = "0.2.0"
+description = "Realtime ASCII-art video: play .ascii feature assets in a terminal, or render them into your own cell grid"
+version = "0.3.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -13,9 +13,8 @@ readme = "README.md"
 workspace = true
 
 [features]
-default = ["bin", "compose"]
+default = ["terminal", "audio", "compose"]
 terminal = ["auto-ascii-term/session", "compose"]
-bin = ["terminal", "audio", "dep:clap", "dep:anyhow"]
 compose = ["dep:toml"]
 audio = ["dep:cpal"]
 
@@ -24,15 +23,8 @@ auto-ascii-core = { workspace = true }
 auto-ascii-format = { workspace = true }
 auto-ascii-term = { path = "../auto-ascii-term", version = "0.1.0", default-features = false }
 memmap2 = { workspace = true }
-clap = { workspace = true, optional = true }
-anyhow = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 cpal = { version = "0.18", optional = true }
-
-[[bin]]
-name = "auto-ascii-player"
-path = "src/bin/auto-ascii-player.rs"
-required-features = ["bin"]
 
 [[example]]
 name = "simple-play"
@@ -48,9 +40,6 @@ name = "headless-dump"
 criterion = { workspace = true }
 auto-ascii-eval = { workspace = true }
 proptest = { workspace = true }
-
-[target.'cfg(unix)'.dev-dependencies]
-libc = { workspace = true }
 
 [[bench]]
 name = "pipeline"

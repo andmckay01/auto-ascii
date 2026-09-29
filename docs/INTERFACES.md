@@ -23,32 +23,40 @@ crates/
   auto-ascii-eval       lib   deps: auto-ascii-core, auto-ascii-term, auto-ascii-format, serde, serde_json
                         dev: insta, proptest   (NEW at M2; auto-ascii-format added
                         at item C for the synthetic fixture builders)
-  auto-ascii-factory lib+bin deps: auto-ascii-format, auto-ascii-core,
+  auto-ascii-factory lib   deps: auto-ascii-format, auto-ascii-core,
                         auto-ascii-term, auto-ascii-eval,
                         auto-ascii(default-features=false — pipeline only),
-                        clap, indicatif, serde, serde_json,
+                        indicatif, serde, serde_json,
                         toml, memmap2               (M2 item B additions)
-                        M7: lib + THIN bin — src/lib.rs owns the modules and
-                        the build entry; src/main.rs is the clap surface and
-                        `inspect`. Unpublished (ffmpeg subprocess).
-  auto-ascii      lib+bin  THE public facade (M4 item A; absorbed the
-                        auto-ascii-player crate — pipeline, tests, benches, bin).
+                        Library only since 0.3.0 (its clap bin and `inspect`
+                        moved into auto-ascii-cli as `import -o` and `dev`).
+                        Unpublished (`publish = false`; ffmpeg subprocess).
+  auto-ascii      lib      THE public facade (M4 item A; absorbed the old
+                        player crate — pipeline, tests, benches). 0.3.0: no
+                        binary (the player's argv surface is `auto-ascii
+                        play`, below).
                         deps: auto-ascii-core, auto-ascii-format, memmap2,
                         auto-ascii-term(default-features=false)
-                        features: default = ["bin"];
+                        features: default = ["terminal", "audio", "compose"];
                           terminal = auto-ascii-term/session (Player/PlayerBuilder);
-                          bin = terminal + clap + anyhow (the auto-ascii-player
-                          binary, required-features gated).
+                          audio = cpal (the soundtrack device sink).
                         --no-default-features = pure embedder: RenderSession
                         only; dep tree has NO clap/anyhow/crossterm
                         (M4 acceptance 4)
-  auto-ascii-cli      bin   the `auto-ascii` binary (NEW at M7; unpublished).
-                        deps: auto-ascii(path, DEFAULT features — `play`
-                        needs the terminal Player, and the workspace entry
-                        sets default-features=false), auto-ascii-factory(path,
+  auto-ascii-cli      bin   the `auto-ascii` binary (NEW at M7; unpublished),
+                        the ONLY product binary since 0.3.0.
+                        deps: auto-ascii(path, default-features=false +
+                        terminal + compose; the CLI's own `audio` feature
+                        turns on auto-ascii/audio and cpal), auto-ascii-factory(path,
                         the lib), auto-ascii-format, clap, memmap2, serde,
-                        serde_json; dev: auto-ascii-eval (AVI fixtures).
-                        No new external dependency entered the workspace.
+                        serde_json; dev: auto-ascii-eval (AVI fixtures), toml.
+                        No new external dependency entered the workspace
+                        at M7. The first-use tool downloader (FEATURE-MAP
+                        flow 18) added indicatif (workspace), ureq 3
+                        (rustls + ring + webpki-roots, no native-tls, no
+                        gzip) and zip 8 (deflate read via flate2/zlib-rs
+                        only) — CLI-only; the published facade gained just
+                        the network-free hidden `tools` lookup.
                         It is a THIRD crate because the factory already
                         depends on the facade, so the binary needing both
                         cannot live in either.
@@ -187,7 +195,7 @@ pub fn all_palette_glyphs() -> Vec<char>;     // compositor can emit at a
     // Consumers: the font-table generator + the repertoire veto below.
 
 // font_table.rs (§3.4 per-font ink-coverage tables) — NEW at M5 item B.
-// Hand-rolled reader of exactly the `auto-ascii-factory font-table` TOML
+// Hand-rolled reader of exactly the `auto-ascii dev font-table` TOML
 // emitter subset (auto-ascii-core stays zero-dep); structural problems are
 // Err(String), not panics (tables arrive via --font-table PATH).
 pub const BUILTIN_FONT_TABLES: &[&str];  // conservative, dejavu-sans-mono,
@@ -358,12 +366,12 @@ pub mod style {
 // the module and generates the variant, its ALL entry, name() and the
 // compose_frame_style arm. The bin's --style help and headless-dump's usage
 // are built from Style::names, so neither needs an edit.
-// Renamed from codec/Codec/GlyphCodec/compose_frame_codec; those names stay
-// one release as #[deprecated] aliases (pub mod codec, fn compose_frame_codec,
-// cell_flags::CODEC_PRIVATE_MASK), as do RenderSession::set_codec/codec and
-// PlayerBuilder::codec. The root Codec/GlyphCodec (and auto_ascii::Codec) are
-// plain re-exports, not type aliases, so `use Codec::{Letters, ..}` still
-// compiles; rustc ignores #[deprecated] on re-exports, so they don't warn.
+// Renamed from codec/Codec/GlyphCodec/compose_frame_codec. The deprecated
+// aliases that kept the old names for one release (pub mod codec,
+// fn compose_frame_codec, cell_flags::CODEC_PRIVATE_MASK, the root and
+// auto_ascii::Codec/GlyphCodec re-exports, RenderSession::set_codec/codec,
+// PlayerBuilder::codec, the codec-named CLI flag and the `codec =` settings key)
+// were removed in 0.3.0; a saved `codec =` key is now an ignored unknown key.
 // cell_flags bits 2–7 are style-private temporal memory (a style switch
 // resets all state).
 ```
@@ -621,7 +629,7 @@ impl AsciiReader<'a> {
 
 Library-only measurement primitives + the versioned JSON report schema.
 The driver that builds assets, runs SimBackend and writes `runs/*.json` +
-HTML contact sheets is `auto-ascii-factory eval` (M2 item B) — not this crate.
+HTML contact sheets is `auto-ascii dev eval` (M2 item B) — not this crate.
 
 ```rust
 // coverage.rs — glyph ink-coverage table (§6 "rasterize through the stored
@@ -861,7 +869,7 @@ pub mod timecode;  // M7 (PLAN-M6-M8 §2): the project's ONE timestamp grammar
     //     the hour — the progress overlay's shape; <0/NaN print 0:00
     // pub enum TimecodeError { TooManyFields, BadField(String),
     //     OutOfRange(String) }   // Display text is user-facing verbatim
-    // Core tier: no deps, no features. `auto-ascii-player --seek` and
+    // Core tier: no deps, no features. `auto-ascii play --seek` and
     // `auto-ascii import --ss/--t` are both this function.
 
 // composition.rs — M8 (PLAN-M6-M8 §3): clips stitched on one timeline.
@@ -1031,7 +1039,7 @@ impl RenderSession {
 pub use auto_ascii_core::Style;         // note 27h — the registry enum
 pub use auto_ascii_core::ComposeParams; // RenderSession::set_compose_params
 
-// player.rs — feature "terminal" (in the default set via "bin")
+// player.rs — feature "terminal" (in the default set)
 pub enum RepaintMode { Full /*default*/, Diff }
 pub struct PlayerBuilder;   // Default; #[must_use]
 impl PlayerBuilder {        // the spec'd builder (§7 M4) + escape hatches
@@ -1075,10 +1083,10 @@ impl Player {
       // AnsiBackend session (restore hooks armed first) → the §3.6
       // wall-clock loop (latest-frame-wins, digit jumps, resize reflow) →
       // shutdown/restore. Consumes self; the M0–M3 machinery verbatim
-      // (moved from the old auto-ascii-player main.rs — no logic fork with the
-      // bin, which is now a pure argv shim)
+      // (moved from the old player binary's main.rs — no logic fork with
+      // `auto-ascii play`, which is a pure argv shim)
   pub fn play(self) -> Result<Stopped, Error>;  // run(), reporting why it
-      // stopped; the bin exits 0 on Ended and 3 on Quit, so a launcher loop
+      // stopped; `auto-ascii play` exits 0 on Ended and 3 on Quit, so a launcher loop
       // tells a quit from the end of the clip without timing the run
 }
 pub enum Stopped { Ended, Quit }  // Ended: end of asset or duration_secs;
@@ -1116,13 +1124,13 @@ fronted clip, dropping its slot (player first, then mapping, by the same
 field order), and re-opening is the lazy path again — cold, which is the
 temporal reset a return to a clip wants anyway.
 
-## auto_ascii::pipeline — the hidden engine room (ex auto-ascii-player lib)
+## auto_ascii::pipeline — the hidden engine room (ex player crate lib)
 
-Extracted to a lib at M2 so `auto-ascii-factory eval` drives the EXACT player
+Extracted to a lib at M2 so `auto-ascii dev eval` drives the EXACT player
 frame pipeline headlessly (metrics must measure the real renderer, not a
 reimplementation — note 14); M4 moved it verbatim from `auto_ascii_player::` to
-`auto_ascii::` and hid it from the public docs. Consumers: the auto-ascii-player
-bin (--sim), factory eval, resize fuzz, perf benches, parity goldens.
+`auto_ascii::` and hid it from the public docs. Consumers: `auto-ascii play
+--sim`, factory eval, resize fuzz, perf benches, parity goldens.
 
 M4 signature changes: all `anyhow::Result` became `Result<_, auto_ascii::Error>`
 (same coherent type as the facade; factory's `?` still works — Error is a
@@ -1273,24 +1281,28 @@ facade surface + this hidden module.)
 
 ## Binaries
 
-- `auto-ascii-factory` (PLAN §5), CLI as of M3 (+ M5 item B):
-  `build <in> -o <out> [--ss T] [--t T] [--fps N] [--res WxH] [--params F]`,
-  `inspect <asset> [--dump-planes DIR] [--frame N]...` (M3: per-plane value
+- The factory commands (PLAN §5), since 0.3.0 part of `auto-ascii` (the
+  old factory binary is gone; `crates/auto-ascii-cli/src/import.rs` and
+  `src/dev/`), surface as of M3 (+ M5 item B):
+  `import <in> -o <out> [--ss T] [--t T] [--fps N] [--res WxH] [--params F]
+  [--force]` (was `build`; `-o` refuses an existing file without `--force`
+  and takes the same timecodes as the library mode),
+  `dev inspect <asset> [--dump-planes DIR] [--frame N]...` (M3: per-plane value
   stats over sampled frames + optional PGM/PPM plane dumps for eyeballing),
-  `params --dump [--params F]`,
-  `font-table <font.ttf> -o T.toml [--name N] | font-table --conservative
+  `dev params --dump [--params F]`,
+  `dev font-table <font.ttf> -o T.toml [--name N] | dev font-table --conservative
   -o T.toml` (M5 item B: rasterizes `all_palette_glyphs()` at 64×128 via
   ab_glyph — advance-fitted, ink-box centered+clipped — into a
   deterministic TOML coverage table; same font bytes ⇒ byte-identical
   output, unit-tested; missing glyphs get coverage 0 + `missing` entry +
   stderr WARN; the five committed `fonts/*.toml` are its artifacts, see
   fonts/README.md),
-  `eval --corpus <dir> [--params F] [--baseline B.json] --out X.json
+  `dev eval --corpus <dir> [--params F] [--baseline B.json] --out X.json
   [--html X.html] [--reel R.html] [--cache-dir D] [--font-table NAME|PATH]`
   (M5: `--font-table` swaps the SSIM rasterizer's ink model — builtin name
   or generator TOML path; default `conservative` = the committed baseline's
   table; sweep always scores conservative),
-  `sweep --corpus <dir> --grid G.toml --out DIR [--params F]
+  `dev sweep --corpus <dir> --grid G.toml --out DIR [--params F]
   [--cache-dir D]` (M3 Tune, note 21: the PLAN §5 sweep CLI — G.toml
   declares `[[axes]]` of dotted-param override sets (values within an axis
   travel together, axes cross) + optional `[score]` weights; default
@@ -1311,7 +1323,7 @@ facade surface + this hidden module.)
   **params.toml contract:** the committed repo-root `params.toml` is
   embedded via `include_str!` and IS the default config; `--params FILE`
   overrides any key subset (serde defaults; unknown keys are hard errors);
-  CLI `--fps`/`--res` override last; `params --dump` prints the effective
+  CLI `--fps`/`--res` override last; `dev params --dump` prints the effective
   merged TOML. Tables: `[build] fps/base_w/base_h/zstd_level/keyframe_ivl`,
   `[shots] sad_threshold_milli/min_shot_frames`, `[levels] lo_pct/hi_pct`,
   `[edges] scharr_shift/bilateral_passes/bilateral_radius/t_hi/t_lo`,
@@ -1336,7 +1348,7 @@ facade surface + this hidden module.)
   cached under `--cache-dir` keyed `(input sha256, build-params sha256,
   pipeline source fingerprint)` (eval-only knobs excluded via
   `Params::build_fingerprint`; the fingerprint is an FNV-1a 64 over all
-  auto-ascii-factory + auto-ascii-format `src/*.rs`, emitted by build.rs — M2 review
+  `auto-ascii-factory` + `auto-ascii-format` `src/*.rs`, emitted by build.rs — M2 review
   fix 4d: factory/format code changes must invalidate cached corpus
   assets) → edge-F1 ground-truth pass (M3: one streaming ffmpeg gray decode
   of the source through the identical scale/fps chain; Canny masks at the
@@ -1368,19 +1380,24 @@ facade surface + this hidden module.)
   streamed through the v1 writer default profile (temporal delta, keyframe
   interval 60, zstd-19, CRCs) in registry order [Y, E, Ex, Ey, H, C]. NORM
   levels: position 0 (Y) = shot p2/p98; all other positions = (0,0). Output
-  goes to `<out>.part`, renamed only after `finish()`. `inspect` additionally
+  goes to `<out>.part`, renamed only after `finish()`. `dev inspect` additionally
   reports shots + cut flags, keyframe count, per-plane compressed/raw sizes,
   compression ratio vs raw planes, and per-plane value stats over sampled
   frames (E nonzero %, Ex/Ey bias deviation, H flag rates).
-- `auto-ascii-player` (PLAN §3) — M4: now built from `crates/auto-ascii`
-  (`[[bin]]` behind the default-on `bin` feature, so `cargo install
-  auto-ascii` ships it; `required-features` keeps embedder builds
-  binary-free). The bin is a thin argv shim: interactive flags map 1:1 onto
-  `PlayerBuilder` and `run()` (no logic fork); `--sim` drives
-  `auto_ascii::pipeline` directly. CLI unchanged since M3 and byte-identical
-  in behavior (sim-dump sha256 pinned pre/post move). CLI as of M3 (see
-  notes 9, 11 and 20):
-  `<asset> [--repaint full|diff] [--loop] [--fps-cap FPS] [--cell-aspect F]
+- `auto-ascii play` (PLAN §3) — the player's argv surface. Since 0.3.0 it
+  lives in `crates/auto-ascii-cli/src/play/` (the old standalone player
+  binary and the facade's `bin` feature are gone). It is a thin argv shim:
+  interactive flags map 1:1 onto `PlayerBuilder` and `play()` (no logic
+  fork); `--sim` (`play/sim.rs`) and `--bench-seek` (`play/bench.rs`) drive
+  `auto_ascii::pipeline` / `deck::ClipDeck` directly. `play --help` shows
+  only `--loop --seek --style --palette --mute --no-audio`; every other flag
+  below is hidden but accepted, and `--help-all` (global; `help.rs`
+  re-renders the same clap graph with nothing hidden) lists them.
+  `dev sim <target> --sim …` and `dev bench-seek <target> --bench-seek N`
+  are the same code with the flags shown. Exit status: 0 at the end (or
+  `--duration-secs`), 3 when the viewer quits, 1 on an error, 2 on a usage
+  error. Flags (as of M3, see notes 9, 11 and 20):
+  `<target> [--repaint full|diff] [--loop] [--fps-cap FPS] [--cell-aspect F]
   [--duration-secs N] [--seek TIMESTAMP] [--tier TIER] [--no-query]
   [--no-cache] [--no-quirks] [--no-backdrop] [--palette auto|ascii|unicode|braille]
   [--bench-seek N]
@@ -1428,15 +1445,19 @@ facade surface + this hidden module.)
   interactive loop uses, proving next-frame reflow.
 - `auto-ascii` (PLAN-M6-M8 §2) — M7, the agent-first CLI, built from
   `crates/auto-ascii-cli` (package `auto-ascii-cli`, binary `auto-ascii`;
-  unpublished, like the factory it depends on). CLI as of M8:
-  `[--json] import <video> [--name N] [--ss T] [--t T] [--fps N]
-  [--res WxH] [--force] | list | info <clip> |
+  unpublished, like the factory it depends on). CLI as of 0.3.0:
+  `[--json] [--yes] [--help-all] play <clip | composition> [play flags] |
+  stream <URL|TERMS>... | import <video> [--name N | -o PATH] [--ss T]
+  [--t T] [--fps N] [--res WxH] [--params F] [--force] | list | info <clip> |
   cut <clip> --in T --out T [--name N] [--force] |
   compose new <name> | compose add <name> <clip> [--in T] [--out T] [--at T] |
-  compose show <name> | compose play <name> |
-  compose export <name> [-o path] [--force] |
-  play <clip | composition> | agent-guide | home`. `--json` is global
-  (accepted before or after the subcommand, at any subcommand depth).
+  compose show <name> | compose play <name> [play flags] |
+  compose export <name> [-o path] [--force] | home | agent-guide |
+  doctor [--fetch] | dev inspect|params|eval|sweep|font-table|sim|bench-seek`.
+  `--json`, `--yes` and `--help-all` are global (accepted before or after
+  the subcommand, at any subcommand depth). Modules: `args.rs` (the clap
+  graph), `commands.rs`, `import.rs`, `play/`, `dev/`, `help.rs`,
+  `output.rs`; `main.rs` only parses, dispatches and maps the exit status.
   **Home folder:** `~/auto-ascii`, or `$AUTO_ASCII_HOME` when set and
   non-empty, with `library/` + `compositions/` + `exports/` created on
   demand by `home` and by `import` (NOT by `agent-guide`, which resolves no
@@ -1451,7 +1472,7 @@ facade surface + this hidden module.)
   kebab step in `resolve_clip` is the bridge between the two.
   **Timestamps** (`--ss`, `--t`) go through `auto_ascii::timecode::parse`,
   the facade's one grammar (`SS[.f]`, `MM:SS[.f]`, `HH:MM:SS[.f]`), shared
-  with `auto-ascii-player --seek`; they are parsed by the command, not by a
+  with `play --seek`; they are parsed by the command, not by a
   clap `value_parser`, so a bad one is an `auto-ascii` error in the chosen
   output mode rather than a clap usage error.
   **Output contract:** humans get aligned text on stdout (the factory's
@@ -1465,11 +1486,13 @@ facade surface + this hidden module.)
   none of. `--help`/`--version` stay OUTPUT (clap's own stream, exit 0) and
   a usage error WITHOUT `--json` keeps clap's rendering and clap's exit
   code 2, so "you typed it wrong" stays distinguishable from "it ran and
-  failed". `play` is the one command
-  that REFUSES `--json` (`{"error": "play is interactive; run it without
-  --json"}`, exit 1, checked before the home folder is even resolved): the
-  player owns stdout for its whole run, so no value printed around it could
-  be the only one there. Everything chatty —
+  failed". Interactive `play` / `compose play` REFUSE `--json`
+  (`{"error": "play is interactive; run it without --json (or add --sim for
+  one JSON stats line)"}`, exit 1, checked before the home folder is even
+  resolved): the player owns stdout for its whole run, so no value printed
+  around it could be the only one there. With `--sim` or `--bench-seek`
+  they run headlessly and print their one JSON line whether or not
+  `--json` is given. Everything chatty —
   ffmpeg progress, the factory's `input:`/`pass 1/2:`/`wrote` lines —
   goes to stderr in BOTH modes, which is what makes that keepable.
   **Every byte of output goes through one `emit`/`outln!` pair** (M8
@@ -1491,9 +1514,9 @@ facade surface + this hidden module.)
   rename and the sidecar leaves a clip visibly unrecorded (which `list`
   says) rather than one described by bytes that were never written. The
   four steps `import` and `cut` share — name, refuse-existing, retire +
-  record, print — are one set of functions in `main.rs`; only what they put
+  record, print — are one set of functions in `commands.rs`; only what they put
   in the library differs.
-  The `asset` block is re-read from the ASCI header (mmap + `AsciiReader`)
+  The `asset` block is re-read from the .ascii header (mmap + `AsciiReader`)
   on every `list`/`info`, so it cannot go stale; only provenance comes from
   the file, and an asset with no sidecar still lists, with the three
   nullable fields `null`. Sidecars are parsed through a provenance-only
@@ -1540,7 +1563,7 @@ facade surface + this hidden module.)
   written back VERBATIM (the schema takes a string anywhere it takes
   seconds). The composition the file WOULD become is parsed and RESOLVED
   first (M8 review), so a table above that no longer loads, a trim the
-  timeline rejects or a `<clip>` that is not an ASCI asset fails with the
+  timeline rejects or a `<clip>` that is not an .ascii asset fails with the
   file byte for byte as it was; the append itself is one `O_APPEND` write,
   so two agents adding at once both land where a read-modify-write would
   have lost one;
@@ -1613,7 +1636,7 @@ facade surface + this hidden module.)
    `WriterOptions::default()` filter is now `TEMPORAL_DELTA`; the committed
    byte golden (`GOLDEN_SHA256` in `tests/container.rs`) was re-baselined.
    Back-compat: minor-0 intra (M0) assets still open/decode/verify —
-   confirmed against the committed `assets/*.ascii`. (`auto-ascii-factory build`
+   confirmed against the committed `assets/*.ascii`. (the factory's build
    briefly pinned the intra profile here; superseded by the M1 factory
    upgrade, note 10 — it now emits the full v1 profile.) Adversarial-review
    fixes: zero fps and zero base dims are rejected by both writer and reader
@@ -1645,7 +1668,7 @@ facade surface + this hidden module.)
    cell aspect defaults to the terminal-reported cell pixel ratio
    (`Caps::cell_px`, interactive only) with 2.0 fallback (§3.2). No library
    `pub` signature changed during integration — this note is CLI-only.
-10. **auto-ascii-factory M1 upgrade** (M1 factory agent): full v1 pipeline per
+10. **Factory M1 upgrade** (M1 factory agent): full v1 pipeline per
     the Binaries section above — two-pass build (shot detection + per-shot
     levels → NORM; Y + C planes through the v1 writer default
     delta/keyframe-60/zstd-19 profile), M0's baked-in normalization removed
@@ -1659,7 +1682,7 @@ facade surface + this hidden module.)
     seek-vs-sequential, plus a two-scene lavfi concat asserting a CUT-flagged
     shot boundary exactly at the splice with distinct per-shot levels.
     Factory binary output stays byte-deterministic (determinism test kept).
-11. **auto-ascii-player M1 integration** (M1 integrator): CLI per the Binaries
+11. **Player M1 integration** (M1 integrator): CLI per the Binaries
     section above; no library `pub` signature changed. Decisions recorded:
     (a) decode policy on TEMPORAL_DELTA assets — a loaded-frame tracker
     rolls sequential successors through `decode_plane_into` (standing double
@@ -1686,7 +1709,7 @@ facade surface + this hidden module.)
     seek-vs-sequential byte identity, runtime NORM per shot, probe no-hang).
 12. **auto-ascii-eval created** (M2 item A agent): metrics library per its section
     above — nothing else in the workspace consumes it yet (the
-    `auto-ascii-factory eval` wiring is M2 item B). Decisions recorded:
+    `auto-ascii dev eval` wiring is M2 item B). Decisions recorded:
     (a) built-in coverage constants derived from DejaVu Sans Mono (the
     conservative default; per-font tables M5) via the committed
     `crates/auto-ascii-eval/tools/derive_coverage.py` — constants are the
@@ -1741,9 +1764,9 @@ facade surface + this hidden module.)
     (debug-assertions unchanged). No existing `pub` signature changed.
 14. **M2 item B + review fix 1 landed** (params/eval agent). Decisions
     recorded:
-    (a) **pipeline extraction over binary-shelling**: `auto-ascii-player` gained
-    a lib target (`pipeline` module, section above) and `auto-ascii-factory
-    eval` drives `Player` in-process against `SimBackend` — chosen over
+    (a) **pipeline extraction over binary-shelling**: the player crate gained
+    a lib target (`pipeline` module, section above) and the factory's
+    eval drives `Player` in-process against `SimBackend` — chosen over
     calling the player binary because the metrics need per-frame
     `Grid<Cell>` access (rasterize/flicker) and per-frame `FrameStats`,
     which the `--sim` JSON line cannot carry; `main.rs` is now CLI-only and
@@ -1819,7 +1842,7 @@ facade surface + this hidden module.)
     (grass-field-windy-mirror + sheep-counting-neroni-clips from
     corpus/prepared/, silhouette-dance from corpus/) so `eval`'s
     non-recursive scan never picks up prep-tool variants, runs
-    `auto-ascii-factory eval` against `runs/base.json` writing
+    `auto-ascii dev eval` against `runs/base.json` writing
     `runs/latest.{json,html}`, then the `#[ignore]`d real-corpus
     determinism guard (grass rebuild byte-identical to assets/). Absent
     corpus → notice + skip (committed gates stay corpus-free).
@@ -1867,7 +1890,7 @@ facade surface + this hidden module.)
     sizes + 48×12 tier-golden size × color/mono × seq/seek/cut frames ×
     mid-run reflows), so the 27 insta goldens + 4 tier goldens
     transitively cover the shipping renderer (mutation-tested: dropping
-    reflow's ramp update fails parity). auto-ascii-player gained dev-deps
+    reflow's ramp update fails parity). The player crate gained dev-deps
     auto-ascii-eval + proptest; auto-ascii-eval dropped its proptest dev-dep;
     scripts/eval.sh fuzz section now targets it (M4: crate renamed auto-ascii).
     (4d) **eval cache staleness** [medium]: the eval asset cache key
@@ -1879,7 +1902,7 @@ facade surface + this hidden module.)
     were migrated to the new names after the grass byte-identity guard
     proved output unchanged.
 18. **M3 factory plane extraction landed** (factory agent; PLAN §5 stages
-    3–4). `auto-ascii-factory build` now writes all six §4 planes — see the
+    3–4). `auto-ascii import -o` now writes all six §4 planes — see the
     Binaries section for the pipeline. **Wire semantics the player relies
     on (factory⇄player contract):**
     (a) **E** (plane 2): u8, unthinned local Scharr magnitude of the
@@ -1963,7 +1986,7 @@ facade surface + this hidden module.)
     coverage on the synthetic corpus in m2_params_eval.rs.
     (e) **deps**: workspace gains `image` (default-features off,
     codec-less buffers only) + `imageproc` (default-features off) for
-    auto-ascii-eval, `gif` for auto-ascii-factory — PNG I/O stays with the ffmpeg
+    auto-ascii-eval, `gif` for `auto-ascii-factory` — PNG I/O stays with the ffmpeg
     subprocess.
 20. **M3 pipeline integration landed** (integrator). The player runs the
     full §3.5 path — see the auto_ascii::pipeline section for the surface.
@@ -2023,7 +2046,7 @@ facade surface + this hidden module.)
     measured on the corpus (grass F1 0.72@32 vs 0.52@40 vs 0.00@96 with
     precision ≈ 0.77 — the coherence gates carry noise suppression).
     Sweep evidence in the M3 integration report.
-21. **M3 Tune landed** (tune agent): `auto-ascii-factory sweep` per the Binaries
+21. **M3 Tune landed** (tune agent): `auto-ascii dev sweep` per the Binaries
     section (PLAN §5 CLI — sweep.rs; ranked `sweep.json` schema v1 +
     `leaderboard.html`; the M3 axis grids, since removed from the tree). Decisions:
     (a) **composite score** = `0.4·mean(ssim) + 0.4·mean(edge_f1) −
@@ -2161,7 +2184,7 @@ facade surface + this hidden module.)
     every frame. Both new fields are `params.toml` `[compose]` knobs
     (validated `quad_e_off <= quad_e_on`, pinned to the core defaults by the
     existing single-source-of-truth test). CI could not see any of this — all
-    committed goldens contain zero quadrant glyphs and `auto-ascii-factory eval`
+    committed goldens contain zero quadrant glyphs and `auto-ascii dev eval`
     renders at `GlyphTier::Ascii`, where `quadrant: false` — so the coverage
     is three `auto-ascii-core` unit tests instead:
     `lsb_noise_orientation_never_picks_quadrant` (floor holds),
@@ -2175,8 +2198,8 @@ facade surface + this hidden module.)
     1 ignored) instead of failing on a `Player` that is configured out;
     docs.rs builds with default features and still shows the runnable form.
     Same-config rot fixed alongside: `tests/m1_sim.rs` and `tests/sim_e2e.rs`
-    carry `#![cfg(feature = "bin")]`, so they no longer silently exercise a
-    stale `target/debug/auto-ascii-player` left by an earlier default-feature
+    carried the (since removed) `bin` feature gate, so they no longer silently
+    exercised a stale player binary in `target/debug/` left by an earlier default-feature
     build. No public signature changed in (c). Superseded by the comment
     rule: the quickstart, `RenderSession` and `Composition` examples are now
     `crates/auto-ascii/tests/public_examples.rs` (the terminal builder chain
@@ -2192,7 +2215,7 @@ facade surface + this hidden module.)
     facade `PlayerBuilder::font_table` + `RenderSession::set_font_table` +
     hidden `auto_ascii::load_font_table`, factory `font-table` subcommand +
     `eval --font-table`, player `--font-table`. Decisions recorded:
-    (a) **Generator = `auto-ascii-factory font-table`** (ab_glyph — already in
+    (a) **Generator = `auto-ascii dev font-table`** (ab_glyph — already in
     the tree via imageproc; new direct workspace dep). Cell model: font
     scaled so the monospace ADVANCE = 64 px (terminals size by advance,
     not em), ink box centered and clipped to the 64×128 cell; coverage =
@@ -2265,7 +2288,7 @@ facade surface + this hidden module.)
     through a strict screen model (parse failure = corruption) and pins
     with-overlay vs no-overlay screens identical after hide + the full
     repaint on the hide frame. Scrub latency instrumented by the new
-    `auto-ascii-player --bench-seek N` (reset + FIDX seek + decode + resample +
+    `auto-ascii play --bench-seek N` (reset + FIDX seek + decode + resample +
     compose + present @300×80, seeded xorshift frame sequence): on the
     856 MB sheep asset, 100 seeks → p50 8.6 ms / p95 20.3 ms / max 32.3 ms
     (accept < 50 ms).
@@ -2419,7 +2442,7 @@ facade surface + this hidden module.)
     default|saved|s to save|unreadable|save failed ` — riding with the
     hints row; `/` and `s` raise both for the dial timeout. Codec
     precedence when a clip fronts (`player::LiveSettings`): the session's
-    last `/` pick, else `--codec`, else the video's saved codec, else pixels
+    last `/` pick, else the style flag (then named for codecs), else the video's saved codec, else pixels
     — so `/` survives composition cuts. A sidecar that will not parse plays
     defaults under session/CLI overrides, shows `unreadable`, and is reported
     on stderr after the session; a bare `codec = letters` is accepted. The hints row lists

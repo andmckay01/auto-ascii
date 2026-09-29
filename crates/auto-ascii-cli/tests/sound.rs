@@ -2,7 +2,7 @@
 //! discovery order, duration-mismatch rejection, `--mute`, `--no-audio`, the
 //! silent fallback, audio-clock pacing, and no ffmpeg child outliving the run.
 //! Skipped when ffmpeg is missing.
-#![cfg(all(unix, feature = "bin"))]
+#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -38,7 +38,8 @@ impl Stage {
     }
 
     fn sim(&self, extra: &[&str]) -> (Output, String, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_auto-ascii-player"))
+        let out = Command::new(env!("CARGO_BIN_EXE_auto-ascii"))
+            .arg("play")
             .arg(self.0.join("clip.ascii"))
             .args(["--sim", "80x24:15"])
             .args(extra)
@@ -119,7 +120,7 @@ fn no_track_or_a_different_cut_plays_silently() {
     let (_, stdout, stderr) = stage.sim(&["--sim-audio"]);
     let a = audio(&stdout);
     assert_eq!(field(a, "sound"), "none", "a 12 s source is not this 2.4 s clip: {a}");
-    assert!(stderr.contains("auto-ascii-player: sound:") && stderr.contains("source.mp4") && stderr.contains("not played"), "{stderr}");
+    assert!(stderr.contains("auto-ascii: sound:") && stderr.contains("source.mp4") && stderr.contains("not played"), "{stderr}");
 }
 
 #[test]
