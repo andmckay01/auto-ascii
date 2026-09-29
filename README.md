@@ -20,13 +20,32 @@ cell grid you own.
 
 ## Install
 
-You need a recent stable Rust toolchain (edition 2024). macOS and Linux build
-from source.
+Pick one; each installs the same prebuilt `auto-ascii` binary.
 
 ```bash
-git clone https://github.com/andmckay01/auto-ascii && cd auto-ascii
-cargo install --path crates/auto-ascii-cli       # the auto-ascii command
+# macOS / Linux
+curl -fsSL https://github.com/andmckay01/auto-ascii/releases/latest/download/install.sh | sh
+
+# Windows (PowerShell)
+powershell -c "irm https://github.com/andmckay01/auto-ascii/releases/latest/download/install.ps1 | iex"
+
+# Homebrew (macOS / Linux)
+brew install andmckay01/tap/auto-ascii
+
+# npm — or try it without installing: npx auto-ascii --help
+npm install -g auto-ascii
+
+# Rust
+cargo install auto-ascii      # or: cargo binstall auto-ascii
 ```
+
+The two install scripts check the archive's SHA-256 and install to
+`~/.local/bin` (macOS, Linux) or `%LOCALAPPDATA%\Programs\auto-ascii`
+(Windows), without sudo. Prebuilt binaries cover macOS (Apple silicon and
+Intel), Linux x86_64 and arm64 (glibc 2.35 or newer, and the ALSA library
+that desktop distros already ship: `libasound2`, called `libasound2t64` on
+Ubuntu 24.04+ and Debian 13, `alsa-lib` on Fedora), and Windows x64 and arm64.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers building from source.
 
 `add` and `import` need `ffmpeg` and `ffprobe`; links also need `yt-dlp`. If
 one is not on `PATH`, the CLI offers once to download a checksum-verified build
@@ -93,12 +112,14 @@ auto_ascii::Player::builder().asset("intro.ascii").looping(true).build()?.run()?
 
 That one call is the whole player. If you own the event loop and the output
 layer, the terminal-free `RenderSession` hands you a grid of glyphs and RGB
-colors per frame, and `default-features = false` drops clap and crossterm.
-[crates/auto-ascii](crates/auto-ascii/README.md) lists the feature tiers and
-the three runnable examples.
+colors per frame. The `cli` feature, on by default, pulls in the command and
+its dependencies (clap, the factory). The line below keeps the Player without
+them; `default-features = false` with no features leaves only `RenderSession`,
+without crossterm. [crates/auto-ascii](crates/auto-ascii/README.md) lists the
+feature tiers and the three runnable examples.
 
 ```toml
-auto-ascii = "0.2"
+auto-ascii = { version = "0.3", default-features = false, features = ["terminal", "audio", "compose"] }   # the player, no CLI
 ```
 
 ## Docs
