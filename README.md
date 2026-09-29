@@ -12,37 +12,41 @@ reflows live on resize, and applies temporal hysteresis so nothing flickers.
 Because every glyph is chosen at render time, one asset looks right at 80×24
 in a Linux console, at 320×90 in a GPU terminal, and inside your own renderer.
 
+![Ten seconds of The Matrix Reloaded's Architect scene, 2:14 to 2:24, playing as colored ASCII art in a terminal](docs/assets/architect-2m14s.gif)
+
+<sub>Terminal playback of The Matrix Reloaded's Architect scene from 2:14 to
+2:24: 10 s on a 120×34 grid (letterbox rows trimmed), `ascii` style with the
+video's saved dials, each cell's truecolor drawn on the player's black
+backdrop in Menlo. The GIF drops to 12 fps to stay small; the player runs
+at the source's 30.</sub>
+
 ```text
-|BBBBBMMMMMMMMMMMMMMBBBBBB8888DDDDGGSSSSSSSSSGGGGDDDDDDDDGGGSSeeeon
-|888888BBBBBMMMMBBMMMBBBBBB8888DDDGGGSSSSSSSSSSSGGDDDDDDDDGGGSSeeen
-|DGDDGDDDD88BBBBBBBBBBBBBBBBB88DDGGGGSSSSeeeeeSSSGGGGDDDGGGSSeeooon
-|GSSGSGDDDD8BBBBBBBBMMMMMMMBBBB88GPFTFPoSeeeeeeeeSSGGGGGGGGSeeoooon
-|GoeeeeSGGDBBBBBBBBBMMMMMMMMMMMMDo    .;oDeoooooeeeSGGGDDGGSeonnnnx
-|SooonoeooeG88DGMMPPPGBMMMMMMMMMDx     :cPooooooooeSGGGDGGSSonxxxxx
-|enonYTxeeeGDeT     :x8MMBMMMMMMBe,    .+uoxc".:xSeeSGSF" ;eonxxxnn
-|ennc  ;FeSSex      :+eeS88MMBMMMDn     ;nex;  .;oSeeeo:  .+xxT7TxF
-|Y.+c: .+onooc.     .;xGSG: .YD/"""    ,gee+   .:xoSSSSo,  ;o+   ;;
-|. ;:  ,*:;ccc:      .;nee;  :F;,,.,uaa+eeT.    :+x;Tnc: .:+;.   ..
- .:;c;:Txccx+":.     .,..7:.:++xeoc+PMGxcSa+au;+a+;.. .+xon;""++++:
-      ::cxc:;     .a+*;;  ..   .Fooc;.:ccFeen+++GSc.   .+xxc  :c+xc
-       .:xc:c:. :+cxoexnnwc:     .++:    :cn;: +oe++....:xc+  :;oo;
-       ..+;:cxx+;;xccnccnSn+   ...++.:.+anc++. +eGn;+c; .+:. :+:nec
-   .    ..  :;ncx+;+;;+oeno+:   :+u|.++xen:;+;.+eDeXX:  .;:  .c;++;
-    .   .;c:.  . : '  ;nGn+:;    .;cu;;*xc.;cc.7FGDSo;   ::  .++;;+
-          .+:  .  .   :+nc..+    ;xeex...:.:cnwa_-X;T+u ..;:.  ..:;
-          .      .:aaxcw+:.:c.    .+oea:.  :+xncoeSeX++a.   '.=.+..
-         .;+,     :FncSGx:.:x;     :nSSa.  .::;xc+cc:..""":.    ..
-         .+c"      .++SDn:.:x:      .7nSw,  ..:;;   ....    .   ..
-         .:;      .:x+xSo;.;x:        .;cY+u.. .:::,,   .      .:
-          .;.     .;eSeSSou;o+        . .,:;*.,    .;c+
-    .:;;+:        .:eSenSGeSSoc.         ."7+xx;     .;.
-     .:::.         "PPnnnooowxxc,             .".
-       .:               "7FPooeeSoa,
+,,,,,,,;;;:::.    .;vuaaaaaawwwwwwggggga. .;;;,,,,,,,,,,,::...  ..;;;;;,,,,,,,,;:::.    .
+.......    .      .+caS#DDDD8B888BBBBBBa:.  .................       ............
+gggggggggwau,;+   ;+"YF7PPPSSD8D88BBB8Dn..;,vuuuuuuuuuuuuuv;.   .:,vvuuuuuuuuuvvv,,:    .
+7MMP#7PPoxeFor++.:r.         "noT''    . .+rcxre7noc7aoca7er:.  .;coecaP7oF7SSFSaan;.   .
++r;PMP;+++ruco+;.+x,         ;Sa.      ..+crr++r;7MP;+++r+rc:.  ;cr+r+r;FMM+;r;r++x+.   :
+ceFeDDP7croFnoeo++rncuu,,.,,ve8Ba,...:uw*+ox7creYoD#7ecra7oc:...:xeanrSoo#gSSn+aaeo+.. .;
++u;"F";u++uucrcFr++rcoeaSDD#eeDBB8DD#DDDDrccu++r;;FT;u++rucc:...;crrr+r;+eF;+++r+rx+..  ;
+"". . .":+YTcr:"++;++rcaS#SaDD8BBB888DSar+ccFr;".....";rFFxr:...;cxec+Y: . .TrrS7en;.  .+
+    .     ;ccr...;;;;+cxoSSc;;rnYe###ar..:ccc. .........;ucr:. .;ccr: .       .:vrc;.  .+
+,,,,,,,,,;;++;...:;;;+rcneSaooxoa#D#So.  :rcr;::,,,,:::,;rr;:. .:coc:..........:Ycr:.  .+
+.............   .;.:;+rccrrYYYYFF7eSe+    ........""""':.....   ..:"""""""""""""::..    .
+uuuauuaauuv,,.  .;;.:;;rrrrruuuucoee+.   ..,,,,,,,,,::....,..   .................
+MMMMMMMMMPPen;. .;;;:.:+rccxcccneaac..   .+conoSa7F7S#aa#So;.  .:rneeeSSeoeSweawac+.   .:
+++;PMS;+++r+rr.   ..::.:+cnaS##DDS". .  .;r;++++;D@o:++r++cr:. .:r;+rrr+gga"crrcToc:.   :
+caxo#SaerroFx;       ....:;cncYYY'   .. .;xoerracaggae+caenr:. .+oeercauoSnwa+raacc:.  .+
++r;+FY;r++rv:          ..::;;;.       ...;cvr+++;reY;+;r++cr.. .+c+r+rr+a8PYc+cYYcc:.  .r
++T. . .";"".             .:.          ...;"FFr+T....:Y+xeonr.. .+oaarcc:.".+n+caanc:.  .r
+  .. ......               .           ......::...  .....;rc+.  .+c++:........."T+cc:.  :c
+.......    .                         ..................."Y";.  ."TY"..        .;r""..  ."
 ```
 
-<sub>One frame of Apple's "1984" ad on a 90×26 grid, `letters` style, colors
-dropped (`headless-dump` example). In a terminal every cell also carries the
-source's color.</sub>
+<sub>Frame 7830 (4:21) of the same video on a 90×25 grid, letterbox rows
+trimmed, `ascii` style with the video's saved dials: the last of 61 frames from
+`headless-dump "The Architect.ascii" 61 90x25 --from 7770 --settings "The
+Architect.player.toml"`, so hysteresis is warm as in playback. Colors are
+dropped here; in a terminal every cell also carries the source's color.</sub>
 
 The Rust workspace, supported by Python tools, has a library (`auto-ascii`),
 two engine binaries (`auto-ascii-factory` and `auto-ascii-player`), and the `auto-ascii`
