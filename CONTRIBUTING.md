@@ -10,22 +10,22 @@ registry, milestone by milestone.
 ## Build and run
 
 ```bash
-cargo build --release -p auto-ascii-cli   # the one `auto-ascii` binary (or: make build)
+cargo build --release -p auto-ascii       # the one `auto-ascii` binary (or: make build)
+cargo run -p auto-ascii -- <args>         # run it without installing
 cargo test --workspace                    # or: make test
 ```
 
-macOS builds from source on Apple Silicon and Intel; there is no cross build
-for it. Playback needs only crossterm and POSIX termios; `auto-ascii import`
+It builds with a recent stable Rust toolchain on macOS, Linux and Windows;
+Linux also needs `libasound2-dev` and `pkg-config` for sound.
+`cargo install --path crates/auto-ascii` installs your build. Playback needs
+only crossterm (plus POSIX termios on macOS and Linux); `auto-ascii import`
 and `add` need `ffmpeg` and `ffprobe`, and `add <link>` and `stream` `yt-dlp`
 (from `PATH`, or downloaded on first use).
 
-`scripts/release.sh` (or `make dist`) is Linux-hosted. It builds stripped
-`auto-ascii` binaries into `dist/` for `x86_64-unknown-linux-gnu` (native),
-`x86_64-unknown-linux-musl` (fully static, checked with `ldd`) and
-`x86_64-pc-windows-gnu` (MinGW cross; smoke-tested under wine only when wine
-is installed), and gates each under 5 MB. Missing toolchains are installed with `rustup target add` and
-`sudo -n apt-get install` (musl-tools, mingw-w64); `NO_APT=1` forbids apt and
-fails instead.
+Releases are cut by pushing a `vX.Y.Z` tag. `.github/workflows/release.yml`
+then builds the six prebuilt targets and publishes the GitHub release,
+crates.io, npm and the Homebrew tap; [docs/RELEASING.md](docs/RELEASING.md)
+is the maintainer guide.
 
 ## The gate
 
@@ -122,8 +122,10 @@ The `comment rule` section of `scripts/eval.sh`, `make comments`, and
 `make lint` all fail on violations or stale exemptions. Workspace tests
 cover language fixtures and use isolated repositories for CLI regressions
 and the tooling's own compliance. The eval gate scans the live worktree.
-The repo has no `.github` CI or pre-commit hook; enforcement is in the
-existing eval gate.
+CI (`.github/workflows/ci.yml`) runs clippy and the tests on pull requests
+and pushes to `main`, and `release.yml` runs on tags; neither runs
+`check-comments`, and there is no pre-commit hook, so enforcement is in the
+eval gate.
 
 ## Rules that keep the output deterministic
 
@@ -175,14 +177,13 @@ existing eval gate.
 
 | path | what |
 |---|---|
-| `crates/auto-ascii` | the public library (the terminal `Player` and `RenderSession`) |
-| `crates/auto-ascii-cli` | the `auto-ascii` binary: everyday commands plus `dev` (unpublished) |
-| `crates/auto-ascii-factory` | offline factory library, eval and sweep drivers (unpublished) |
+| `crates/auto-ascii` | the public library (the terminal `Player` and `RenderSession`) and, behind the default `cli` feature, the `auto-ascii` binary (`src/bin/auto-ascii/`): everyday commands plus `dev` |
+| `crates/auto-ascii-factory` | offline factory library: ffmpeg ingest, feature planes, `.ascii` build |
 | `crates/auto-ascii-core` / `-format` / `-term` | engine, container, terminal backend |
-| `crates/auto-ascii-eval` | metrics, fixtures, report schema (unpublished) |
+| `crates/auto-ascii-eval` | metrics, fixtures, report schema |
 | `crates/auto-ascii-lint` | comment policy checker and fixtures (unpublished) |
 | `params.toml`, `perf/thresholds.toml` | the tunables and the perf gates |
-| `scripts/` | `eval.sh` (the gate), `perf-gate.sh`, `release.sh`, `play-with-sound.command` (a launcher that restarts `auto-ascii play` at each clip end and logs every exit) |
+| `scripts/` | `eval.sh` (the gate), `perf-gate.sh`, `play-with-sound.command` (a launcher that restarts `auto-ascii play` at each clip end and logs every exit), `install.sh` and `install.ps1` (the user installers, uploaded to each release), and the release-workflow helpers `package-archive.sh` (archive and checksum per target), `homebrew-formula.sh` (the tap formula) and `publish-crates.sh` (crates.io in dependency order) |
 | `tools/` | `prep_video.py`, `soak.py` |
 | `corpus/`, `runs/` | local videos and eval output; both gitignored |
 | `docs/` | feature map, plans, API registry, agent guide, terminal checklist, research digests |
@@ -190,21 +191,28 @@ existing eval gate.
 ## Publishing
 
 `auto-ascii` (0.2.x) and `auto-ascii-core`, `auto-ascii-format`,
-`auto-ascii-term` (0.1.x) are on crates.io; the factory, eval and CLI crates
-are not published. The facade's version is ahead of the libraries' because
+`auto-ascii-term` (0.1.x) are on crates.io. From 0.3.0 every published crate
+(those four plus `auto-ascii-eval` and `auto-ascii-factory`) shares the
+workspace version, and `auto-ascii` carries the `auto-ascii` binary behind its
+default `cli` feature, so `cargo install auto-ascii` installs the CLI.
 `auto-ascii` 0.1.0 was published under the project's earlier crate names and
-is yanked. Publish in the order core, format, term, facade, bumping versions
-first: a published version number can never be reused. Path dependencies
-carry a version requirement alongside the path so `cargo package` can
-rewrite them; `auto-ascii-eval` is deliberately path-only, because it is a
-dev-dependency (it dev-dep-cycles with `auto-ascii-term`) and cargo strips
-path-only dev-dependencies when packaging.
+is yanked. Bump `[workspace.package] version` first, since a published
+version number can never be reused, then `cargo publish --workspace`
+publishes in dependency order (core, format, term, eval, factory,
+`auto-ascii`). Path dependencies carry a version requirement alongside the
+path so `cargo package` can rewrite them, except `auto-ascii-term`'s
+dev-dependency on `auto-ascii-eval`: the two form a dev-dependency cycle, so
+that one is path-only, and cargo strips path-only dev-dependencies when
+packaging. A published crate can only embed files inside its own directory,
+so the factory embeds its own copy of `params.toml` and the CLI embeds
+`crates/auto-ascii/AGENT-GUIDE.md`; tests pin both to the repo-root
+`params.toml` and `docs/AGENT-GUIDE.md`.
 
 The workspace allows one clippy lint, `chunks_exact_to_as_chunks`
 (`Cargo.toml` `[workspace.lints.clippy]`): it would rewrite about twenty
 hot `chunks_exact(N)` loops into equivalent code, which is not worth
-churning the perf gate over. The `npm/` package is
-a name placeholder only.
+churning the perf gate over. `npm/` holds the npm launcher package and the
+platform-package generator; see [npm/README.md](npm/README.md).
 
 The project is MIT licensed ([LICENSE](LICENSE)); contributions are accepted
 under the same terms.

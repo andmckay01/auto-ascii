@@ -30,4 +30,4 @@ doc = false
 required-features = ["session"]
 
 [dev-dependencies]
-auto-ascii-eval = { workspace = true }
+auto-ascii-eval = { path = "../auto-ascii-eval" }

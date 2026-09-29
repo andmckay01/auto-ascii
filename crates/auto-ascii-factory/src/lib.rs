@@ -2,19 +2,15 @@
 
 pub mod build;
 pub mod edges;
-pub mod eval;
 pub mod extract;
 pub mod features;
 pub mod ffmpeg;
-pub mod font_table;
 pub mod highlights;
 pub mod live;
 pub mod lut;
 pub mod params;
-pub mod reel;
 pub mod sha256;
 pub mod shots;
-pub mod sweep;
 pub mod temporal;
 
 use std::io::Write;
@@ -23,6 +19,9 @@ use std::path::Path;
 pub use build::BuildReport;
 pub use ffmpeg::{BoxErr, Programs};
 pub use sha256::{sha256, sha256_file, sha256_hex};
+
+pub const PIPELINE_FINGERPRINT: &str = env!("ASCII_PIPELINE_FINGERPRINT");
+pub const PIPELINE_VERSION: &str = "0.1.0";
 
 pub struct BuildRequest<'a> {
     pub input: &'a Path,

@@ -7,7 +7,7 @@ use auto_ascii_eval::Tolerances;
 
 use crate::ffmpeg::BoxErr;
 
-pub const EMBEDDED_PARAMS: &str = include_str!("../../../params.toml");
+pub const EMBEDDED_PARAMS: &str = include_str!("../params.toml");
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]

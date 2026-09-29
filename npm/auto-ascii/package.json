@@ -1,0 +1,49 @@
+{
+  "name": "auto-ascii",
+  "version": "0.3.0",
+  "description": "Realtime ASCII-art video in your terminal: play, stream and import video as .ascii assets",
+  "license": "MIT",
+  "homepage": "https://github.com/andmckay01/auto-ascii#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andmckay01/auto-ascii.git",
+    "directory": "npm/auto-ascii"
+  },
+  "bugs": {
+    "url": "https://github.com/andmckay01/auto-ascii/issues"
+  },
+  "keywords": [
+    "ascii",
+    "ascii-art",
+    "terminal",
+    "tui",
+    "ansi",
+    "video",
+    "player",
+    "cli",
+    "youtube",
+    "ffmpeg"
+  ],
+  "bin": {
+    "auto-ascii": "bin/auto-ascii.js"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@auto-ascii/darwin-arm64": "0.3.0",
+    "@auto-ascii/darwin-x64": "0.3.0",
+    "@auto-ascii/linux-x64": "0.3.0",
+    "@auto-ascii/linux-arm64": "0.3.0",
+    "@auto-ascii/win32-x64": "0.3.0",
+    "@auto-ascii/win32-arm64": "0.3.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

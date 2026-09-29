@@ -5,11 +5,12 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use auto_ascii_eval::EvalReport;
 
-use crate::eval::{self, EvalArgs, TruthCache};
-use crate::ffmpeg::Programs;
-use crate::ffmpeg::BoxErr;
-use crate::params::Params;
-use crate::sha256::sha256_hex;
+use auto_ascii_factory::ffmpeg::Programs;
+use auto_ascii_factory::ffmpeg::BoxErr;
+use auto_ascii_factory::params::Params;
+use auto_ascii_factory::sha256::sha256_hex;
+
+use super::eval::{self, EvalArgs, TruthCache, html_escape};
 
 pub struct SweepArgs {
     pub corpus: PathBuf,
@@ -348,7 +349,7 @@ fn render_leaderboard(report: &SweepReport) -> String {
     let w = &report.score_weights;
     h.push_str(&format!(
         "<p class=\"meta\">{} | schema v{} | score = {}·ssim + {}·edgeF1 − {}·(flicker/{})</p>\n",
-        crate::eval::html_escape(&report.generator),
+        html_escape(&report.generator),
         report.schema_version,
         w.ssim, w.edge_f1, w.flicker, w.flicker_norm
     ));
@@ -365,14 +366,14 @@ fn render_leaderboard(report: &SweepReport) -> String {
             ""
         };
         let per_clip = if let Some(reason) = &r.skip_reason {
-            format!("skipped: {}", crate::eval::html_escape(reason))
+            format!("skipped: {}", html_escape(reason))
         } else {
             r.clips
                 .iter()
                 .map(|c| {
                     format!(
                         "{}: {} / {} / {}",
-                        crate::eval::html_escape(&c.clip),
+                        html_escape(&c.clip),
                         fmt(c.ssim),
                         fmt(c.edge_f1),
                         fmt(c.flicker)
@@ -386,7 +387,7 @@ fn render_leaderboard(report: &SweepReport) -> String {
              <td>{}</td><td>{}</td><td>{}</td><td class=\"combo\">{per_clip}</td></tr>\n",
             if r.skip_reason.is_some() { "—".into() } else { (rank + 1).to_string() },
             r.id,
-            crate::eval::html_escape(&r.combo),
+            html_escape(&r.combo),
             r.score.map_or("—".into(), |s| format!("{s:.4}")),
             fmt(r.ssim_mean),
             fmt(r.edge_f1_mean),

@@ -396,7 +396,7 @@ def main() -> int:
         ap.error("--outdir is required (unless --check-logs/--self-test)")
     if not args.player.is_file():
         sys.exit(f"auto-ascii binary not found: {args.player}\n"
-                 f"build it: cargo build --release -p auto-ascii-cli")
+                 f"build it: cargo build --release -p auto-ascii")
     if not args.asset.is_file():
         sys.exit(f"asset not found: {args.asset}")
 

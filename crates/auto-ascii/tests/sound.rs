@@ -2,6 +2,7 @@
 //! discovery order, duration-mismatch rejection, `--mute`, `--no-audio`, the
 //! silent fallback, audio-clock pacing, and no ffmpeg child outliving the run.
 //! Skipped when ffmpeg is missing.
+#![cfg(feature = "cli")]
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};

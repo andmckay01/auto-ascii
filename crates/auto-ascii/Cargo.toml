@@ -1,7 +1,7 @@
 [package]
 name = "auto-ascii"
 description = "Realtime ASCII-art video: play .ascii feature assets in a terminal, or render them into your own cell grid"
-version = "0.3.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -13,18 +13,49 @@ readme = "README.md"
 workspace = true
 
 [features]
-default = ["terminal", "audio", "compose"]
+default = ["terminal", "audio", "compose", "cli"]
 terminal = ["auto-ascii-term/session", "compose"]
 compose = ["dep:toml"]
 audio = ["dep:cpal"]
+cli = [
+    "terminal",
+    "compose",
+    "dep:auto-ascii-factory",
+    "dep:auto-ascii-eval",
+    "dep:ab_glyph",
+    "dep:gif",
+    "dep:clap",
+    "dep:indicatif",
+    "dep:libc",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:ureq",
+    "dep:zip",
+]
 
 [dependencies]
 auto-ascii-core = { workspace = true }
 auto-ascii-format = { workspace = true }
-auto-ascii-term = { path = "../auto-ascii-term", version = "0.1.0", default-features = false }
+auto-ascii-term = { path = "../auto-ascii-term", version = "0.3.0", default-features = false }
 memmap2 = { workspace = true }
 toml = { workspace = true, optional = true }
 cpal = { version = "0.18", optional = true }
+auto-ascii-factory = { workspace = true, optional = true }
+auto-ascii-eval = { workspace = true, optional = true }
+ab_glyph = { workspace = true, optional = true }
+gif = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+indicatif = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
+
+[[bin]]
+name = "auto-ascii"
+path = "src/bin/auto-ascii/main.rs"
+required-features = ["cli"]
 
 [[example]]
 name = "simple-play"
@@ -40,7 +71,19 @@ name = "headless-dump"
 criterion = { workspace = true }
 auto-ascii-eval = { workspace = true }
 proptest = { workspace = true }
+toml = { workspace = true }
 
 [[bench]]
 name = "pipeline"
 harness = false
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/auto-ascii-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-fmt = "zip"

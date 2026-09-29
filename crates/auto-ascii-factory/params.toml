@@ -1,0 +1,64 @@
+[build]
+fps = 30
+base_w = 480
+base_h = 270
+zstd_level = 15
+keyframe_ivl = 60
+
+[shots]
+sad_threshold_milli = 300
+min_shot_frames = 8
+
+[levels]
+lo_pct = 2
+hi_pct = 98
+
+[edges]
+scharr_shift = 4
+bilateral_passes = 2
+bilateral_radius = 2
+t_hi = 28
+t_lo = 12
+
+[highlights]
+tophat_radius = 3
+tophat_thresh = 48
+shadow_pct = 8
+shadow_max_l = 40
+
+[temporal]
+ema_alpha_y_milli = 700
+ema_alpha_e_milli = 500
+ema_alpha_c_milli = 700
+
+[compose]
+edge_t_on = 32
+edge_t_off = 16
+coh_min_q8 = 96
+coh_dir_q8 = 160
+hi_cut_q8 = 160
+edge_white_cut_q8 = 240
+halfblock_min_delta = 64
+edge_strong = 96
+quad_e_on = 2
+quad_e_off = 1
+idx_hyst_q8 = 128
+shadow_lift = 0
+
+[eval]
+grid_cols = 300
+grid_rows = 80
+max_frames = 900
+ssim_every = 30
+contact_frames = 3
+
+[eval.tolerances]
+ssim_max_drop = 0.02
+flicker_max_increase = 0.5
+edge_f1_max_drop = 0.05
+bytes_frac_max_increase = 0.20
+damage_rate_max_increase = 0.05
+stage_ms_frac_max_increase = 0.50
+shot_structure_max_delta = 0.0
+keyframes_frac_max_drop = 0.0
+asset_bytes_frac_max_increase = 0.20

@@ -10,8 +10,11 @@ The META chunk is a CBOR map. Its factory provenance records the input file
 name, never an absolute path, host, user, or wall-clock time. `ciborium`
 serializes struct fields in declaration order; new fields are append-only
 and use `serde(default)` so older readers ignore unknown keys and newer
-readers accept older assets. See [FEATURE-MAP.md](FEATURE-MAP.md) for the
-container's deterministic byte contract.
+readers accept older assets. Its `factory_version` is the factory's
+`PIPELINE_VERSION`, not the crate version, so a release does not move the
+asset byte pin; bump it only when the distilled bytes change. See
+[FEATURE-MAP.md](FEATURE-MAP.md) for the container's deterministic byte
+contract.
 
 ### AVI fixture byte layout
 

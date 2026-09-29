@@ -1,3 +1,5 @@
+#![cfg(feature = "cli")]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -47,12 +49,6 @@ fn cli(args: &[&dyn AsRef<std::ffi::OsStr>]) -> Output {
 
 fn build(input: &Path, output: &Path) -> Output {
     cli(&[&"import", &input, &"-o", &output, &"--fps", &"10"])
-}
-
-fn factory_version() -> String {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
-    let workspace: toml::Value = toml::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
-    workspace["workspace"]["package"]["version"].as_str().unwrap().to_string()
 }
 
 fn stderr_of(out: &Output) -> String {
@@ -130,7 +126,7 @@ fn full_build_roundtrip_and_determinism() {
     reader.verify().expect("CRC walk must pass on a fresh asset");
 
     let meta = reader.meta().unwrap();
-    assert_eq!(meta.factory_version, factory_version());
+    assert_eq!(meta.factory_version, auto_ascii_factory::PIPELINE_VERSION);
     assert_eq!(meta.source, "in.mp4");
 
     let shots = reader.shots().to_vec();

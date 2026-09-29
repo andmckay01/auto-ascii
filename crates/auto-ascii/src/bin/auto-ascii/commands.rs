@@ -13,7 +13,7 @@ use crate::library::{self, AssetInfo, Sidecar, Source, absolute, clip_ref};
 use crate::output::{fps_text, human_bytes};
 use crate::{BoxErr, Cli, composition, deps, stream};
 
-const AGENT_GUIDE: &str = include_str!("../../../docs/AGENT-GUIDE.md");
+const AGENT_GUIDE: &str = include_str!("../../../AGENT-GUIDE.md");
 
 const STREAM_IS_INTERACTIVE: &str =
     "stream is interactive; run it without --json (or add --sim for one JSON stats line)";

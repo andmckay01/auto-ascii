@@ -7,12 +7,11 @@ members = [
     "crates/auto-ascii-eval",
     "crates/auto-ascii-factory",
     "crates/auto-ascii",
-    "crates/auto-ascii-cli",
     "crates/auto-ascii-lint",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/andmckay01/auto-ascii"
@@ -21,11 +20,12 @@ repository = "https://github.com/andmckay01/auto-ascii"
 chunks_exact_to_as_chunks = "allow"
 
 [workspace.dependencies]
-auto-ascii-core = { path = "crates/auto-ascii-core", version = "0.2.0" }
-auto-ascii-term = { path = "crates/auto-ascii-term", version = "0.1.0" }
-auto-ascii-format = { path = "crates/auto-ascii-format", version = "0.1.0" }
-auto-ascii-eval = { path = "crates/auto-ascii-eval" }
-auto-ascii = { path = "crates/auto-ascii", default-features = false }
+auto-ascii-core = { path = "crates/auto-ascii-core", version = "0.3.0" }
+auto-ascii-term = { path = "crates/auto-ascii-term", version = "0.3.0" }
+auto-ascii-format = { path = "crates/auto-ascii-format", version = "0.3.0" }
+auto-ascii-eval = { path = "crates/auto-ascii-eval", version = "0.3.0" }
+auto-ascii-factory = { path = "crates/auto-ascii-factory", version = "0.3.0" }
+auto-ascii = { path = "crates/auto-ascii", version = "0.3.0", default-features = false }
 zstd = "0.13"
 rayon = "1"
 crc32fast = "1.4"

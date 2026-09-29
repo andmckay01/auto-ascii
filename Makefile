@@ -1,10 +1,8 @@
-.PHONY: build release dist test eval comments lint clean
+# Releases: push a vX.Y.Z tag — see docs/RELEASING.md
+.PHONY: build test eval comments lint clean
 
 build:
-	cargo build --release -p auto-ascii-cli
-
-dist release:
-	./scripts/release.sh
+	cargo build --release -p auto-ascii
 
 test:
 	cargo test --workspace

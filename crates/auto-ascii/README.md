@@ -24,17 +24,23 @@ and RGB colors for your renderer, game engine or test.
 | `terminal` | **on** | `Player` / `PlayerBuilder` — the blocking terminal session (implies `compose`) |
 | `audio` | **on** | plays an asset's soundtrack through the audio device (cpal) |
 | `compose` | **on** | `Composition` TOML timelines (stitched clips) |
+| `cli` | **on** | the `auto-ascii` command and its dependencies: clap, the factory (implies `terminal`) |
 | *(none)* | | `RenderSession` only: no crossterm, no clap (`default-features = false`) |
 
 Examples: `simple-play` (the whole player in one call), `embedded-loop`
 (`RenderSession` in a hand-rolled loop with a mid-run resize), `headless-dump`
 (frames to stdout as text, no terminal at all).
 
-This crate is a library only. Producing assets, and playing them from a shell,
-is the job of the `auto-ascii` command (`auto-ascii add`, `auto-ascii play`)
-built from the repository — its README (`README.md` at the workspace root)
-covers that workflow, and `docs/FEATURE-MAP.md` the glyph styles, the eight
-shipped palettes and the eval harness.
+The crate also ships the `auto-ascii` command behind the default-on `cli`
+feature, so `cargo install auto-ascii` installs it. Producing assets and
+playing them from a shell (`auto-ascii add`, `auto-ascii play`) is its job —
+the repository's README (`README.md` at the workspace root) covers that
+workflow, and `docs/FEATURE-MAP.md` the glyph styles, the eight shipped
+palettes and the eval harness. To embed the player without the command:
+
+```toml
+auto-ascii = { version = "0.3", default-features = false, features = ["terminal", "audio", "compose"] }
+```
 
 ## License
 

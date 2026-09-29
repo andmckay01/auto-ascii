@@ -19,7 +19,7 @@ terminal.
 ## 0. Before you start
 
 ```bash
-cargo build --release -p auto-ascii-cli       # the player
+cargo build --release -p auto-ascii           # the player
 ASSET=path/to/clip.ascii                      # any .ascii (auto-ascii import makes one)
 PLAY="./target/release/auto-ascii play $ASSET"
 ```

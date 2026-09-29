@@ -4,11 +4,15 @@
 
 One command. The `auto-ascii` binary now does everything the old player and
 factory binaries did; `auto-ascii --help` leads with `play`, `stream` and
-`import`, and `auto-ascii --help-all` shows every command and flag.
+`import`, and `auto-ascii --help-all` shows every command and flag. It ships
+from the `auto-ascii` crate, so `cargo install auto-ascii` installs it.
 
-Versions: `auto-ascii` 0.2.0 → 0.3.0, `auto-ascii-core` 0.1.0 → 0.2.0,
-`auto-ascii-cli` 0.2.0 (unpublished). `auto-ascii-factory` keeps its version
-(it is recorded in every asset's META), and is now `publish = false`.
+Versions: every published crate (`auto-ascii`, `auto-ascii-core`,
+`auto-ascii-format`, `auto-ascii-term`, `auto-ascii-eval`,
+`auto-ascii-factory`) now shares one workspace version, 0.3.0. Assets no
+longer record the factory crate's version: META's `factory_version` is the
+factory's `PIPELINE_VERSION` (still `0.1.0`), which moves only when the built
+bytes do.
 
 ### Breaking
 
@@ -24,13 +28,14 @@ Versions: `auto-ascii` 0.2.0 → 0.3.0, `auto-ascii-core` 0.1.0 → 0.2.0,
   | `auto-ascii-factory build IN -o OUT [--ss --t --fps --res --params]` | `auto-ascii import IN -o OUT [same flags]`; add `--force` to replace an existing file |
   | `auto-ascii-factory inspect \| params \| eval \| sweep \| font-table …` | `auto-ascii dev inspect \| params \| eval \| sweep \| font-table …` (same flags) |
   | `auto-ascii-player --version`, `auto-ascii-factory --version` | `auto-ascii --version` |
-  | `cargo build -p auto-ascii --features bin`, `cargo build -p auto-ascii-factory` | `cargo build -p auto-ascii-cli` |
-  | `cargo install auto-ascii` (installed the player) | `cargo install --path crates/auto-ascii-cli` |
+  | `cargo build -p auto-ascii --features bin`, `cargo build -p auto-ascii-factory` | `cargo build -p auto-ascii` |
+  | `cargo install auto-ascii` (installed the player) | `cargo install --path crates/auto-ascii` |
 
-- The `auto-ascii` library crate ships no binary: the `bin` feature and its
-  optional `clap` / `anyhow` dependencies are gone. Default features are now
-  `terminal`, `audio` and `compose`, so the library API a default build gets is
-  unchanged.
+- The `auto-ascii` crate's `bin` feature and its optional `anyhow` dependency
+  are gone. The binary now needs the new `cli` feature; default features are
+  `terminal`, `audio`, `compose` and `cli`. Depend on the crate with
+  `default-features = false` (adding `terminal`, `audio` or `compose` as
+  needed) to get the lean library without the CLI's dependencies.
 - **Codec-named compatibility is removed** (deprecated since the rename to
   "style"): the hidden `--codec` flag on `play`, `compose play`, `stream` and
   the `headless-dump` example; the `codec = "…"` key in a video's saved
@@ -50,15 +55,25 @@ Versions: `auto-ascii` 0.2.0 → 0.3.0, `auto-ascii-core` 0.1.0 → 0.2.0,
 - `scripts/play-with-sound.command` takes the `auto-ascii` binary instead of a
   player binary (`play-with-sound.command CLI ASSET [PLAY_ARGS…]`), runs
   `CLI play`, and no longer skips a legacy audio-file argument.
-- `scripts/release.sh` builds and ships one `auto-ascii-<target>` binary per
-  target instead of `auto-ascii-player-<target>` plus an informational factory.
+- `scripts/release.sh` is removed. Releases come from the tag-driven
+  workflow (see Added), which ships one `auto-ascii` binary per target instead
+  of `auto-ascii-player-<target>` plus an informational factory.
 - Diagnostics that said `auto-ascii-player: sound: …` / `settings: …` now say
   `auto-ascii: …`; "not a valid ASCI asset" now reads "not a valid .ascii
   asset" (and the container's own errors say ".ascii file").
 - `auto-ascii dev params` without `--dump` is a usage error (exit 2) rather
   than a runtime error.
-- In the unpublished factory library, `ffmpeg::Programs::lookup` is gone:
-  `eval::EvalArgs` and `sweep::SweepArgs` carry the resolved `programs`.
+- The factory library's `eval`, `sweep`, `reel` and `font_table` modules
+  moved into the CLI as the `dev eval`, `dev sweep` and `dev font-table` code,
+  so the factory no longer depends on `auto-ascii` and is published.
+  `ffmpeg::Programs::lookup` is gone: `EvalArgs` and `SweepArgs` carry the
+  resolved `programs`.
+- Files a published crate embeds now live inside it:
+  `crates/auto-ascii-factory/params.toml` (pinned to the repo-root
+  `params.toml` by `factory_embeds_the_committed_params_file` in
+  `crates/auto-ascii/tests/m2_params_eval.rs`) and
+  `crates/auto-ascii/AGENT-GUIDE.md` (pinned to `docs/AGENT-GUIDE.md` by
+  `agent_guide_prints_the_committed_file` in `crates/auto-ascii/tests/cli.rs`).
 
 ### Added
 
@@ -83,6 +98,19 @@ Versions: `auto-ascii` 0.2.0 → 0.3.0, `auto-ascii-core` 0.1.0 → 0.2.0,
 - The `headless-dump` example takes `--warm N` (render the N frames before
   `--from` without printing them) and `--cells` (print glyph, fg and bg per
   cell). `tools/readme_gif.py` uses them to render the README GIF.
+- Tag-driven releases: pushing a `vX.Y.Z` tag runs
+  `.github/workflows/release.yml`, which builds `auto-ascii` for six targets
+  (aarch64/x86_64-apple-darwin, x86_64/aarch64-unknown-linux-gnu,
+  x86_64/aarch64-pc-windows-msvc) and publishes the GitHub Release,
+  crates.io, npm and the Homebrew tap. `docs/RELEASING.md` has the steps.
+- `scripts/install.sh` (macOS, Linux) and `scripts/install.ps1` (Windows)
+  install the prebuilt binary from a GitHub Release, and refuse to install a
+  download whose SHA-256 does not match the published one.
+- `brew install andmckay01/tap/auto-ascii`.
+- `npm i -g auto-ascii` or `npx auto-ascii`: the `auto-ascii` npm package
+  runs the prebuilt binary from its `@auto-ascii/<platform>` package.
+- `cargo binstall auto-ascii` fetches the prebuilt binary
+  (`[package.metadata.binstall]` in `crates/auto-ascii/Cargo.toml`).
 
 ### Changed
 

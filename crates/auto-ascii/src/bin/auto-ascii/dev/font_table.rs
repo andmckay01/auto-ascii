@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use ab_glyph::{Font, FontRef, PxScale};
 
-use crate::ffmpeg::BoxErr;
-use crate::sha256::sha256_hex;
+use auto_ascii_factory::ffmpeg::BoxErr;
+use auto_ascii_factory::sha256::sha256_hex;
 
 pub const CELL_W: u32 = 64;
 pub const CELL_H: u32 = 128;
@@ -217,11 +217,11 @@ mod tests {
     }
 
     const COMMITTED_TABLES: [&str; 5] = [
-        include_str!("../../auto-ascii-core/fonts/conservative.toml"),
-        include_str!("../../auto-ascii-core/fonts/dejavu-sans-mono.toml"),
-        include_str!("../../auto-ascii-core/fonts/liberation-mono.toml"),
-        include_str!("../../auto-ascii-core/fonts/noto-sans-mono.toml"),
-        include_str!("../../auto-ascii-core/fonts/ubuntu-mono.toml"),
+        include_str!("../../../../../auto-ascii-core/fonts/conservative.toml"),
+        include_str!("../../../../../auto-ascii-core/fonts/dejavu-sans-mono.toml"),
+        include_str!("../../../../../auto-ascii-core/fonts/liberation-mono.toml"),
+        include_str!("../../../../../auto-ascii-core/fonts/noto-sans-mono.toml"),
+        include_str!("../../../../../auto-ascii-core/fonts/ubuntu-mono.toml"),
     ];
 
     #[test]

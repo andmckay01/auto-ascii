@@ -98,7 +98,7 @@ tools/soak.py --asset PATH --outdir DIR [--duration SECS=3600] [--seed N]
               [--player PATH]
 ```
 
-Build the player first: `cargo build --release -p auto-ascii-cli` (the soak
+Build the player first: `cargo build --release -p auto-ascii` (the soak
 runs `target/release/auto-ascii play`).
 
 Continuously: drains the pty into a rotation-capped log (**first 2 MB** →

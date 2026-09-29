@@ -2,13 +2,17 @@
 //! is a thin adapter over the factory library, printing human text or, with
 //! --json, exactly one JSON value on stdout.
 
+pub mod eval;
+pub mod font_table;
 pub mod inspect;
+pub mod reel;
+pub mod sweep;
 
 use std::path::Path;
 
 use auto_ascii::Stopped;
 use auto_ascii::tools::Tool;
-use auto_ascii_factory::{Programs, effective_params, eval, font_table, sweep};
+use auto_ascii_factory::{Programs, effective_params};
 
 use crate::args::DevCmd;
 use crate::play::{self, Request};
