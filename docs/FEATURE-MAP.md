@@ -458,9 +458,11 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   `auto-ascii dev sim <asset> --sim COLSxROWS:N` and `auto-ascii dev bench-seek <asset>
   --bench-seek N` are the same runs, with every flag in their `--help`.
   `cargo run --release -p auto-ascii --example headless-dump -- <asset|comp.toml> [FRAMES]
-  [COLSxROWS] [--style S] [--palette P] [--from F] [--settings PLAYER.toml]` prints frames as
-  text. `--settings` applies a video's saved `<stem>.player.toml` (its `style` and dials);
-  an explicit `--style` still wins.
+  [COLSxROWS] [--style S] [--palette P] [--from F] [--warm N] [--settings PLAYER.toml]
+  [--cells]` prints frames as text. `--settings` applies a video's saved `<stem>.player.toml`
+  (its `style` and dials); an explicit `--style` still wins. `--warm N` renders the N frames
+  before `--from` without printing them; `--cells` prints every cell as hex glyph, fg and bg
+  (`------` for the default bg). `tools/readme_gif.py` draws that into the README GIF.
 - **Code:** `crates/auto-ascii-cli/src/play/sim.rs` `run` (the `--sim` harness drives
   `ClipDeck` against `SimBackend`; `play/bench.rs` is `--bench-seek`) and
   `crates/auto-ascii/examples/headless-dump.rs`.

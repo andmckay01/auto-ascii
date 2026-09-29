@@ -142,3 +142,40 @@ Full detached soak:
 setsid nohup tools/soak.py --asset clip.ascii --duration 3600 --outdir runs/soak-1h \
     > runs/soak-1h/harness.out 2>&1 &
 ```
+
+## readme_gif.py — the README demo GIF
+
+Renders `docs/assets/architect-2m14s.gif` from the Architect asset. It runs the
+`headless-dump` example with `--cells` (every cell's glyph, fg and bg), draws
+each kept frame with Pillow (Menlo 13 on black, 8x16 px cells, 120x34 grid
+with the 4-row letterbox trimmed top and bottom → 960x416), builds one global
+256-color palette with ffmpeg (`palettegen=stats_mode=diff`,
+`paletteuse=dither=none`) and optimizes with gifsicle. Needs Python 3 with
+Pillow, `ffmpeg`, `gifsicle` and macOS's `/System/Library/Fonts/Menlo.ttc`.
+Run it from the repo root:
+
+```sh
+python3 -m venv /tmp/gifenv && /tmp/gifenv/bin/pip install pillow
+/tmp/gifenv/bin/python tools/readme_gif.py \
+    "path/to/matrix-reloaded-architect-scene/The Architect.ascii"
+```
+
+```
+tools/readme_gif.py ASSET [--settings PLAYER.toml] [--start F=4036] [--end F=4339]
+                    [--step N=3] [--delay CS=10] [--warm N=0] [--grid 120x34]
+                    [--trim 4] [--font-size 13] [--lossy 10]
+                    [--out docs/assets/architect-2m14s.gif]
+```
+
+`--settings` defaults to the asset's saved `<stem>.player.toml` (style and
+dials). Every source frame from `--start` to `--end` is rendered, so
+hysteresis runs as in the player; every `--step`-th one is kept and shown for
+`--delay` centiseconds. The defaults are one shot, cut to cut: frames
+4036–4339 (2:14.53 up to the cut at 2:24.70), step 3 at 10 cs (10 fps, real
+time, 102 frames, 10.2 s). The shot is a zoom, so no two frames 8 s or more
+apart match (the closest pair differs by about 23 mean abs RGB, against about
+8 between kept neighbours); the loop point is the film's own cut on both sides
+instead. `--warm` is 0 because 4036 is the first frame after a cut: warming up
+across the cut leaves pre-cut glyphs in 12.5% of the first frame's cells. The
+committed file was made with Pillow 12.3.0, ffmpeg 9.0.2 and gifsicle 1.96;
+other versions can change the bytes.

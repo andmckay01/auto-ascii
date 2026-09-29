@@ -80,6 +80,9 @@ Versions: `auto-ascii` 0.2.0 → 0.3.0, `auto-ascii-core` 0.1.0 → 0.2.0,
   gained a structured report for it).
 - `play --sim` / `--bench-seek` (and `dev sim` / `dev bench-seek`) run with
   or without `--json` and print their one JSON line on stdout.
+- The `headless-dump` example takes `--warm N` (render the N frames before
+  `--from` without printing them) and `--cells` (print glyph, fg and bg per
+  cell). `tools/readme_gif.py` uses them to render the README GIF.
 
 ### Changed
 

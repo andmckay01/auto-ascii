@@ -1408,7 +1408,9 @@ facade surface + this hidden module.)
   (default `ascii`, `Style::default()`); `--sim`
   never reads a video's saved settings. `examples/headless-dump.rs` takes
   `--style NAME`, `--palette ascii|unicode|braille` (default ascii) and
-  `--from FRAME` (FRAMES consecutive frames from FRAME) anywhere on the line,
+  `--from FRAME` (FRAMES consecutive frames from FRAME; `--warm N` renders
+  the N frames before it unprinted) and `--cells` (each cell as 8 hex digits
+  of glyph, 6 of fg, 6 of bg or `------` for the default bg) anywhere on the line,
   plus `--settings PLAYER.toml` (feature `terminal`): a video's saved
   sidecar, parsed by `settings::VideoSettings::parse`, sets the style
   (an explicit `--style` wins) and `RenderSession::set_compose_params`.
