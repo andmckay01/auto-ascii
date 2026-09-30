@@ -239,6 +239,7 @@ jobs:
     needs: [version, release]
     if: needs.version.outputs.is_release == 'true'
     runs-on: ubuntu-22.04
+    environment: release
     timeout-minutes: 60
     permissions:
       id-token: write
@@ -275,6 +276,7 @@ jobs:
     needs: [version, release]
     if: needs.version.outputs.is_release == 'true'
     runs-on: ubuntu-22.04
+    environment: release
     timeout-minutes: 20
     permissions:
       id-token: write
@@ -344,6 +346,7 @@ jobs:
     needs: [version, release]
     if: needs.version.outputs.is_release == 'true' && needs.version.outputs.prerelease != 'true'
     runs-on: ubuntu-22.04
+    environment: release
     timeout-minutes: 10
     env:
       VERSION: ${{ needs.version.outputs.version }}
