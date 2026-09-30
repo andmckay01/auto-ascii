@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::BoxErr;
 use crate::home::{Home, folder_clip, sidecar_path};
+use crate::output::terminal_safe;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Sidecar {
@@ -16,6 +17,23 @@ pub struct Sidecar {
     pub created: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+impl Sidecar {
+    pub fn terminal_safe(&self) -> Sidecar {
+        Sidecar {
+            name: safe_copy(&self.name),
+            source: self.source.as_ref().map(Source::terminal_safe),
+            asset: self.asset.as_ref().map(|asset| AssetInfo { path: safe_copy(&asset.path), ..asset.clone() }),
+            created_unix: self.created_unix,
+            created: self.created.as_deref().map(safe_copy),
+            error: self.error.as_deref().map(safe_copy),
+        }
+    }
+}
+
+fn safe_copy(text: &str) -> String {
+    terminal_safe(text).into_owned()
 }
 
 pub const UNKNOWN: &str = "(unknown)";
@@ -83,6 +101,22 @@ impl Source {
             from: Some(from),
             in_secs: Some(in_secs),
             out_secs: Some(out_secs),
+        }
+    }
+
+    pub fn terminal_safe(&self) -> Source {
+        match self {
+            Source::Video { path, sha256, bytes } => Source::Video {
+                path: safe_copy(path),
+                sha256: sha256.as_deref().map(safe_copy),
+                bytes: *bytes,
+            },
+            Source::Cut { kind, from, in_secs, out_secs } => Source::Cut {
+                kind: safe_copy(kind),
+                from: from.as_deref().map(safe_copy),
+                in_secs: *in_secs,
+                out_secs: *out_secs,
+            },
         }
     }
 

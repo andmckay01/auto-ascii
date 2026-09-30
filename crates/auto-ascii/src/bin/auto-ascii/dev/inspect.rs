@@ -11,6 +11,7 @@ use auto_ascii_format::{
 use serde::Serialize;
 
 use crate::BoxErr;
+use crate::output::{terminal_safe, terminal_safe_line};
 
 #[derive(Serialize)]
 pub struct Report {
@@ -63,6 +64,22 @@ pub struct PlaneStats {
     pub deep_shadow_pct: f64,
     pub dev_mean: f64,
     pub dev_max: u8,
+}
+
+impl Report {
+    pub fn terminal_safe(self) -> Report {
+        let safe = |text: &str| terminal_safe(text).into_owned();
+        Report {
+            path: safe(&self.path),
+            meta: auto_ascii_format::Meta {
+                factory_version: safe(&self.meta.factory_version),
+                source: safe(&self.meta.source),
+                palette_hints: self.meta.palette_hints.iter().map(|hint| safe(hint)).collect(),
+            },
+            dumped_to: self.dumped_to.as_deref().map(safe),
+            ..self
+        }
+    }
 }
 
 pub fn collect(
@@ -154,7 +171,7 @@ pub fn collect(
 }
 
 pub fn print(r: &Report) {
-    outln!("{}: ASCI v{}", r.path, r.version);
+    outln!("{}: ASCI v{}", terminal_safe_line(&r.path), r.version);
     outln!("  file size:    {} bytes", r.file_bytes);
     outln!(
         "  flags:        {:#06x} (index: {}, crcs: {})",

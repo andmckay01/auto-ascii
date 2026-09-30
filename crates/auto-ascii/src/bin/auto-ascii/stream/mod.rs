@@ -987,21 +987,22 @@ fn sim_json(
     t0: Instant,
 ) -> String {
     let media = stats.media.as_ref();
+    let safe = |text: &str| crate::output::terminal_safe(text).into_owned();
     let stages: Vec<serde_json::Value> = stats
         .stages
         .iter()
         .map(|(n, p)| serde_json::json!({ "stage": n, "percent": p }))
         .collect();
     let obj = serde_json::json!({
-        "id": media.map(|m| m.id.clone()),
-        "title": media.map(|m| m.title.clone()),
-        "entry_url": stats.entry_url,
+        "id": media.map(|m| safe(&m.id)),
+        "title": media.map(|m| safe(&m.title)),
+        "entry_url": stats.entry_url.as_deref().map(safe),
         "duration_secs": media.and_then(|m| m.duration),
         "fps": stats.fps.map(|f| json_f(f.value())),
         "source": media.map(|m| format!("{}x{}", m.width.unwrap_or(0), m.height.unwrap_or(0))),
         "formats": media.map(|m| serde_json::json!({
-            "video": m.video.first().map(|t| t.format_id.clone()),
-            "audio": m.audio.first().map(|t| t.format_id.clone()),
+            "video": m.video.first().map(|t| safe(&t.format_id)),
+            "audio": m.audio.first().map(|t| safe(&t.format_id)),
         })),
         "plane": stats.plane.map(|(w, h)| format!("{w}x{h}")),
         "frames_decoded": stats.frames_decoded,
@@ -1016,13 +1017,13 @@ fn sim_json(
         "playback_started_secs": stats.started_at.map(json_f),
         "rebuffers": stats.rebuffers,
         "loader_peak_percent": stats.loader_peak,
-        "notes": stats.notes,
+        "notes": stats.notes.iter().map(|note| safe(note)).collect::<Vec<_>>(),
         "children_spawned": spawned,
         "children_alive": alive,
         "temp_files_written": scratch_entries,
         "temp_dir_removed": removed,
         "exit_reason": reason.name(),
-        "error": error,
+        "error": error.map(safe),
         "wall_secs": json_f(t0.elapsed().as_secs_f64()),
     });
     obj.to_string()

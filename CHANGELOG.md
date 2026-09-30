@@ -26,16 +26,19 @@
 
 ### Fixed
 
-- **Text from remote sites can no longer drive the terminal.** yt-dlp errors,
-  download progress, resolved URLs, stream notes, and the clip names, paths and
-  sidecar fields that `list` and `info` print now show every control character
-  except newline and tab as `?`. So do `--json` error objects and the link in
-  `add --json` output. That stops a malicious page from retitling the terminal
-  or writing the clipboard through OSC 52, in 7-bit or 8-bit form. Every
-  one-line message also shows newlines as `?`, so a page cannot forge extra
-  output lines in it; only the final error message keeps its line breaks.
-  Progress that yt-dlp or ffmpeg redraws with carriage returns now echoes only
-  its last state.
+- **Text from remote sites and shipped clip folders can no longer drive the
+  terminal.** yt-dlp errors, download progress, resolved URLs and stream notes;
+  the clip names, paths and sidecar fields that `list`, `info`, `cut`,
+  `compose` and `dev inspect` print; and the settings and sound problems
+  reported when playback ends now show every control character except newline
+  and tab as `?`. So do the string fields of `--json` output from
+  `stream --sim`, `list`, `info`, `cut`, `compose add`, `compose show` and
+  `dev inspect`, `--json` error objects, and the link in `add --json` output.
+  That stops a malicious page or clip folder from retitling the terminal or
+  writing the clipboard through OSC 52, in 7-bit or 8-bit form. Every one-line
+  message also shows newlines as `?`, so it cannot forge extra output lines;
+  only the final error message keeps its line breaks. Progress that yt-dlp or
+  ffmpeg redraws with carriage returns now echoes only its last state.
 - **Saving player settings with `s` no longer follows a symlink planted beside
   the clip.** The settings are written to a new, uniquely named temp file that
   refuses to open an existing path, then renamed into place, so a

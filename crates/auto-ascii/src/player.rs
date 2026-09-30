@@ -12,6 +12,7 @@ use crate::deck::{ClipDeck, DeckConfig};
 use crate::error::Error;
 use crate::pipeline::ProgressContext;
 use crate::settings::VideoSettings;
+use crate::text::terminal_safe_line;
 use crate::{PaletteChoice, pipeline};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -463,6 +464,20 @@ fn write_end_line(
     )
 }
 
+fn write_exit_notes<'a>(
+    out: &mut impl std::io::Write,
+    problems: &[String],
+    sound_notes: impl IntoIterator<Item = &'a String>,
+) -> std::io::Result<()> {
+    for problem in problems {
+        writeln!(out, "auto-ascii: settings: {}", terminal_safe_line(problem))?;
+    }
+    for note in sound_notes {
+        writeln!(out, "auto-ascii: sound: {}", terminal_safe_line(note))?;
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct HintState {
     pinned: bool,
@@ -884,12 +899,8 @@ impl Player {
         }
         let sound_notes = clock.finish();
         backend.shutdown();
-        for problem in &live.problems {
-            eprintln!("auto-ascii: settings: {problem}");
-        }
-        for note in opening.notes.iter().chain(&sound_notes) {
-            eprintln!("auto-ascii: sound: {note}");
-        }
+        let notes = opening.notes.iter().chain(&sound_notes);
+        let _ = write_exit_notes(&mut std::io::stderr().lock(), &live.problems, notes);
         stopped
     }
 }
@@ -1240,6 +1251,24 @@ mod tests {
         assert_eq!((live.style, live.compose, live.status()), (Style::Ascii, ComposeParams::default(), "unreadable"));
         assert_eq!(live.problems.len(), 1);
         assert!(live.problems[0].contains("clip-a.player.toml") && live.problems[0].contains("line 1"), "{:?}", live.problems);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exit_notes_from_a_shipped_sidecar_print_as_one_scrubbed_line_each() {
+        let (dir, a, _) = two_clip_dir("exit-notes");
+        let hostile = "shadow_lift = \x1b]0;X\x07\u{9d}52;c;SGVsbG8=\u{9c}\rforged\n";
+        std::fs::write(dir.join("clip-a.player.toml"), hostile).unwrap();
+        let mut live = LiveSettings::new(None);
+        live.front(0, &a);
+        let mut out = Vec::new();
+        write_exit_notes(&mut out, &live.problems, &["device \x1b[2Jgone\nforged".to_string()]).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.lines().count(), 2, "{text:?}");
+        assert!(!text.contains(|c: char| c.is_control() && c != '\n'), "{text:?}");
+        assert!(text.starts_with("auto-ascii: settings: "), "{text:?}");
+        assert!(text.contains("got ?]0;X??52;c;SGVsbG8=??forged\n"), "{text:?}");
+        assert!(text.ends_with("auto-ascii: sound: device ?[2Jgone?forged\n"), "{text:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
