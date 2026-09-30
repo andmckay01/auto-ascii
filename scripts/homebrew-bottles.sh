@@ -41,10 +41,20 @@ for pair in "${bottle_targets[@]}"; do
     tar -xzf "$archive" -C "$keg" LICENSE README.md auto-ascii
     mv "$keg/auto-ascii" "$keg/bin/auto-ascii"
     chmod 0755 "$keg/bin/auto-ascii"
+    touch -r "$keg/bin/auto-ascii" "$keg/bin" "$keg" "$stage/$tag/auto-ascii"
 
     name="auto-ascii-$version.$tag.bottle.tar.gz"
     rm -f "$dist/$name" "$dist/$name.sha256"
-    COPYFILE_DISABLE=1 tar -C "$stage/$tag" -czf "$dist/$name" auto-ascii
-    printf '%s  %s\n' "$(sha256_hex "$dist/$name")" "$name" > "$dist/$name.sha256"
+    members=(
+        auto-ascii
+        "auto-ascii/$version"
+        "auto-ascii/$version/LICENSE"
+        "auto-ascii/$version/README.md"
+        "auto-ascii/$version/bin"
+        "auto-ascii/$version/bin/auto-ascii"
+    )
+    COPYFILE_DISABLE=1 tar -C "$stage/$tag" --no-recursion -cf - "${members[@]}" | gzip -n -9 > "$dist/$name"
+    hex=$(sha256_hex "$dist/$name")
+    printf '%s  %s\n' "$hex" "$name" > "$dist/$name.sha256"
     echo "auto-ascii $version $tag: $dist/$name"
 done
