@@ -74,6 +74,11 @@ jobs:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    # The macOS leg is informational until the timing-bound tests measure
+    # their real gaps: the slower macOS runners miss wall-clock windows that
+    # Linux, which gates the same tests, meets. The durable fix belongs in
+    # the tests.
+    continue-on-error: ${{ matrix.os == 'macos-15' }}
     strategy:
       fail-fast: false
       matrix:
@@ -128,22 +133,16 @@ jobs:
 
       # The stream tests play real-time media against stall thresholds and
       # flake when they compete for the runner's CPUs, so they run serially.
+      # --no-fail-fast keeps going past a failing test target, so one run
+      # lists every failure.
       - name: Test
-        if: runner.os == 'Linux'
-        run: cargo test --workspace --locked -- --skip 'stream::'
-
-      # Two pty_probe tests write 40-50 ms apart against a 150 ms harness
-      # deadline and miss it on the slower macOS runners (Linux keeps covering
-      # them); the durable fix is in the tests, not here.
-      - name: Test (macOS, minus two timing-bound pty tests)
-        if: runner.os == 'macOS'
-        run: >-
-          cargo test --workspace --locked -- --skip 'stream::'
-          --skip probe_grace_drain_consumes_replies_dribbling_past_deadline
-          --skip split_esc_p_straggler_burst_never_quits_or_leaks_keys
-
-      - name: Test stream (serial)
         if: runner.os != 'Windows'
+        run: cargo test --workspace --locked --no-fail-fast -- --skip 'stream::'
+
+      # Runs even when the step above fails, so the macOS leg still exercises
+      # the stream tests.
+      - name: Test stream (serial)
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
         run: cargo test --locked -p auto-ascii --bin auto-ascii 'stream::' -- --test-threads=1
 
       # The CLI, term and lint suites spawn sh and python3, so Windows covers
