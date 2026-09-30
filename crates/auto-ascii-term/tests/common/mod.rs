@@ -68,7 +68,10 @@ pub fn spawn_harness_with(
     cmd.arg(mode)
         .stdin(dup_stdio(slave))
         .stdout(dup_stdio(slave))
-        .stderr(dup_stdio(slave));
+        .stderr(dup_stdio(slave))
+        .env_remove("TERM_PROGRAM")
+        .env_remove("TERM_PROGRAM_VERSION")
+        .env_remove("COLORTERM");
     for (key, value) in env {
         match value {
             Some(v) => cmd.env(key, v),

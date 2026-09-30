@@ -29,12 +29,22 @@ pub const QUIRKS: &[Quirk] = &[
     },
 ];
 
+pub const TERM_PROGRAM_COLOR_CAPS: &[(&str, ColorTier)] = &[("Apple_Terminal", ColorTier::C256)];
+
 fn rank(t: ColorTier) -> u8 {
     match t {
         ColorTier::Mono => 0,
         ColorTier::C16 => 1,
         ColorTier::C256 => 2,
         ColorTier::True => 3,
+    }
+}
+
+pub fn cap_color_for_term_program(caps: &mut Caps, term_program: &str) {
+    for &(program, most) in TERM_PROGRAM_COLOR_CAPS {
+        if term_program == program && rank(caps.color) > rank(most) {
+            caps.color = most;
+        }
     }
 }
 
@@ -127,6 +137,22 @@ mod tests {
         let mut c = caps(ColorTier::True);
         assert!(apply_quirks(&mut c, &replies("XTerm(390)", Some(true))).is_empty());
         assert_eq!(c.color, ColorTier::True);
+    }
+
+    #[test]
+    fn apple_terminal_cap_only_lowers_tiers() {
+        let capped = |color, program: &str| {
+            let mut c = caps(color);
+            cap_color_for_term_program(&mut c, program);
+            c.color
+        };
+        assert_eq!(capped(ColorTier::True, "Apple_Terminal"), ColorTier::C256);
+        assert_eq!(capped(ColorTier::C256, "Apple_Terminal"), ColorTier::C256);
+        assert_eq!(capped(ColorTier::C16, "Apple_Terminal"), ColorTier::C16);
+        assert_eq!(capped(ColorTier::Mono, "Apple_Terminal"), ColorTier::Mono);
+        for other in ["", "iTerm.app", "WezTerm", "ghostty", "apple_terminal"] {
+            assert_eq!(capped(ColorTier::True, other), ColorTier::True, "{other:?}");
+        }
     }
 
     #[test]

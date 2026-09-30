@@ -346,6 +346,24 @@ fn apply_passive(caps: &mut Caps, h: &EnvHints) {
 }
 
 #[cfg(unix)]
+fn apply_replies(caps: &mut Caps, replies: &ProbeReplies) {
+    if replies.xtgettcap_rgb == Some(true) {
+        caps.color = ColorTier::True;
+    }
+    caps.sync_2026 = replies.sync_supported();
+    if replies.cell_px.is_some() {
+        caps.cell_px = replies.cell_px;
+    }
+}
+
+fn settle_color(caps: &mut Caps, h: &EnvHints, forced: Option<ColorTier>) {
+    crate::quirks::cap_color_for_term_program(caps, &h.term_program);
+    if let Some(t) = forced {
+        caps.color = t;
+    }
+}
+
+#[cfg(unix)]
 pub fn probe_caps(opts: &ProbeOptions) -> Caps {
     let in_fd = libc::STDIN_FILENO;
     let out_fd = libc::STDOUT_FILENO;
@@ -390,13 +408,7 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
             match run_volley(in_fd, out_fd, opts.timeout) {
                 Ok(replies) if replies.da1 => {
                     apply_passive(&mut caps, &hints);
-                    if replies.xtgettcap_rgb == Some(true) {
-                        caps.color = ColorTier::True;
-                    }
-                    caps.sync_2026 = replies.sync_supported();
-                    if replies.cell_px.is_some() {
-                        caps.cell_px = replies.cell_px;
-                    }
+                    apply_replies(&mut caps, &replies);
                     let pre_quirk_color = caps.color;
                     if !opts.no_quirks {
                         let _ = crate::quirks::apply_quirks(&mut caps, &replies);
@@ -419,9 +431,7 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
         }
     }
 
-    if let Some(t) = opts.forced_tier {
-        caps.color = t;
-    }
+    settle_color(&mut caps, &hints, opts.forced_tier);
     caps
 }
 
@@ -440,16 +450,14 @@ pub fn probe_caps(opts: &ProbeOptions) -> Caps {
     };
     VOLLEY_STRAGGLERS.store(false, Ordering::Relaxed);
     let tty = std::io::stdin().is_tty() && std::io::stdout().is_tty();
+    let hints = EnvHints::from_env();
     if tty {
         if let Ok((cols, rows)) = crossterm::terminal::size() {
             caps.cells = (cols, rows);
         }
-        let hints = EnvHints::from_env();
         apply_passive(&mut caps, &hints);
     }
-    if let Some(t) = opts.forced_tier {
-        caps.color = t;
-    }
+    settle_color(&mut caps, &hints, opts.forced_tier);
     caps
 }
 
@@ -792,6 +800,68 @@ mod tests {
         assert_eq!(passive(&hints("xterm", "WezTerm", "", "C")).color, ColorTier::True);
         assert_eq!(passive(&hints("xterm-direct", "", "", "C")).color, ColorTier::True);
         assert_eq!(passive(&hints("xterm", "", "", "C")).color, ColorTier::C256);
+    }
+
+    fn settled(h: &EnvHints, forced: Option<ColorTier>) -> Caps {
+        let mut caps = passive(h);
+        settle_color(&mut caps, h, forced);
+        caps
+    }
+
+    #[test]
+    fn apple_terminal_is_capped_at_256_despite_colorterm() {
+        let h = hints("xterm-256color", "Apple_Terminal", "truecolor", "en_US.UTF-8");
+        assert_eq!(passive(&h).color, ColorTier::True, "passive hints alone still say truecolor");
+        assert_eq!(settled(&h, None).color, ColorTier::C256);
+    }
+
+    #[test]
+    fn colorterm_truecolor_without_term_program_stays_truecolor() {
+        let h = hints("xterm-256color", "", "truecolor", "en_US.UTF-8");
+        assert_eq!(settled(&h, None).color, ColorTier::True);
+    }
+
+    #[test]
+    fn apple_terminal_without_colorterm_is_256() {
+        let h = hints("xterm-256color", "Apple_Terminal", "", "en_US.UTF-8");
+        assert_eq!(settled(&h, None).color, ColorTier::C256);
+    }
+
+    #[test]
+    fn apple_terminal_cap_survives_an_rgb_reply() {
+        let h = hints("xterm-256color", "Apple_Terminal", "", "en_US.UTF-8");
+        let mut caps = passive(&h);
+        let replies =
+            ProbeReplies { xtgettcap_rgb: Some(true), da1: true, ..ProbeReplies::default() };
+        apply_replies(&mut caps, &replies);
+        assert_eq!(caps.color, ColorTier::True, "the reply alone upgrades");
+        settle_color(&mut caps, &h, None);
+        assert_eq!(caps.color, ColorTier::C256);
+    }
+
+    #[test]
+    fn apple_terminal_cap_survives_a_stale_cache_hit() {
+        let h = hints("xterm-256color", "Apple_Terminal", "truecolor", "en_US.UTF-8");
+        let mut caps = passive(&h);
+        apply_cache_hit(
+            &mut caps,
+            CacheEntry { color: ColorTier::True, sync_2026: false, quirk_clamped: false },
+        );
+        assert_eq!(caps.color, ColorTier::True, "an entry stored before the cap existed");
+        settle_color(&mut caps, &h, None);
+        assert_eq!(caps.color, ColorTier::C256);
+    }
+
+    #[test]
+    fn forced_tier_overrides_the_apple_terminal_cap() {
+        let h = hints("xterm-256color", "Apple_Terminal", "", "en_US.UTF-8");
+        assert_eq!(settled(&h, Some(ColorTier::True)).color, ColorTier::True);
+        assert_eq!(settled(&h, Some(ColorTier::Mono)).color, ColorTier::Mono);
+    }
+
+    #[test]
+    fn linux_console_stays_16_colors() {
+        assert_eq!(settled(&hints("linux", "", "", "C"), None).color, ColorTier::C16);
     }
 
     #[test]
