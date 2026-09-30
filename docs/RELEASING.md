@@ -96,13 +96,18 @@ After the first release, switch both registries to trusted publishing (OIDC)
 and delete the two tokens, from the repository secrets and from the
 registries:
 
+- **GitHub**: the three publish jobs run in the `release` environment
+  (repository Settings → Environments), whose deployment rule allows only
+  the tag pattern `v*`. A publish token can therefore only be minted by a
+  tag push, never by a branch or a manual run.
 - **crates.io**: for each of the six crates, Settings → Trusted Publishing →
   add GitHub, owner `andmckay01`, repository `auto-ascii`, workflow
-  `release.yml`, no environment.
+  `release.yml`, environment `release`.
 - **npm**: for each of the seven packages (`auto-ascii` and the six
   `@auto-ascii/*`), package Settings → Trusted publishing → GitHub Actions,
-  owner `andmckay01`, repository `auto-ascii`, workflow `release.yml`, no
-  environment. Tick plain `npm publish`, not only `npm stage publish`.
+  owner `andmckay01`, repository `auto-ascii`, workflow `release.yml`,
+  environment `release`. Tick plain `npm publish`, not only
+  `npm stage publish`.
 
 With a token secret set the jobs use it; with none they fall back to OIDC
 (`rust-lang/crates-io-auth-action` for crates.io; npm 11.5.1+ for npm).
