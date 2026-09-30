@@ -412,9 +412,9 @@ jobs:
           # push only, so the token never lands in .git/config.
           git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TAP_TOKEN" | base64 | tr -d '\n')" push origin HEAD:main
 
-  # Installs this release from its published archives with its published
-  # installers, pinned to this version, which proves both work before anyone
-  # else downloads them.
+  # Downloads and runs the installers the release job uploaded, pinned to
+  # this version, so a missing or stale installer asset fails here, before
+  # anyone else downloads it. Nothing comes from the tree: no checkout.
   smoke:
     name: smoke (${{ matrix.os }})
     needs: [version, release]
@@ -430,10 +430,6 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-
       # The Linux binary links libasound.so.2 at runtime.
       - name: Install system dependencies
         if: runner.os == 'Linux'
@@ -447,7 +443,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          AUTO_ASCII_VERSION="$VERSION" AUTO_ASCII_INSTALL_DIR="$RUNNER_TEMP/auto-ascii-bin" sh scripts/install.sh
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/install.sh" "https://github.com/andmckay01/auto-ascii/releases/download/v$VERSION/install.sh"
+          AUTO_ASCII_VERSION="$VERSION" AUTO_ASCII_INSTALL_DIR="$RUNNER_TEMP/auto-ascii-bin" sh "$RUNNER_TEMP/install.sh"
           out=$("$RUNNER_TEMP/auto-ascii-bin/auto-ascii" --version)
           echo "$out"
           case "$out" in
@@ -459,7 +456,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          & scripts/install.ps1 -Version $env:VERSION -InstallDir "$env:RUNNER_TEMP\auto-ascii-bin"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/andmckay01/auto-ascii/releases/download/v$env:VERSION/install.ps1" -OutFile "$env:RUNNER_TEMP\install.ps1"
+          & "$env:RUNNER_TEMP\install.ps1" -Version $env:VERSION -InstallDir "$env:RUNNER_TEMP\auto-ascii-bin"
           $out = & "$env:RUNNER_TEMP\auto-ascii-bin\auto-ascii.exe" --version
           Write-Host $out
           if ($LASTEXITCODE -ne 0 -or -not "$out".Contains($env:VERSION)) {
