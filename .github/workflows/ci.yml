@@ -1,48 +1,123 @@
 name: ci
 
+# Every job runs on the toolchain pinned in rust-toolchain.toml. A floating
+# stable plus -D warnings can fail unrelated PRs the day a Rust release lands,
+# so toolchain bumps are deliberate commits (docs/RELEASING.md).
 on:
   pull_request:
   push:
     branches: [main]
+  # Weekly, so advisory, runner-image and upstream download drift shows up on
+  # main rather than in the next PR or tag.
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# PR runs supersede each other; main pushes, the weekly run and manual runs
+# never cancel or queue behind one another.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.ref) || format('ci-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
 
 jobs:
+  # ./ rather than GitHub's newer $/ self-repository form, which actionlint
+  # 1.7.12 rejects, so zizmor's self-repository finding is ignored here.
+  checks:
+    uses: ./.github/workflows/checks.yml # zizmor: ignore[self-repository]
+    with:
+      live: ${{ github.event_name == 'schedule' }}
+
+  # The same six-target build a tag ships, cached and kept for 7 days.
+  build:
+    uses: ./.github/workflows/build.yml # zizmor: ignore[self-repository]
+
+  # Rehearses the tag-only release assembly on every PR: the bottles and
+  # every checksum, the Homebrew formula and the npm packages, from this
+  # run's build.
+  assemble:
+    name: assemble
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml names the toolchain; cargo reads the version.
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      - name: Read version
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="auto-ascii") | .version')
+          [ -n "$version" ] || { echo "::error::no auto-ascii package in cargo metadata"; exit 1; }
+          echo "version $version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: archive-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: bin-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Bottles and checksums
+        run: |
+          set -euo pipefail
+          bash scripts/homebrew-bottles.sh "$VERSION" dist
+          (cd dist && sha256sum -c -- *.sha256)
+
+      - name: Homebrew formula
+        run: |
+          set -euo pipefail
+          bash scripts/homebrew-formula.sh "$VERSION" dist > "$RUNNER_TEMP/auto-ascii.rb"
+          ruby -c "$RUNNER_TEMP/auto-ascii.rb"
+
+      - name: npm packages
+        run: |
+          set -euo pipefail
+          node npm/scripts/set-version.mjs "$VERSION"
+          node npm/scripts/make-platform-packages.mjs --version "$VERSION" --artifacts artifacts --out npm-dist
+          for dir in npm-dist/* npm/auto-ascii; do npm pack --dry-run "./$dir"; done
+          git checkout -- npm/auto-ascii/package.json
+
+  # The gate. Its display name "ci" is the context branch protection
+  # requires; renamed, every PR would wait on a check that never reports. It
+  # runs on always() because a required check that is skipped counts as
+  # passing on GitHub: the gate must run and fail explicitly when anything it
+  # needs did not succeed.
   ci:
     name: ci
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    needs: [checks, build, assemble]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-
-      # alsa-sys (cpal) links libasound via pkg-config; the factory and
-      # stream tests shell out to a real ffmpeg.
-      - name: Install system dependencies
+      - name: Require every job
+        env:
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config ffmpeg
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      # The stream tests play real-time media against stall thresholds and
-      # flake when they compete for the runner's CPUs, so they run serially.
-      - name: Test
-        run: cargo test --workspace -- --skip 'stream::'
-
-      - name: Test stream (serial)
-        run: cargo test -p auto-ascii --bin auto-ascii 'stream::' -- --test-threads=1
+          echo "$RESULTS"
+          jq -e 'all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null || { echo "::error::a required job did not succeed"; exit 1; }

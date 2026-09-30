@@ -1,33 +1,35 @@
 name: release
 
 # A vX.Y.Z tag builds, packages and publishes everything: the GitHub release
-# (archives, SHA256SUMS, install scripts), crates.io, npm and the Homebrew tap.
-# Manual runs and PRs touching the release machinery build and package only.
-# docs/RELEASING.md is the maintainer guide.
+# (archives, SHA256SUMS, install scripts), crates.io, npm and the Homebrew tap,
+# after the same checks ci.yml runs. Manual runs check, build and package only.
+# PRs don't run this workflow: ci.yml builds every PR through the same
+# build.yml. docs/RELEASING.md is the maintainer guide.
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+*']
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/release.yml'
-      - 'scripts/**'
-      - 'npm/**'
 
 permissions:
   contents: read
 
+# Never cancelled: a second run for the same tag waits rather than cutting a
+# publish short.
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
 
 jobs:
   # The single version every job uses. On a tag push the tag must name the
   # Cargo workspace version, so a release can't ship binaries that report
-  # another one.
+  # another one, and must be on main, so it ships only what has merged.
   version:
     name: version
     runs-on: ubuntu-22.04
@@ -37,9 +39,19 @@ jobs:
       is_release: ${{ steps.version.outputs.is_release }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      # Full history, so the tagged commit can be checked against main.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      # rust-toolchain.toml names the toolchain and its components; rustup
+      # itself is left as the runner image ships it.
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
 
       - name: Read and check version
         id: version
@@ -66,113 +78,54 @@ jobs:
             echo "prerelease=$prerelease"
           } >> "$GITHUB_OUTPUT"
 
-  # One native build per target, smoke-tested on its own runner, packaged as
-  # archive-<target> (for the release) and bin-<target> (for npm).
+      # is_release is true exactly on a tag push. Every commit of a merged PR
+      # is an ancestor of main, so the check walks main's first-parent line
+      # instead. The fetch is anonymous: the repository is public and the
+      # checkout kept no credentials. rev-list is captured first: grep -q
+      # stops at the first match, and the SIGPIPE a still-writing rev-list
+      # would then take fails the step under pipefail.
+      - name: Check the tag is on main
+        if: steps.version.outputs.is_release == 'true'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          first_parent=$(git rev-list --first-parent origin/main)
+          grep -qx "$GITHUB_SHA" <<<"$first_parent" || { echo "::error::tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not a commit on main's first-parent line; move the tag to the merge commit: git tag -d $GITHUB_REF_NAME && git push origin :refs/tags/$GITHUB_REF_NAME && git checkout main && git pull && git tag $GITHUB_REF_NAME && git push origin $GITHUB_REF_NAME"; exit 1; }
+
+  # The same checks ci.yml runs on every PR, run again on the tagged commit
+  # before anything publishes. ./ rather than $/ for the reason in ci.yml.
+  # No installers job: it installs the latest published release, which on a
+  # tag is the previous one. The post-publish smoke job tests the new
+  # installers against the new release, so a tag run never depends on the
+  # previous release's assets.
+  checks:
+    uses: ./.github/workflows/checks.yml # zizmor: ignore[self-repository]
+    with:
+      installers: false
+
+  # The binaries that ship: built cold, with no cache, and kept for 30 days.
   build:
-    name: build (${{ matrix.target }})
-    needs: version
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { target: aarch64-apple-darwin, os: macos-15, archive: tar.gz }
-          - { target: x86_64-apple-darwin, os: macos-15-intel, archive: tar.gz }
-          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, archive: tar.gz }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, archive: tar.gz }
-          - { target: x86_64-pc-windows-msvc, os: windows-2022, archive: zip }
-          - { target: aarch64-pc-windows-msvc, os: windows-11-arm, archive: zip }
-    env:
-      TARGET: ${{ matrix.target }}
-      VERSION: ${{ needs.version.outputs.version }}
-      ARCHIVE: ${{ matrix.archive }}
-      EXE: ${{ contains(matrix.target, '-windows-') && 'auto-ascii.exe' || 'auto-ascii' }}
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      # alsa-sys (cpal) links libasound via pkg-config.
-      - name: Install system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
-
-      # ring (via ureq's rustls) compiles its C with clang on arm64 Windows.
-      - name: Check for clang
-        if: matrix.target == 'aarch64-pc-windows-msvc'
-        run: |
-          set -euo pipefail
-          command -v clang >/dev/null || { echo "::error::clang is not on PATH; ring needs it to build for $TARGET"; exit 1; }
-          clang --version
-
-      # A static CRT on MSVC, so the binary runs without the VC++ runtime.
-      - name: Build
-        env:
-          RUSTFLAGS: ${{ endsWith(matrix.target, '-pc-windows-msvc') && '-C target-feature=+crt-static' || '' }}
-        run: |
-          set -euo pipefail
-          cargo build --release --locked -p auto-ascii --target "$TARGET"
-
-      # package-archive.sh strips the binary in place, so npm gets it stripped too.
-      - name: Package
-        run: |
-          set -euo pipefail
-          bash scripts/package-archive.sh "$TARGET" "$VERSION" "$ARCHIVE"
-          mkdir -p "bin/$TARGET"
-          cp "target/$TARGET/release/$EXE" "bin/$TARGET/"
-
-      # Runs the stripped binary, the bits that ship.
-      - name: Smoke test
-        run: |
-          set -euo pipefail
-          out=$("bin/$TARGET/$EXE" --version)
-          echo "$out"
-          case "$out" in
-            *"$VERSION"*) ;;
-            *) echo "::error::$EXE --version printed '$out', expected it to contain $VERSION"; exit 1 ;;
-          esac
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: archive-${{ matrix.target }}
-          path: |
-            dist/auto-ascii-${{ matrix.target }}.${{ matrix.archive }}
-            dist/auto-ascii-${{ matrix.target }}.${{ matrix.archive }}.sha256
-          if-no-files-found: error
-
-      # Uploading the bin/ directory keeps the <target>/ level, so downloading
-      # every bin-* artifact into one directory rebuilds <dir>/<target>/.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: bin-${{ matrix.target }}
-          path: bin/
-          if-no-files-found: error
+    uses: ./.github/workflows/build.yml # zizmor: ignore[self-repository]
+    with:
+      cache: false
+      retention-days: 30
 
   # The GitHub release: every archive, SHA256SUMS and both install scripts.
   # gh creates it as a draft, uploads, then publishes, so it never appears
-  # half-uploaded. Safe to re-run: an existing release just gets its assets
-  # re-uploaded.
+  # half-uploaded; a draft left by a failed run is deleted and recreated. A
+  # published release is never replaced. Re-running this job after a failure
+  # finds its own SHA256SUMS already published and carries on to attest; a
+  # rebuild ("Re-run all jobs") brings other checksums and fails on purpose.
   release:
     name: release
-    needs: [version, build]
+    needs: [version, checks, build]
     if: needs.version.outputs.is_release == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: write # create the release and upload its assets
+      id-token: write # sign the provenance attestation with the run's OIDC identity
+      attestations: write # store the provenance attestation on this repository
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -180,9 +133,11 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       PRERELEASE: ${{ needs.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: archive-*
           path: dist
@@ -199,7 +154,7 @@ jobs:
           ls -l dist
           cat dist/SHA256SUMS
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: homebrew-bottle-sha256
           path: dist/*.bottle.tar.gz.sha256
@@ -229,20 +184,46 @@ jobs:
           NOTES
 
       - name: Create release and upload assets
+        id: publish
         run: |
           set -euo pipefail
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "release $TAG exists; uploading assets only"
-            gh release upload "$TAG" dist/* --clobber
-          else
-            flags=()
-            if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
-            gh release create "$TAG" dist/* --verify-tag --title "auto-ascii $VERSION" \
-              --generate-notes --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"
+          if is_draft=$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null); then
+            if [ "$is_draft" = true ]; then
+              echo "release $TAG is a draft left by an earlier run; deleting it"
+              gh release delete "$TAG" --yes
+            else
+              # The same SHA256SUMS means a re-run of this job on the same
+              # run's artifacts; the bottles are reproducible.
+              gh release download "$TAG" --pattern SHA256SUMS --dir "$RUNNER_TEMP/published"
+              if cmp -s "$RUNNER_TEMP/published/SHA256SUMS" dist/SHA256SUMS; then
+                echo "release $TAG already holds these exact assets; continuing"
+                echo "created=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "::error::release $TAG is already published; re-run the failed jobs instead of rebuilding, or delete the release (keep the tag) to publish a fresh build"
+              exit 1
+            fi
           fi
+          flags=()
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          gh release create "$TAG" dist/* --verify-tag --title "auto-ascii $VERSION" \
+            --generate-notes --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"
+          echo "created=true" >> "$GITHUB_OUTPUT"
 
-  # Crates in dependency order. Auth: a CARGO_REGISTRY_TOKEN secret if set
-  # (needed for the first release), else crates.io trusted publishing (OIDC).
+      # Every archive and bottle listed in SHA256SUMS gets a signed build
+      # provenance statement, only once the release holding exactly those
+      # files is published; check one with
+      # gh attestation verify <file> --repo andmckay01/auto-ascii \
+      #   --signer-workflow andmckay01/auto-ascii/.github/workflows/release.yml
+      - name: Attest build provenance
+        if: steps.publish.outputs.created == 'true'
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+  # Crates in dependency order. Auth: crates.io trusted publishing (OIDC)
+  # only. A brand-new crate is published once by hand from a maintainer
+  # machine, then given trusted publishing.
   publish-crates:
     name: publish crates.io
     needs: [version, release]
@@ -251,14 +232,18 @@ jobs:
     environment: release
     timeout-minutes: 60
     permissions:
-      id-token: write
+      id-token: write # exchanged for a short-lived crates.io publish token
       contents: read
-    env:
-      HAS_CARGO_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
 
       - name: Install system dependencies
         run: |
@@ -266,20 +251,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
 
-      - uses: rust-lang/crates-io-auth-action@v1
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
         id: auth
-        if: env.HAS_CARGO_TOKEN != 'true'
 
       - name: Publish
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           set -euo pipefail
           bash scripts/publish-crates.sh
 
   # The seven npm packages: the six platform packages first, so the launcher's
-  # pins resolve the moment it is live. Auth: an NPM_TOKEN secret if set
-  # (needed for the first release), else npm trusted publishing (OIDC).
+  # pins resolve the moment it is live. Auth: npm trusted publishing (OIDC)
+  # only. A brand-new package is published once by hand from a maintainer
+  # machine, then given trusted publishing.
   publish-npm:
     name: publish npm
     needs: [version, release]
@@ -288,31 +273,38 @@ jobs:
     environment: release
     timeout-minutes: 20
     permissions:
-      id-token: write
+      id-token: write # npm trusted publishing and provenance
       contents: read
     env:
       VERSION: ${{ needs.version.outputs.version }}
       PRERELEASE: ${{ needs.version.outputs.prerelease }}
-      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: bin-*
           path: artifacts
           merge-multiple: true
 
-      - uses: actions/setup-node@v4
-        with:
+      # setup-node v4 caches only when `cache:` is set, and it is not; zizmor
+      # assumes the package-manager cache that v5 turns on by default.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: # zizmor: ignore[cache-poisoning]
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      # Trusted publishing needs npm 11.5.1 or later.
+      # Trusted publishing needs npm 11.5.1 or later. Pinned exactly, to a
+      # release at least a week old: the same cooldown dependabot.yml gives
+      # every other update, so a bad npm release has time to be caught first.
+      # npm bundles every dependency it has, so nothing here resolves
+      # unreviewed; zizmor flags any global install, hence the ignore.
       - name: Update npm
-        run: |
+        run: | # zizmor: ignore[adhoc-packages]
           set -euo pipefail
-          npm install -g npm@latest
+          npm install -g npm@11.20.0
           npm --version
 
       - name: Generate packages
@@ -322,14 +314,10 @@ jobs:
           node npm/scripts/make-platform-packages.mjs --version "$VERSION" --artifacts artifacts --out npm-dist
 
       - name: Publish
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          if [ "$HAS_NPM_TOKEN" = true ]; then
-            export NODE_AUTH_TOKEN="$NPM_TOKEN"
-          fi
           # npm refuses a prerelease without a dist-tag; keep it off latest.
+          # Trusted publishing attaches provenance itself, so no --provenance.
           flags=(--access public)
           if [ "$PRERELEASE" = true ]; then flags+=(--tag next); fi
           published=()
@@ -367,17 +355,19 @@ jobs:
           set -euo pipefail
           echo "::warning::HOMEBREW_TAP_TOKEN is not set; skipping the Homebrew tap update for $VERSION"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: env.HAS_TAP_TOKEN == 'true'
+        with:
+          persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: env.HAS_TAP_TOKEN == 'true'
         with:
           pattern: archive-*
           path: dist
           merge-multiple: true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: env.HAS_TAP_TOKEN == 'true'
         with:
           name: homebrew-bottle-sha256
@@ -390,16 +380,21 @@ jobs:
           bash scripts/homebrew-formula.sh "$VERSION" dist > "$RUNNER_TEMP/auto-ascii.rb"
           cat "$RUNNER_TEMP/auto-ascii.rb"
 
-      - uses: actions/checkout@v4
+      # The token clones the tap and is not kept in .git/config; the push
+      # below passes it again for that one command.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: env.HAS_TAP_TOKEN == 'true'
         with:
           repository: andmckay01/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
+          persist-credentials: false
 
       - name: Commit and push formula
         if: env.HAS_TAP_TOKEN == 'true'
         working-directory: tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p Formula
@@ -413,4 +408,61 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m "auto-ascii $VERSION"
-          git push
+          # The header actions/checkout would have stored, passed for this
+          # push only, so the token never lands in .git/config.
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TAP_TOKEN" | base64 | tr -d '\n')" push origin HEAD:main
+
+  # Installs this release from its published archives with its published
+  # installers, pinned to this version, which proves both work before anyone
+  # else downloads them.
+  smoke:
+    name: smoke (${{ matrix.os }})
+    needs: [version, release]
+    if: needs.version.outputs.is_release == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # The Linux binary links libasound.so.2 at runtime.
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2t64
+
+      - name: install.sh
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          AUTO_ASCII_VERSION="$VERSION" AUTO_ASCII_INSTALL_DIR="$RUNNER_TEMP/auto-ascii-bin" sh scripts/install.sh
+          out=$("$RUNNER_TEMP/auto-ascii-bin/auto-ascii" --version)
+          echo "$out"
+          case "$out" in
+            *"$VERSION"*) ;;
+            *) echo "::error::auto-ascii --version printed '$out', expected it to contain $VERSION"; exit 1 ;;
+          esac
+
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & scripts/install.ps1 -Version $env:VERSION -InstallDir "$env:RUNNER_TEMP\auto-ascii-bin"
+          $out = & "$env:RUNNER_TEMP\auto-ascii-bin\auto-ascii.exe" --version
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0 -or -not "$out".Contains($env:VERSION)) {
+            Write-Host "::error::auto-ascii.exe --version printed '$out', expected it to contain $env:VERSION"
+            exit 1
+          }
