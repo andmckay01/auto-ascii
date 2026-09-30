@@ -30,10 +30,10 @@ skipped, so the tap formula stays on the last stable release.
 |---|---|---|
 | `version` | every run | reads the Cargo workspace version; on a tag, checks the tag matches |
 | `build` | every run | builds, runs `--version`, packages each target (below) |
-| `release` | tags only | creates the GitHub release with every asset attached (gh drafts, uploads, then publishes); if it already exists, re-uploads the assets with `--clobber` |
+| `release` | tags only | repacks the macOS and Linux archives as Homebrew bottles (`scripts/homebrew-bottles.sh`), then creates the GitHub release with every asset attached (gh drafts, uploads, then publishes); if it already exists, re-uploads the assets with `--clobber` |
 | `publish-crates` | tags only | `scripts/publish-crates.sh`: `cargo publish` for `auto-ascii-format`, `-core`, `-term`, `-eval`, `-factory`, then `auto-ascii` |
 | `publish-npm` | tags only | stamps the version, generates the six `@auto-ascii/*` platform packages, publishes them, then `auto-ascii` |
-| `publish-homebrew` | stable tags only | renders `Formula/auto-ascii.rb` with `scripts/homebrew-formula.sh` and pushes it to `andmckay01/homebrew-tap` |
+| `publish-homebrew` | stable tags only | renders `Formula/auto-ascii.rb`, bottle block included, with `scripts/homebrew-formula.sh` and pushes it to `andmckay01/homebrew-tap` |
 
 | target | runner | archive |
 |---|---|---|
@@ -55,10 +55,21 @@ No musl build is published. The Windows builds link the C runtime statically
   `auto-ascii[.exe]`, `LICENSE` and `README.md` at the top level; a
   `.sha256` beside each (`<hex>  <file>`); `SHA256SUMS` with all of them;
   `install.sh`; `install.ps1`.
+- Homebrew bottles: `auto-ascii-<version>.<tag>.bottle.tar.gz` and its
+  `.sha256`, one per macOS and Linux archive, holding the same binary at
+  `auto-ascii/<version>/bin/auto-ascii`. The formula's `root_url` is the
+  release download URL. Without a bottle, brew treats the formula as a
+  source build and refuses to run on a Mac whose Xcode or Command Line
+  Tools are out of date, even though nothing is compiled. The macOS tags are
+  `arm64_big_sur` and `big_sur` because Rust's default deployment target is
+  macOS 11 on arm64 and older on Intel; brew pours an older macOS tag on any
+  newer macOS.
 - Workflow artifacts, kept for every run including PRs and manual runs:
   `archive-<target>` (the archive and its `.sha256`, from
   `scripts/package-archive.sh`) and `bin-<target>` (the stripped binary at
-  `<target>/auto-ascii[.exe]`).
+  `<target>/auto-ascii[.exe]`). Tag runs also keep
+  `homebrew-bottle-sha256`, the bottles' `.sha256` files, which
+  `publish-homebrew` reads.
 
 ## How users install
 

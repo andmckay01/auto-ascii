@@ -188,13 +188,22 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # Bottles repack the macOS and Linux archives so `brew install` pours
+      # the binary without checking for Xcode or the Command Line Tools.
       - name: Assemble dist
         run: |
           set -euo pipefail
+          bash scripts/homebrew-bottles.sh "$VERSION" dist
           cat dist/*.sha256 > dist/SHA256SUMS
           cp scripts/install.sh scripts/install.ps1 dist/
           ls -l dist
           cat dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-bottle-sha256
+          path: dist/*.bottle.tar.gz.sha256
+          if-no-files-found: error
 
       # gh puts these notes above the generated ones.
       - name: Write release notes
@@ -367,6 +376,12 @@ jobs:
           pattern: archive-*
           path: dist
           merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        if: env.HAS_TAP_TOKEN == 'true'
+        with:
+          name: homebrew-bottle-sha256
+          path: dist
 
       - name: Render formula
         if: env.HAS_TAP_TOKEN == 'true'
