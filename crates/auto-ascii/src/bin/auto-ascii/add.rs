@@ -101,6 +101,7 @@ pub fn run(cli: &Cli, args: &AddArgs) -> Result<(), BoxErr> {
     let soundtrack = built.soundtrack.then(|| absolute(&folder.join(format!("{title}.m4a"))));
 
     if cli.json {
+        let safe = sidecar.terminal_safe();
         let obj = serde_json::json!({
             "name": slug,
             "title": title,
@@ -109,9 +110,9 @@ pub fn run(cli: &Cli, args: &AddArgs) -> Result<(), BoxErr> {
             "soundtrack": soundtrack,
             "launcher": absolute(&launcher),
             "source_duration_secs": built.source_secs,
-            "source": sidecar.source,
-            "asset": sidecar.asset,
-            "created": sidecar.created,
+            "source": safe.source,
+            "asset": safe.asset,
+            "created": safe.created,
         });
         outln!("{obj}");
         return Ok(());

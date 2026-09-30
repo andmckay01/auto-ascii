@@ -1973,7 +1973,7 @@ fn cut_and_compose_scrub_a_shipped_clip_path_in_text() {
 }
 
 #[test]
-fn cut_and_compose_json_scrub_c1_from_a_shipped_clip_path() {
+fn cut_and_compose_json_scrub_c1_from_shipped_clip_and_composition_names() {
     let s = Scratch::new("cutjsonc1");
     let name = shipped_c1_clip(&s);
     let tail = format!("evil{C1_OSC_52_SCRUBBED}/evil{C1_OSC_52_SCRUBBED}.ascii");
@@ -1981,7 +1981,9 @@ fn cut_and_compose_json_scrub_c1_from_a_shipped_clip_path() {
     ok(&cli(&s, &["compose", "new", "demo"]));
     let added = cli(&s, &["--json", "compose", "add", "demo", &name]);
     let shown = cli(&s, &["--json", "compose", "show", "demo"]);
-    for out in [&cut, &added, &shown] {
+    std::fs::copy(s.compositions().join("demo.toml"), s.compositions().join(format!("{name}.toml"))).unwrap();
+    let exported = cli(&s, &["--json", "compose", "export", &name]);
+    for out in [&cut, &added, &shown, &exported] {
         assert!(!carries_c1_osc(&out.stdout), "{:?}", stdout_of(out));
     }
     assert!(json_of(&cut)["source"]["from"].as_str().unwrap().ends_with(&tail), "{}", stdout_of(&cut));
@@ -1989,6 +1991,20 @@ fn cut_and_compose_json_scrub_c1_from_a_shipped_clip_path() {
     for path in [&added["clip"]["asset"], &added["clip"]["path"], &shown["clips"][0]["asset"], &shown["clips"][0]["path"]] {
         assert!(path.as_str().unwrap().ends_with(&tail), "{added} {shown}");
     }
+    let exported = json_of(&exported);
+    assert!(exported["path"].as_str().unwrap().ends_with(&format!("evil{C1_OSC_52_SCRUBBED}.ascii")), "{exported}");
+}
+
+#[test]
+fn add_json_scrubs_c1_from_a_local_video_path() {
+    let Some(tools) = media_tools() else { return };
+    let s = Scratch::new("addlocalc1");
+    let video = s.0.join("src").join(format!("clip{C1_OSC_52}.mp4"));
+    sounding_video(&tools, &video);
+    let out = cli(&s, &["--json", "add", video.to_str().unwrap(), "--title", "Demo"]);
+    assert!(!carries_c1_osc(&out.stdout), "{:?}", stdout_of(&out));
+    let v = json_of(&out);
+    assert!(v["source"]["path"].as_str().unwrap().ends_with(&format!("clip{C1_OSC_52_SCRUBBED}.mp4")), "{v}");
 }
 
 #[test]

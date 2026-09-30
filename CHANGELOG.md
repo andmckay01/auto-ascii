@@ -32,8 +32,9 @@
   `compose` and `dev inspect` print; and the settings and sound problems
   reported when playback ends now show every control character except newline
   and tab as `?`. So do the string fields of `--json` output from
-  `stream --sim`, `list`, `info`, `cut`, `compose add`, `compose show` and
-  `dev inspect`, `--json` error objects, and the link in `add --json` output.
+  `stream --sim`, `list`, `info`, `cut`, `compose add`, `compose show`,
+  `compose export` and `dev inspect`, `--json` error objects, and the link and
+  source in `add --json` output.
   That stops a malicious page or clip folder from retitling the terminal or
   writing the clipboard through OSC 52, in 7-bit or 8-bit form. Every one-line
   message also shows newlines as `?`, so it cannot forge extra output lines;

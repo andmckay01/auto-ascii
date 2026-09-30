@@ -323,7 +323,7 @@ pub fn compose_export(cli: &Cli, home: &Home, args: &ExportArgs<'_>) -> Result<(
     let report = auto_ascii::compose::export(&comp, &out, &export_options()?)?;
     if cli.json {
         let obj = serde_json::json!({
-            "path": absolute(&out),
+            "path": terminal_safe(&absolute(&out)),
             "frames": report.frames,
             "fps": report.fps,
             "bytes": report.bytes,
