@@ -37,7 +37,7 @@ pub struct Cell {
     pub attrs: u8,
 }
 
-const _: () = assert!(core::mem::size_of::<Cell>() == 12, "Cell must be 12 B (PLAN §3.1)");
+const _: () = assert!(core::mem::size_of::<Cell>() == 12, "Cell must be 12 B");
 const _: () = assert!(core::mem::align_of::<Cell>() == 4);
 
 impl Cell {

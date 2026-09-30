@@ -186,6 +186,21 @@ const XTERM_COLORTERM_LIE: Identity = Identity {
     want_glyphs: 1 | 2 | 4,
 };
 
+const APPLE_TERMINAL_RGB_REPLY: Identity = Identity {
+    name: "Apple Terminal (RGB reply, COLORTERM=truecolor)",
+    env: fixture_env!["TERM" => Some("xterm-256color"), "COLORTERM" => Some("truecolor"),
+              "TERM_PROGRAM" => Some("Apple_Terminal")],
+    ws: winsize_with_cell_px(80, 24, 8, 16),
+    replies: b"\x1bP1+r524742=38\x1b\\\
+\x1b[6;16;8t\
+\x1b[?1;2c",
+    want_color: "C256",
+    want_sync: false,
+    want_cell_px: "8x16",
+    want_support: "UnicodeCore",
+    want_glyphs: 1 | 2 | 4,
+};
+
 fn assert_identity(id: &Identity) {
     assert_identity_mode(id, "probe-reply");
 }
@@ -263,6 +278,11 @@ fn xterm_colorterm_lie_quirk_and_escape_hatch() {
     assert_identity_mode(&raw, "probe-reply-noquirks");
 }
 
+#[test]
+fn apple_terminal_cap_beats_an_rgb_reply_and_colorterm() {
+    assert_identity(&APPLE_TERMINAL_RGB_REPLY);
+}
+
 fn run_cached_probe(
     id: &Identity,
     mode: &str,
@@ -333,8 +353,9 @@ fn identity_matrix_is_diverse() {
         LINUX_CONSOLE,
         KITTY_STRIPPED,
         XTERM_COLORTERM_LIE,
+        APPLE_TERMINAL_RGB_REPLY,
     ];
-    assert_eq!(all.len(), 10);
+    assert_eq!(all.len(), 11);
     assert!(all.iter().any(|i| i.want_color == "C256"), "a 256-color terminal");
     assert!(all.iter().any(|i| i.want_color == "C16"), "a 16-color terminal");
     assert!(all.iter().any(|i| i.want_sync), "a terminal with synchronized output");

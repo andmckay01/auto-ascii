@@ -1,4 +1,4 @@
-# fonts/ — glyph ink-coverage tables (PLAN §3.4, M5 item B)
+# fonts/ — glyph ink-coverage tables (FEATURE-MAP §5, M5 item B)
 
 Committed, deterministic coverage tables for the glyphs the 8 shipped
 palettes can emit — the data behind `--font-table NAME|PATH` (player,
@@ -22,7 +22,7 @@ Repertoire claims were verified against each font's own `cmap` (and
 `fc-list :charset=`), not eyeballed. Notable: **no common monospace font
 ships palette-7 braille** — DejaVu's braille lives in DejaVu Sans/Serif,
 not the Mono face; terminals render braille through font *fallback*, which
-is exactly why `PaletteChoice::Braille` is opt-in/verified-only (PLAN §3.4)
+is exactly why `PaletteChoice::Braille` is opt-in/verified-only (FEATURE-MAP §3)
 and why every builtin table vetoes `BrailleVerified` down to unicode.
 
 ## Generation model (deterministic)
@@ -32,7 +32,7 @@ and why every builtin table vetoes `BrailleVerified` down to unicode.
 - Glyph set: `auto_ascii_core::palette::all_palette_glyphs()` — enumerated from
   the palette data (ramps, edge LUTs incl. junctions, subposition triplet,
   quadrants/half-blocks, reachable braille masks), never a hardcoded list.
-- Cell: 64×128 px (§3.4). The font is scaled so its monospace **advance**
+- Cell: 64×128 px. The font is scaled so its monospace **advance**
   equals 64 px (terminals size text by advance); the glyph ink box is
   centered and clipped to the cell. A font whose line box is taller than
   twice its advance (e.g. Noto Sans Mono) overflows the 1:2 cell exactly as
@@ -74,7 +74,7 @@ Over the 37 glyphs present in **all four** fonts:
 - mean per-glyph ΔL\* across fonts: **5.0**; max: **ΔL\* 19.6 on `▒`**
   (DejaVu draws MEDIUM SHADE much denser: L\* 75.1 vs ≈55.5 elsewhere).
   Runners-up: `_` ΔL\* 10.0, `#` 8.8, `░` 8.7 — the ±15% ink-variance risk
-  PLAN §9.5 predicted, now measured.
+  predicted before the tables existed, now measured.
 - vs `conservative`, per-font tables also *extend* the scale: `█` reaches
   L\* ≈ 100 while the conservative (ASCII-only) table tops out at `@`
   (L\* ≈ 59). SSIM scored under `--font-table` therefore normalizes to a
@@ -82,7 +82,7 @@ Over the 37 glyphs present in **all four** fonts:
   one table choice.
 
 **Ramp-ordering inversions exist under every font** (this is precisely what
-§3.4 built these tables to expose; ramps are deliberately NOT retuned in
+the ramp design (FEATURE-MAP §5) built these tables to expose; ramps are deliberately NOT retuned in
 M5). Palettes 5 (` ·░▒▓█`) and 8 (` .:coO8@`) are monotone under all four
 fonts + conservative. The hand-specified ASCII ramps are not:
 
@@ -96,7 +96,7 @@ fonts + conservative. The hand-specified ASCII ramps are not:
   (`*` is smaller-inked than `+` in those fonts).
 
 Follow-up (out of M5 scope, per the task directive): rebuild the ASCII
-ramps from these tables at uniform L\* intervals (§3.4's stated offline
+ramps from these tables at uniform L\* intervals (the original design's stated offline
 procedure) — the committed data is already sufficient.
 
 ## Wiring

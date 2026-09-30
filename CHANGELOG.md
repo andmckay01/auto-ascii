@@ -1,6 +1,30 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## Unreleased
+
+### Added
+
+- **`AUTO_ASCII_FRAME_LOG=<path>`** makes the player append one row per
+  presented frame (`frame_index`, `wall_ms`, `bytes`, `cells_damaged`,
+  `write_ns`, `dropped`, tab-separated) and a final `# end …` summary line, to
+  measure skipped frames and terminal back-pressure on a real tty. Unset, it
+  costs nothing. See `docs/TERMINAL-CHECKLIST.md`.
+
+### Changed
+
+- **Apple Terminal.app is capped at 256 colors.** It renders 24-bit color
+  (2.15, verified 2026-09-30), but truecolor costs more than it is worth there,
+  and it received the truecolor stream whenever
+  `COLORTERM=truecolor` was exported, which shell configs often do. The probe
+  now keys on `TERM_PROGRAM=Apple_Terminal` and limits the tier to 256 after
+  the passive hints, the volley and the cache, so neither `COLORTERM` nor a
+  reply can lift it; `--tier truecolor` still opts back in. Measured on Terminal.app
+  2.15 (M3 Pro, 30 fps clip): the 256 tier is about a third of the bytes and
+  half the Terminal.app CPU of truecolor at the same grid (200×55: 43 against
+  143 KB/frame, 80% against 146% of a core), and a 240×70 grid that skipped 5.6%
+  of frames at truecolor skips none at 256 with `--repaint diff`.
+
+## 0.3.0 — 2026-09-29
 
 One command. The `auto-ascii` binary now does everything the old player and
 factory binaries did; `auto-ascii --help` leads with `play`, `stream` and

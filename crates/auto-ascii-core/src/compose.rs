@@ -375,7 +375,7 @@ mod tests {
         let ascii = select_palettes(GlyphTier::Ascii, ColorDepth::True, 100);
         let (ex, ey) = exy(90.0, 200.0);
         let inp = CellInputs { e: 200, ex, ey, ..base_inp(255) };
-        assert_eq!(cell_with(&inp, &ascii).glyph(), '@', "§3.4: edge never overrides near-white");
+        assert_eq!(cell_with(&inp, &ascii).glyph(), '@', "FEATURE-MAP §5: edge never overrides near-white");
     }
 
     #[test]

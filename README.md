@@ -136,9 +136,8 @@ auto-ascii = { version = "0.3", default-features = false, features = ["terminal"
   measurements behind the default.
 - [docs/TERMINAL-CHECKLIST.md](docs/TERMINAL-CHECKLIST.md): the manual
   per-terminal pass.
-- [docs/PLAN.md](docs/PLAN.md) and [docs/PLAN-M6-M8.md](docs/PLAN-M6-M8.md):
-  the original designs; [docs/INTERFACES.md](docs/INTERFACES.md): the internal
-  API registry; [docs/NOTES.md](docs/NOTES.md): domain and technology facts;
+- [docs/INTERFACES.md](docs/INTERFACES.md): the internal API registry;
+  [docs/NOTES.md](docs/NOTES.md): domain and technology facts;
   [docs/research/](docs/research/): the research digests.
 
 ## License

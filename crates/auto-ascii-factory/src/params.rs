@@ -260,7 +260,7 @@ impl Params {
             if v < 2 || !v.is_multiple_of(2) {
                 return Err(format!(
                     "params: build.{name} = {v} must be even and >= 2 \
-                     (chroma plane C is stored at half res, PLAN §4)"
+                     (chroma plane C is stored at half res)"
                 )
                 .into());
             }
@@ -271,7 +271,7 @@ impl Params {
         if !(1..=255).contains(&b.keyframe_ivl) {
             return Err(
                 "params: build.keyframe_ivl must be in 1..=255 (the .ascii header stores it \
-                 as u8, PLAN §4)"
+                 as u8)"
                     .into(),
             );
         }

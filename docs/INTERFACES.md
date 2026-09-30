@@ -3,13 +3,14 @@
 Written by the scaffold agent. This freezes the M0 `pub` surface pinned in code.
 Implementers fill `todo!()` bodies; **signature/layout changes require updating
 this file and a deliberate decision** — the factory⇄player format contract
-(PLAN §4) and the §3.1 types are the riskiest interfaces in the system.
+(FEATURE-MAP §2) and the `Cell`, `Backend` and `Caps` types (FEATURE-MAP §3,
+§7) are the riskiest interfaces in the system.
 
 **As of M4 the OUTWARD-facing API is the `auto-ascii` facade crate** (see
 "auto-ascii — THE public facade"); every other crate section below is the
 workspace-internal registry behind it.
 
-## Workspace & dependency edges (PLAN §2, §8)
+## Workspace & dependency edges (FEATURE-MAP Overview)
 
 ```
 crates/
@@ -69,14 +70,14 @@ crates/
 
 - Root workspace: resolver 3, edition 2024, `license = "MIT"`,
   `[profile.release] opt-level = 3`, all versions via `[workspace.dependencies]`.
-- Factory deps `image`/`imageproc`/`ndarray`/`rayon` (PLAN §8) deliberately
+- Factory deps `image`/`imageproc`/`ndarray`/`rayon` deliberately
   deferred: M0 is luma-only from ffmpeg rawvideo — add at M1/M3 when a stage
   needs them (per M0 scoping guidance).
 
-## auto-ascii-core (PLAN §3.1–§3.4; pure, std-only)
+## auto-ascii-core (FEATURE-MAP §4–§6; pure, std-only)
 
 ```rust
-// cell.rs (§3.1)
+// cell.rs
 #[repr(C)] pub struct Rgb { pub r: u8, pub g: u8, pub b: u8 }          // 3 B POD
 impl Rgb { pub const BLACK; pub const WHITE;
            pub const fn new(r,g,b) -> Rgb; pub const fn gray(v: u8) -> Rgb }
@@ -88,7 +89,7 @@ pub mod attrs { pub const NONE: u8 = 0; pub const DEFAULT_BG: u8 = 1; }
 impl Cell { pub const BLANK; pub const fn new(ch: char, fg, bg) -> Cell;
             pub fn glyph(&self) -> char }   // Default = BLANK
 
-// grid.rs (§3.1, §6)
+// grid.rs
 pub struct Grid<T>;   // dense row-major, (col,row) indexed, u16 dims
 impl<T: Copy + Default> Grid<T> {
   pub fn new(cols: u16, rows: u16) -> Grid<T>;
@@ -99,7 +100,7 @@ impl<T: Copy + Default> Grid<T> {
   pub fn row/row_mut(row) -> &[T]/&mut [T];  pub fn as_slice/as_mut_slice();
 }
 
-// viewport.rs (§3.2) — IMPLEMENTED + worked-example tests (80×24→80×23,
+// viewport.rs (FEATURE-MAP §4) — IMPLEMENTED + worked-example tests (80×24→80×23,
 // 213×58→206×58 pads 3/4/0/0, 320×90 exact)
 pub const DEFAULT_CELL_ASPECT: f64 = 2.0;
 pub const MIN_COLS: u16 = 32;  pub const MIN_ROWS: u16 = 9;
@@ -109,16 +110,16 @@ pub fn compute_viewport(term_cols: u16, term_rows: u16, cell_aspect: f64)
     // 16:9 convenience wrapper over compute_viewport_for (bit-identical)
 pub fn compute_viewport_for(term_cols: u16, term_rows: u16, cell_aspect: f64,
     aspect_num: u16, aspect_den: u16) -> Option<Viewport>;  // M5 fix 2: the
-    // letterbox targets the ASSET's header aspect (PLAN §4 aspect_num/den);
+    // letterbox targets the ASSET's header aspect (aspect_num/den, FEATURE-MAP §2);
     // zero num/den falls back to 16:9. pipeline::Player::reflow_grid feeds
     // the header values through this, so Player AND RenderSession letterbox
     // non-16:9 assets correctly (tests: auto-ascii-core viewport.rs,
     // auto-ascii/tests/render_session.rs letterbox suite)
 
-// resample.rs (§3.3) — IMPLEMENTED
+// resample.rs (FEATURE-MAP §4) — IMPLEMENTED
 pub struct Tap1D { pub src_start: u16, pub ntaps: u16, pub w_off: u32 } // Q8, sum 256
 // ntaps widened u8→u16 by the auto-ascii-core implementer: 480 src cols → 1 dst col
-// (legal §6 fuzz case) needs 480 taps in one run, overflowing u8. See note 1b.
+// (legal fuzz case) needs 480 taps in one run, overflowing u8. See note 1b.
 pub struct Resampler;   // private: taps_x/taps_y, shared weight pool, shared u16 hbuf
 impl Resampler {
   pub fn build(src_w, src_h, dst_w, dst_h: u16) -> Resampler;  // resize-only, ~50 µs
@@ -126,23 +127,23 @@ impl Resampler {
   pub fn src_dims/dst_dims() -> (u16, u16);
 }
 
-// ramp.rs (§3.4, palettes 1–2 as data) — IMPLEMENTED
+// ramp.rs (FEATURE-MAP §5, palettes 1–2 as data) — IMPLEMENTED
 pub const ASCII_BASE_COARSE: &[char];      // " .:-=+*#%@"
 pub const ASCII_BASE_FINE:   &[char];      // " .,:;i1tfLCG08@"
 pub const FINE_MIN_COLS: u16 = 70;
 pub fn base_ramp_for_cols(viewport_cols: u16) -> &'static [char];
 pub fn ramp_glyph(ramp: &[char], n: u8) -> char;   // ramp[(n·len)>>8]
 
-// compose.rs (§3.4 L0-only, M0) — ADDED by the auto-ascii-core implementer (task e);
+// compose.rs (FEATURE-MAP §5 L0-only, M0) — ADDED by the auto-ascii-core implementer (task e);
 // M0 compositor: base ramp glyph + Rgb::gray(n) fg + black bg in the viewport,
 // Cell::BLANK pads. Never allocates; `out` must already be term-grid-sized.
 // Panics on grid/viewport mismatch, short luma, or empty ramp.
 pub fn compose_luma(luma: &[u8], vp: &Viewport, ramp: &[char], out: &mut Grid<Cell>);
 
-// ---- M3 (auto-ascii-core layers agent): §3.4 palettes + §3.5 three-layer
+// ---- M3 (auto-ascii-core layers agent): FEATURE-MAP §5 palettes + three-layer
 // compositor. compose_luma and ramp.rs are UNCHANGED (M0/M2 goldens). ----
 
-// palette.rs (§3.4) — all 8 palettes as data + PaletteSet selection.
+// palette.rs (FEATURE-MAP §5) — all 8 palettes as data + PaletteSet selection.
 // auto-ascii-core stays terminal-free: the player maps Caps → these enums
 // (Caps.glyphs/glyph_support → GlyphTier, Caps.color → ColorDepth).
 pub enum GlyphTier { Ascii, UnicodeBlocks, BrailleVerified }
@@ -163,7 +164,7 @@ pub const UNICODE_BASE: &[char];      // palette 5 " ·░▒▓█"
 pub const UNICODE_QUADRANTS: &[char]; // palette 5 "▖▘▝▗▀▄▌▐" (▌▐ unreachable
                                       // until 2Vc×2Vr sampling — documented)
 pub const MONO_FALLBACK_BASE: &[char]; // palette 8 " .:coO8@" (CP437-safe)
-pub const SUBPOS_GLYPHS: [char; 3];   // " - _ (§3.3; ascii-tier subposition;
+pub const SUBPOS_GLYPHS: [char; 3];   // " - _ (FEATURE-MAP §4; ascii-tier subposition;
                                       // CHANGED at M4 review: was ‾ U+203E,
                                       // which is NOT CP437 and boxed out on
                                       // the Linux console — the tier is now
@@ -175,7 +176,7 @@ pub fn braille_glyph(mask: u8) -> char;               // solid; edge-only)
 pub fn quadrant_for(class: GlyphClass, top_bright: bool) -> Option<char>;
     // diagonal classes only — vertical-pair + dominant-orientation approx
 pub const RAMP_CAP_TRUE: u8 = 8;  pub const RAMP_CAP_256: u8 = 12;
-pub struct RampView;  // &'static glyphs + effective len (per-tier cap, §1b:
+pub struct RampView;  // &'static glyphs + effective len (per-tier cap, FEATURE-MAP §5:
                       // NOT duplicated data); glyph(idx) spreads 0..len over
                       // the full ramp with exact endpoints
 pub struct PaletteSet { pub base: RampView, pub highlight: RampView,
@@ -186,7 +187,7 @@ pub struct PaletteSet { pub base: RampView, pub highlight: RampView,
                             // selected for (ascii holds its shade cap after
                             // quantization)
 pub fn select_palettes(GlyphTier, ColorDepth, viewport_cols: u16) -> PaletteSet;
-// Key (§1b): C16/Mono → palette 8 base uncapped ("mono longest"); True caps
+// Key (FEATURE-MAP §5): C16/Mono → palette 8 base uncapped ("mono longest"); True caps
 // ramps to 8, C256 to 12; Ascii → coarse/fine by density + subpos; unicode
 // tiers → halfblock + quadrant; braille only BrailleVerified × Fine density.
 pub fn tier_glyphs(GlyphTier) -> Vec<char>;   // M5 item B: every glyph the
@@ -196,7 +197,7 @@ pub fn all_palette_glyphs() -> Vec<char>;     // compositor can emit at a
     // subpos + quadrants + reachable braille masks); sorted, deduped.
     // Consumers: the font-table generator + the repertoire veto below.
 
-// font_table.rs (§3.4 per-font ink-coverage tables) — NEW at M5 item B.
+// font_table.rs (FEATURE-MAP §3 per-font ink-coverage tables) — NEW at M5 item B.
 // Hand-rolled reader of exactly the `auto-ascii dev font-table` TOML
 // emitter subset (auto-ascii-core stays zero-dep); structural problems are
 // Err(String), not panics (tables arrive via --font-table PATH).
@@ -212,7 +213,7 @@ impl FontTable {
   pub fn coverage(char) -> Option<f32>;  // Some(0.0) for listed-but-missing
   pub fn has_glyph(char) -> bool;        // listed AND not in missing[]
   pub fn veto_tier(&self, want: GlyphTier) -> GlyphTier;
-      // §3.4 repertoire veto: highest tier ≤ want whose tier_glyphs() the
+      // FEATURE-MAP §3 repertoire veto: highest tier ≤ want whose tier_glyphs() the
       // font fully covers; degrades Braille → UnicodeBlocks → Ascii; Ascii
       // is the floor. Researched reality (cmap-verified, fonts/README.md):
       // NO common monospace font ships braille (DejaVu's braille is in the
@@ -222,7 +223,7 @@ impl FontTable {
       // builtins_load_and_veto_as_researched.
 }
 
-// orient.rs (§3.3) — sign/comparison only, no atan2, no floats.
+// orient.rs (FEATURE-MAP §5) — sign/comparison only, no atan2, no floats.
 // PLANE CONTRACT (matches factory features.rs/edges.rs): Ex/Ey are bias-128
 // HALF-SCALE bytes of the GRADIENT doubled-angle vector in y-down coords
 // (ex = 128 + (m·cos 2θg)/2); coherence = 2·|(Ex−128, Ey−128)| / max(E,1).
@@ -234,7 +235,7 @@ pub fn bin_with_guard(dx, dy: i32, prev: u8) -> u8;  // ±8° θ hysteresis via
                                              // Q14 boundary-vector cross tests
 pub fn coherence_at_least(dx, dy: i32, e: u8, t_q8: u8) -> bool; // squared, no sqrt
 
-// hysteresis.rs (§3.5) — 5 B/cell state; alloc ONLY in new/resize.
+// hysteresis.rs (FEATURE-MAP §6) — 5 B/cell state; alloc ONLY in new/resize.
 pub const IDX_UNSET: u8 = 0xFF;
 pub const IDX_HYST_Q8: u32 = 90;             // round(0.35·256) — the spec
                                              // DEFAULT; live width is
@@ -249,17 +250,17 @@ pub struct CellState {
 }  // + Default
 pub struct HysteresisState;  // new(cols,rows)/cols/rows/cell/cell_mut +
                              // reset() = scene cut (no realloc) +
-                             // resize(cols,rows) = realloc + reset (§3.5)
+                             // resize(cols,rows) = realloc + reset (FEATURE-MAP §6)
 pub fn hysteresis_idx(n: u8, len: u8, prev: u8, hyst_q8: u32) -> u8;
     // ±hyst_q8/256-step boundary (SIGNATURE CHANGED at M3 Tune: width was
     // the IDX_HYST_Q8 constant; hyst_q8 < 256, u8-sourced by contract)
 pub fn edge_gate(e: u8, was_edge: bool, t_on: u8, t_off: u8) -> bool;
     // e > T_on || (was_edge && e > T_off) — both strict
 
-// compose.rs M3 additions (§3.5 per-cell selection; priority/override, never
+// compose.rs M3 additions (FEATURE-MAP §5 per-cell selection; priority/override, never
 // blended; fg is ALWAYS the chroma sample (gray(n) fallback), bg black except
 // half-block/quadrant (fg,bg) pairs; no dithering).
-pub mod h_flags { HIGHLIGHT = 1, DEEP_SHADOW = 2 }   // §4 H plane bits
+pub mod h_flags { HIGHLIGHT = 1, DEEP_SHADOW = 2 }   // FEATURE-MAP §1 H plane bits
 pub struct CellInputs { pub luma_top, luma_bottom, e, ex, ey, h: u8,
                         pub chroma: Option<Rgb> }
 pub struct ComposeParams { pub edge_t_on/edge_t_off: u8,        // 32/16 (M3
@@ -267,7 +268,7 @@ pub struct ComposeParams { pub edge_t_on/edge_t_off: u8,        // 32/16 (M3
   pub coh_min_q8/coh_dir_q8: u8,     // 96/160: <min suppress, min..dir
                                      // junction glyph, ≥dir directional
   pub hi_cut_q8: u8,                 // 160: highlight iff idx < len·q8/256
-  pub edge_white_cut_q8: u8,         // 240: §3.4 near-white edge suppression
+  pub edge_white_cut_q8: u8,         // 240: FEATURE-MAP §5 near-white edge suppression
                                      // ((plain_idx+1)·256/len > cut = top
                                      // step). Since the Tune finish (note
                                      // 22) the veto rides the PLAIN
@@ -286,7 +287,7 @@ pub struct ComposeParams { pub edge_t_on/edge_t_off: u8,        // 32/16 (M3
                                      // earlier fix used edge_t_off (16)
                                      // here and silently downgraded every
                                      // real fine diagonal to a half-block
-  pub idx_hyst_q8: u8 }              // §3.5 idx hysteresis width in Q8 steps
+  pub idx_hyst_q8: u8 }              // FEATURE-MAP §6 idx hysteresis width in Q8 steps
                                      // (promoted at M3 Tune, note 21);
                                      // default 128 = IDX_HYST_DEFAULT_Q8,
                                      // also the recommended max (hard
@@ -309,11 +310,11 @@ pub struct FramePlanes<'a> { pub luma2: &'a [u8],       // Vc × 2Vr
 pub fn compose_frame(&FramePlanes, &Viewport, lut: &[u8;256], &PaletteSet,
                      &ComposeParams, &mut HysteresisState, &mut Grid<Cell>);
 // BLANK pads; edge layer runs only when E+Ex+Ey all present (M1 Y+C assets
-// compose pure-base — the §4 back-compat auto-disable); panics on any size
+// compose pure-base — the FEATURE-MAP Data & wire back-compat auto-disable); panics on any size
 // mismatch (incl. state ≠ vp dims); never allocates.
 
 // M3 render metadata (edge-F1 agent, note 19) — the LayerMask: which layer
-// won each cell (§3.4 priority is override-only, so it's a single id).
+// won each cell (FEATURE-MAP §5 priority is override-only, so it's a single id).
 pub mod layer { BASE=0, EDGE=1, HIGHLIGHT=2, SHADOW=3, STRUCTURE=4 }
     // STRUCTURE = half-block/quadrant/subposition; pads are BASE
 pub fn compose_cell_layer(...same args as compose_cell) -> (Cell, u8);
@@ -348,7 +349,7 @@ pub mod style {
       &ComposeParams, &mut HysteresisState, &mut Grid<Cell>,
       mask: Option<&mut Grid<u8>>);  // Pixels ≡ compose_frame(_masked) byte
       // for byte (tests/style_props.rs)
-  pub mod pixels { pub struct Pixels; }   // the §3.5 compositor, verbatim
+  pub mod pixels { pub struct Pixels; }   // the FEATURE-MAP §5 compositor, verbatim
   pub mod letters {                       // printable characters
     pub struct Letters;
     pub const LETTERS_RAMP, LETTERS_TOP, LETTERS_BOTTOM: &[char]; // 16 each
@@ -378,7 +379,7 @@ pub mod style {
 // resets all state).
 ```
 
-## auto-ascii-term (PLAN §3.1, §3.6) — M1: caps probe + color tiers + ?2026
+## auto-ascii-term (FEATURE-MAP §3, §7) — M1: caps probe + color tiers + ?2026
 
 M4 (item B): feature `"session"` (default ON) gates everything that touches
 a real terminal — `ansi`/`probe`/`quirks`/`restore` modules, their re-exports
@@ -407,8 +408,8 @@ impl Default for Caps;  // kitty-class: True color, ASCII, (80,24)
 pub struct FrameStats { pub bytes: u32, pub cells_damaged: u32,
                         pub write_ns: u64, pub dropped: bool }
 
-// probe.rs — NEW at M1 (PLAN §3.1 capability detection, minus connectivity)
-pub const DEFAULT_PROBE_TIMEOUT: Duration;  // 200 ms (PLAN: 150–250 local)
+// probe.rs — NEW at M1 (FEATURE-MAP §3 capability detection, minus connectivity)
+pub const DEFAULT_PROBE_TIMEOUT: Duration;  // 200 ms (design range 150–250 local)
 pub const VOLLEY: &[u8];  // ONE write: XTVERSION, DECRQM 2026, XTGETTCAP RGB,
                           // CSI 16 t, then DA1 (CSI c) LAST as sentinel
 pub struct ProbeOptions { pub forced_tier: Option<ColorTier>,  // --tier
@@ -426,8 +427,10 @@ pub fn probe_caps(&ProbeOptions) -> Caps;
 // (256-color, ASCII glyphs). tty flow: passive env hints (COLORTERM / TERM /
 // TERM_PROGRAM / locale→glyph tier) as base; volley upgrades (XTGETTCAP RGB
 // with a usable width → True; DECRPM 2026 Ps∈{1,2} → sync_2026; CSI 16 t →
-// cell_px, overriding the TIOCGWINSZ pixel fields); forced_tier overrides
-// color last. M4 (item D) tightened two reply readings against researched
+// cell_px, overriding the TIOCGWINSZ pixel fields); then the TERM_PROGRAM
+// color cap (quirks.rs, below: Apple_Terminal → at most 256, whatever
+// COLORTERM, a volley reply or a cache hit said; independent of no_quirks);
+// forced_tier overrides color last. M4 (item D) tightened two reply readings against researched
 // terminal behavior: Ps 3/4 are "permanently set/reset" = NOT support (VTE
 // answers 4 for 2026), and the RGB cap is read BY VALUE — xterm answers the
 // *valid* form `1+r524742=` hex("-1") when it is not in direct-color mode, so
@@ -468,8 +471,8 @@ pub struct ProbeReplies { pub xtversion: Option<String>, pub decrqm_2026: Option
                           pub xtgettcap_rgb: Option<bool>,
                           pub cell_px: Option<(u16,u16)>, pub da1: bool }
 
-// quirks.rs — NEW at M5 item C (PLAN §3.1 "quirk table keyed on queried
-// identity"); session-gated. Matched on the XTVERSION reply prefix + the
+// quirks.rs — NEW at M5 item C (FEATURE-MAP §3, quirk table keyed on queried
+// identity); session-gated. Matched on the XTVERSION reply prefix + the
 // XTGETTCAP-RGB reading — never TERM; applied by probe_caps post-volley,
 // pre-forced-tier, never on cache hits / --no-query (details + the two
 // sourced entries: note 26a).
@@ -480,8 +483,14 @@ pub struct Quirk { pub name: &'static str, pub xtversion_prefix: &'static str,
 pub const QUIRKS: &[Quirk];   // kitty-rgbless-xtgettcap, xterm-no-direct-color
 pub fn apply_quirks(caps: &mut Caps, &ProbeReplies) -> Vec<&'static str>;
     // returns the names applied (probe logging/tests)
+pub const TERM_PROGRAM_COLOR_CAPS: &[(&str, ColorTier)];  // [("Apple_Terminal", C256)]:
+    // renders 24-bit (2.15, verified 2026-09-30) but truecolor costs ~3.3x the
+    // bytes and ~2x the CPU, so capped for cost; `--tier truecolor` opts in; keyed on the TERM_PROGRAM env value, so it
+    // needs no volley reply and holds on --no-query, cache hits and Windows
+pub fn cap_color_for_term_program(caps: &mut Caps, term_program: &str);
+    // lowers caps.color to the table's maximum, never raises it
 
-// quant.rs — NEW at M1 (PLAN §3.1 quantize-before-diff; pure math). Note
+// quant.rs — NEW at M1 (FEATURE-MAP §7 quantize-before-diff; pure math). Note
 // 27(m): the math moved to auto_ascii_core::quant; this module re-exports it.
 pub fn rgb_to_256(Rgb) -> u8;     // xterm 6×6×6 cube (16–231) + gray ramp (232–255)
 pub fn rgb_to_16(Rgb) -> u8;      // nearest of the standard 16 (xterm defaults)
@@ -495,7 +504,7 @@ pub enum Key { Char(char), Ctrl(char), Esc, Left, Right }
 pub enum Event { Resize(u16, u16), Key(Key), Quit }
 pub struct EventQueue;  // new/push/pop/is_empty/clear (implemented, VecDeque)
 
-// backend.rs (§3.1) — exactly AnsiBackend + SimBackend implement this
+// backend.rs (FEATURE-MAP §7) — exactly AnsiBackend + SimBackend implement this
 pub trait Backend {
   fn caps(&self) -> &Caps;
   fn events(&mut self) -> &mut EventQueue;
@@ -526,14 +535,14 @@ impl SimBackend {
   pub fn set_caps(&mut self, caps: Caps);   // NEW at M1: tier/sync tests; keeps current cells
 }
 
-// restore.rs (§3.1 session hygiene; M0 acceptance 3 pty test)
+// restore.rs (FEATURE-MAP §7 session hygiene; M0 acceptance 3 pty test)
 pub const RESTORE_SEQ: &[u8] = b"\x1b[0m\x1b[?25h\x1b[?7h\x1b[?1049l";
 pub const BACKDROP_SET: &[u8] = b"\x1b]11;rgb:0000/0000/0000\x1b\\";  // note 27(l)
 pub const BACKDROP_RESET: &[u8] = b"\x1b]111\x1b\\";                  // before RESTORE_SEQ
 pub fn install_restore_hooks();   // panic hook + SIGINT/SIGTERM/SIGHUP + atexit
 ```
 
-## auto-ascii-format (PLAN §4; container only, no I/O policy) — M1: full ASCI v1
+## auto-ascii-format (FEATURE-MAP §2; container only, no I/O policy) — M1: full ASCI v1
 
 ```rust
 // header.rs — 64-B layout frozen (offset-freezing tests)
@@ -544,7 +553,7 @@ pub mod plane_id { Y=1, E=2, EX=3, EY=4, H=5, C=6;
                    pub const fn is_known(id: u8) -> bool }   // 1..=6
 pub fn plane_raw_size(base_w, base_h, id: u8) -> Option<usize>;
     // Y/E/Ex/Ey/H = w×h u8; C = (w/2)×(h/2)×2 (RGB565); None for unknown ids
-    // (their raw size travels in the FRAM subblock header — skip-unknown, §4)
+    // (their raw size travels in the FRAM subblock header — skip-unknown, FEATURE-MAP §2)
 pub mod codec   { RAW=0, LZ4=1, ZSTD=2 }
 pub mod filter  { INTRA=0, TEMPORAL_DELTA=1 }
 pub mod header_flags { INDEX_PRESENT=1, CRCS_PRESENT=2 }
@@ -553,7 +562,7 @@ pub struct AsciiHeader { ... unchanged ... }  // + to/from_bytes
 // chunk.rs — unchanged framing (16-B chunk header, 16-B FIDX entry)
 // FIDX entry flags mirror FRAM flags (bit0 = KEYFRAME) — the seek roster.
 
-// norm.rs — NEW at M1: NORM chunk records (runtime per-shot levels, PLAN §4/§5)
+// norm.rs — NEW at M1: NORM chunk records (runtime per-shot levels, FEATURE-MAP §1/§2)
 pub mod norm_flags { CUT=1 }        // bit0: hard cut (player resets hysteresis)
 pub const NORM_RECORD_SIZE: usize = 24;  // fixed rows, flat, binary-searchable
 pub struct PlaneLevels { pub p2: u8, pub p98: u8 }
@@ -570,7 +579,7 @@ pub struct WriterOptions { ... same fields ... }
 // [Y], crc on). INTRA remains valid (M0 profile). new() now also rejects:
 // fps_num/fps_den == 0 (adversarial-review fix), plane ids outside the known
 // registry (writer needs geometry).
-// §4 GEOMETRY TERM (M2, review fix 1): base_w and base_h MUST be even and
+// GEOMETRY TERM (M2, review fix 1): base_w and base_h MUST be even and
 // >= 2 — the C plane lives at (base_w/2, base_h/2), so odd/degenerate base
 // dims imply a zero-dimension chroma plane (base_w == 1 → C width 0, which
 // panicked the player's Resampler::build). Enforced at writer new() AND
@@ -620,34 +629,34 @@ impl AsciiReader<'a> {
       // buffer) — delta is decoded to internal scratch and memadded in place.
       // Sequential playback loops call it exactly as at M0.
   pub fn seek_plane_into(&mut self, frame, plane_id, dst) -> Result<usize>;
-      // NEW (PLAN §4 seek): keyframe bsearch + ≤ keyframe_ivl−1 delta rolls;
+      // NEW (FEATURE-MAP §2 seek): keyframe bsearch + ≤ keyframe_ivl−1 delta rolls;
       // dst contents on entry irrelevant. Frame-skipping players MUST use
       // this (or roll every frame) on TEMPORAL_DELTA assets.
   pub fn verify(&self) -> Result<()>;
 }
 ```
 
-## auto-ascii-eval (PLAN §6; M2 item A — metrics library, no I/O beyond serde)
+## auto-ascii-eval (FEATURE-MAP §15; M2 item A — metrics library, no I/O beyond serde)
 
 Library-only measurement primitives + the versioned JSON report schema.
 The driver that builds assets, runs SimBackend and writes `runs/*.json` +
 HTML contact sheets is `auto-ascii dev eval` (M2 item B) — not this crate.
 
 ```rust
-// coverage.rs — glyph ink-coverage table (§6 "rasterize through the stored
-// glyph-coverage tables"). Built-in conservative table derived from DejaVu
-// Sans Mono via ffmpeg drawtext at 64×128 px/cell (§3.4's raster size),
+// coverage.rs — glyph ink-coverage table (FEATURE-MAP §15: rasterize through the stored
+// glyph-coverage tables). Built-in conservative table derived from DejaVu
+// Sans Mono via ffmpeg drawtext at 64×128 px/cell,
 // coverage = mean gray / 255 (antialiased ink integral); derivation script
 // committed at crates/auto-ascii-eval/tools/derive_coverage.py, constants are the
 // artifact (no corpus/font dependency at test time). Covers all printable
-// ASCII (⊇ every shipped palette incl. the PLAN §3.4 mono ramp " .:coO8@").
+// ASCII (⊇ every shipped palette incl. the mono ramp (FEATURE-MAP §5) " .:coO8@").
 pub const CONSERVATIVE_COVERAGE: &[(char, f32)];  // 95 entries, sorted
 pub struct CoverageTable;   // sorted entries + max; per-font tables: M5 ↓
 impl CoverageTable {
   pub fn conservative() -> &'static CoverageTable;
   pub fn from_font_table(&auto_ascii_core::FontTable) -> CoverageTable;  // M5 item
       // B: per-font scoring (eval --font-table). Missing glyphs enter at
-      // coverage 0 (blank ink, the §3.4 missing-glyph policy — NOT the
+      // coverage 0 (blank ink, the missing-glyph policy — NOT the
       // unknown-glyph mid-gray fallback); max_coverage (the normalize_ink
       // anchor) tracks the table, so absolute SSIM is only comparable
       // within one table choice.
@@ -666,7 +675,7 @@ impl GrayImage { pub fn new/from_raw(w, h, Vec<u8>)/w/h/get/as_slice;
 pub fn luma8(Rgb) -> u8;  // gamma-space Rec.709, integer fixed-point
 pub struct RasterOptions { pub cell_w_px: u16, pub cell_h_px: u16,
                            pub normalize_ink: bool }
-// Default: 1×2 px/cell (1:2 cell aspect, §3.2) + normalize_ink = true
+// Default: 1×2 px/cell (1:2 cell aspect, FEATURE-MAP §4) + normalize_ink = true
 // (gain = 1/max_coverage: metric compares in relative ink — raw physical
 // coverage tops out ~0.26 and would drown SSIM's luminance term).
 pub fn rasterize(&Grid<Cell>, &CoverageTable, &RasterOptions) -> GrayImage;
@@ -680,11 +689,11 @@ pub const SSIM_WINDOW: usize = 11;  pub const SSIM_SIGMA: f64 = 1.5;
 pub fn ssim(&GrayImage, &GrayImage) -> f64;        // panics on dim mismatch
 pub fn downscale_ssim(rendered: &GrayImage, src_luma: &[u8],
                       src_w: u16, src_h: u16) -> f64;
-// = §6 downscale-SSIM: source resampled to rendered dims through auto-ascii-core's
+// = FEATURE-MAP §15 downscale-SSIM: source resampled to rendered dims through auto-ascii-core's
 // own Resampler (same box-average semantics as the player), then ssim.
 // Pass the viewport-cropped raster (GrayImage::crop) — pads are not scored.
 
-// edge.rs — NEW at M3: §6 edge F1 vs SOURCE Canny at grid resolution
+// edge.rs — NEW at M3: FEATURE-MAP §15 edge F1 vs SOURCE Canny at grid resolution
 // (ground truth is never the factory's own planes — the driver streams the
 // raw fps-normalized gray source; imageproc canny; auto-ascii-eval gained the
 // codec-less image+imageproc deps). Prediction = cells where the edge layer
@@ -711,7 +720,7 @@ pub fn edge_f1(truth, pred: &EdgeMask, tol: u16) -> EdgeScore;
     // Empty-mask conventions (all finite): none/none → P=R=F1=1;
     // truth-only → P=1,R=0,F1=0; pred-only → P=0,R=1,F1=0.
 
-// flicker.rs — §6 flicker score (M3 gate ≤ 2 switches/cell/s). Streaming;
+// flicker.rs — FEATURE-MAP §15 flicker score (M3 gate ≤ 2 switches/cell/s). Streaming;
 // compares Cell::ch only (color-only changes aren't flicker); a grid-dim
 // change resets the pair state (resize legitimately reglyphs everything).
 // Static-segment selection is the driver's job (it has the NORM shot table).
@@ -728,12 +737,12 @@ pub struct DamageStats { frames, dropped_frames: u32, bytes_total: u64,
   avg_write_ms: f64, bytes_per_sec: f64 }          // serde
 pub fn aggregate_frame_stats(&[FrameStats], grid_cells: u32, fps: f64)
     -> DamageStats;                                // empty slice → zeros
-pub enum Stage { Decode, Resample, Compose, Present }  // §3.6 stages; ALL, as_str
+pub enum Stage { Decode, Resample, Compose, Present }  // stages; ALL, as_str
 pub struct StageStat { frames: u32, mean_ms, max_ms: f64 }       // serde
 pub struct StageTimesMs { decode, resample, compose, present: StageStat } // serde
 pub struct StageAccum;  // record(Stage, Duration) → report() -> StageTimesMs
 
-// report.rs — versioned JSON schema (the §5 agent socket's machine half).
+// report.rs — versioned JSON schema (the agent socket's machine half).
 // Deterministic serialization (no timestamps/host info in the body; BTreeMap
 // keys sorted); additive fields don't bump the version (serde defaults).
 pub const SCHEMA_VERSION: u32 = 2;  // M3 bump: edge_f1/edge_precision/
@@ -828,7 +837,7 @@ pub struct FixtureRenderer<'a>;  // player-pipeline replay on public APIs,
 impl FixtureRenderer<'a> {      // M3: decode(seq roll/FIDX seek)→resample
   pub fn new(asset: &'a [u8], GoldenPalette) -> Self;   // (luma Vc×2Vr)→
   pub fn reflow(&mut self, cols, rows);   // NORM LUT (+ shot-change state
-                                          // reset)→ §3.5 compose_frame
+                                          // reset)→ FEATURE-MAP §5 compose_frame
                                           // (fixtures are Y+C ⇒ edge/
                                           // highlight auto-disabled)
   pub fn render(&mut self, frame: u32) -> &Grid<Cell>;  // BLANK below 32×9
@@ -857,13 +866,13 @@ pub enum Error;                       // one coherent error (thiserror-style
     // | Config(String) | Terminal(io::Error); #[non_exhaustive];
     // M5 fix 1: Display states THIS layer only; the cause is exposed via
     // source() alone, so anyhow-style chain printers show it exactly once
-pub enum PaletteChoice { Auto, Ascii, Unicode, Braille }  // §3.4 charset axis
+pub enum PaletteChoice { Auto, Ascii, Unicode, Braille }  // FEATURE-MAP §5 charset axis
     // Auto = probed caps (Player) / Unicode blocks (RenderSession);
     // braille NEVER chosen automatically
 pub use auto_ascii_core::{Cell, Grid, Rgb};  // what render() hands back — nothing
     // else from auto-ascii-core is re-exported (resampler, palettes, viewport,
     // hysteresis: engine internals a simple project never touches)
-pub mod timecode;  // M7 (PLAN-M6-M8 §2): the project's ONE timestamp grammar
+pub mod timecode;  // M7 (FEATURE-MAP §8): the project's ONE timestamp grammar
     // pub fn parse(&str) -> Result<f64, TimecodeError>   // SS[.f] | MM:SS[.f]
     //     | HH:MM:SS[.f]; fields trimmed, NOT range-checked against the unit
     //     above them (0:90 == 90 s), negatives/inf/NaN rejected
@@ -874,7 +883,7 @@ pub mod timecode;  // M7 (PLAN-M6-M8 §2): the project's ONE timestamp grammar
     // Core tier: no deps, no features. `auto-ascii play --seek` and
     // `auto-ascii import --ss/--t` are both this function.
 
-// composition.rs — M8 (PLAN-M6-M8 §3): clips stitched on one timeline.
+// composition.rs — M8 (FEATURE-MAP §11): clips stitched on one timeline.
 // Core tier EXCEPT the TOML parser (feature `compose`, default-on via
 // `terminal`); nothing here re-encodes anything.
 pub const SCHEMA_VERSION: i64 = 1;    // the only `schema` this build reads
@@ -933,7 +942,7 @@ impl Composition {
   pub fn frame_count(&self) -> u32;        // duration × fps, snapped
   pub fn locate(&self, t_secs: f64) -> Option<Located>;   // = locate_frame(t·fps)
   pub fn locate_frame(&self, frame_idx: u32) -> Option<Located>;
-      // THE time→frame function (§3 semantics): file order, `at` overrides,
+      // THE time→frame function (FEATURE-MAP §11 semantics): file order, `at` overrides,
       // ends EXCLUSIVE, overlap → the LATER-listed clip, gap → None (black,
       // not an error). Pure integer over the frame grid; float positions
       // are snapped to the exact integer within 1e-6 frames (absolute), so
@@ -1022,10 +1031,10 @@ impl RenderSession {
   pub fn aspect(&self) -> f64;        // asset picture aspect (w/h, ≈1.778);
       // since M5 fix 2 this IS the letterbox target ratio render() uses
   pub fn set_palette(&mut self, PaletteChoice);            // resets temporal
-  pub fn set_cell_aspect(&mut self, f64) -> Result<(), Error>; // §3.2 knob
+  pub fn set_cell_aspect(&mut self, f64) -> Result<(), Error>; // FEATURE-MAP §4 knob
       // (1.0 for square cells in an embedder's own renderer)
   pub fn set_font_table(&mut self, Option<&str>) -> Result<(), Error>;
-      // M5 item B (§3.4 --font-table): builtin NAME | PATH to a generator
+      // M5 item B (FEATURE-MAP §3 --font-table): builtin NAME | PATH to a generator
       // TOML | None to clear. The table's repertoire VETOES the palette
       // choice via FontTable::veto_tier (braille→unicode→ascii) — resets
       // temporal state like set_palette; bad specs are Error::Config and
@@ -1044,7 +1053,7 @@ pub use auto_ascii_core::ComposeParams; // RenderSession::set_compose_params
 // player.rs — feature "terminal" (in the default set)
 pub enum RepaintMode { Full /*default*/, Diff }
 pub struct PlayerBuilder;   // Default; #[must_use]
-impl PlayerBuilder {        // the spec'd builder (§7 M4) + escape hatches
+impl PlayerBuilder {        // the spec'd builder (FEATURE-MAP §13) + escape hatches
   pub fn asset(self, impl Into<PathBuf>) -> Self;          // REQUIRED
   pub fn composition(self, impl Into<PathBuf>) -> Self;    // M8: …or this,
       // a composition .toml — mutually exclusive with asset(). The whole
@@ -1062,12 +1071,12 @@ impl PlayerBuilder {        // the spec'd builder (§7 M4) + escape hatches
   pub fn seek_secs(self, f64) -> Self;            // FIDX seek; bounds at build
   pub fn duration_secs(self, f64) -> Self;        // stop after N s wall clock, including pauses
   pub fn no_query(self, bool) -> Self;            // probe escape hatches
-  pub fn no_cache(self, bool) -> Self;            //   (PLAN §3.1)
+  pub fn no_cache(self, bool) -> Self;            //   (FEATURE-MAP §3)
   pub fn no_quirks(self, bool) -> Self;           // M5 item C: skip the
       // identity-keyed quirk table (auto-ascii-term quirks.rs) post-probe
   pub fn no_backdrop(self, bool) -> Self;         // note 27(l): keep the
       // terminal's default background (default: black for the session)
-  pub fn font_table(self, impl Into<String>) -> Self;  // M5 item B (§3.4):
+  pub fn font_table(self, impl Into<String>) -> Self;  // M5 item B (FEATURE-MAP §3):
       // builtin NAME | PATH; parsed+validated at build(); run() applies the
       // repertoire veto AFTER resolve_for_caps (user-asserted font truth
       // degrades the probed/forced tier, never upgrades it)
@@ -1081,15 +1090,21 @@ impl PlayerBuilder {        // the spec'd builder (§7 M4) + escape hatches
 pub struct Player;          // asset open+validated, terminal untouched
 impl Player {
   pub fn builder() -> PlayerBuilder;
-  pub fn run(self) -> Result<(), Error>;  // BLOCKING: probe (§3.1) →
-      // AnsiBackend session (restore hooks armed first) → the §3.6
+  pub fn run(self) -> Result<(), Error>;  // BLOCKING: probe (FEATURE-MAP §3) →
+      // AnsiBackend session (restore hooks armed first) → the FEATURE-MAP §8
       // wall-clock loop (latest-frame-wins, digit jumps, resize reflow) →
       // shutdown/restore. Consumes self; the M0–M3 machinery verbatim
       // (moved from the old player binary's main.rs — no logic fork with
       // `auto-ascii play`, which is a pure argv shim)
   pub fn play(self) -> Result<Stopped, Error>;  // run(), reporting why it
       // stopped; `auto-ascii play` exits 0 on Ended and 3 on Quit, so a launcher loop
-      // tells a quit from the end of the clip without timing the run
+      // tells a quit from the end of the clip without timing the run.
+      // Env AUTO_ASCII_FRAME_LOG=<path> (read by play, not the builder): append
+      // one TSV row per presented frame — frame_index, wall_ms, bytes,
+      // cells_damaged, write_ns, dropped — and a final `# end frames_presented=…
+      // target_frames=… elapsed_ms=… tier=… grid=CxR` line on every stop, quit
+      // included; an unopenable path is Error::Io before the terminal is touched;
+      // unset costs nothing
 }
 pub enum Stopped { Ended, Quit }  // Ended: end of asset or duration_secs;
     // Quit: q / Esc / Ctrl-C
@@ -1141,7 +1156,7 @@ terminal-free — `reflow_grid(cols, rows)` (everything but backend
 resize/invalidate) and `render_grid(frame_idx)` (everything but present);
 `reflow`/`render_present` are now thin wrappers over them + the backend
 calls (call order and bytes IDENTICAL to M3 — verified by the pre/post
-sim-dump sha256 pin at M4). Also new: `reset_temporal_state()` (the §3.5
+sim-dump sha256 pin at M4). Also new: `reset_temporal_state()` (the FEATURE-MAP §6
 discontinuity reset, used by RenderSession backward jumps),
 `set_glyph_tier_for_next_reflow(GlyphTier)` +
 `set_cell_aspect_for_next_reflow(f64)` (take effect at next reflow;
@@ -1150,7 +1165,7 @@ the comment cleanup). A warmed sequential `render_grid` with overlays off
 is allocation-free for every style (`tests/render_alloc.rs`).
 
 ```rust
-// pipeline.rs — M3: the full §3.5 three-layer path (integrator; note 20).
+// pipeline.rs — M3: the full FEATURE-MAP §5 three-layer path (integrator; note 20).
 pub struct StageNs { pub decode, resample, compose, present: u64 } // ns, Copy
 pub struct Drained { pub quit: bool, pub jump_digit: Option<u8>,
                      pub seek_steps: i32 }  // M5 scrub UX: net Left(−1)/
@@ -1158,7 +1173,7 @@ pub struct Drained { pub quit: bool, pub jump_digit: Option<u8>,
     // Nonzero ⇒ hysteresis already reset (same rule as jump_digit).
     // M3 review fix (medium, seek ghosting): when jump_digit is Some,
     // drain_events has ALREADY reset all hysteresis state — a digit seek is
-    // a temporal discontinuity (same class as the §3.5 cut/resize resets;
+    // a temporal discontinuity (same class as the FEATURE-MAP §6 cut/resize resets;
     // update_levels only covers jumps that cross a shot boundary, so a
     // same-shot jump used to ghost pre-seek was_edge/idx into the landing
     // frame). Callers just repoint their clock and render (regression:
@@ -1178,7 +1193,7 @@ impl<'a> Player<'a> {
       // Mono ⇒ chroma subblocks are never decoded (M1 rule, unchanged).
       // Plane registry detection happens here: E+Ex+Ey all present ⇒ edge
       // layer on; H present ⇒ highlight/shadow on; absent ⇒ auto-disabled
-      // (M1-era Y+C assets play with pure base+structure — §4 back-compat,
+      // (M1-era Y+C assets play with pure base+structure — FEATURE-MAP Data & wire back-compat,
       // regression-tested in tests/m3_layers.rs).
   pub fn set_style(&mut self, Style); pub fn style(&self) -> Style;
       // note 27h: a CHANGE resets all per-cell temporal state (cold start
@@ -1193,8 +1208,8 @@ impl<'a> Player<'a> {
       // an equal value is a no-op. ComposeParams: PartialEq + Eq for this.
   pub fn reflow<B: Backend>(&mut self, backend: &mut B, cols, rows);
       // M3 additions: palette reselection, luma tap tables at Vc×2Vr (ONE
-      // build, §3.3), feature tap tables at Vc×Vr (only when planes exist),
-      // HysteresisState.resize (realloc+reset — §3.5 graft from C)
+      // build, FEATURE-MAP §4), feature tap tables at Vc×Vr (only when planes exist),
+      // HysteresisState.resize (realloc+reset — FEATURE-MAP §6; graft from C)
   pub fn drain_events<B: Backend>(&mut self, backend: &mut B) -> Drained;
   pub fn set_progress_overlay(&mut self, visible: bool);  // M5 scrub UX:
       // 1-line bottom-row progress bar drawn over the composed grid by
@@ -1207,7 +1222,7 @@ impl<'a> Player<'a> {
       -> Result<FrameStats, Error>;  // M4: facade Error
       // M3 frame: decode Y(+E/Ex/Ey/H/C present-planes; sequential roll or
       // FIDX seek per plane) → update_levels (LUT rebuild on shot change
-      // ALSO resets hysteresis — deliberate superset of the §3.5 CUT rule:
+      // ALSO resets hysteresis — deliberate superset of the FEATURE-MAP §6 CUT rule:
       // a changed LUT makes every remembered ramp index stale, and every
       // CUT is a shot change) → resample (luma Vc×2Vr; E/Ex/Ey box-avg at
       // Vc×Vr; H bits expanded to 0/255 masks, box-avg'd, re-thresholded
@@ -1221,7 +1236,7 @@ impl<'a> Player<'a> {
   pub fn layer_mask() -> Option<&Grid<u8>>;
   pub fn resampler_dims() -> Option<((u16,u16),(u16,u16))>;
       // LUMA resampler; dst is (Vc, 2·Vr) since M3 — fuzz asserts exactly
-  pub fn hysteresis_dims() -> (u16, u16);    // NEW: §6 fuzz invariant
+  pub fn hysteresis_dims() -> (u16, u16);    // NEW: fuzz invariant
       // "hysteresis buffers realloc'd to the new grid" ((0,0) below 32×9)
 }
 pub fn build_levels_lut(lut: &mut [u8; 256], levels: Option<PlaneLevels>);
@@ -1231,7 +1246,7 @@ pub fn draw_progress_overlay(grid: &mut Grid<Cell>, frame: u32,
                              frame_count: u32, fps: f64);  // M5 scrub UX:
     // the bottom-row bar (" M:SS / M:SS [====>....] NN% ", pure ASCII,
     // byte-deterministic — unchanged rows cost zero diff damage)
-// M8 (PLAN-M6-M8 §3) additions:
+// M8 (FEATURE-MAP §11) additions:
 pub struct ProgressContext { pub frame, frame_count: u32,
                              pub fps_num, fps_den: u16,
                              pub clip: Option<(usize, usize)> }  // + fps()
@@ -1270,7 +1285,7 @@ pub fn drain_backend_events<B: Backend>(&mut B) -> (Drained, Option<(u16,u16)>);
     // wins and stops the drain). Player::drain_events is this plus the
     // reflow/reset; deck::ClipDeck::drain_events is this plus its own —
     // a gap frame has no clip player to drain through
-// REMOVED at M3: compose_cells (the M1 base-only compositor) — the §3.5
+// REMOVED at M3: compose_cells (the M1 base-only compositor) — the FEATURE-MAP §5
 // path replaced it wholesale; keeping it invited silent drift between the
 // shipping renderer and the golden harness.
 ```
@@ -1283,7 +1298,7 @@ facade surface + this hidden module.)
 
 ## Binaries
 
-- The factory commands (PLAN §5), since 0.3.0 part of `auto-ascii` (the
+- The factory commands (FEATURE-MAP §1), since 0.3.0 part of `auto-ascii` (the
   old factory binary is gone; `crates/auto-ascii/src/bin/auto-ascii/import.rs` and
   `src/dev/`), surface as of M3 (+ M5 item B):
   `import <in> -o <out> [--ss T] [--t T] [--fps N] [--res WxH] [--params F]
@@ -1305,7 +1320,7 @@ facade surface + this hidden module.)
   or generator TOML path; default `conservative` = the committed baseline's
   table; sweep always scores conservative),
   `dev sweep --corpus <dir> --grid G.toml --out DIR [--params F]
-  [--cache-dir D]` (M3 Tune, note 21: the PLAN §5 sweep CLI — G.toml
+  [--cache-dir D]` (M3 Tune, note 21: the sweep CLI, FEATURE-MAP §15 — G.toml
   declares `[[axes]]` of dotted-param override sets (values within an axis
   travel together, axes cross) + optional `[score]` weights; default
   composite score `0.4·mean(ssim) + 0.4·mean(edge_f1) −
@@ -1386,7 +1401,7 @@ facade surface + this hidden module.)
   reports shots + cut flags, keyframe count, per-plane compressed/raw sizes,
   compression ratio vs raw planes, and per-plane value stats over sampled
   frames (E nonzero %, Ex/Ey bias deviation, H flag rates).
-- `auto-ascii play` (PLAN §3) — the player's argv surface. Since 0.3.0 it
+- `auto-ascii play` (FEATURE-MAP §8) — the player's argv surface. Since 0.3.0 it
   lives in `crates/auto-ascii/src/bin/auto-ascii/play/` (the old standalone player
   binary and the facade's `bin` feature are gone). It is a thin argv shim:
   interactive flags map 1:1 onto `PlayerBuilder` and `play()` (no logic
@@ -1429,10 +1444,10 @@ facade surface + this hidden module.)
   selection (`auto` = `glyph_tier_from_caps`; `--sim` derives auto from
   `Caps::default()` — ascii). The `--sim` JSON line gained
   `"layers":{"base","edge","highlight","shadow","structure"}` — cumulative
-  winning-layer cell counts over the run (the §3.4 priority decision made
+  winning-layer cell counts over the run (the FEATURE-MAP §5 priority decision made
   observable headlessly; sim always enables the LayerMask).
-  Default `--repaint full` = invalidate-every-frame (§3.1/§7 one render path).
-  M1: interactive startup runs `probe_caps` (§3.1) — `--tier TIER`
+  Default `--repaint full` = invalidate-every-frame (FEATURE-MAP §7, one render path).
+  M1: interactive startup runs `probe_caps` (FEATURE-MAP §3) — `--tier TIER`
   (truecolor|256|16|mono) and `--no-query` both SKIP the volley (passive
   hints only; the forced tier still wins), `--no-cache` bypasses the probe
   cache; `--sim` never probes. `--seek` accepts seconds ("42.5") or colon
@@ -1447,7 +1462,7 @@ facade surface + this hidden module.)
   `--sim-resize` (default value 100x40, requires `--sim`) injects a
   `Event::Resize` at frame NFRAMES/2 through the same event path the
   interactive loop uses, proving next-frame reflow.
-- `auto-ascii` (PLAN-M6-M8 §2) — M7, the agent-first CLI, built from
+- `auto-ascii` (FEATURE-MAP §12) — M7, the agent-first CLI, built from
   `crates/auto-ascii/src/bin/auto-ascii/` (package `auto-ascii`, binary
   `auto-ascii`, feature `cli`). CLI as of 0.3.0:
   `[--json] [--yes] [--help-all] play <clip | composition> [play flags] |
@@ -1602,12 +1617,12 @@ facade surface + this hidden module.)
   **`compose export --json`** is the `ExportReport` plus where it landed:
   `{"path","frames","fps","bytes","shots","cuts"}`.
 
-## M0 scope notes & deviations from PLAN
+## M0 scope notes & deviations from the original design
 
-1. **`Tap1D` weights**: PLAN/digest sketch inline `w: [u16]` / `w[MAXTAP]`;
+1. **`Tap1D` weights**: the design/digest sketch inline `w: [u16]` / `w[MAXTAP]`;
    frozen API stores `w_off: u32` into a shared pool in `Resampler`. Reason: a
    fixed MAXTAP can't cover legal extreme downscales (480 src cols → 1-col
-   viewport under §6 resize fuzz); the pool keeps `Tap1D` fixed-size POD with
+   viewport under resize fuzz); the pool keeps `Tap1D` fixed-size POD with
    identical semantics (Q8, per-run sum 256).
    **1b (implementation follow-up):** `Tap1D::ntaps` widened `u8` → `u16` —
    the same 480→1 collapse puts 480 taps in a single run, which overflows
@@ -1616,7 +1631,7 @@ facade surface + this hidden module.)
    floats anywhere in resample.rs; V-pass emits `(acc + 0x8000) >> 16`
    (round-half-up, still shift-out, still float-free). No external code
    consumed `Tap1D` at the time of the change.
-2. **Palette 2 length**: PLAN §3.4 says "16-step" but specifies 15 glyphs
+2. **Palette 2 length**: the original design said "16-step" but specified 15 glyphs
    (`" .,:;i1tfLCG08@"`); the glyph string is authoritative → 15 entries.
 3. **`Cell` layout**: 11 payload bytes + 1 tail pad = 12 B (`align 4`),
    compile-time asserted; constructors (`new`/`BLANK`) leave padding zeroed.
@@ -1670,7 +1685,7 @@ facade surface + this hidden module.)
    `--loop`, `--fps-cap`, `--sim COLSxROWS:NFRAMES` + JSON stats line,
    `--sim-resize [COLSxROWS]`. `--cell-aspect` and `--duration-secs` kept;
    cell aspect defaults to the terminal-reported cell pixel ratio
-   (`Caps::cell_px`, interactive only) with 2.0 fallback (§3.2). No library
+   (`Caps::cell_px`, interactive only) with 2.0 fallback (FEATURE-MAP §4). No library
    `pub` signature changed during integration — this note is CLI-only.
 10. **Factory M1 upgrade** (M1 factory agent): full v1 pipeline per
     the Binaries section above — two-pass build (shot detection + per-shot
@@ -1700,9 +1715,9 @@ facade surface + this hidden module.)
     (c) chroma fg — C plane (RGB565 LE) unpacked to three 8-bit channel
     planes (bit-replicating expand) and AREA-resampled per cell through the
     same shared separable `Resampler` as luma (not nearest: consistent with
-    §3.3, no extra code path), fg = sampled RGB on truecolor/256/16; mono
+    FEATURE-MAP §4, no extra code path), fg = sampled RGB on truecolor/256/16; mono
     (and luma-only assets) keep the M0 gray/glyph-only path and skip C
-    subblock decode entirely (PLAN §4 "low tiers skip chroma");
+    subblock decode entirely (per-plane subblocks, FEATURE-MAP "Data & wire");
     (d) `--tier` implies no volley (probe escape hatches per the task
     directive: the volley runs only when none of `--sim`/`--tier`/
     `--no-query` is present).
@@ -1748,7 +1763,7 @@ facade surface + this hidden module.)
     re-bless with `ASCII_UPDATE_GOLDENS=1`); auto-ascii-term gained a
     DEV-dependency on auto-ascii-eval for this (a legal dev-dep cycle — dev-deps
     sit outside the package's own dep graph).
-    Resize fuzzing (§6 invariant set as explicit assertions; MOVED to
+    Resize fuzzing (invariant set as explicit assertions; MOVED to
     `crates/auto-ascii/tests/resize_fuzz.rs` against the real `Player`
     by review fix 4c, note 17):
     originally `crates/auto-ascii-eval/tests/resize_fuzz.rs` — random
@@ -1781,7 +1796,7 @@ facade surface + this hidden module.)
     pins the committed file to `Params::default()`, and the determinism
     guard byte-pins the default build (synthetic lavfi fixture, committed
     sha; corpus grass check is the `#[ignore]`d integration half);
-    (c) **§4 geometry term** (M1 review fix 1): base dims even and >= 2,
+    (c) **geometry term** (M1 review fix 1): base dims even and >= 2,
     enforced writer + reader + factory (see auto-ascii-format section); player
     regression test drives the binary on a header-patched asset (base_w ∈
     {1, 0, odd}) and asserts clean error, no panic;
@@ -1793,7 +1808,7 @@ facade surface + this hidden module.)
     independent of the tunables under test; the NORM stretch itself is
     still not scored;
     (e) **flicker segmentation**: fresh `FlickerAccum` per NORM cut, counts
-    summed across segments — scene cuts contribute zero pairs (§6 "static
+    summed across segments — scene cuts contribute zero pairs (FEATURE-MAP §15 "static
     segments" without needing per-shot metric plumbing);
     (f) **damage passes run `repaint_full = false`** (pure diff): damage
     rate is meaningless under invalidate-every-frame; the player's
@@ -1809,7 +1824,7 @@ facade surface + this hidden module.)
     scale/fps/select→png), so no image crate either; `toml` is the one new
     workspace dependency.
 15. **M2 item E + review fixes 2/3 landed** (perf-gate agent). No `pub`
-    signature changed. Perf gates (PLAN §6): criterion benches at
+    signature changed. Perf gates (FEATURE-MAP §15): criterion benches at
     `crates/auto-ascii/benches/pipeline.rs` over the REAL pipeline —
     `decode_delta_roll_480x270` (Y+C sequential delta roll),
     `resample_480x270_to_300x80`, `compose_300x80` (viewport inside the
@@ -1837,7 +1852,7 @@ facade surface + this hidden module.)
     cache-merge rule. `criterion` (default-features off +
     `cargo_bench_support`) added to `[workspace.dependencies]`.
 16. **M2 item F landed** (integrator). `scripts/eval.sh` is the one-command
-    loop (PLAN §6/§7): workspace tests (incl. all goldens, the 256-case
+    loop (FEATURE-MAP §15): workspace tests (incl. all goldens, the 256-case
     fuzz and the ≥24 fps e2e gate) → clippy `-D warnings` → resize fuzz at
     `FUZZ_CASES` (default 2000; acceptance depth `FUZZ_CASES=10000`) →
     `scripts/perf-gate.sh` → corpus section. The corpus section runs ONLY
@@ -1880,7 +1895,7 @@ facade surface + this hidden module.)
     runs/base.json + base.html re-baselined (SSIM reference changed:
     grass 0.6402, sheep 0.4272, silhouette 0.8983 + structure metrics).
     (4b) **perf thresholds** [medium]: perf/thresholds.toml re-calibrated
-    from ×1.30 to ×1.15 over fresh 3-run medians — PLAN §6 promises
+    from ×1.30 to ×1.15 over fresh 3-run medians — the design promised
     failure on >15% regressions, and at ×1.30 the mandated 20% drill was
     arithmetically impossible. Verified: +20–25% spin in Resampler::apply
     trips the gate (resample −8.4% headroom → FAIL); reverted; two
@@ -1905,8 +1920,8 @@ facade surface + this hidden module.)
     edits is accepted as the safe direction). Existing runs/cache entries
     were migrated to the new names after the grass byte-identity guard
     proved output unchanged.
-18. **M3 factory plane extraction landed** (factory agent; PLAN §5 stages
-    3–4). `auto-ascii import -o` now writes all six §4 planes — see the
+18. **M3 factory plane extraction landed** (factory agent; FEATURE-MAP §1
+    pass 2). `auto-ascii import -o` now writes all six FEATURE-MAP §1 planes — see the
     Binaries section for the pipeline. **Wire semantics the player relies
     on (factory⇄player contract):**
     (a) **E** (plane 2): u8, unthinned local Scharr magnitude of the
@@ -1920,7 +1935,7 @@ facade surface + this hidden module.)
     vector: `byte = 128 + (v >> 1)` where `(vx, vy) = E·(cos 2θg, sin 2θg)`
     in the **gradient** convention, y-down raster, computed rationally
     (`vx = E·(gx²−gy²)/(gx²+gy²)`, `vy = E·2gxgy/(gx²+gy²)` — no atan2
-    anywhere). Decode `v ≈ (byte − 128)·2`; §3.3 coherence =
+    anywhere). Decode `v ≈ (byte − 128)·2`; FEATURE-MAP §5 coherence =
     `2·|(Ex−128, Ey−128)| / E`; the edge TANGENT doubled vector is
     `−(vx, vy)` (the player's LUT maps gradient bins → stroke glyphs with
     one negation). Sign anchors: vertical edge → Ex > 128; horizontal →
@@ -1945,8 +1960,8 @@ facade surface + this hidden module.)
     integration (the `#[ignore]`d grass byte-identity guard fails until
     then, by design). Memory: extraction state is O(plane), ~4 MB fixed
     (see FEATURE-MAP.md, factory build flow); planes stream to the writer.
-19. **M3 edge-F1 metric + review reel landed** (edge-F1/reel agent; PLAN
-    §6 "Edge F1 vs source Canny", §7 M3 review-reel gate). Decisions:
+19. **M3 edge-F1 metric + review reel landed** (edge-F1/reel agent; FEATURE-MAP
+    §15, edge F1 vs source Canny, and the M3 review-reel gate). Decisions:
     (a) **ground truth** = imageproc Canny on the RAW source (one streaming
     ffmpeg gray decode per clip through the identical
     `scale=W:H:flags=area,fps=N` ingest chain — independent of every
@@ -1960,8 +1975,8 @@ facade surface + this hidden module.)
     1-cell Chebyshev tolerance ring both ways (glyph quantization +
     deliberately-unthinned E make off-by-one correct, not lenient);
     NaN-free empty-frame conventions in the `edge_f1` entry in the
-    [auto-ascii-eval section](#auto-ascii-eval-plan-6-m2-item-a--metrics-library-no-io-beyond-serde).
-    (b) **prediction side / LayerMask contract**: §3.4 composition is
+    [auto-ascii-eval section](#auto-ascii-eval-feature-map-15-m2-item-a--metrics-library-no-io-beyond-serde).
+    (b) **prediction side / LayerMask contract**: FEATURE-MAP §5 composition is
     override-only, so per-cell render metadata is a single u8 layer id —
     additive auto-ascii-core API (`compose::layer`, `compose_cell_layer`,
     `compose_frame_masked`; masked output byte-identical to unmasked,
@@ -1993,16 +2008,16 @@ facade surface + this hidden module.)
     auto-ascii-eval, `gif` for `auto-ascii-factory` — PNG I/O stays with the ffmpeg
     subprocess.
 20. **M3 pipeline integration landed** (integrator). The player runs the
-    full §3.5 path — see the auto_ascii::pipeline section for the surface.
+    full FEATURE-MAP §5 path — see the auto_ascii::pipeline section for the surface.
     Decisions recorded:
     (a) **Player::new signature** `want_color: bool` → `(ColorDepth,
     GlyphTier)`: palette selection is the player's job (Caps mapped via the
     new `glyph_tier_from_caps`/`color_depth`; `--palette` CLI override);
     no external crate consumed the old form outside this workspace.
-    (b) **Resampler topology**: ONE luma tap-table build at Vc×2Vr (§3.3);
+    (b) **Resampler topology**: ONE luma tap-table build at Vc×2Vr (FEATURE-MAP §4);
     one shared feature resampler at Vc×Vr for E/Ex/Ey + the H masks, built
     only when those planes exist; chroma unchanged. E/Ex/Ey are
-    box-averaged (not max-pooled, despite the §4 "runtime max-pools"
+    box-averaged (not max-pooled, despite the original design's "runtime max-pools"
     parenthetical): coherence = 2|(Ex,Ey)|/E is only meaningful when all
     three planes share the same linear resample — max-pooling E would
     depress coherence on perfectly coherent edges and mis-fire the
@@ -2013,7 +2028,7 @@ facade surface + this hidden module.)
     fine grids, single-px noise cannot own a coarse cell), deep shadow
     ≥ 128/255 (area feature). Constants in pipeline.rs.
     (d) **Hysteresis lifecycle**: reset on every levels-LUT rebuild (shot
-    change — deliberate superset of the §3.5 CUT rule: a changed LUT makes
+    change — deliberate superset of the FEATURE-MAP §6 CUT rule: a changed LUT makes
     remembered ramp indices stale, and every CUT is a shot change; pinned
     by tests/m3_layers.rs warmed-vs-cold-at-cut equality), realloc+reset on
     reflow, (0,0) below the viewport minimum. Fuzz invariants extended
@@ -2031,7 +2046,7 @@ facade surface + this hidden module.)
     configs and the temporal state trajectory. compose_cells removed from
     the pipeline lib (see the section note).
     (g) **Benches/thresholds**: the synthetic bench asset carries all six
-    §4 planes; compose bench = compose_frame with hysteresis + alternating
+    FEATURE-MAP §1 planes; compose bench = compose_frame with hysteresis + alternating
     inputs; perf/thresholds.toml recalibrated (3-run medians ×1.15) for
     decode (6-plane roll), compose (three-layer), present (busier M3
     grids) and e2e — resample unchanged.
@@ -2051,11 +2066,11 @@ facade surface + this hidden module.)
     precision ≈ 0.77 — the coherence gates carry noise suppression).
     Sweep evidence in the M3 integration report.
 21. **M3 Tune landed** (tune agent): `auto-ascii dev sweep` per the Binaries
-    section (PLAN §5 CLI — sweep.rs; ranked `sweep.json` schema v1 +
+    section (FEATURE-MAP §15 — sweep.rs; ranked `sweep.json` schema v1 +
     `leaderboard.html`; the M3 axis grids, since removed from the tree). Decisions:
     (a) **composite score** = `0.4·mean(ssim) + 0.4·mean(edge_f1) −
     0.2·mean(flicker/2.0)` (means over clips; `[score]` overridable per
-    grid file; flicker_norm 2.0 = the §6 gate, so a clip at the gate costs
+    grid file; flicker_norm 2.0 = the FEATURE-MAP §15 gate, so a clip at the gate costs
     its full flicker weight);
     (b) **sweep mode plumbing**: `EvalArgs.truecolor_only` (sweep skips the
     256/mono damage passes; plain `eval` keeps full tier coverage) +
@@ -2063,7 +2078,7 @@ facade surface + this hidden module.)
     depend on no tunable under test); `eval_clip`/`discover_corpus` are
     `pub(crate)` for the sweep driver; axes-crossed combos that fail
     `Params::validate()` are recorded as skipped with the reason;
-    (c) **idx hysteresis width promoted to a tunable** (the §3.5 "0.35·step"
+    (c) **idx hysteresis width promoted to a tunable** (the "0.35·step"
     constant): `auto_ascii_core::hysteresis_idx` gained a `hyst_q8` parameter,
     `ComposeParams`/params.toml `[compose]` gained `idx_hyst_q8`
     (default 90 = the spec value; `IDX_HYST_Q8` remains as the documented
@@ -2076,7 +2091,7 @@ facade surface + this hidden module.)
     ComposeParams). Corpus sweep (note 21 composite score): 160 scores
     0.4160 vs 0.3932 @ 90; grass flicker 2.313 → 1.651 (fixes the M3 ≤ 2
     gate breach; sheep 1.288, silhouette 1.599), edge F1 byte-identical per
-    clip, mean ssim flat. `IDX_HYST_Q8` (= 90) remains the §3.5 spec
+    clip, mean ssim flat. `IDX_HYST_Q8` (= 90) remains the original design spec
     nominal.
     (b) **Near-white edge veto rides the PLAIN quantized index** (was: the
     hysteresis-held idx), so edge recall no longer couples to the width
@@ -2101,8 +2116,8 @@ facade surface + this hidden module.)
     re-baseline: schema v2, edge-F1 family + tuned metrics; the M1-era
     baseline was unreproducible against the M3 renderer by design).
 
-23. **M4 items D + E landed** (terminal-matrix agent; PLAN §7 M4 "local
-    terminals verified", Scope-amendment audit). No facade API change; two
+23. **M4 items D + E landed** (terminal-matrix agent; M4 "local
+    terminals verified", TERMINAL-CHECKLIST §5 audit). No facade API change; two
     probe *readings* corrected against researched terminal behavior, one new
     `pub` helper (`ProbeReplies::sync_supported`), one new harness mode
     (`caps`) and two extra fields on the harness PROBE-DONE line
@@ -2210,8 +2225,8 @@ facade surface + this hidden module.)
     is typechecked behind `terminal` and never run), and the facade no
     longer carries `#![deny(missing_docs)]`.
 
-25. **M5 item B landed** (font-tables agent; PLAN §3.4 "coverage tables for
-    4 common monospace fonts plus one conservative default" + `--font-table`).
+25. **M5 item B landed** (font-tables agent; FEATURE-MAP §3, coverage tables for
+    4 common monospace fonts plus one conservative default, + `--font-table`).
     New surface per the sections above: `auto_ascii_core::palette::{tier_glyphs,
     all_palette_glyphs}` (palette-data-driven glyph enumeration),
     `auto_ascii_core::font_table` (`FontTable` parse/builtin/veto_tier,
@@ -2241,7 +2256,7 @@ facade surface + this hidden module.)
     Liberation/Ubuntu — pinned by auto-ascii-core/facade tests
     (`builtins_load_and_veto_as_researched`,
     `font_table_repertoire_vetoes_palette_tier`). The veto was wired (it
-    was trivial on top of the repertoire data), satisfying the §3.4
+    was trivial on top of the repertoire data), satisfying the original design's
     "palette selection can veto" clause.
     (d) **Comparison note (fonts/README.md):** mean per-glyph ΔL* across
     the four fonts 5.0, max ΔL* 19.6 (`▒`, DejaVu much denser); ramp-
@@ -2256,9 +2271,9 @@ facade surface + this hidden module.)
     moves with the table (see `CoverageTable::from_font_table` in the
     auto-ascii-eval section above).
 
-26. **M5 items C + D + E + F landed** (scrub/ship agent). PLAN §7 M5 minus
+26. **M5 items C + D + E + F landed** (scrub/ship agent). M5 minus
     the soak (A) and font tables (B), which landed separately (note 25).
-    (a) **Quirk table keyed on queried identity** (item C, PLAN §3.1):
+    (a) **Quirk table keyed on queried identity** (item C, FEATURE-MAP §3):
     `auto_ascii_term::quirks` (session-gated) — a static `QUIRKS: &[Quirk]`
     matched on the XTVERSION reply prefix plus the XTGETTCAP-RGB reading,
     applied by `probe_caps` post-volley and pre-`--tier`, NEVER on cache
@@ -2321,7 +2336,7 @@ facade surface + this hidden module.)
     because the deps are unpublished; `--no-verify` skips the rebuild,
     nothing is published; on a dirty tree add `--allow-dirty`).
 
-27. **M6 landed** (key-hints agent; PLAN-M6-M8 §1 — "the player should show,
+27. **M6 landed** (key-hints agent; owner request — "the player should show,
     terse but clear, what the keys do"). No always-on chrome: the hints are
     event-driven like the M5 overlay, so every headless grid is untouched.
     (a) **Progress row gains an arrow-hint block** at the far left —
@@ -2345,7 +2360,7 @@ facade surface + this hidden module.)
     `Player::set_hint_overlay(bool)` and `pub fn draw_hint_overlay(grid: &mut
     Grid<Cell>)`, plus `Drained.toggle_hints: bool` (`v`, collapsed to
     one flag per drain — a held key must not flicker the row). Printable
-    ASCII only, so the arrows are `<-`/`->` (PLAN-M6-M8 §0.6); `auto-ascii-term`
+    ASCII only, so the arrows are `<-`/`->` (FEATURE-MAP §10); `auto-ascii-term`
     needed no change, since both keys already arrive as `Key::Char`.
     (c) **Visibility is run-loop policy, never the pipeline's.** `player.rs`
     gains `HINT_STARTUP_SHOW_FOR` (3 s) and a private `HintState`: the row
@@ -2419,7 +2434,7 @@ facade surface + this hidden module.)
     (h) **Glyph codecs, `/`, and per-video settings** (after the dial fix).
     The per-cell mapping became a named, pluggable codec
     (`auto_ascii_core::codec`, API in the core section): `pixels` is the
-    §3.5 compositor moved verbatim into `codec/pixels.rs` and stays the
+    FEATURE-MAP §5 compositor moved verbatim into `codec/pixels.rs` and stays the
     default — every golden, the parity pin and the console golden pass
     unblessed, and `--sim-dump` escape streams on all four sample clips were
     compared byte for byte against the pre-codec build. `letters` draws
@@ -2494,7 +2509,7 @@ facade surface + this hidden module.)
     info). So the overlay stays about as large on screen as at 80 columns,
     and the hint and progress rows drop items for `cols/4` exactly as
     they do on a narrow terminal. This is a deliberate exception to
-    PLAN-M6-M8 decision 6 (printable ASCII overlays), made only where the
+    the printable-ASCII overlay rule (FEATURE-MAP §10), made only where the
     tier already draws half-blocks in the picture; the ASCII tier keeps
     one-cell ASCII rows at every size, and the strict parser in
     `scrub_overlay.rs` still runs on the ASCII tier. The pipeline and the
@@ -2819,7 +2834,7 @@ facade surface + this hidden module.)
     goldens do not change. The candidate's gradual glyph walk was rejected because it
     exceeded the flicker budget. The pre-existing live dial label difference
     from main (`shadow lift (floor, default)`) is deliberate and retained.
-28. **M7 landed** (agent-CLI agent; PLAN-M6-M8 §2 — "an agent-first CLI
+28. **M7 landed** (agent-CLI agent; owner request — "an agent-first CLI
     should take a video from anywhere on the desktop, process it, and land
     it in the folder where the user's processed videos live"). The shape of
     the new binary is in the Binaries section above; these are the
@@ -2883,14 +2898,14 @@ facade surface + this hidden module.)
     resolves by name and by path; `agent-guide` is asserted equal to the
     committed file; a bad `--ss` exits 1 with `{"error": ...}` on stderr,
     empty stdout and no asset written.
-29. **M8 landed** (compositions agent; PLAN-M6-M8 §3 — "`.ascii` files are
+29. **M8 landed** (compositions agent; owner request — "`.ascii` files are
     the clips, and a *composition* stitches an unbounded number of them,
     each placed at a chosen point on the timeline with its start and end
     trimmed"). The library half: the type, the player, the export. The
     `auto-ascii compose …`/`cut` subcommands are the CLI half and land
     beside it.
     (a) **One timeline function, and single assets go through it.**
-    `Composition::locate(t_secs) -> Option<Located>` is the only place §3's
+    `Composition::locate(t_secs) -> Option<Located>` is the only place FEATURE-MAP §11's
     semantics live (file order, `at` overrides, ends EXCLUSIVE, later-listed
     clip on top of an overlap, gap → `None`), and `locate_frame(f)` is
     `locate(f / fps)`. A plain asset is `Composition::single(path)` — one
@@ -2996,7 +3011,7 @@ facade surface + this hidden module.)
     the TOML (`crates/auto-ascii/src/bin/auto-ascii/composition.rs`): `new` writes a
     header and a commented clip table, `add` appends one `[[clip]]` and
     nothing re-serializes the file, so an agent's comments and ordering
-    survive every edit — the file is the source of truth (§0.3), and these
+    survive every edit — the file is the source of truth (FEATURE-MAP §11), and these
     are conveniences over it, not a model of it. Reading is the facade's
     `Composition::from_toml_file`, resolved against the home `library/`
     rather than the environment sniff `default_library_dir` does, because
@@ -3030,7 +3045,7 @@ facade surface + this hidden module.)
     `cut --json` equals the file it wrote, collides, and rebuilds
     byte-identically under `--force`; `new` + two `add`s are pinned to the
     exact TOML tail and an agent's own comment survives the next `add`;
-    `show --json` reports the 1.6 s gap of the §3 example and a second case
+    `show --json` reports the 1.6 s gap of the schema example and a second case
     marks `OVERLAP #0`; `export`'s `frames` equals `show`'s `frame_count`
     and its file re-enters `list` header-first; a `.toml` outside the home
     folder resolves and exports; and every error path — unknown clip,

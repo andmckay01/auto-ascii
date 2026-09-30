@@ -53,7 +53,7 @@ impl FramePainter {
     pub(crate) fn paint(&mut self, grid: &Grid<Cell>, tier: ColorTier, sync_2026: bool) -> u32 {
         assert!(
             grid.cols() == self.prev.cols() && grid.rows() == self.prev.rows(),
-            "present(): grid is {}x{} but backend is {}x{} — call resize() first (PLAN §3.1)",
+            "present(): grid is {}x{} but backend is {}x{} — call resize() first",
             grid.cols(),
             grid.rows(),
             self.prev.cols(),

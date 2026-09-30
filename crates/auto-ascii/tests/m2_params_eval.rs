@@ -107,7 +107,7 @@ fn params_validation_rejects_degenerate_geometry() {
     assert!(!out.status.success());
     assert!(
         stderr_of(&out).contains("even and >= 2"),
-        "stderr should state the §4 geometry rule:\n{}",
+        "stderr should state the geometry rule:\n{}",
         stderr_of(&out)
     );
 

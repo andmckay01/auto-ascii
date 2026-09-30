@@ -98,6 +98,20 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     (`crates/auto-ascii/src/pipeline.rs` `Player::load_frame`).
   - The reader takes `&[u8]` (the player mmaps with `memmap2`). The crate does no file I/O.
   - Writer output is byte-pinned (`GOLDEN_SHA256` in `crates/auto-ascii-format/tests/container.rs`).
+  - **Forward compatibility is the plane-ID registry, not the version number.** A new plane (a
+    motion or audio-envelope plane) is a new plane ID that old readers skip, not a version bump:
+    readers look planes up by ID (`AsciiReader::plane_index`), so an ID they never ask for is
+    never decoded.
+  - Unknown chunks are skipped by size unless flagged required. An unknown *required* chunk is a
+    hard error (`AsciiError::UnknownRequiredChunk`, `crates/auto-ascii-format/src/read.rs`
+    `AsciiReader::open`). FRAM, FIDX and TRLR are written required; META and NORM are not.
+  - A `version_major` above the reader's is rejected (`AsciiError::UnsupportedVersion`,
+    `crates/auto-ascii-format/src/header.rs` `AsciiHeader::from_bytes`). Minor versions are
+    additive only, and the reader ignores `version_minor`. Unknown META keys are ignored.
+  - A missing or short TRLR means the file was truncated (`AsciiError::Truncated`). The tests
+    `unknown_required_chunk_is_rejected`, `unknown_optional_chunk_is_skipped`,
+    `future_major_version_is_rejected` and `missing_trlr_is_truncated` in
+    `crates/auto-ascii-format/tests/container.rs` pin all four rules.
 
 ### 3. Probe the terminal
 - **Does:** works out the color tier, glyph repertoire, synchronized-output support and cell
@@ -109,7 +123,9 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   `CSI 16 t`, DA1 last as the sentinel) parsed by `ProbeParser`. The deadline is
   `DEFAULT_PROBE_TIMEOUT` (200 ms). Results are cached at `$XDG_CACHE_HOME/auto-ascii/caps`
   (`cache_load`, `cache_store`, `apply_cache_hit`). Identity-keyed corrections live in
-  `crates/auto-ascii-term/src/quirks.rs` `QUIRKS` / `apply_quirks`. The palette tier is resolved
+  `crates/auto-ascii-term/src/quirks.rs` `QUIRKS` / `apply_quirks`. The `TERM_PROGRAM` color cap
+  (Apple Terminal.app at 256 colors) is `quirks.rs` `TERM_PROGRAM_COLOR_CAPS` /
+  `cap_color_for_term_program`, applied last by `probe.rs` `settle_color`. The palette tier is resolved
   by `crates/auto-ascii/src/lib.rs` `PaletteChoice::resolve_for_caps`. Font tables are in
   `crates/auto-ascii-core/src/font_table.rs` `FontTable::veto_tier`.
 - **Invariants:**
@@ -117,6 +133,10 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - A cache hit can only upgrade the current run's passive evidence. The one exception is a
     stored quirk clamp.
   - Quirks key on the queried identity (XTVERSION/DA1), never on `TERM`.
+  - Apple Terminal.app (`TERM_PROGRAM=Apple_Terminal`) is capped at 256 colors whatever
+    `COLORTERM`, a volley reply or a cache entry says. Terminal.app 2.15 does render 24-bit
+    color (verified 2026-09-30); the cap is for cost, since truecolor is about 3.3× the bytes
+    and roughly twice the CPU, and drops frames above ~150 KB/frame. The cap only lowers a tier, ignores `--no-quirks`, and `--tier` beats it.
   - Late replies are drained or filtered (`crates/auto-ascii-term/src/ansi.rs`
     `StragglerFilter`), so digits in a reply never trigger a seek.
 
@@ -395,6 +415,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   `resolve_or_update` for the title, then one yt-dlp download run).
   `crates/auto-ascii/src/bin/auto-ascii/commands.rs` `cut`, `list`, `info`, `compose_*`, `home`,
   `agent_guide`. `crates/auto-ascii/src/bin/auto-ascii/play/mod.rs` `play`, `play_composition`.
+  `crates/auto-ascii/src/player.rs` `FrameLog` (`AUTO_ASCII_FRAME_LOG`, below).
   `crates/auto-ascii/src/bin/auto-ascii/output.rs` `emit` / `emit_err` / `fail`.
   `crates/auto-ascii/src/bin/auto-ascii/home.rs` `Home` (`resolve`, `create`,
   `resolve_clip`, `resolve_playable`), plus free functions `kebab_case`, `cut_name` and
@@ -430,6 +451,13 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - `play` refuses `--json` unless `--sim` or `--bench-seek` is given (flow 14); those headless
     runs print exactly one JSON line on stdout with or without `--json`.
     `stream` refuses `--json` the same way unless `--sim` is given.
+  - `AUTO_ASCII_FRAME_LOG=<path>` makes the real-tty player append one tab-separated row per
+    presented frame: `frame_index`, `wall_ms`, `bytes`, `cells_damaged`, `write_ns`, `dropped`
+    (`1` when the write failed). A final `# end frames_presented=N target_frames=N
+    elapsed_ms=X tier=T grid=CxR` line is written however playback stops, quit included. Unset,
+    the player does nothing extra; set, a path that cannot be opened is an error before the
+    terminal is touched. The headless `--sim` runs do not write it. Reading it is in
+    `docs/TERMINAL-CHECKLIST.md`.
 
 ### 13. Embedding: `Player` and `RenderSession`
 - **Does:** the published library API.
@@ -733,6 +761,11 @@ is not counted in `size`.
 Plane subblocks are 64-byte aligned. NORM records are 24 B: `first_frame u32`, `flags u8` (bit0
 cut), then eight `(p2, p98)` pairs indexed by plane position (`crates/auto-ascii-format/src/norm.rs`).
 
+**Asset size:** a 3-minute clip at 30 fps is about 122 MB on synthetic planes and 190–350 MB on
+real footage. The format-compatible shrink levers, none pulled today: a 384×216 base
+(`build.base_w` / `base_h`), keyframe interval 120 (`build.keyframe_ivl`), quarter-res chroma and
+zstd dictionaries.
+
 **Per-video settings** (`<asset stem>.player.toml`, `crates/auto-ascii/src/settings.rs`):
 
 ```toml
@@ -833,8 +866,6 @@ values = [
 - [CONTRIBUTING.md](../CONTRIBUTING.md): build, the `scripts/eval.sh` gate, determinism rules,
   perf calibration, publishing.
 - [AGENT-GUIDE.md](AGENT-GUIDE.md): the CLI for agents, JSON shapes, composition schema.
-- [PLAN.md](PLAN.md) and [PLAN-M6-M8.md](PLAN-M6-M8.md): the original engine and tool-layer
-  designs (the "§" references in older code history point here).
 - [INTERFACES.md](INTERFACES.md): the internal API registry and decision log.
 - [TERMINAL-CHECKLIST.md](TERMINAL-CHECKLIST.md): the manual per-terminal pass.
 - [research/zoom.md](research/zoom.md): why the player hints at zoom instead of changing it.
@@ -865,3 +896,15 @@ values = [
 - **Don't "fix":** the player has no always-on chrome (overlays are event-driven), there is no
   SSH/tmux/throughput tuning, `WriterOptions::default()` stays at zstd 19 while the factory uses
   15, and `pipeline` stays `#[doc(hidden)]`. All four are deliberate (`CONTRIBUTING.md`).
+
+## Not built
+
+- **MCP server:** `auto-ascii mcp` over stdio, a thin wrapper that calls the same library
+  functions and returns the `--json` objects.
+- **Clip-name scrub overlay:** the composition progress row shows ` c/N `, not names.
+- **Transitions:** a fade to black between clips.
+- **Per-clip dials:** a turned dial applies to every clip of a composition (flow 9).
+- **Motion plane:** a new plane ID, no version bump (flow 2).
+- **Kitty-graphics `PixelPresenter`:** pixel output beside the glyph-cell path.
+- **zstd dictionaries:** a size lever (Data & wire).
+- **Embedded audio plane and per-clip sound:** compositions play silent (flow 16).

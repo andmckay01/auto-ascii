@@ -1378,7 +1378,7 @@ mod tests {
         assert_eq!(row_at(63, Some((2, 3))), m6(63), "below 64 columns the block is dropped");
         assert_eq!(row_at(80, None), m6(80), "no context = the M6 row");
         assert_eq!(row_at(64, Some((2, 3))).len(), 64, "the threshold row still fits");
-        assert!(wide.is_ascii(), "overlays stay printable ASCII (§0.6)");
+        assert!(wide.is_ascii(), "overlays stay printable ASCII (FEATURE-MAP §10)");
     }
 
     #[test]

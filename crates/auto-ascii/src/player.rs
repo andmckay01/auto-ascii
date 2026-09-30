@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use std::fmt::Write as _;
 
 use auto_ascii_core::{ComposeParams, Style};
-use auto_ascii_term::{AnsiBackend, Backend, ColorTier, ProbeOptions, probe_caps};
+use auto_ascii_term::{AnsiBackend, Backend, ColorTier, FrameStats, ProbeOptions, probe_caps};
 
 use crate::audio::{SinkChoice, Sound, SoundOptions, Soundtrack};
 use crate::composition::Composition;
@@ -398,6 +398,72 @@ impl RepaintGate {
 }
 
 #[derive(Debug)]
+struct FrameLog {
+    out: std::io::BufWriter<std::fs::File>,
+    presented: u64,
+    target_frames: u64,
+}
+
+impl FrameLog {
+    fn from_env() -> Result<Option<FrameLog>, Error> {
+        let Some(path) = std::env::var_os("AUTO_ASCII_FRAME_LOG").filter(|v| !v.is_empty())
+        else {
+            return Ok(None);
+        };
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|source| Error::Io { path: path.into(), source })?;
+        Ok(Some(FrameLog { out: std::io::BufWriter::new(file), presented: 0, target_frames: 0 }))
+    }
+
+    fn frame(&mut self, target: u64, since_start: Duration, stats: FrameStats) {
+        self.presented += 1;
+        self.target_frames = self.target_frames.max(target + 1);
+        let _ = write_frame_row(&mut self.out, target, since_start, stats);
+    }
+
+    fn finish(mut self, elapsed: Duration, tier: ColorTier, grid: (u16, u16)) {
+        use std::io::Write as _;
+        let _ = write_end_line(&mut self.out, self.presented, self.target_frames, elapsed, tier, grid);
+        let _ = self.out.flush();
+    }
+}
+
+fn write_frame_row(
+    out: &mut impl std::io::Write,
+    target: u64,
+    since_start: Duration,
+    stats: FrameStats,
+) -> std::io::Result<()> {
+    writeln!(
+        out,
+        "{target}\t{:.3}\t{}\t{}\t{}\t{}",
+        since_start.as_secs_f64() * 1e3,
+        stats.bytes,
+        stats.cells_damaged,
+        stats.write_ns,
+        u8::from(stats.dropped),
+    )
+}
+
+fn write_end_line(
+    out: &mut impl std::io::Write,
+    presented: u64,
+    target_frames: u64,
+    elapsed: Duration,
+    tier: ColorTier,
+    (cols, rows): (u16, u16),
+) -> std::io::Result<()> {
+    writeln!(
+        out,
+        "# end frames_presented={presented} target_frames={target_frames} elapsed_ms={:.3} tier={tier:?} grid={cols}x{rows}",
+        elapsed.as_secs_f64() * 1e3,
+    )
+}
+
+#[derive(Debug)]
 struct HintState {
     pinned: bool,
 }
@@ -605,6 +671,7 @@ impl Player {
     }
 
     pub fn play(self) -> Result<Stopped, Error> {
+        let mut frame_log = FrameLog::from_env()?;
         let probe_opts = ProbeOptions {
             forced_tier: self.cfg.tier,
             no_query: self.cfg.no_query || self.cfg.tier.is_some(),
@@ -794,8 +861,12 @@ impl Player {
                 (show_progress, show_hints, dial_up, deck.size());
 
             if gate.should_paint(clock.paused(), dirty) {
-                if let Err(e) = deck.present_at(&mut backend, located) {
-                    break Err(e);
+                let stats = match deck.present_at(&mut backend, located) {
+                    Ok(stats) => stats,
+                    Err(e) => break Err(e),
+                };
+                if let Some(log) = frame_log.as_mut() {
+                    log.frame(target, t0.elapsed(), stats);
                 }
                 presented = Some(target);
             }
@@ -808,6 +879,9 @@ impl Player {
                 next_tick = now;
             }
         };
+        if let Some(log) = frame_log {
+            log.finish(t0.elapsed(), backend.caps().color, deck.size());
+        }
         let sound_notes = clock.finish();
         backend.shutdown();
         for problem in &live.problems {
@@ -823,6 +897,22 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_log_row_and_end_line_are_tab_separated_and_stable() {
+        let stats = FrameStats { bytes: 56_000, cells_damaged: 4_200, write_ns: 1_250_000, dropped: true };
+        let mut out = Vec::new();
+        write_frame_row(&mut out, 7, Duration::from_micros(233_333), stats).unwrap();
+        write_frame_row(&mut out, 9, Duration::from_millis(300), FrameStats::default()).unwrap();
+        write_end_line(&mut out, 2, 10, Duration::from_millis(30_000), ColorTier::C256, (120, 35))
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "7\t233.333\t56000\t4200\t1250000\t1\n\
+             9\t300.000\t0\t0\t0\t0\n\
+             # end frames_presented=2 target_frames=10 elapsed_ms=30000.000 tier=C256 grid=120x35\n"
+        );
+    }
 
     #[test]
     fn cell_aspect_resolution() {

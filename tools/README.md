@@ -81,10 +81,10 @@ never needs per-aspect logic. The filtergraph construction in
 hstack/vstack strips → centered crop) is deliberately kept as small, pure,
 documented functions (`contain_fit`, `build_mirror_axis`, `build_concat`,
 `build_boomerang`) so the same logic can be absorbed into the `auto-ascii-factory`
-ingest stage (docs/PLAN.md §5, stage 1) if that ever lands. Until then, run
+ingest stage (docs/FEATURE-MAP.md §1, ingest) if that ever lands. Until then, run
 this tool first and point the factory at `corpus/prepared/`.
 
-## soak.py — resize-storm soak harness (M5, PLAN §7)
+## soak.py — resize-storm soak harness (M5)
 
 Forks the release player onto a fresh pty (`pty.fork`, so the pty is the
 player's controlling terminal and `TIOCSWINSZ` delivers real SIGWINCHes),
@@ -111,7 +111,7 @@ bytes, and writes `summary.json`: exit code, resize/byte counts, whether
 slope (MB/h), and the **structural escape-stream check** (`escape_check`).
 
 The structural check is the M5-acceptance "no desync in captured output"
-evidence (PLAN §7 M5 A): both `head.log` and `tail.log` are run through a
+evidence: both `head.log` and `tail.log` are run through a
 strict VT parser (`check_escape_stream`, in the spirit of the byte-exact
 interpreter in `crates/auto-ascii/tests/scrub_overlay.rs`) that accepts
 exactly the player's specified output vocabulary — the probe volley, the

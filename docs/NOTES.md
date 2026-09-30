@@ -123,6 +123,40 @@ queries. Windows Terminal supported truecolor without exporting
 passive hints could not establish it. The passive-only contract remains in
 [INTERFACES.md](INTERFACES.md).
 
+### Apple Terminal.app is capped at 256 colors for cost
+
+Terminal.app 2.15 renders 24-bit color: a 64-cell `48;2;r;0;0` ramp shows 63
+distinct levels against 24 for a 256-palette ramp (screenshot, verified
+2026-09-30). The player still caps it at 256 because truecolor costs too much
+there (table below), and it would otherwise receive the truecolor stream
+whenever `COLORTERM=truecolor` is in the environment, which shell configs often
+export regardless of which terminal they run in. `--tier truecolor` opts back
+in and is fine for small windows.
+Terminal.app sets `TERM_PROGRAM=Apple_Terminal` and `TERM=xterm-256color`. The
+cap keys on `TERM_PROGRAM` rather than a queried identity, so it holds with or
+without a volley: it limits the tier to 256 colors after passive detection,
+after any volley or cache upgrade, and before `--tier`, which still wins.
+
+Measured on Terminal.app 2.15, macOS 26.2, M3 Pro, with a 30 fps clip and the
+default `--repaint full` (the 256-color rows come from the same clip, and a
+"skipped" frame is a presentation slot the player missed):
+
+| grid | tier | repaint | KB/frame | skipped | Terminal.app CPU |
+|---|---|---|---|---|---|
+| 120×35 | truecolor | full | 56 | 0 | 83% of a core |
+| 200×55 | truecolor | full | 143 | 0 | 146% |
+| 200×55 | 256 | full | 43 | 0 | 80% |
+| 240×70 | truecolor | full | 190 | 5.6% (write p95 46 ms) | 165% (saturated, about 2 cores) |
+| 240×70 | 256 | diff | 34 | 0 | 94% |
+
+Truecolor is about 3.3× the bytes of the 256 tier at the same grid and roughly
+doubles Terminal.app's CPU. `--repaint diff` alone saves about 19% of the bytes
+on motion video, and `--fps-cap 15` halves the load. On that machine the smooth
+envelope is up to roughly 150 KB/frame. The player itself uses 4–9% CPU, so
+the terminal's parser and renderer are the bottleneck, not the frame pipeline.
+Truecolor above roughly 150 KB/frame is what drops frames; 120×35 truecolor ran
+at 83% CPU with no drops.
+
 ### Unix signal-safe restoration
 
 On Unix, the process-wide restore path writes the alt-screen-leave,
@@ -151,6 +185,13 @@ shadow lift blends toward integer `isqrt(n·255)`, not a `powf` gamma: float
 results are not guaranteed bit-identical across platforms, and the render
 goldens are byte-compared. Both terms are monotonic in `n`, so the ramp
 never inverts, and 0 and 255 are fixed points.
+
+chafa is LGPL, and mpv, timg and jp2a are GPL, so they are concept-only
+sources: their algorithms were studied and no code was reused. libav
+bindings, OpenCV, flatbuffers, SQLite and Python in the shipping path are
+rejected; ffmpeg stays a subprocess. The reasons are in
+[research/ecosystem.md](research/ecosystem.md) and
+[research/file-format.md](research/file-format.md).
 
 ### Standalone tool downloads
 
@@ -261,7 +302,7 @@ master deliver a real `SIGWINCH`, so each storm resize reaches the player
 exactly as a user resizing a terminal window would. RSS samples come from
 `VmRSS` in `/proc/<pid>/status`, which exists on Linux only; on macOS the
 harness still storms and validates escape streams but `rss.csv` holds only
-its header. The RSS slope (< 1 MB/h after warmup, PLAN M5) is reported for a
+its header. The RSS slope (< 1 MB/h after warmup) is reported for a
 reviewer, not gated by the harness exit code.
 
 ### Memory-mapped assets

@@ -113,7 +113,7 @@ fn full_build_roundtrip_and_determinism() {
     assert_eq!(
         &h.plane_ids[..6],
         &[plane_id::Y, plane_id::E, plane_id::EX, plane_id::EY, plane_id::H, plane_id::C],
-        "PLAN §4 registry order"
+        "plane registry order (FEATURE-MAP, Data & wire)"
     );
     assert_eq!(h.codec, codec::ZSTD);
     assert_eq!(h.filter, filter::TEMPORAL_DELTA, "M1 profile is delta+keyframes");
