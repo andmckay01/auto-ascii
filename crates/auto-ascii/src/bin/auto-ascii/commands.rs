@@ -10,7 +10,7 @@ use auto_ascii::tools::Tool;
 use crate::args::StreamArgs;
 use crate::home::{Home, cut_name, kebab_case, library_name, rfc3339_utc, stem_of};
 use crate::library::{self, AssetInfo, Sidecar, Source, absolute, clip_ref};
-use crate::output::{fps_text, human_bytes};
+use crate::output::{fps_text, human_bytes, terminal_safe_line};
 use crate::{BoxErr, Cli, composition, deps, stream};
 
 const AGENT_GUIDE: &str = include_str!("../../../AGENT-GUIDE.md");
@@ -172,7 +172,9 @@ pub fn list(cli: &Cli, home: &Home) -> Result<(), BoxErr> {
             (None, Some(src)) => src.summary(),
             (None, None) => "-".to_string(),
         };
-        outln!("{:<w$}  {duration:>8}  {fps:>5}  {frames:>7}  {bytes:>10}  {last}", c.name);
+        let last = terminal_safe_line(&last);
+        let name = terminal_safe_line(&c.name);
+        outln!("{name:<w$}  {duration:>8}  {fps:>5}  {frames:>7}  {bytes:>10}  {last}");
     }
     Ok(())
 }
@@ -183,7 +185,7 @@ pub fn info(cli: &Cli, home: &Home, clip: &str) -> Result<(), BoxErr> {
     if cli.json {
         outln!("{}", serde_json::to_string(&sidecar)?);
     } else {
-        outln!("{}", sidecar.name);
+        outln!("{}", terminal_safe_line(&sidecar.name));
         print_clip_body(&sidecar);
     }
     Ok(())
@@ -523,7 +525,7 @@ fn print_timeline(report: &composition::Report) {
 
 pub fn print_clip_body(sidecar: &Sidecar) {
     if let Some(a) = &sidecar.asset {
-        outln!("  {:<14}{}", "asset:", a.path);
+        outln!("  {:<14}{}", "asset:", terminal_safe_line(&a.path));
         outln!("  {:<14}{} ({})", "bytes:", a.bytes, human_bytes(a.bytes));
         outln!(
             "  {:<14}{} ({:.2}s @ {} fps)",
@@ -535,22 +537,25 @@ pub fn print_clip_body(sidecar: &Sidecar) {
         outln!("  {:<14}{}x{}", "base res:", a.base_w, a.base_h);
     }
     if let Some(e) = &sidecar.error {
-        outln!("  {:<14}{e}", "error:");
+        outln!("  {:<14}{}", "error:", terminal_safe_line(e));
     }
     match &sidecar.source {
         Some(Source::Video { path, sha256, bytes }) => {
-            outln!("  {:<14}{}", "source:", path);
+            outln!("  {:<14}{}", "source:", terminal_safe_line(path));
             match bytes {
                 Some(n) => outln!("  {:<14}{n} ({})", "source bytes:", human_bytes(*n)),
                 None => outln!("  {:<14}{}", "source bytes:", library::UNKNOWN),
             }
-            outln!("  {:<14}{}", "source sha:", sha256.as_deref().unwrap_or(library::UNKNOWN));
+            let sha = sha256.as_deref().unwrap_or(library::UNKNOWN);
+            outln!("  {:<14}{}", "source sha:", terminal_safe_line(sha));
         }
-        Some(cut @ Source::Cut { .. }) => outln!("  {:<14}{}", "source:", cut.summary()),
+        Some(cut @ Source::Cut { .. }) => {
+            outln!("  {:<14}{}", "source:", terminal_safe_line(&cut.summary()));
+        }
         None => outln!("  {:<14}(none: no sidecar beside this asset)", "source:"),
     }
     if let Some(created) = &sidecar.created {
-        outln!("  {:<14}{}", "created:", created);
+        outln!("  {:<14}{}", "created:", terminal_safe_line(created));
     }
 }
 

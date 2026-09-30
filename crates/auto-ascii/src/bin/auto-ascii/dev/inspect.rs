@@ -177,7 +177,7 @@ pub fn print(r: &Report) {
         );
     }
     outln!(
-        "  meta:         factory {} | source {:?} | palette hints {:?}",
+        "  meta:         factory {:?} | source {:?} | palette hints {:?}",
         r.meta.factory_version, r.meta.source, r.meta.palette_hints
     );
     if r.shots.is_empty() {
@@ -245,7 +245,8 @@ pub fn print(r: &Report) {
             r.planes.len()
         ));
     }
-    outln!("  integrity:    OK (all chunk CRCs verified, TRLR present)");
+    let crcs = if r.crcs_present { "all chunk CRCs verified" } else { "no chunk CRCs present" };
+    outln!("  integrity:    OK ({crcs}, TRLR present)");
 }
 
 fn plane_name(id: u8) -> &'static str {

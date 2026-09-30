@@ -13,6 +13,7 @@ use std::sync::Arc;
 use auto_ascii::tools::{self, Found, Lookup, Origin, Tool};
 use serde::Serialize;
 
+use crate::output::terminal_safe_line;
 use fetch::{Manifest, Noise};
 use platform::Asset;
 
@@ -110,7 +111,7 @@ pub struct Live {
 
 impl Provider for Live {
     fn ask(&mut self, prompt: &str) -> bool {
-        eprint!("auto-ascii: {prompt} [Y/n] ");
+        eprint!("auto-ascii: {} [Y/n] ", terminal_safe_line(prompt));
         let mut answer = String::new();
         match std::io::stdin().lock().read_line(&mut answer) {
             Ok(0) | Err(_) => {

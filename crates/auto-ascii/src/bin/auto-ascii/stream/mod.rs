@@ -329,7 +329,7 @@ pub fn run(programs: &Programs, args: &StreamArgs) -> Result<(), BoxErr> {
         }
     } else {
         for note in &stats.notes {
-            eprintln!("auto-ascii: {note}");
+            eprintln!("auto-ascii: {}", crate::output::terminal_safe_line(note));
         }
     }
     let signal = SIGNALLED.load(Ordering::SeqCst);

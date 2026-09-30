@@ -1559,7 +1559,7 @@ fn dev_commands_answer_in_text_or_json() {
     let clip = clip.to_str().unwrap();
 
     let text = ok(&cli(&s, &["dev", "inspect", clip]));
-    assert!(text.contains("integrity:    OK"), "{text}");
+    assert!(text.contains("integrity:    OK (all chunk CRCs verified, TRLR present)"), "{text}");
     let v = json_line(&cli(&s, &["--json", "dev", "inspect", clip, "--frame", "0"]));
     assert_eq!(v["integrity"], "ok");
     assert_eq!(v["sampled_frames"], serde_json::json!([0]));
@@ -1575,6 +1575,25 @@ fn dev_commands_answer_in_text_or_json() {
     assert_eq!(v["name"], "conservative");
     assert!(table.is_file());
     assert!(!s.home().exists(), "dev commands never touch the library");
+}
+
+#[test]
+fn dev_inspect_quotes_meta_text_and_says_when_no_crcs_were_written() {
+    use auto_ascii_format::{AsciiWriter, Meta, PlaneRef, WriterOptions, header::plane_id};
+
+    let s = Scratch::new("inspectnocrc");
+    let opts = WriterOptions { with_crc: false, ..WriterOptions::default() };
+    let y = vec![0u8; usize::from(opts.base_w) * usize::from(opts.base_h)];
+    let meta = Meta { factory_version: "evil\x1b]0;X\x07".into(), source: "synthetic".into(), palette_hints: vec![] };
+    let mut writer = AsciiWriter::new(std::io::Cursor::new(Vec::new()), opts, &meta).unwrap();
+    writer.write_frame(&[PlaneRef { id: plane_id::Y, data: &y }]).unwrap();
+    let clip = s.0.join("no-crc.ascii");
+    std::fs::write(&clip, writer.finish().unwrap().into_inner()).unwrap();
+
+    let text = ok(&cli(&s, &["dev", "inspect", clip.to_str().unwrap()]));
+    assert!(text.contains("integrity:    OK (no chunk CRCs present, TRLR present)"), "{text}");
+    assert!(text.contains(r#"factory "evil\u{1b}]0;X\u{7}" | source "synthetic""#), "{text}");
+    assert!(!text.contains(['\x1b', '\x07']), "{text:?}");
 }
 
 #[test]
@@ -1718,6 +1737,111 @@ cp '{fixture}' "$(printf '%s' "$out" | sed 's/%(ext)s/mp4/')""#,
         assert!(!call.iter().any(|a| a.contains("cookies")), "never browser cookies: {call:?}");
         assert_eq!(call[call.len() - 2..], ["--", url], "{call:?}");
     }
+}
+
+fn fake_ytdlp_for_page(s: &Scratch, entry_url: &str, download: &str) -> PathBuf {
+    let entry = serde_json::json!({ "webpage_url": entry_url });
+    let meta = serde_json::json!({
+        "_type": "video", "id": "v", "title": "Evil", "duration": 2,
+        "url": "https://v.example/18", "format_id": "18", "vcodec": "avc1", "acodec": "mp4a", "height": 90,
+    });
+    let body = format!(
+        r#"case "$*" in *--flat-playlist*) cat <<'JSON'
+{entry}
+JSON
+exit 0;; *--simulate*) cat <<'JSON'
+{meta}
+JSON
+exit 0;; esac
+{download}"#
+    );
+    fake_ytdlp(s, &body)
+}
+
+#[test]
+fn add_scrubs_terminal_controls_from_what_a_remote_site_sends() {
+    let Some(_) = media_tools() else { return };
+    let s = Scratch::new("addescape");
+    let download = format!(
+        r#"printf '[download] Destination: source.mp4\r\n'
+printf '[download]   1.0%% of 2.00MiB\r[download]  50.0%% of 2.00MiB {progress}\r\n'
+printf 'frame=    1 fps=0.0\rframe=   60 fps=30\n' >&2
+echo 'ERROR: [generic] v: Unable to download webpage: HTTP Error 404: {reason}' >&2
+exit 1"#,
+        progress = "\x1b]0;LINE\x07",
+        reason = "\x1b]0;X\x07\u{9d}52;c;SGVsbG8=\u{9c}",
+    );
+    let ytdlp = fake_ytdlp_for_page(&s, "https://evil.example/v\x1b]0;URL\x07\nauto-ascii: forged", &download);
+    let out = stream_cli(&s, &ytdlp, &["add", "https://evil.example/v"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = stderr_of(&out);
+    assert!(!stderr.contains(['\x1b', '\x07', '\u{9c}', '\u{9d}']), "{stderr:?}");
+    assert!(!stderr.lines().any(|line| line.starts_with("auto-ascii: forged")), "{stderr}");
+    assert!(!stderr.contains("1.0% of") && !stderr.contains("frame=    1"), "overwritten progress: {stderr}");
+    for scrubbed in [
+        "auto-ascii: downloading https://evil.example/v?]0;URL??auto-ascii: forged (up to 1080p)\n",
+        "[download] Destination: source.mp4\n",
+        "[download]  50.0% of 2.00MiB ?]0;LINE?\n",
+        "frame=   60 fps=30\n",
+        "ERROR: [generic] v: Unable to download webpage: HTTP Error 404: ?]0;X??52;c;SGVsbG8=?\n",
+        "auto-ascii: yt-dlp: Unable to download webpage: HTTP Error 404: ?]0;X??52;c;SGVsbG8=? (log: ",
+    ] {
+        assert!(stderr.contains(scrubbed), "{scrubbed:?} missing from {stderr:?}");
+    }
+
+    let out = stream_cli(&s, &ytdlp, &["--json", "add", "https://evil.example/v"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!stderr_of(&out).contains(['\u{9c}', '\u{9d}']), "{:?}", stderr_of(&out));
+    let e: serde_json::Value = serde_json::from_str(stderr_of(&out).trim()).unwrap();
+    let error = e["error"].as_str().unwrap();
+    let scrubbed = "yt-dlp: Unable to download webpage: HTTP Error 404: ?]0;X??52;c;SGVsbG8=? (log: ";
+    assert!(error.starts_with(scrubbed) && !error.contains(char::is_control), "{error:?}");
+}
+
+#[test]
+fn add_scrubs_the_link_a_page_chose_in_text_and_json() {
+    let Some(tools) = media_tools() else { return };
+    let s = Scratch::new("addlinkescape");
+    let fixture = s.0.join("src").join("fixture.mp4");
+    sounding_video(&tools, &fixture);
+    let download = format!(
+        r#"out=""
+prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+cp '{fixture}' "$(printf '%s' "$out" | sed 's/%(ext)s/mp4/')""#,
+        fixture = fixture.display(),
+    );
+    let ytdlp = fake_ytdlp_for_page(&s, "https://evil.example/v\u{9d}52;c;SGVsbG8=\u{9c}\nforged: line", &download);
+
+    let out = stream_cli(&s, &ytdlp, &["--json", "add", "https://evil.example/v"]);
+    assert!(!stdout_of(&out).contains(['\u{9c}', '\u{9d}']), "{:?}", stdout_of(&out));
+    assert_eq!(json_of(&out)["url"], "https://evil.example/v?52;c;SGVsbG8=?\nforged: line");
+
+    let out = stream_cli(&s, &ytdlp, &["add", "https://evil.example/v", "--force"]);
+    let text = ok(&out);
+    let link = format!("  {:<14}{}\n", "link:", "https://evil.example/v?52;c;SGVsbG8=??forged: line");
+    assert!(text.contains(&link), "{link:?} missing from {text}");
+    assert!(!text.lines().any(|line| line.starts_with("forged")), "{text}");
+    assert!(!text.contains(['\u{9c}', '\u{9d}']) && !stderr_of(&out).contains(['\u{9c}', '\u{9d}']), "{text:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn list_and_info_scrub_the_names_a_shipped_folder_brings() {
+    let s = Scratch::new("shippedname");
+    let hostile = "evil\x1b]0;X\x07\u{9d}52;c;SGVsbG8=\u{9c}\nforged";
+    let folder = s.library().join(hostile);
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(format!("{hostile}.ascii")), build_fixture(Fixture::HardCut)).unwrap();
+
+    let listed = ok(&cli(&s, &["list"]));
+    let shown = ok(&cli(&s, &["info", hostile]));
+    for text in [&listed, &shown] {
+        assert!(!text.contains(|c: char| c.is_control() && c != '\n'), "{text:?}");
+        assert!(!text.lines().any(|line| line.starts_with("forged")), "{text}");
+        assert!(text.contains("evil?]0;X??52;c;SGVsbG8=??forged"), "{text}");
+    }
+    assert!(shown.contains("evil?]0;X??52;c;SGVsbG8=??forged.ascii\n"), "the asset path: {shown}");
 }
 
 #[test]
