@@ -50,9 +50,9 @@ else
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then
-    check_sum() { sha256sum -c "$1"; }
+    sha256_of() { sha256sum "$1" | cut -d' ' -f1; }
 elif command -v shasum >/dev/null 2>&1; then
-    check_sum() { shasum -a 256 -c "$1"; }
+    sha256_of() { shasum -a 256 "$1" | cut -d' ' -f1; }
 else
     err "need sha256sum or shasum to verify the download; refusing to install unverified"
 fi
@@ -67,7 +67,14 @@ fetch "$base/$archive" "$tmp/$archive" ||
 fetch "$base/$archive.sha256" "$tmp/$archive.sha256" ||
     err "could not download $base/$archive.sha256"
 
-if ! (cd "$tmp" && check_sum "$archive.sha256") >/dev/null 2>&1; then
+expected=$(head -n 1 "$tmp/$archive.sha256" | tr -d '\r' | awk '{ print $1 }')
+case "$expected" in
+    *[!0-9a-f]* | '') err "malformed checksum file for $archive; refusing to install" ;;
+esac
+[ "${#expected}" -eq 64 ] ||
+    err "malformed checksum file for $archive; refusing to install"
+actual=$(sha256_of "$tmp/$archive")
+if [ "${#actual}" -ne 64 ] || [ "$actual" != "$expected" ]; then
     err "SHA-256 mismatch for $archive; refusing to install"
 fi
 

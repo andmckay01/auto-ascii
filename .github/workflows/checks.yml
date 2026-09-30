@@ -1,0 +1,290 @@
+name: checks
+
+# The checks every change must pass before it merges or ships: lint, tests on
+# Linux, macOS and Windows, dependency policy, a crates.io dry run, the
+# release machinery and the installers. ci.yml runs them on every PR, push to
+# main and weekly; release.yml runs them again, all but the installers, on the
+# tagged commit before anything publishes.
+on:
+  workflow_call:
+    inputs:
+      # Only the weekly run depends on the upstream sites the CLI downloads
+      # ffmpeg and yt-dlp from.
+      live:
+        type: boolean
+        default: false
+      # Off on tag runs: there the latest published release is the previous
+      # one, and release.yml's smoke job tests the new installers instead.
+      installers:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # alsa-sys (cpal) links libasound via pkg-config.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+
+      # rust-toolchain.toml names the toolchain and its components; rustup
+      # itself is left as the runner image ships it.
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      # PRs restore main's cache and never save their own: the repository's
+      # cache quota is shared by every job.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # CONTRIBUTING promises the lean library builds without the CLI's
+      # default features.
+      - name: Build the library without default features
+        run: cargo build --locked -p auto-ascii --no-default-features
+
+      # The repo's own comment lint, as `make comments` runs it.
+      - name: Comment rule
+        run: cargo run --quiet --locked --release -p auto-ascii-lint --bin check-comments --
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    # The macOS leg is informational until the timing-bound tests measure
+    # their real gaps: the slower macOS runners miss wall-clock windows that
+    # Linux, which gates the same tests, meets. The durable fix belongs in
+    # the tests.
+    continue-on-error: ${{ matrix.os == 'macos-15' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04 }
+          - { os: macos-15 }
+          - { os: windows-2022 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Seven text goldens are compared byte-exact, so Windows must check
+      # them out with the LF endings they were written with.
+      - name: Keep LF line endings
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # alsa-sys (cpal) links libasound via pkg-config; the factory, build
+      # and CLI import tests shell out to a real ffmpeg.
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config ffmpeg
+
+      # The factory, build and CLI import tests shell out to a real ffmpeg.
+      - name: Install ffmpeg
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # The lint crate's tests need python3 3.12 or later; a runner image
+      # that changes either tool shows up here before it shows up as a test
+      # failure.
+      - name: Tool versions
+        if: runner.os != 'Windows'
+        run: |
+          python3 --version
+          ffmpeg -version | head -1
+
+      # The stream tests play real-time media against stall thresholds and
+      # flake when they compete for the runner's CPUs, so they run serially.
+      # --no-fail-fast keeps going past a failing test target, so one run
+      # lists every failure.
+      - name: Test
+        if: runner.os != 'Windows'
+        run: cargo test --workspace --locked --no-fail-fast -- --skip 'stream::'
+
+      # Runs even when the step above fails, so the macOS leg still exercises
+      # the stream tests.
+      - name: Test stream (serial)
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        run: cargo test --locked -p auto-ascii --bin auto-ascii 'stream::' -- --test-threads=1
+
+      # The CLI, term and lint suites spawn sh and python3, so Windows covers
+      # the pure crates only.
+      - name: Test (core, format, eval)
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p auto-ascii-core -p auto-ascii-format -p auto-ascii-eval
+
+      # The two ignored live_ tests install ffmpeg, ffprobe and yt-dlp from
+      # their upstream download sites.
+      - name: Live download tests
+        if: runner.os == 'Linux' && inputs.live
+        run: cargo test --locked -p auto-ascii --bin auto-ascii -- --ignored live_
+
+  # Advisories, licences, duplicate and wildcard dependencies, and sources,
+  # against the policy in deny.toml. The release binary is pinned by SHA-256
+  # rather than run through cargo-deny-action, whose container brings its own
+  # rustup and would trip on rust-toolchain.toml.
+  deny:
+    name: deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      - name: Install cargo-deny
+        run: |
+          set -euo pipefail
+          tarball=cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          expected=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$tarball" https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          echo "$expected  $tarball" | sha256sum -c -
+          tar -xzf "$tarball"
+
+      - name: cargo-deny
+        run: ./cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny --all-features --locked check
+
+  # Packages and verifies every crate the way the tag run will, resolving each
+  # against the others' local packages, and uploads nothing.
+  publish-dry-run:
+    name: publish-dry-run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # alsa-sys (cpal) links libasound via pkg-config.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Publish dry run
+        run: DRY_RUN=1 bash scripts/publish-crates.sh
+
+  # The release machinery otherwise runs only on a tag: the workflows
+  # themselves, the shell scripts and the npm launcher.
+  pipeline:
+    name: pipeline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # The image is pinned by digest; it bundles shellcheck for run: blocks.
+      - name: actionlint
+        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: -color
+
+      - name: zizmor
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          version: 1.30.1
+          advanced-security: false
+          annotations: true
+          min-severity: low
+
+      # shellcheck is preinstalled on the ubuntu runners. install.sh is also
+      # checked as plain sh, the shell `curl | sh` actually runs it with.
+      - name: shellcheck
+        run: |
+          shellcheck -S style scripts/*.sh scripts/play-with-sound.command npm/scripts/smoke.sh
+          shellcheck -s sh scripts/install.sh
+
+      # Offline; the script restores npm/auto-ascii/package.json itself.
+      - name: npm launcher smoke
+        run: bash npm/scripts/smoke.sh
+
+  # Exercises the shipped installers in this branch against the latest
+  # published release, the path a user's `curl | sh` or `irm | iex` takes.
+  installers:
+    name: installers (${{ matrix.os }})
+    if: ${{ inputs.installers }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # The Linux binary links libasound.so.2 at runtime.
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2t64
+
+      - name: install.sh
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          AUTO_ASCII_INSTALL_DIR="$RUNNER_TEMP/auto-ascii-bin" sh scripts/install.sh
+          "$RUNNER_TEMP/auto-ascii-bin/auto-ascii" --version
+
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & scripts/install.ps1 -InstallDir "$env:RUNNER_TEMP\auto-ascii-bin"
+          & "$env:RUNNER_TEMP\auto-ascii-bin\auto-ascii.exe" --version

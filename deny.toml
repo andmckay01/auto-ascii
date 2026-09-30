@@ -1,0 +1,33 @@
+# cargo-deny policy, checked by the deny job in .github/workflows/checks.yml.
+# Unmaintained crates fail only as direct dependencies; transitive ones are
+# upstream's to replace. Path dev-dependencies may omit a version, so the
+# crates can publish in dependency order.
+[graph]
+all-features = true
+
+[advisories]
+unmaintained = "workspace"
+yanked = "deny"
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

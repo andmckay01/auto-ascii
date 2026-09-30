@@ -1,0 +1,29 @@
+# Weekly, grouped, with a cooldown so a freshly published action or crate
+# has a week of exposure before it is proposed here. Security updates
+# ignore the cooldown. There is no npm entry on purpose: the launcher's
+# optionalDependencies pin the @auto-ascii/* packages to the launcher's
+# own version, stamped by the release workflow, and must not be bumped.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-and-patch:
+        update-types: ["minor", "patch"]
