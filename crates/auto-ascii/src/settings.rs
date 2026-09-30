@@ -1,7 +1,10 @@
 //! Per-video dial and style sidecar I/O.
 
 use std::fmt::Write as _;
+use std::fs::OpenOptions;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use auto_ascii_core::{ComposeParams, Style};
 
@@ -102,11 +105,25 @@ impl VideoSettings {
 
     pub fn save(&self, asset: &Path) -> Result<PathBuf, Error> {
         let path = VideoSettings::path_for(asset);
-        let tmp = path.with_extension("toml.tmp");
-        let io = |source| Error::Io { path: path.clone(), source };
-        std::fs::write(&tmp, self.to_toml()).map_err(io)?;
-        std::fs::rename(&tmp, &path).map_err(io)?;
-        Ok(path)
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+        let tmp = path.with_extension(format!("toml.{}.{nanos}.tmp", std::process::id()));
+        match self.write_then_rename(&tmp, &path) {
+            Ok(()) => Ok(path),
+            Err(source) => Err(Error::Io { path, source }),
+        }
+    }
+
+    fn write_then_rename(&self, tmp: &Path, path: &Path) -> std::io::Result<()> {
+        let written = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(tmp)?
+            .write_all(self.to_toml().as_bytes());
+        let renamed = written.and_then(|()| std::fs::rename(tmp, path));
+        if renamed.is_err() {
+            let _ = std::fs::remove_file(tmp);
+        }
+        renamed
     }
 }
 
@@ -120,6 +137,15 @@ mod tests {
         Dial::EdgeStrength.turn(&mut compose, -3);
         Dial::Hysteresis.turn(&mut compose, 2);
         VideoSettings { compose, style: Style::Letters }
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
     }
 
     #[test]
@@ -232,7 +258,11 @@ mod tests {
         let path = s.save(&asset).unwrap();
         assert_eq!(path, dir.join("My Clip.player.toml"));
         assert_eq!(VideoSettings::load(&asset).unwrap(), Some(s));
-        assert!(!dir.join("My Clip.player.toml.tmp").exists(), "the temp file is renamed away");
+        let temps: Vec<String> = names(&dir)
+            .into_iter()
+            .filter(|name| name.starts_with("My Clip.player.toml.") && name.ends_with(".tmp"))
+            .collect();
+        assert!(temps.is_empty(), "the temp file is renamed away: {temps:?}");
 
         let again = VideoSettings { style: Style::Pixels, ..s };
         again.save(&asset).unwrap();
@@ -241,6 +271,58 @@ mod tests {
         std::fs::write(&path, "shadow_lift = nope\n").unwrap();
         let e = VideoSettings::load(&asset).unwrap_err();
         assert!(matches!(e, Error::Config(_)), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_never_writes_through_a_symlink_planted_at_the_old_temp_name() {
+        let root = std::env::temp_dir().join(format!("auto-ascii-settings-symlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (clip_dir, home) = (root.join("clip"), root.join("home"));
+        std::fs::create_dir_all(&clip_dir).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let victim = home.join(".zshrc");
+        std::fs::write(&victim, "export PATH=/usr/bin\n").unwrap();
+        std::os::unix::fs::symlink("../home/.zshrc", clip_dir.join("clip.player.toml.tmp")).unwrap();
+
+        let asset = clip_dir.join("clip.ascii");
+        let path = turned().save(&asset).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "export PATH=/usr/bin\n");
+        assert_eq!(path, clip_dir.join("clip.player.toml"));
+        assert!(std::fs::symlink_metadata(&path).unwrap().is_file(), "a regular file, not a link");
+        assert_eq!(VideoSettings::load(&asset).unwrap(), Some(turned()));
+        assert_eq!(names(&clip_dir), ["clip.player.toml", "clip.player.toml.tmp"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_planted_at_the_exact_temp_name_is_refused_not_followed() {
+        let dir = std::env::temp_dir().join(format!("auto-ascii-settings-exact-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let victim = dir.join("victim.rc");
+        std::fs::write(&victim, "export PATH=/usr/bin\n").unwrap();
+        let (tmp, path) = (dir.join("clip.player.toml.1.2.tmp"), dir.join("clip.player.toml"));
+        std::os::unix::fs::symlink(&victim, &tmp).unwrap();
+
+        let e = turned().write_then_rename(&tmp, &path).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists, "{e}");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "export PATH=/usr/bin\n");
+        assert!(std::fs::symlink_metadata(&tmp).unwrap().file_type().is_symlink(), "the planted link is left alone");
+        assert!(!path.exists(), "nothing was renamed into place");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_save_removes_its_temp_file() {
+        let dir = std::env::temp_dir().join(format!("auto-ascii-settings-failed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("clip.player.toml")).unwrap();
+        let e = turned().save(&dir.join("clip.ascii")).unwrap_err();
+        assert!(matches!(e, Error::Io { .. }), "{e}");
+        assert_eq!(names(&dir), ["clip.player.toml"], "only the directory that blocked the rename");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

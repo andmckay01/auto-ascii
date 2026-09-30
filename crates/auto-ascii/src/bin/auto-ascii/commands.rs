@@ -10,7 +10,7 @@ use auto_ascii::tools::Tool;
 use crate::args::StreamArgs;
 use crate::home::{Home, cut_name, kebab_case, library_name, rfc3339_utc, stem_of};
 use crate::library::{self, AssetInfo, Sidecar, Source, absolute, clip_ref};
-use crate::output::{fps_text, human_bytes};
+use crate::output::{fps_text, human_bytes, terminal_safe, terminal_safe_line};
 use crate::{BoxErr, Cli, composition, deps, stream};
 
 const AGENT_GUIDE: &str = include_str!("../../../AGENT-GUIDE.md");
@@ -75,9 +75,9 @@ pub fn finish_clip(
     sidecar_path: &Path,
 ) -> Result<(), BoxErr> {
     if cli.json {
-        outln!("{}", serde_json::to_string(sidecar)?);
+        outln!("{}", serde_json::to_string(&sidecar.terminal_safe())?);
     } else {
-        outln!("{headline}");
+        outln!("{}", terminal_safe_line(headline));
         print_clip_body(sidecar);
         outln!("  {:<14}{}", "sidecar:", sidecar_path.display());
     }
@@ -142,7 +142,8 @@ pub fn cut(cli: &Cli, home: &Home, args: &CutArgs<'_>) -> Result<(), BoxErr> {
 pub fn list(cli: &Cli, home: &Home) -> Result<(), BoxErr> {
     let clips = library::list(home)?;
     if cli.json {
-        outln!("{}", serde_json::to_string(&clips)?);
+        let safe: Vec<Sidecar> = clips.iter().map(Sidecar::terminal_safe).collect();
+        outln!("{}", serde_json::to_string(&safe)?);
         return Ok(());
     }
     if clips.is_empty() {
@@ -172,7 +173,9 @@ pub fn list(cli: &Cli, home: &Home) -> Result<(), BoxErr> {
             (None, Some(src)) => src.summary(),
             (None, None) => "-".to_string(),
         };
-        outln!("{:<w$}  {duration:>8}  {fps:>5}  {frames:>7}  {bytes:>10}  {last}", c.name);
+        let last = terminal_safe_line(&last);
+        let name = terminal_safe_line(&c.name);
+        outln!("{name:<w$}  {duration:>8}  {fps:>5}  {frames:>7}  {bytes:>10}  {last}");
     }
     Ok(())
 }
@@ -181,9 +184,9 @@ pub fn info(cli: &Cli, home: &Home, clip: &str) -> Result<(), BoxErr> {
     let path = home.resolve_clip(clip)?;
     let sidecar = library::describe(&library::clip_name(home, &path), &path)?;
     if cli.json {
-        outln!("{}", serde_json::to_string(&sidecar)?);
+        outln!("{}", serde_json::to_string(&sidecar.terminal_safe())?);
     } else {
-        outln!("{}", sidecar.name);
+        outln!("{}", terminal_safe_line(&sidecar.name));
         print_clip_body(&sidecar);
     }
     Ok(())
@@ -257,11 +260,11 @@ pub fn compose_add(cli: &Cli, home: &Home, args: &AddArgs<'_>) -> Result<(), Box
     let name = stem_of(&path);
     if cli.json {
         let obj = serde_json::json!({
-            "name": name,
-            "path": absolute(&path),
+            "name": terminal_safe(&name),
+            "path": terminal_safe(&absolute(&path)),
             "clip": {
-                "asset": asset,
-                "path": absolute(&clip),
+                "asset": terminal_safe(&asset),
+                "path": terminal_safe(&absolute(&clip)),
                 "in_secs": in_secs,
                 "out_secs": out_secs,
                 "at_secs": at_secs,
@@ -269,9 +272,9 @@ pub fn compose_add(cli: &Cli, home: &Home, args: &AddArgs<'_>) -> Result<(), Box
         });
         outln!("{obj}");
     } else {
-        outln!("added {asset} to {name}");
-        outln!("  {:<14}{}", "path:", absolute(&path));
-        outln!("  {:<14}{}", "clip:", absolute(&clip));
+        outln!("added {} to {}", terminal_safe_line(&asset), terminal_safe_line(&name));
+        outln!("  {:<14}{}", "path:", terminal_safe_line(&absolute(&path)));
+        outln!("  {:<14}{}", "clip:", terminal_safe_line(&absolute(&clip)));
         for (label, spec) in
             [("in:", args.in_spec), ("out:", args.out_spec), ("at:", args.at_spec)]
         {
@@ -288,7 +291,7 @@ pub fn compose_show(cli: &Cli, home: &Home, name: &str) -> Result<(), BoxErr> {
     let comp = open_composition(home, &path)?;
     let report = composition::report(&comp);
     if cli.json {
-        outln!("{}", serde_json::to_string(&report)?);
+        outln!("{}", serde_json::to_string(&report.terminal_safe())?);
     } else {
         print_timeline(&report);
     }
@@ -320,7 +323,7 @@ pub fn compose_export(cli: &Cli, home: &Home, args: &ExportArgs<'_>) -> Result<(
     let report = auto_ascii::compose::export(&comp, &out, &export_options()?)?;
     if cli.json {
         let obj = serde_json::json!({
-            "path": absolute(&out),
+            "path": terminal_safe(&absolute(&out)),
             "frames": report.frames,
             "fps": report.fps,
             "bytes": report.bytes,
@@ -329,8 +332,8 @@ pub fn compose_export(cli: &Cli, home: &Home, args: &ExportArgs<'_>) -> Result<(
         });
         outln!("{obj}");
     } else {
-        outln!("exported {name}");
-        outln!("  {:<14}{}", "path:", absolute(&out));
+        outln!("exported {}", terminal_safe_line(&name));
+        outln!("  {:<14}{}", "path:", terminal_safe_line(&absolute(&out)));
         outln!("  {:<14}{} ({})", "bytes:", report.bytes, human_bytes(report.bytes));
         outln!(
             "  {:<14}{} ({:.2}s @ {} fps)",
@@ -479,7 +482,7 @@ fn print_timeline(report: &composition::Report) {
     let clips = report.clips.len();
     outln!(
         "{}  {clips} clip{}  {:.2}s  {} frames @ {} fps",
-        report.name,
+        terminal_safe_line(&report.name),
         if clips == 1 { "" } else { "s" },
         report.duration_secs,
         report.frame_count,
@@ -505,7 +508,7 @@ fn print_timeline(report: &composition::Report) {
                 outln!(
                     "  {:>3}  {:<w$}  {:>7.2}  {:>7.2}  {:>7.2}  {:>7.2}  {:>5}{note}",
                     c.index,
-                    c.asset,
+                    terminal_safe_line(&c.asset),
                     c.start_secs,
                     c.end_secs,
                     c.in_secs,
@@ -523,7 +526,7 @@ fn print_timeline(report: &composition::Report) {
 
 pub fn print_clip_body(sidecar: &Sidecar) {
     if let Some(a) = &sidecar.asset {
-        outln!("  {:<14}{}", "asset:", a.path);
+        outln!("  {:<14}{}", "asset:", terminal_safe_line(&a.path));
         outln!("  {:<14}{} ({})", "bytes:", a.bytes, human_bytes(a.bytes));
         outln!(
             "  {:<14}{} ({:.2}s @ {} fps)",
@@ -535,22 +538,25 @@ pub fn print_clip_body(sidecar: &Sidecar) {
         outln!("  {:<14}{}x{}", "base res:", a.base_w, a.base_h);
     }
     if let Some(e) = &sidecar.error {
-        outln!("  {:<14}{e}", "error:");
+        outln!("  {:<14}{}", "error:", terminal_safe_line(e));
     }
     match &sidecar.source {
         Some(Source::Video { path, sha256, bytes }) => {
-            outln!("  {:<14}{}", "source:", path);
+            outln!("  {:<14}{}", "source:", terminal_safe_line(path));
             match bytes {
                 Some(n) => outln!("  {:<14}{n} ({})", "source bytes:", human_bytes(*n)),
                 None => outln!("  {:<14}{}", "source bytes:", library::UNKNOWN),
             }
-            outln!("  {:<14}{}", "source sha:", sha256.as_deref().unwrap_or(library::UNKNOWN));
+            let sha = sha256.as_deref().unwrap_or(library::UNKNOWN);
+            outln!("  {:<14}{}", "source sha:", terminal_safe_line(sha));
         }
-        Some(cut @ Source::Cut { .. }) => outln!("  {:<14}{}", "source:", cut.summary()),
+        Some(cut @ Source::Cut { .. }) => {
+            outln!("  {:<14}{}", "source:", terminal_safe_line(&cut.summary()));
+        }
         None => outln!("  {:<14}(none: no sidecar beside this asset)", "source:"),
     }
     if let Some(created) = &sidecar.created {
-        outln!("  {:<14}{}", "created:", created);
+        outln!("  {:<14}{}", "created:", terminal_safe_line(created));
     }
 }
 

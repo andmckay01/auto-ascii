@@ -1559,7 +1559,7 @@ fn dev_commands_answer_in_text_or_json() {
     let clip = clip.to_str().unwrap();
 
     let text = ok(&cli(&s, &["dev", "inspect", clip]));
-    assert!(text.contains("integrity:    OK"), "{text}");
+    assert!(text.contains("integrity:    OK (all chunk CRCs verified, TRLR present)"), "{text}");
     let v = json_line(&cli(&s, &["--json", "dev", "inspect", clip, "--frame", "0"]));
     assert_eq!(v["integrity"], "ok");
     assert_eq!(v["sampled_frames"], serde_json::json!([0]));
@@ -1575,6 +1575,25 @@ fn dev_commands_answer_in_text_or_json() {
     assert_eq!(v["name"], "conservative");
     assert!(table.is_file());
     assert!(!s.home().exists(), "dev commands never touch the library");
+}
+
+#[test]
+fn dev_inspect_quotes_meta_text_and_says_when_no_crcs_were_written() {
+    use auto_ascii_format::{AsciiWriter, Meta, PlaneRef, WriterOptions, header::plane_id};
+
+    let s = Scratch::new("inspectnocrc");
+    let opts = WriterOptions { with_crc: false, ..WriterOptions::default() };
+    let y = vec![0u8; usize::from(opts.base_w) * usize::from(opts.base_h)];
+    let meta = Meta { factory_version: "evil\x1b]0;X\x07".into(), source: "synthetic".into(), palette_hints: vec![] };
+    let mut writer = AsciiWriter::new(std::io::Cursor::new(Vec::new()), opts, &meta).unwrap();
+    writer.write_frame(&[PlaneRef { id: plane_id::Y, data: &y }]).unwrap();
+    let clip = s.0.join("no-crc.ascii");
+    std::fs::write(&clip, writer.finish().unwrap().into_inner()).unwrap();
+
+    let text = ok(&cli(&s, &["dev", "inspect", clip.to_str().unwrap()]));
+    assert!(text.contains("integrity:    OK (no chunk CRCs present, TRLR present)"), "{text}");
+    assert!(text.contains(r#"factory "evil\u{1b}]0;X\u{7}" | source "synthetic""#), "{text}");
+    assert!(!text.contains(['\x1b', '\x07']), "{text:?}");
 }
 
 #[test]
@@ -1718,6 +1737,274 @@ cp '{fixture}' "$(printf '%s' "$out" | sed 's/%(ext)s/mp4/')""#,
         assert!(!call.iter().any(|a| a.contains("cookies")), "never browser cookies: {call:?}");
         assert_eq!(call[call.len() - 2..], ["--", url], "{call:?}");
     }
+}
+
+fn fake_ytdlp_for_page(s: &Scratch, entry_url: &str, download: &str) -> PathBuf {
+    let entry = serde_json::json!({ "webpage_url": entry_url });
+    let meta = serde_json::json!({
+        "_type": "video", "id": "v", "title": "Evil", "duration": 2,
+        "url": "https://v.example/18", "format_id": "18", "vcodec": "avc1", "acodec": "mp4a", "height": 90,
+    });
+    let body = format!(
+        r#"case "$*" in *--flat-playlist*) cat <<'JSON'
+{entry}
+JSON
+exit 0;; *--simulate*) cat <<'JSON'
+{meta}
+JSON
+exit 0;; esac
+{download}"#
+    );
+    fake_ytdlp(s, &body)
+}
+
+#[test]
+fn add_scrubs_terminal_controls_from_what_a_remote_site_sends() {
+    let Some(_) = media_tools() else { return };
+    let s = Scratch::new("addescape");
+    let download = format!(
+        r#"printf '[download] Destination: source.mp4\r\n'
+printf '[download]   1.0%% of 2.00MiB\r[download]  50.0%% of 2.00MiB {progress}\r\n'
+printf 'frame=    1 fps=0.0\rframe=   60 fps=30\n' >&2
+echo 'ERROR: [generic] v: Unable to download webpage: HTTP Error 404: {reason}' >&2
+exit 1"#,
+        progress = "\x1b]0;LINE\x07",
+        reason = "\x1b]0;X\x07\u{9d}52;c;SGVsbG8=\u{9c}",
+    );
+    let ytdlp = fake_ytdlp_for_page(&s, "https://evil.example/v\x1b]0;URL\x07\nauto-ascii: forged", &download);
+    let out = stream_cli(&s, &ytdlp, &["add", "https://evil.example/v"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = stderr_of(&out);
+    assert!(!stderr.contains(['\x1b', '\x07', '\u{9c}', '\u{9d}']), "{stderr:?}");
+    assert!(!stderr.lines().any(|line| line.starts_with("auto-ascii: forged")), "{stderr}");
+    assert!(!stderr.contains("1.0% of") && !stderr.contains("frame=    1"), "overwritten progress: {stderr}");
+    for scrubbed in [
+        "auto-ascii: downloading https://evil.example/v?]0;URL??auto-ascii: forged (up to 1080p)\n",
+        "[download] Destination: source.mp4\n",
+        "[download]  50.0% of 2.00MiB ?]0;LINE?\n",
+        "frame=   60 fps=30\n",
+        "ERROR: [generic] v: Unable to download webpage: HTTP Error 404: ?]0;X??52;c;SGVsbG8=?\n",
+        "auto-ascii: yt-dlp: Unable to download webpage: HTTP Error 404: ?]0;X??52;c;SGVsbG8=? (log: ",
+    ] {
+        assert!(stderr.contains(scrubbed), "{scrubbed:?} missing from {stderr:?}");
+    }
+
+    let out = stream_cli(&s, &ytdlp, &["--json", "add", "https://evil.example/v"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!stderr_of(&out).contains(['\u{9c}', '\u{9d}']), "{:?}", stderr_of(&out));
+    let e: serde_json::Value = serde_json::from_str(stderr_of(&out).trim()).unwrap();
+    let error = e["error"].as_str().unwrap();
+    let scrubbed = "yt-dlp: Unable to download webpage: HTTP Error 404: ?]0;X??52;c;SGVsbG8=? (log: ";
+    assert!(error.starts_with(scrubbed) && !error.contains(char::is_control), "{error:?}");
+}
+
+#[test]
+fn add_scrubs_the_link_a_page_chose_in_text_and_json() {
+    let Some(tools) = media_tools() else { return };
+    let s = Scratch::new("addlinkescape");
+    let fixture = s.0.join("src").join("fixture.mp4");
+    sounding_video(&tools, &fixture);
+    let download = format!(
+        r#"out=""
+prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+cp '{fixture}' "$(printf '%s' "$out" | sed 's/%(ext)s/mp4/')""#,
+        fixture = fixture.display(),
+    );
+    let ytdlp = fake_ytdlp_for_page(&s, "https://evil.example/v\u{9d}52;c;SGVsbG8=\u{9c}\nforged: line", &download);
+
+    let out = stream_cli(&s, &ytdlp, &["--json", "add", "https://evil.example/v"]);
+    assert!(!stdout_of(&out).contains(['\u{9c}', '\u{9d}']), "{:?}", stdout_of(&out));
+    assert_eq!(json_of(&out)["url"], "https://evil.example/v?52;c;SGVsbG8=?\nforged: line");
+
+    let out = stream_cli(&s, &ytdlp, &["add", "https://evil.example/v", "--force"]);
+    let text = ok(&out);
+    let link = format!("  {:<14}{}\n", "link:", "https://evil.example/v?52;c;SGVsbG8=??forged: line");
+    assert!(text.contains(&link), "{link:?} missing from {text}");
+    assert!(!text.lines().any(|line| line.starts_with("forged")), "{text}");
+    assert!(!text.contains(['\u{9c}', '\u{9d}']) && !stderr_of(&out).contains(['\u{9c}', '\u{9d}']), "{text:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn list_and_info_scrub_the_names_a_shipped_folder_brings() {
+    let s = Scratch::new("shippedname");
+    let hostile = "evil\x1b]0;X\x07\u{9d}52;c;SGVsbG8=\u{9c}\nforged";
+    let folder = s.library().join(hostile);
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(format!("{hostile}.ascii")), build_fixture(Fixture::HardCut)).unwrap();
+
+    let listed = ok(&cli(&s, &["list"]));
+    let shown = ok(&cli(&s, &["info", hostile]));
+    for text in [&listed, &shown] {
+        assert!(!text.contains(|c: char| c.is_control() && c != '\n'), "{text:?}");
+        assert!(!text.lines().any(|line| line.starts_with("forged")), "{text}");
+        assert!(text.contains("evil?]0;X??52;c;SGVsbG8=??forged"), "{text}");
+    }
+    assert!(shown.contains("evil?]0;X??52;c;SGVsbG8=??forged.ascii\n"), "the asset path: {shown}");
+}
+
+const C1_OSC_52: &str = "\u{9d}52;c;SGVsbG8=\u{9c}";
+
+const C1_OSC_52_SCRUBBED: &str = "?52;c;SGVsbG8=?";
+
+fn carries_c1_osc(bytes: &[u8]) -> bool {
+    bytes.windows(2).any(|pair| pair == [0xC2, 0x9D])
+}
+
+fn shipped_c1_clip(s: &Scratch) -> String {
+    let name = format!("evil{C1_OSC_52}");
+    let folder = s.library().join(&name);
+    std::fs::create_dir_all(&folder).unwrap();
+    let asset = folder.join(format!("{name}.ascii"));
+    std::fs::write(&asset, build_fixture(Fixture::HardCut)).unwrap();
+    let sidecar = serde_json::json!({
+        "source": { "path": format!("/videos/{name}.mp4"), "sha256": name, "bytes": 1 },
+        "created_unix": 1,
+        "created": name,
+    });
+    std::fs::write(asset.with_extension("json"), sidecar.to_string()).unwrap();
+    name
+}
+
+#[test]
+fn list_json_scrubs_c1_from_folder_names_and_sidecars() {
+    let s = Scratch::new("listc1");
+    shipped_c1_clip(&s);
+    let out = cli(&s, &["--json", "list"]);
+    assert!(!carries_c1_osc(&out.stdout), "{:?}", stdout_of(&out));
+    let listed = json_of(&out);
+    let clip = &listed[0];
+    let safe = format!("evil{C1_OSC_52_SCRUBBED}");
+    for field in [&clip["name"], &clip["created"], &clip["source"]["sha256"]] {
+        assert_eq!(field.as_str(), Some(safe.as_str()), "{clip}");
+    }
+    assert_eq!(clip["source"]["path"].as_str(), Some(format!("/videos/{safe}.mp4").as_str()), "{clip}");
+    assert!(clip["asset"]["path"].as_str().unwrap().ends_with(&format!("{safe}/{safe}.ascii")), "{clip}");
+}
+
+#[test]
+fn info_json_scrubs_c1_from_folder_names_and_sidecars() {
+    let s = Scratch::new("infoc1");
+    let name = shipped_c1_clip(&s);
+    let out = cli(&s, &["--json", "info", &name]);
+    assert!(!carries_c1_osc(&out.stdout), "{:?}", stdout_of(&out));
+    let clip = json_of(&out);
+    let safe = format!("evil{C1_OSC_52_SCRUBBED}");
+    for field in [&clip["name"], &clip["created"], &clip["source"]["sha256"]] {
+        assert_eq!(field.as_str(), Some(safe.as_str()), "{clip}");
+    }
+    assert!(clip["asset"]["path"].as_str().unwrap().ends_with(&format!("{safe}/{safe}.ascii")), "{clip}");
+}
+
+#[test]
+fn dev_inspect_scrubs_c1_from_the_path_and_meta_in_json_and_text() {
+    use auto_ascii_format::{AsciiWriter, Meta, PlaneRef, WriterOptions, header::plane_id};
+
+    let s = Scratch::new("inspectc1");
+    let hostile = format!("evil{C1_OSC_52}");
+    let opts = WriterOptions::default();
+    let y = vec![0u8; usize::from(opts.base_w) * usize::from(opts.base_h)];
+    let meta = Meta { factory_version: hostile.clone(), source: hostile.clone(), palette_hints: vec![hostile.clone()] };
+    let mut writer = AsciiWriter::new(std::io::Cursor::new(Vec::new()), opts, &meta).unwrap();
+    writer.write_frame(&[PlaneRef { id: plane_id::Y, data: &y }]).unwrap();
+    let clip = s.0.join(format!("{hostile}.ascii"));
+    std::fs::write(&clip, writer.finish().unwrap().into_inner()).unwrap();
+    let clip = clip.to_str().unwrap();
+    let safe = format!("evil{C1_OSC_52_SCRUBBED}");
+
+    let out = cli(&s, &["--json", "dev", "inspect", clip]);
+    assert!(!carries_c1_osc(&out.stdout), "{:?}", stdout_of(&out));
+    let v = json_line(&out);
+    for field in [&v["meta"]["factory_version"], &v["meta"]["source"], &v["meta"]["palette_hints"][0]] {
+        assert_eq!(field.as_str(), Some(safe.as_str()), "{v}");
+    }
+    assert!(v["path"].as_str().unwrap().ends_with(&format!("{safe}.ascii")), "{v}");
+
+    let out = cli(&s, &["dev", "inspect", clip]);
+    assert!(!carries_c1_osc(&out.stdout), "{:?}", stdout_of(&out));
+    assert!(ok(&out).lines().next().unwrap().contains(&format!("{safe}.ascii: ASCI v")), "{}", stdout_of(&out));
+}
+
+#[test]
+fn stream_sim_json_scrubs_c1_from_what_the_page_sends() {
+    let s = Scratch::new("streamc1");
+    let video = s.0.join("src").join("short.avi");
+    auto_ascii_eval::fixtures::write_bgr24_avi(&video, FIX_W, FIX_H, FIX_FPS, (0..10).map(fixture_frame)).unwrap();
+    let json = serde_json::json!({
+        "_type": "video", "id": format!("v{C1_OSC_52}"), "title": format!("Evil{C1_OSC_52}"), "duration": 0.33,
+        "fps": 30, "width": FIX_W, "height": FIX_H, "url": video, "format_id": format!("avi{C1_OSC_52}"),
+        "protocol": "file", "vcodec": "rawvideo", "acodec": "none",
+        "webpage_url": format!("https://evil.example/v{C1_OSC_52}"),
+    });
+    let ytdlp = fake_ytdlp(&s, &format!("cat <<'JSON'\n{json}\nJSON"));
+    let out = stream_cli(&s, &ytdlp, &["stream", "https://evil.example/v", "--sim", "40x12:20"]);
+    assert!(!carries_c1_osc(&out.stdout), "{:?}", stdout_of(&out));
+    let v = json_of(&out);
+    assert_eq!(v["exit_reason"], "eof", "{v}");
+    for (field, text) in [("id", "v"), ("title", "Evil"), ("entry_url", "https://evil.example/v")] {
+        assert_eq!(v[field].as_str(), Some(format!("{text}{C1_OSC_52_SCRUBBED}").as_str()), "{v}");
+    }
+    assert_eq!(v["formats"]["video"].as_str(), Some(format!("avi{C1_OSC_52_SCRUBBED}").as_str()), "{v}");
+
+    let ytdlp = fake_ytdlp(&s, &format!("echo 'ERROR: [generic] v: HTTP Error 404: {C1_OSC_52}' >&2\nexit 1"));
+    let out = stream_cli(&s, &ytdlp, &["--json", "stream", "https://evil.example/v", "--sim", "40x12:20"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!carries_c1_osc(&out.stdout) && !carries_c1_osc(&out.stderr), "{:?}", stdout_of(&out));
+    let v: serde_json::Value = serde_json::from_str(stdout_of(&out).trim()).unwrap();
+    let scrubbed = format!("HTTP Error 404: {C1_OSC_52_SCRUBBED}");
+    assert!(v["error"].as_str().unwrap().ends_with(&scrubbed), "{v}");
+}
+
+#[test]
+fn cut_and_compose_scrub_a_shipped_clip_path_in_text() {
+    let s = Scratch::new("cutc1");
+    let name = shipped_c1_clip(&s);
+    let safe = format!("evil{C1_OSC_52_SCRUBBED}");
+    let cut = ok(&cli(&s, &["cut", &name, "--in", "0.5", "--out", "1"]));
+    ok(&cli(&s, &["compose", "new", "demo"]));
+    let added = ok(&cli(&s, &["compose", "add", "demo", &name]));
+    let shown = ok(&cli(&s, &["compose", "show", "demo"]));
+    for text in [&cut, &added, &shown] {
+        assert!(!carries_c1_osc(text.as_bytes()), "{text:?}");
+        assert!(text.contains(&format!("{safe}/{safe}.ascii")), "{text}");
+    }
+    assert!(cut.starts_with("cut ") && cut.lines().next().unwrap().ends_with(&format!("{safe}/{safe}.ascii")), "{cut}");
+}
+
+#[test]
+fn cut_and_compose_json_scrub_c1_from_shipped_clip_and_composition_names() {
+    let s = Scratch::new("cutjsonc1");
+    let name = shipped_c1_clip(&s);
+    let tail = format!("evil{C1_OSC_52_SCRUBBED}/evil{C1_OSC_52_SCRUBBED}.ascii");
+    let cut = cli(&s, &["--json", "cut", &name, "--in", "0.5", "--out", "1"]);
+    ok(&cli(&s, &["compose", "new", "demo"]));
+    let added = cli(&s, &["--json", "compose", "add", "demo", &name]);
+    let shown = cli(&s, &["--json", "compose", "show", "demo"]);
+    std::fs::copy(s.compositions().join("demo.toml"), s.compositions().join(format!("{name}.toml"))).unwrap();
+    let exported = cli(&s, &["--json", "compose", "export", &name]);
+    for out in [&cut, &added, &shown, &exported] {
+        assert!(!carries_c1_osc(&out.stdout), "{:?}", stdout_of(out));
+    }
+    assert!(json_of(&cut)["source"]["from"].as_str().unwrap().ends_with(&tail), "{}", stdout_of(&cut));
+    let (added, shown) = (json_of(&added), json_of(&shown));
+    for path in [&added["clip"]["asset"], &added["clip"]["path"], &shown["clips"][0]["asset"], &shown["clips"][0]["path"]] {
+        assert!(path.as_str().unwrap().ends_with(&tail), "{added} {shown}");
+    }
+    let exported = json_of(&exported);
+    assert!(exported["path"].as_str().unwrap().ends_with(&format!("evil{C1_OSC_52_SCRUBBED}.ascii")), "{exported}");
+}
+
+#[test]
+fn add_json_scrubs_c1_from_a_local_video_path() {
+    let Some(tools) = media_tools() else { return };
+    let s = Scratch::new("addlocalc1");
+    let video = s.0.join("src").join(format!("clip{C1_OSC_52}.mp4"));
+    sounding_video(&tools, &video);
+    let out = cli(&s, &["--json", "add", video.to_str().unwrap(), "--title", "Demo"]);
+    assert!(!carries_c1_osc(&out.stdout), "{:?}", stdout_of(&out));
+    let v = json_of(&out);
+    assert!(v["source"]["path"].as_str().unwrap().ends_with(&format!("clip{C1_OSC_52_SCRUBBED}.mp4")), "{v}");
 }
 
 #[test]

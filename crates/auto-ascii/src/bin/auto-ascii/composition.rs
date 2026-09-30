@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::BoxErr;
 use crate::library::absolute;
+use crate::output::terminal_safe;
 
 pub fn new_text(name: &str) -> String {
     format!(
@@ -168,6 +169,19 @@ impl Report {
             .collect();
         rows.sort_by(|a, b| a.start_secs().total_cmp(&b.start_secs()));
         rows
+    }
+
+    pub fn terminal_safe(self) -> Report {
+        let safe = |text: &str| terminal_safe(text).into_owned();
+        Report {
+            name: safe(&self.name),
+            clips: self
+                .clips
+                .into_iter()
+                .map(|clip| ClipRow { asset: safe(&clip.asset), path: safe(&clip.path), ..clip })
+                .collect(),
+            ..self
+        }
     }
 }
 

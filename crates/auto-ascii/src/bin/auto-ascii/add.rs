@@ -17,6 +17,7 @@ use crate::commands::print_clip_body;
 use crate::home::{Home, STAGING_SUFFIX, kebab_case, sidecar_path};
 use crate::import::{build_with_defaults, record_import};
 use crate::library::absolute;
+use crate::output::{terminal_safe, terminal_safe_line};
 use crate::source::{self, YtDlpDownloader};
 use crate::{BoxErr, Cli};
 
@@ -100,17 +101,18 @@ pub fn run(cli: &Cli, args: &AddArgs) -> Result<(), BoxErr> {
     let soundtrack = built.soundtrack.then(|| absolute(&folder.join(format!("{title}.m4a"))));
 
     if cli.json {
+        let safe = sidecar.terminal_safe();
         let obj = serde_json::json!({
             "name": slug,
             "title": title,
             "folder": absolute(&folder),
-            "url": source.url(),
+            "url": source.url().map(terminal_safe),
             "soundtrack": soundtrack,
             "launcher": absolute(&launcher),
             "source_duration_secs": built.source_secs,
-            "source": sidecar.source,
-            "asset": sidecar.asset,
-            "created": sidecar.created,
+            "source": safe.source,
+            "asset": safe.asset,
+            "created": safe.created,
         });
         outln!("{obj}");
         return Ok(());
@@ -118,7 +120,7 @@ pub fn run(cli: &Cli, args: &AddArgs) -> Result<(), BoxErr> {
     outln!("added {title}");
     outln!("  {:<14}{}", "folder:", absolute(&folder));
     if let Some(url) = source.url() {
-        outln!("  {:<14}{url}", "link:");
+        outln!("  {:<14}{}", "link:", terminal_safe_line(url));
     }
     print_clip_body(&sidecar);
     outln!(
