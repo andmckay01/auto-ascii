@@ -2,10 +2,10 @@
 
 auto-ascii is a Rust workspace (edition 2024). This page is the working
 agreement: how to build, what "green" means, and the few rules that keep the
-renderer deterministic. The design lives in [docs/PLAN.md](docs/PLAN.md) (the
-engine) and [docs/PLAN-M6-M8.md](docs/PLAN-M6-M8.md) (the CLI and
-compositions); [docs/INTERFACES.md](docs/INTERFACES.md) is the internal API
-registry, milestone by milestone.
+renderer deterministic. The design lives in
+[docs/FEATURE-MAP.md](docs/FEATURE-MAP.md) (every flow, engine to CLI);
+[docs/INTERFACES.md](docs/INTERFACES.md) is the internal API registry,
+milestone by milestone.
 
 ## Build and run
 
@@ -130,7 +130,7 @@ eval gate.
 ## Rules that keep the output deterministic
 
 - **Assets never store glyphs.** Glyph choice happens at render time; that is
-  what makes resize correct. Planes only (docs/PLAN.md §4).
+  what makes resize correct. Planes only (docs/FEATURE-MAP.md §2).
 - **Goldens and byte pins move only deliberately.** The insta snapshots, the
   `.ansi` tier goldens, the console golden, `FIXTURE_ASSET_SHA` in the
   factory tests and `GOLDEN_SHA256` in the format tests are the regression
@@ -142,7 +142,7 @@ eval gate.
   `[levels]`, `[edges]`, `[highlights]`, `[temporal]`) is a re-baselining
   act: the byte-pin test and any `runs/base.json` you keep will move.
   Glyph-style design constants — the `letters` ramps and its fill/hold
-  thresholds, like the §3.4 palettes — are style *data*, not tunables: they
+  thresholds, like the palettes (FEATURE-MAP §5) — are style *data*, not tunables: they
   live in their style module (`auto-ascii-core/src/style/`), pinned by its
   tests and goldens. Anything a viewer or a sweep adjusts is a
   `ComposeParams` field in `[compose]`, which every style reads.
@@ -171,7 +171,9 @@ eval gate.
   and console-golden tests render the real grid and must keep passing
   unblessed.
 - **No connectivity engineering.** No SSH/WAN tuning, tmux/ConPTY special
-  cases or throughput governors (docs/PLAN.md, scope amendment at the top).
+  cases or throughput governors. The backend abstraction, the capability
+  tiers and the diff renderer stay: they are about terminal features and
+  generic efficiency, not connectivity.
 
 ## Layout
 

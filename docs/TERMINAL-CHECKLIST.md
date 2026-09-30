@@ -50,6 +50,52 @@ control bytes, hence `cat -v`):
 printf '\033[>0q\033[?2026$p\033P+q524742\033\\\033[16t\033[c'; cat -v
 ```
 
+### Measuring on a real tty
+
+Set `AUTO_ASCII_FRAME_LOG` and the player appends one row per presented frame
+to that file. Unset, it costs nothing. The log is appended to, so delete it
+between runs:
+
+```bash
+rm -f /tmp/frames.tsv
+AUTO_ASCII_FRAME_LOG=/tmp/frames.tsv auto-ascii play "$ASSET" --duration-secs 30
+```
+
+Rows are tab-separated:
+
+| Column | Meaning |
+|---|---|
+| `frame_index` | the asset frame this presentation showed |
+| `wall_ms` | milliseconds from the start of playback to the end of the present |
+| `bytes` | escape bytes written for the frame |
+| `cells_damaged` | cells repainted |
+| `write_ns` | nanoseconds spent in the write to the tty |
+| `dropped` | `1` when the write failed; the next frame is then a full repaint |
+
+The last line is `# end frames_presented=… target_frames=… elapsed_ms=… tier=… grid=CxR`.
+It is written however playback stops, quit included (exit 3), but not when the
+player is killed. `tier` is the color tier the run used (`True`, `C256`, `C16`
+or `Mono`), `grid` the cell grid at the end.
+
+**Skipped frames** show up as gaps in `frame_index`: the player picks each
+frame by wall clock, so when a present runs long the next row jumps ahead.
+`target_frames - frames_presented` in the end line is the total for a run from
+frame 0 without `--loop`, pause, or seeks: a paused repaint presents the same
+target again and a seek back re-presents lower indices, so both push
+`frames_presented` up without moving `target_frames`. Gaps are expected with `--fps-cap`: `--fps-cap 15` on
+a 30 fps clip skips every other frame by design.
+
+**Back-pressure** shows up as `write_ns`. The write blocks when the terminal
+has not drained the pty, so `write_ns` above one frame interval (33 ms at 30 fps)
+means the terminal's parser and renderer are the bottleneck; a run of those
+rows followed by gaps is a saturated terminal.
+
+```bash
+grep -v '^#' /tmp/frames.tsv | cut -f5 | sort -n \
+  | awk '{a[NR]=$1} END {printf "write p95 %.1f ms over %d frames\n", a[int(NR*0.95)]/1e6, NR}'
+grep -v '^#' /tmp/frames.tsv | awk -F'\t' 'NR>1 && $1-p>1 {g+=$1-p-1} {p=$1} END {print "skipped:", g+0}'
+```
+
 ---
 
 ## 1. The matrix
@@ -61,9 +107,13 @@ printf '\033[>0q\033[?2026$p\033P+q524742\033\\\033[16t\033[c'; cat -v
 | wezterm | truecolor · sync 2026 · cell px from `CSI 16 t` | truecolor proven by the *query* path (no COLORTERM needed) |
 | gnome-terminal (VTE) | truecolor · **no** sync 2026 · cell px from winsize | tearing on fast pans (expected — see quirks) |
 | xterm (`xterm-256color`) | **256** · no sync · cell px from `CSI 16 t` | banding is correct here, not a bug |
+| Terminal.app (`xterm-256color`, `TERM_PROGRAM=Apple_Terminal`) | **256**, capped even with `COLORTERM=truecolor` · 24-bit: yes (2.15, verified 2026-09-30) · sync 2026 not verified · cell px not verified | the `caps` line reads `color=C256`; big grids stay smooth only at 256 |
 | Linux console (`TERM=linux`) | 16 colors · CP437/ASCII ramp · no cell px | legibility at 80×24, no missing-glyph boxes |
 
-Every row is asserted by a pty fixture; the columns below are the human half.
+Every row except Terminal.app is asserted by a pty fixture; Terminal.app's cap
+is pinned by unit tests instead (`apple_terminal_*` in `src/probe.rs`,
+`apple_terminal_cap_only_lowers_tiers` in `src/quirks.rs`). The columns below
+are the human half.
 
 ---
 
@@ -164,6 +214,34 @@ xterm -direct2 -e "$PLAY"   # TERM=xterm-direct*; caps line should read color=Tr
 DA1 only as the volley's end sentinel, so any form works. No mode 2026 (expect
 tearing).
 
+### Terminal.app
+
+```bash
+$PLAY                                  # TERM=xterm-256color, TERM_PROGRAM=Apple_Terminal
+$PLAY --tier truecolor                 # to compare: forced, and roughly twice the CPU
+```
+
+*Expect:* **256-color** output whatever `COLORTERM` says. Terminal.app has no
+renders 24-bit color (2.15, verified 2026-09-30 by screenshot: 63 of 64 ramp
+levels distinct), but truecolor is about 3.3× the bytes and roughly twice the
+CPU of 256 at the same grid, and shell configs often export
+`COLORTERM=truecolor`, so the probe would otherwise stream it by default. The cap keys on `TERM_PROGRAM=Apple_Terminal`
+(`auto-ascii-term/src/quirks.rs`, `TERM_PROGRAM_COLOR_CAPS`) and applies after the
+passive hints, after any volley or cache upgrade, and before `--tier`.
+`--no-quirks` does not lift it; `--tier truecolor` does, and is the right choice
+for small windows (120×35 truecolor ran at 83% CPU with no drops).
+
+*Quirks:*
+- Cost, measured on 2.15 (macOS 26.2, M3 Pro, 30 fps clip): a 240×70 grid at
+  truecolor is 190 KB/frame, skips 5.6% of frames and saturates about two cores;
+  at 256 with `--repaint diff` it is 34 KB/frame with no skips. The full table
+  is in [NOTES.md](NOTES.md). Past roughly 150 KB/frame, shrink the window or
+  use `--fps-cap 15`.
+- Not verified: whether `CSI 16 t` is answered and whether the kernel winsize
+  carries pixels. The `caps` line settles it: `cellpx=none` means neither did and
+  the aspect falls back to 2.0 (override with `--cell-aspect`). The frame log
+  records only the grid, so it cannot tell you.
+
 ### Linux console (`TERM=linux`)
 
 Switch to a VT (`ctrl+alt+F3`), log in, then:
@@ -195,6 +273,7 @@ skips even that.
 | Symptom | Try |
 |---|---|
 | Washed-out or banded color on a truecolor terminal | `--tier truecolor` (probe was too conservative — tell us the `caps` line) |
+| Stutter or skipped frames on a big grid | measure first (Measuring on a real tty above), then a smaller window, `--tier 256 --repaint diff`, or `--fps-cap 15` |
 | Boxes / question marks instead of glyphs | `--palette ascii` (font lacks the block or box-drawing repertoire) |
 | Picture too tall or too wide | `--cell-aspect 2.0` (or measure: `cellpx=WxH` → aspect = H/W) |
 | Terminal hangs on start, or garbage keys | `--no-query` (never writes the volley) |
@@ -213,6 +292,8 @@ skips even that.
 | Terminal always restored, backdrop reset included (drop / panic / SIGINT / SIGTERM / SIGHUP) | `crates/auto-ascii-term/tests/pty_restore.rs` |
 | Per-tier escape streams (truecolor / 256 / 16 / mono) | `crates/auto-ascii-term/tests/tier_goldens.rs` |
 | `TERM=linux` render golden + legibility floor | `crates/auto-ascii/tests/linux_console_golden.rs` |
+| Terminal.app 256-color cap, incl. over an RGB reply, a stale cache entry and `--tier` | `crates/auto-ascii-term/src/probe.rs` and `quirks.rs` unit tests |
+| Frame-log row and end-line format | `crates/auto-ascii/src/player.rs` unit test |
 
 Not covered by any of them, and hence this document: font coverage, actual
 rendered color, perceived tearing, and taste.
@@ -221,12 +302,12 @@ rendered color, perceived tearing, and taste.
 
 ## 5. Audit — no connectivity-specific code paths
 
-Scope amendment (PLAN, top): connectivity engineering is out of scope. The
-audit command and its current result:
+Connectivity engineering is out of scope (`CONTRIBUTING.md`, "No connectivity
+engineering"). The audit command and its current result:
 
 ```bash
 rg -n -i -e 'SSH_CONNECTION|SSH_TTY|\bssh\b|conpty|tmux|telnet|downshift|governor|bandwidth' \
-   --glob '!target/**' --glob '!docs/research/**' --glob '!docs/PLAN.md' --glob '!runs/**' \
+   --glob '!target/**' --glob '!docs/research/**' --glob '!runs/**' \
    --glob '!Cargo.lock' .
 ```
 
@@ -239,6 +320,19 @@ branches nothing: `probe.rs`'s
 are byte-identical with the flag set and unset, and only the cache slot
 differs. (The M4 pass also removed the last stale prose references to a
 ConPTY backend and the descoped throughput governor from `auto-ascii-term`'s docs.)
+
+**Design note, not implemented: the governor's trigger is now measurable.**
+The adaptive throughput governor stays descoped (`CONTRIBUTING.md`). What
+changed is that its trigger no longer needs a guess: the frame log (Measuring on
+a real tty, above) records `write_ns`, the time each write to the tty takes,
+and a local terminal that cannot keep up, Terminal.app on a big grid, shows up
+in it directly. If the scope is ever revisited, the proposed rule is that
+when the p95 of `write_ns` over the last N frames exceeds about 20 ms, the
+player steps down truecolor to 256 first and only then caps fps. It would read
+the terminal's drain rate, not the environment (no `SSH_CONNECTION`, no
+multiplexer check), so it would add no connectivity-specific path. A better default than the static cap would be grid-aware: truecolor below roughly
+8k cells, 256 above. That is not implemented here. The
+Terminal.app change ships only the static cap.
 
 Related, deliberately kept, and *not* connectivity code:
 `SimBackend::set_throughput` — an in-memory writer that reports a simulated
