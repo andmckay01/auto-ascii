@@ -667,6 +667,7 @@ mod tests {
         assert!(!discarded(&mut f, &digit, late + Duration::from_millis(400)));
     }
 
+    #[cfg(unix)]
     #[test]
     fn resize_adopts_the_winsize_cell_px_only_when_it_changes() {
         let probed = Some((6, 13));
