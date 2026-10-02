@@ -375,6 +375,10 @@ impl Backend for AnsiBackend {
 
     fn resize(&mut self, cols: u16, rows: u16) {
         self.caps.cells = (cols, rows);
+        #[cfg(unix)]
+        if let Some(cell_px) = query_cell_px(libc::STDOUT_FILENO) {
+            self.caps.cell_px = Some(cell_px);
+        }
         self.painter.resize(cols, rows);
     }
 
