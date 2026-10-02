@@ -23,6 +23,19 @@
   half the Terminal.app CPU of truecolor at the same grid (200×55: 43 against
   143 KB/frame, 80% against 146% of a core), and a 240×70 grid that skipped 5.6%
   of frames at truecolor skips none at 256 with `--repaint diff`.
+- **`ascii` stays on black where the terminal ignores the backdrop.**
+  Multiplexers and embedded terminals (cmux, tmux, editor panes) can ignore
+  OSC 11, and there the cells `ascii` leaves unshaded, and its letterbox pads,
+  showed the theme's background through SGR 49: on a navy theme the picture
+  looked like black blotches on a navy field. On truecolor and 256-color,
+  auto-ascii now paints those cells explicit black (`48;2;0;0;0`, `48;5;16`),
+  so the picture is right whether or not OSC 11 takes effect. The backdrop
+  still blackens the window margins, and `--no-backdrop` keeps your color
+  there. `stream`, which uses `AnsiBackend::new` and never sends OSC 11, now
+  puts its `ascii` picture and loader on black too, on truecolor and
+  256-color in every terminal; before, they sat on the theme's background.
+  16-color keeps SGR 49 (ANSI black is a theme color); `--sim-dump` streams
+  are unchanged.
 
 ## 0.3.0 — 2026-09-29
 

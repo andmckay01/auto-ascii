@@ -82,7 +82,8 @@ crates/
 impl Rgb { pub const BLACK; pub const WHITE;
            pub const fn new(r,g,b) -> Rgb; pub const fn gray(v: u8) -> Rgb }
 pub mod attrs { pub const NONE: u8 = 0; pub const DEFAULT_BG: u8 = 1; }
-    // DEFAULT_BG: the painter emits SGR 49 instead of `bg` (note 27k)
+    // DEFAULT_BG: the painter emits SGR 49 instead of `bg` (note 27k), or on truecolor/256
+    // its solid background (`FramePainter::set_solid_bg`; AnsiBackend sets black)
 #[repr(C)] pub struct Cell { pub ch: u32, pub fg: Rgb, pub bg: Rgb, pub attrs: u8 }
 // compile-time asserted: size_of::<Cell>() == 12 (memcmp-able POD; bg is
 // load-bearing for M3 half-blocks — do not remove)
@@ -3124,7 +3125,7 @@ the bounded glyph settling fix remains. The 41 safe xterm candidates are
 all must pass the existing quantized hue-family and luminance checks.
 16/mono remain unshaded. Floor 1 sends every nonblack scaled shade, as
 letters does, for dark colour continuity; a shade that scales to exact black
-uses the terminal's own background.
+is left unshaded (`attrs::DEFAULT_BG`).
 
 Hysteresis range and ASCII glyph hold: `IDX_HYST_DEFAULT_Q8` = 128 is the
 default and recommended max, below the hard ceiling `IDX_HYST_MAX_Q8` = 255
