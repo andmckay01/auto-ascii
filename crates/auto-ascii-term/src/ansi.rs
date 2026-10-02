@@ -101,6 +101,8 @@ impl StragglerFilter {
 
 pub struct AnsiBackend {
     caps: Caps,
+    #[cfg(unix)]
+    winsize_px: Option<(u16, u16)>,
     events: EventQueue,
     painter: FramePainter,
     straggler: StragglerFilter,
@@ -138,12 +140,14 @@ impl AnsiBackend {
         let (cols, rows) = terminal::size().unwrap_or(caps.cells);
         let mut caps = caps;
         caps.cells = (cols, rows);
+        let winsize_px = query_cell_px(fd);
         if caps.cell_px.is_none() {
-            caps.cell_px = query_cell_px(fd);
+            caps.cell_px = winsize_px;
         }
 
         Ok(AnsiBackend {
             caps,
+            winsize_px,
             events: EventQueue::new(),
             painter: FramePainter::new(cols, rows),
             straggler: StragglerFilter::new(probe::volley_stragglers_possible(), Instant::now()),
@@ -222,6 +226,18 @@ fn query_cell_px(fd: libc::c_int) -> Option<(u16, u16)> {
         return None;
     }
     Some((ws.ws_xpixel / ws.ws_col, ws.ws_ypixel / ws.ws_row))
+}
+
+#[cfg(unix)]
+type CellPx = Option<(u16, u16)>;
+
+#[cfg(unix)]
+fn refreshed_cell_px(last: CellPx, now: CellPx, cell_px: CellPx) -> (CellPx, CellPx) {
+    if now.is_some() && now != last {
+        (now, now)
+    } else {
+        (last, cell_px)
+    }
 }
 
 #[cfg(unix)]
@@ -375,6 +391,12 @@ impl Backend for AnsiBackend {
 
     fn resize(&mut self, cols: u16, rows: u16) {
         self.caps.cells = (cols, rows);
+        #[cfg(unix)]
+        {
+            let now = query_cell_px(libc::STDOUT_FILENO);
+            (self.winsize_px, self.caps.cell_px) =
+                refreshed_cell_px(self.winsize_px, now, self.caps.cell_px);
+        }
         self.painter.resize(cols, rows);
     }
 
@@ -643,6 +665,24 @@ mod tests {
         assert!(discarded(&mut f, &alt_p, late));
         assert!(discarded(&mut f, &digit, late + Duration::from_millis(1)));
         assert!(!discarded(&mut f, &digit, late + Duration::from_millis(400)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resize_adopts_the_winsize_cell_px_only_when_it_changes() {
+        let probed = Some((6, 13));
+        let at_launch = Some((8, 16));
+        assert_eq!(
+            refreshed_cell_px(at_launch, at_launch, probed),
+            (at_launch, probed),
+            "the startup resize keeps the CSI 16 t cell size"
+        );
+        assert_eq!(refreshed_cell_px(at_launch, None, probed), (at_launch, probed));
+        assert_eq!(refreshed_cell_px(None, None, probed), (None, probed));
+        let zoomed = Some((8, 18));
+        assert_eq!(refreshed_cell_px(at_launch, zoomed, probed), (zoomed, zoomed));
+        assert_eq!(refreshed_cell_px(zoomed, zoomed, zoomed), (zoomed, zoomed));
+        assert_eq!(refreshed_cell_px(zoomed, None, zoomed), (zoomed, zoomed));
     }
 
     #[test]
