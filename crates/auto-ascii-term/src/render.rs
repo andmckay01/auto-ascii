@@ -18,6 +18,7 @@ pub(crate) struct FramePainter {
     quantized: Grid<Cell>,
     pub(crate) buf: Vec<u8>,
     invalidate_next: bool,
+    solid_bg: Option<Rgb>,
 }
 
 impl FramePainter {
@@ -27,9 +28,18 @@ impl FramePainter {
             quantized: Grid::new(cols, rows),
             buf: Vec::with_capacity(MIN_BUF),
             invalidate_next: true,
+            solid_bg: None,
         };
         painter.reserve_for(cols, rows);
         painter
+    }
+
+    #[cfg_attr(
+        not(any(test, feature = "session")),
+        expect(dead_code, reason = "only the ANSI session paints a solid background")
+    )]
+    pub(crate) fn set_solid_bg(&mut self, bg: Option<Rgb>) {
+        self.solid_bg = bg;
     }
 
     pub(crate) fn resize(&mut self, cols: u16, rows: u16) {
@@ -75,6 +85,10 @@ impl FramePainter {
 
         let full = self.invalidate_next;
         let w = src.cols() as usize;
+        let solid = match tier {
+            ColorTier::True | ColorTier::C256 => self.solid_bg,
+            _ => None,
+        };
         let mut fg: Option<Rgb> = None;
         let mut bg: Option<Option<Rgb>> = None;
         let mut damage: u32 = 0;
@@ -115,7 +129,7 @@ impl FramePainter {
                 }
                 emit_cup(&mut self.buf, r, start as u16);
                 for cell in &gr[start..end] {
-                    emit_cell(&mut self.buf, cell, &mut fg, &mut bg, tier);
+                    emit_cell(&mut self.buf, cell, &mut fg, &mut bg, tier, solid);
                 }
                 damage += (end - start) as u32;
             }
@@ -185,9 +199,10 @@ fn emit_cell(
     fg: &mut Option<Rgb>,
     bg: &mut Option<Option<Rgb>>,
     tier: ColorTier,
+    solid: Option<Rgb>,
 ) {
     if tier != ColorTier::Mono {
-        let want_bg = (cell.attrs & attrs::DEFAULT_BG == 0).then_some(cell.bg);
+        let want_bg = if cell.attrs & attrs::DEFAULT_BG != 0 { solid } else { Some(cell.bg) };
         let fg_new = *fg != Some(cell.fg);
         let bg_new = *bg != Some(want_bg);
         if fg_new || bg_new {
@@ -289,6 +304,35 @@ mod tests {
             painter.paint(&grid, tier, false);
             let n49 = painter.buf.windows(2).filter(|w| *w == b"49").count();
             assert_eq!(n49, 2, "{tier:?}: back to the default after a colored bg");
+        }
+    }
+
+    #[test]
+    fn solid_bg_paints_default_bg_cells_on_truecolor_and_256_only() {
+        assert_eq!(quant::rgb_to_256(Rgb::BLACK), 16, "the cube's black, not the theme's ANSI 0");
+        let mut keep = Cell::new('x', Rgb::new(200, 40, 40), Rgb::BLACK);
+        keep.attrs = attrs::DEFAULT_BG;
+        for (tier, unshaded, never) in [
+            (ColorTier::True, &b"48;2;0;0;0m"[..], &b"49"[..]),
+            (ColorTier::C256, &b"48;5;16m"[..], &b"49"[..]),
+            (ColorTier::C16, &b"49m"[..], &b"40m"[..]),
+        ] {
+            let mut painter = FramePainter::new(3, 1);
+            painter.set_solid_bg(Some(Rgb::BLACK));
+            let mut grid: Grid<Cell> = Grid::new(3, 1);
+            grid.fill(keep);
+            painter.paint(&grid, tier, false);
+            let out = painter.buf.clone();
+            let n = out.windows(unshaded.len()).filter(|w| *w == unshaded).count();
+            assert_eq!(n, 1, "{tier:?}: one SGR covers the run of unshaded cells");
+            assert!(!out.windows(never.len()).any(|w| w == never), "{tier:?}");
+            grid.set(1, 0, Cell::new('y', Rgb::new(200, 40, 40), Rgb::new(0, 0, 238)));
+            painter.invalidate();
+            painter.paint(&grid, tier, false);
+            let out = painter.buf.clone();
+            assert!(!out.windows(never.len()).any(|w| w == never), "{tier:?}");
+            let n = out.windows(unshaded.len()).filter(|w| *w == unshaded).count();
+            assert_eq!(n, 2, "{tier:?}: back to the unshaded background after a colored bg");
         }
     }
 
