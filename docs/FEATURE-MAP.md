@@ -139,6 +139,10 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     and roughly twice the CPU, and drops frames above ~150 KB/frame. The cap only lowers a tier, ignores `--no-quirks`, and `--tier` beats it.
   - Late replies are drained or filtered (`crates/auto-ascii-term/src/ansi.rs`
     `StragglerFilter`), so digits in a reply never trigger a seek.
+  - `AnsiBackend::resize` (`crates/auto-ascii-term/src/ansi.rs` `refreshed_cell_px`) re-reads
+    the cell pixel size from `TIOCGWINSZ` on Unix but adopts it only when that reading changed
+    since the last one, so a font zoom reaches the cell aspect (flow 4) while the startup resize
+    keeps a `CSI 16 t` reply, and a terminal that reports no pixel size keeps the size in use.
 
 ### 4. Fit the picture: viewport, letterbox, resample
 - **Does:** fits the asset's aspect into `cols × rows` cells, then box-averages each plane down
@@ -155,6 +159,11 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     terminal" card (`draw_enlarge_card`).
   - Worked examples at 16:9 are frozen as unit tests: 80×24 → 80×23, 213×58 → 206×58, 320×90 is
     an exact fit.
+  - The cell aspect follows font zoom. Whenever the cell pixel size the backend adopts on a
+    resize (flow 3) gives a new aspect, even with the same `cols × rows`, `Player::play`
+    (`crates/auto-ascii/src/player.rs` `aspect_after_resize`) adopts it and repaints, and
+    `ClipDeck::set_cell_aspect` refits every resident clip on its next render. `--cell-aspect R`
+    pins it; a resize that reports no pixel size keeps the aspect in use.
   - Tap tables are pure integer arithmetic and byte-deterministic across platforms.
   - `reflow_grid` and `HysteresisState::resize` are the only hot-path allocation points, overlay text aside.
 

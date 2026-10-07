@@ -59,6 +59,17 @@
   `<clip>.player.toml.tmp` link shipped in someone else's clip folder can no
   longer overwrite the file it points to.
 
+### Fixed
+
+- **Zooming the font while playing refits the picture.** The cell aspect
+  (cell pixel height over width) was measured once at launch, so a zoom
+  reflowed the picture with the old shape: a Ghostty session launched at 2pt
+  (aspect 2.5) and zoomed to 7pt (8×18 px cells, aspect 2.25) drew it about
+  10% too short, leaving 11 rows unused. The terminal backend now re-reads
+  the cell pixel size on every resize, and `play` and `compose play` refit
+  the picture whenever that changes the aspect, even at the same grid size,
+  unless `--cell-aspect` pins it.
+
 ## 0.3.0 — 2026-09-29
 
 One command. The `auto-ascii` binary now does everything the old player and
