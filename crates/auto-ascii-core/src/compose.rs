@@ -59,6 +59,7 @@ pub struct CellInputs {
     pub ey: u8,
     pub h: u8,
     pub chroma: Option<Rgb>,
+    pub dither: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +76,8 @@ pub struct ComposeParams {
     pub quad_e_off: u8,
     pub idx_hyst_q8: u8,
     pub shadow_lift: u8,
+    pub lift_color: u8,
+    pub dither: u8,
 }
 
 impl Default for ComposeParams {
@@ -92,6 +95,8 @@ impl Default for ComposeParams {
             quad_e_off: 1,
             idx_hyst_q8: crate::hysteresis::IDX_HYST_DEFAULT_Q8,
             shadow_lift: 0,
+            lift_color: 0,
+            dither: 0,
         }
     }
 }
@@ -172,6 +177,23 @@ pub fn compose_frame_masked(
     frame_impl::<Pixels>(planes, vp, lut, set, params, state, out, Some(mask));
 }
 
+const BAYER4: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+
+#[inline]
+fn dither_index(mode: u8, c: usize, r: usize) -> u8 {
+    match mode {
+        0 => 0,
+        1 => BAYER4[r & 3][c & 3],
+        _ => {
+            let mut h = (c as u32).wrapping_mul(0x9E37_79B1) ^ (r as u32).wrapping_mul(0x85EB_CA77);
+            h ^= h >> 15;
+            h = h.wrapping_mul(0x2C1B_3C6D);
+            h ^= h >> 12;
+            (h & 15) as u8
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn frame_impl<C: GlyphStyle>(
     planes: &FramePlanes<'_>,
@@ -224,6 +246,7 @@ pub(crate) fn frame_impl<C: GlyphStyle>(
                 ey,
                 h: planes.h.map_or(0, |p| p[i]),
                 chroma: planes.chroma.map(|(pr, pg, pb)| Rgb::new(pr[i], pg[i], pb[i])),
+                dither: dither_index(params.dither, c, r),
             };
             let (cell, won) =
                 C::cell(&inp, lut, set, params, state.cell_mut(c as u16, r as u16));
@@ -323,7 +346,13 @@ mod tests {
     }
 
     fn base_inp(n: u8) -> CellInputs {
-        CellInputs { luma_top: n, luma_bottom: n, e: 0, ex: 128, ey: 128, h: 0, chroma: None }
+        CellInputs { luma_top: n, luma_bottom: n, e: 0, ex: 128, ey: 128, h: 0, chroma: None, dither: 0 }
+    }
+
+    #[test]
+    fn color_lift_and_dither_default_off() {
+        let p = ComposeParams::default();
+        assert_eq!((p.lift_color, p.dither), (0, 0));
     }
 
     #[test]
@@ -345,7 +374,7 @@ mod tests {
         let ascii = select_palettes(GlyphTier::Ascii, ColorDepth::True, 100);
         let uni = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::True, 100);
         let (ex, ey) = exy(0.0, 200.0);
-        let top = CellInputs { luma_top: 200, luma_bottom: 20, e: 200, ex, ey, h: 0, chroma: None };
+        let top = CellInputs { luma_top: 200, luma_bottom: 20, e: 200, ex, ey, h: 0, chroma: None, dither: 0 };
         assert_eq!(cell_with(&top, &ascii).glyph(), '=');
         assert_eq!(cell_with(&top, &uni).glyph(), '‾');
         let bot = CellInputs { luma_top: 20, luma_bottom: 200, ..top };
@@ -442,7 +471,7 @@ mod tests {
     fn quadrant_from_pair_plus_orientation() {
         let uni = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::True, 100);
         let (ex, ey) = exy(45.0, 24.0);
-        let inp = CellInputs { luma_top: 200, luma_bottom: 20, e: 24, ex, ey, h: 0, chroma: None };
+        let inp = CellInputs { luma_top: 200, luma_bottom: 20, e: 24, ex, ey, h: 0, chroma: None, dither: 0 };
         assert_eq!(cell_with(&inp, &uni).glyph(), '▝');
         let flipped = CellInputs { luma_top: 20, luma_bottom: 200, ..inp };
         assert_eq!(cell_with(&flipped, &uni).glyph(), '▖');
@@ -456,7 +485,7 @@ mod tests {
         let uni = select_palettes(GlyphTier::UnicodeBlocks, ColorDepth::True, 100);
         for e in [0u8, 1] {
             for (ex, ey) in [(129u8, 128u8), (127, 128), (128, 129), (129, 127)] {
-                let inp = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None };
+                let inp = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None, dither: 0 };
                 let cell = cell_with(&inp, &uni);
                 assert_eq!(
                     cell.glyph(),
@@ -468,7 +497,7 @@ mod tests {
         let p = ComposeParams::default();
         let e = p.quad_e_on + 1;
         let (ex, ey) = exy(45.0, f64::from(e));
-        let inp = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None };
+        let inp = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None, dither: 0 };
         assert_eq!(cell_with(&inp, &uni).glyph(), '▝', "arms one LSB above the noise floor");
     }
 
@@ -479,7 +508,7 @@ mod tests {
         assert!(p.quad_e_on < p.edge_t_off, "the floor must sit below the edge gate");
         for e in 3u8..=15 {
             let (ex, ey) = exy(45.0, f64::from(e));
-            let up = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None };
+            let up = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None, dither: 0 };
             assert_eq!(cell_with(&up, &uni).glyph(), '▝', "E={e} diagonal lost its quadrant");
             let (ex, ey) = exy(135.0, f64::from(e));
             let dn = CellInputs { ex, ey, ..up };
@@ -494,7 +523,7 @@ mod tests {
         let mut st = HysteresisState::new(1, 1);
         let at = |e: u8, st: &mut HysteresisState| {
             let (ex, ey) = exy(45.0, 8.0);
-            let inp = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None };
+            let inp = CellInputs { luma_top: 200, luma_bottom: 20, e, ex, ey, h: 0, chroma: None, dither: 0 };
             compose_cell(&inp, &lut, &uni, &p, st, 0, 0).glyph()
         };
         assert_eq!(at(p.quad_e_on + 1, &mut st), '▝');

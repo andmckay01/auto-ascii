@@ -12,6 +12,7 @@ use crate::deck::{ClipDeck, DeckConfig};
 use crate::error::Error;
 use crate::pipeline::ProgressContext;
 use crate::settings::VideoSettings;
+use crate::text::terminal_safe_line;
 use crate::{PaletteChoice, pipeline};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -463,6 +464,20 @@ fn write_end_line(
     )
 }
 
+fn write_exit_notes<'a>(
+    out: &mut impl std::io::Write,
+    problems: &[String],
+    sound_notes: impl IntoIterator<Item = &'a String>,
+) -> std::io::Result<()> {
+    for problem in problems {
+        writeln!(out, "auto-ascii: settings: {}", terminal_safe_line(problem))?;
+    }
+    for note in sound_notes {
+        writeln!(out, "auto-ascii: sound: {}", terminal_safe_line(note))?;
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct HintState {
     pinned: bool,
@@ -651,14 +666,29 @@ pub struct Player {
     font_table: Option<auto_ascii_core::FontTable>,
 }
 
+fn measured_cell_aspect(cell_px: Option<(u16, u16)>) -> Option<f64> {
+    match cell_px {
+        Some((w, h)) if w > 0 && h > 0 => Some(f64::from(h) / f64::from(w)),
+        _ => None,
+    }
+}
+
 fn resolve_cell_aspect(flag: Option<f64>, cell_px: Option<(u16, u16)>) -> f64 {
     if let Some(a) = flag {
         return a;
     }
-    match cell_px {
-        Some((w, h)) if w > 0 && h > 0 => f64::from(h) / f64::from(w),
-        _ => auto_ascii_core::DEFAULT_CELL_ASPECT,
+    measured_cell_aspect(cell_px).unwrap_or(auto_ascii_core::DEFAULT_CELL_ASPECT)
+}
+
+fn aspect_after_resize(
+    flag: Option<f64>,
+    cell_px: Option<(u16, u16)>,
+    current: f64,
+) -> Option<f64> {
+    if flag.is_some() {
+        return None;
     }
+    measured_cell_aspect(cell_px).filter(|&fresh| fresh != current)
 }
 
 impl Player {
@@ -683,7 +713,7 @@ impl Player {
 
         let mut backend =
             AnsiBackend::with_backdrop(caps, !self.cfg.no_backdrop).map_err(Error::Terminal)?;
-        let aspect = resolve_cell_aspect(self.cfg.cell_aspect, backend.caps().cell_px);
+        let mut aspect = resolve_cell_aspect(self.cfg.cell_aspect, backend.caps().cell_px);
         let depth = pipeline::color_depth(backend.caps().color);
         let mut glyphs = self.cfg.palette.resolve_for_caps(backend.caps());
         if let Some(t) = &self.font_table {
@@ -797,6 +827,11 @@ impl Player {
                 live.save(&self.comp.clips()[idx].path);
             }
             let resized = deck.size() != was_size;
+            let refit = aspect_after_resize(self.cfg.cell_aspect, backend.caps().cell_px, aspect);
+            if let Some(fresh) = refit {
+                aspect = fresh;
+                deck.set_cell_aspect(fresh);
+            }
             if drained.style_cycle > 0 || drained.save || drained.toggle_sound || resized {
                 note_until = Some(Instant::now() + DIAL_OVERLAY_HIDE_AFTER);
             } else if note_until.is_some_and(|t| Instant::now() >= t) {
@@ -856,6 +891,7 @@ impl Player {
                 || show_progress != was_progress
                 || show_hints != was_hints
                 || dial_up != was_dial
+                || refit.is_some()
                 || deck.size() != was_size;
             (was_progress, was_hints, was_dial, was_size) =
                 (show_progress, show_hints, dial_up, deck.size());
@@ -884,12 +920,8 @@ impl Player {
         }
         let sound_notes = clock.finish();
         backend.shutdown();
-        for problem in &live.problems {
-            eprintln!("auto-ascii: settings: {problem}");
-        }
-        for note in opening.notes.iter().chain(&sound_notes) {
-            eprintln!("auto-ascii: sound: {note}");
-        }
+        let notes = opening.notes.iter().chain(&sound_notes);
+        let _ = write_exit_notes(&mut std::io::stderr().lock(), &live.problems, notes);
         stopped
     }
 }
@@ -920,6 +952,17 @@ mod tests {
         assert_eq!(resolve_cell_aspect(None, Some((10, 21))), 2.1);
         assert_eq!(resolve_cell_aspect(None, Some((0, 20))), 2.0);
         assert_eq!(resolve_cell_aspect(None, None), 2.0);
+    }
+
+    #[test]
+    fn cell_aspect_after_resize() {
+        let launched = resolve_cell_aspect(None, Some((8, 20)));
+        assert_eq!(launched, 2.5);
+        assert_eq!(aspect_after_resize(None, Some((8, 20)), launched), None);
+        assert_eq!(aspect_after_resize(None, Some((8, 18)), launched), Some(2.25));
+        assert_eq!(aspect_after_resize(None, None, launched), None, "keeps 2.5, not 2.0");
+        assert_eq!(aspect_after_resize(None, Some((0, 18)), launched), None, "keeps 2.5, not 2.0");
+        assert_eq!(aspect_after_resize(Some(1.5), Some((8, 18)), 1.5), None, "--cell-aspect pins");
     }
 
     #[test]
@@ -1240,6 +1283,24 @@ mod tests {
         assert_eq!((live.style, live.compose, live.status()), (Style::Ascii, ComposeParams::default(), "unreadable"));
         assert_eq!(live.problems.len(), 1);
         assert!(live.problems[0].contains("clip-a.player.toml") && live.problems[0].contains("line 1"), "{:?}", live.problems);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exit_notes_from_a_shipped_sidecar_print_as_one_scrubbed_line_each() {
+        let (dir, a, _) = two_clip_dir("exit-notes");
+        let hostile = "shadow_lift = \x1b]0;X\x07\u{9d}52;c;SGVsbG8=\u{9c}\rforged\n";
+        std::fs::write(dir.join("clip-a.player.toml"), hostile).unwrap();
+        let mut live = LiveSettings::new(None);
+        live.front(0, &a);
+        let mut out = Vec::new();
+        write_exit_notes(&mut out, &live.problems, &["device \x1b[2Jgone\nforged".to_string()]).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.lines().count(), 2, "{text:?}");
+        assert!(!text.contains(|c: char| c.is_control() && c != '\n'), "{text:?}");
+        assert!(text.starts_with("auto-ascii: settings: "), "{text:?}");
+        assert!(text.contains("got ?]0;X??52;c;SGVsbG8=??forged\n"), "{text:?}");
+        assert!(text.ends_with("auto-ascii: sound: device ?[2Jgone?forged\n"), "{text:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -4,6 +4,10 @@
 
 ### Added
 
+- Optional `lift_color` (0–255) and `dither` (0–2) compose settings: brighten
+  shadow chroma with a capped gain and choose stable Bayer or coordinate-hash
+  ASCII dithering. Both default to zero and round-trip through player sidecars.
+
 - **`AUTO_ASCII_FRAME_LOG=<path>`** makes the player append one row per
   presented frame (`frame_index`, `wall_ms`, `bytes`, `cells_damaged`,
   `write_ns`, `dropped`, tab-separated) and a final `# end …` summary line, to
@@ -32,6 +36,52 @@
   downloaded archive and compares the result to the published digest, so a
   malformed `.sha256` fails closed on every platform (macOS's `sha256sum -c`
   accepted one).
+- **`ascii` stays on black where the terminal ignores the backdrop.**
+  Multiplexers and embedded terminals (cmux, tmux, editor panes) can ignore
+  OSC 11, and there the cells `ascii` leaves unshaded, and its letterbox pads,
+  showed the theme's background through SGR 49: on a navy theme the picture
+  looked like black blotches on a navy field. On truecolor and 256-color,
+  auto-ascii now paints those cells explicit black (`48;2;0;0;0`, `48;5;16`),
+  so the picture is right whether or not OSC 11 takes effect. The backdrop
+  still blackens the window margins, and `--no-backdrop` keeps your color
+  there. `stream`, which uses `AnsiBackend::new` and never sends OSC 11, now
+  puts its `ascii` picture and loader on black too, on truecolor and
+  256-color in every terminal; before, they sat on the theme's background.
+  16-color keeps SGR 49 (ANSI black is a theme color); `--sim-dump` streams
+  are unchanged.
+
+### Fixed
+
+- **Text from remote sites and shipped clip folders can no longer drive the
+  terminal.** yt-dlp errors, download progress, resolved URLs and stream notes;
+  the clip names, paths and sidecar fields that `list`, `info`, `cut`,
+  `compose` and `dev inspect` print; and the settings and sound problems
+  reported when playback ends now show every control character except newline
+  and tab as `?`. So do the string fields of `--json` output from
+  `stream --sim`, `list`, `info`, `cut`, `compose add`, `compose show`,
+  `compose export` and `dev inspect`, `--json` error objects, and the link and
+  source in `add --json` output.
+  That stops a malicious page or clip folder from retitling the terminal or
+  writing the clipboard through OSC 52, in 7-bit or 8-bit form. Every one-line
+  message also shows newlines as `?`, so it cannot forge extra output lines;
+  only the final error message keeps its line breaks. Progress that yt-dlp or
+  ffmpeg redraws with carriage returns now echoes only its last state.
+- **Saving player settings with `s` no longer follows a symlink planted beside
+  the clip.** The settings are written to a new, uniquely named temp file that
+  refuses to open an existing path, then renamed into place, so a
+  `<clip>.player.toml.tmp` link shipped in someone else's clip folder can no
+  longer overwrite the file it points to.
+
+### Fixed
+
+- **Zooming the font while playing refits the picture.** The cell aspect
+  (cell pixel height over width) was measured once at launch, so a zoom
+  reflowed the picture with the old shape: a Ghostty session launched at 2pt
+  (aspect 2.5) and zoomed to 7pt (8×18 px cells, aspect 2.25) drew it about
+  10% too short, leaving 11 rows unused. The terminal backend now re-reads
+  the cell pixel size on every resize, and `play` and `compose play` refit
+  the picture whenever that changes the aspect, even at the same grid size,
+  unless `--cell-aspect` pins it.
 
 ## 0.3.0 — 2026-09-29
 

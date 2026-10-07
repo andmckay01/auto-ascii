@@ -293,3 +293,39 @@ fn font_table_error_surface() {
 fn auto_ascii_core_glyphs() -> Vec<char> {
     auto_ascii_core::palette::all_palette_glyphs()
 }
+
+#[test]
+fn dither_changes_ascii_glyphs_and_is_stable_across_frames() {
+    let f = TmpFile::with_fixture(Fixture::GradientMotion, "dither");
+    let mut plain = RenderSession::open(&f.0).unwrap();
+    let baseline = glyphs(plain.render(0, 80, 24).unwrap());
+    let mut patterns = Vec::new();
+    for mode in [1, 2] {
+        let mut session = RenderSession::open(&f.0).unwrap();
+        session.set_compose_params(ComposeParams { dither: mode, ..ComposeParams::default() });
+        let first = glyphs(session.render(0, 80, 24).unwrap());
+        assert_ne!(first, baseline, "mode {mode} must alter glyph selection");
+        for _ in 0..80 {
+            assert_eq!(glyphs(session.render(0, 80, 24).unwrap()), first, "a static frame must not flicker");
+        }
+        session.render(1, 213, 58).unwrap();
+        assert_eq!(glyphs(session.render(0, 80, 24).unwrap()), first, "resize and seek keep the pattern deterministic");
+        patterns.push(first);
+    }
+    assert_ne!(patterns[0], patterns[1]);
+}
+
+#[test]
+fn color_lift_changes_chroma_and_can_be_disabled_on_the_same_frame() {
+    let f = TmpFile::with_fixture(Fixture::GradientMotion, "color-lift");
+    let mut session = RenderSession::open(&f.0).unwrap();
+    let params = ComposeParams { shadow_lift: 160, ..ComposeParams::default() };
+    session.set_compose_params(params);
+    let plain = session.render(0, 80, 24).unwrap().as_slice().to_vec();
+    session.set_compose_params(ComposeParams { lift_color: 255, ..params });
+    let lifted = session.render(0, 80, 24).unwrap().as_slice().to_vec();
+    assert!(lifted.iter().zip(&plain).any(|(a, b)| a.fg != b.fg), "lift must brighten colored glyphs");
+    assert_eq!(lifted.iter().map(|c| c.glyph()).collect::<String>(), plain.iter().map(|c| c.glyph()).collect::<String>());
+    session.set_compose_params(params);
+    assert_eq!(session.render(0, 80, 24).unwrap().as_slice(), plain, "disabling the lift must restore source chroma");
+}

@@ -44,6 +44,8 @@ quad_e_on = 2
 quad_e_off = 1
 idx_hyst_q8 = 128
 shadow_lift = 0
+lift_color = 0
+dither = 0
 
 [eval]
 grid_cols = 300

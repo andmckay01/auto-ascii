@@ -140,6 +140,8 @@ pub struct ComposeTable {
     pub quad_e_off: u32,
     pub idx_hyst_q8: u32,
     pub shadow_lift: u32,
+    pub lift_color: u32,
+    pub dither: u32,
 }
 
 impl Default for ComposeTable {
@@ -157,6 +159,8 @@ impl Default for ComposeTable {
             quad_e_off: 1,
             idx_hyst_q8: auto_ascii_core::hysteresis::IDX_HYST_DEFAULT_Q8 as u32,
             shadow_lift: 0,
+            lift_color: 0,
+            dither: 0,
         }
     }
 }
@@ -176,6 +180,11 @@ impl ComposeTable {
             quad_e_off: compose_u8("quad_e_off", self.quad_e_off)?,
             idx_hyst_q8: compose_u8("idx_hyst_q8", self.idx_hyst_q8)?,
             shadow_lift: compose_u8("shadow_lift", self.shadow_lift)?,
+            lift_color: compose_u8("lift_color", self.lift_color)?,
+            dither: match self.dither {
+                0..=2 => self.dither as u8,
+                _ => return Err("params: compose.dither must be in 0..=2".into()),
+            },
         })
     }
 }
@@ -504,6 +513,25 @@ mod tests {
         assert_eq!(t.quad_e_off, d.quad_e_off);
         assert_eq!(t.idx_hyst_q8, d.idx_hyst_q8);
         assert_eq!(t.shadow_lift, d.shadow_lift);
+        assert_eq!(t.lift_color, d.lift_color);
+        assert_eq!(t.dither, d.dither);
+    }
+
+    #[test]
+    fn shadow_options_validate_without_changing_build_fingerprint() {
+        let mut p = Params::default();
+        let fp = p.build_fingerprint();
+        p.compose.lift_color = 255;
+        p.compose.dither = 2;
+        p.validate().unwrap();
+        let core = p.compose.to_core().unwrap();
+        assert_eq!((core.lift_color, core.dither), (255, 2));
+        assert_eq!(p.build_fingerprint(), fp);
+        p.compose.dither = 3;
+        assert!(p.validate().is_err());
+        p.compose.dither = 0;
+        p.compose.lift_color = 256;
+        assert!(p.validate().is_err());
     }
 
     #[test]

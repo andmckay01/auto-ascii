@@ -99,9 +99,11 @@ interactive ones takes `--json`.
 `ascii` draws with printable ASCII only, `letters` adds blocks where the
 picture is lit, and `pixels` paints a low-resolution picture from shade ramps
 and half-blocks. Zoom your terminal out for a sharper picture: more cells, more
-detail. While it plays, the player sets the terminal background black and
-resets it on exit (`--no-backdrop` keeps yours). `play` exits 0 at the end, 3
-when you quit and 1 on an error.
+detail. On truecolor and 256-color terminals the picture paints its own black
+inside the grid, so it stays on black where OSC 11 is ignored (multiplexers,
+embedded panes). While it plays, the player also sets the terminal background
+black for the margins and resets it on exit (`--no-backdrop` keeps your color
+there). `play` exits 0 at the end, 3 when you quit and 1 on an error.
 
 ## Embedding
 
