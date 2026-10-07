@@ -14,7 +14,7 @@ jobs:
       - name: Compare wait APIs and thread QoS
         run: |
           python3 - <<'PY'
-          import ctypes, select, statistics, threading, time
+          import ctypes, select, statistics, subprocess, threading, time
           lib = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
           class Timebase(ctypes.Structure):
               _fields_ = [('numer', ctypes.c_uint32), ('denom', ctypes.c_uint32)]
@@ -47,9 +47,16 @@ jobs:
                           samples.append(time.monotonic() - start)
                       samples.sort()
                       print(f'{label} {name} requested={delay:.3f}s median={statistics.median(samples):.4f}s max={max(samples):.4f}s', flush=True)
-          for interactive in (False, True):
-              probe(interactive)
-              worker = threading.Thread(target=probe, args=(interactive,))
-              worker.start()
-              worker.join()
+          original = subprocess.check_output(['sysctl', '-n', 'kern.timer.coalescing_enabled'], text=True).strip()
+          try:
+              for value in (original, '0'):
+                  subprocess.run(['sudo', 'sysctl', '-w', 'kern.timer.coalescing_enabled=' + value], check=True)
+                  print('timer coalescing=' + value, flush=True)
+                  for interactive in (False, True):
+                      probe(interactive)
+                      worker = threading.Thread(target=probe, args=(interactive,))
+                      worker.start()
+                      worker.join()
+          finally:
+              subprocess.run(['sudo', 'sysctl', '-w', 'kern.timer.coalescing_enabled=' + original], check=True)
           PY
