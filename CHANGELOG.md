@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-10-07
+
+### Breaking
+
+- The public Rust compose settings add `lift_color` and `dither` fields.
+  Downstream struct literals must provide both fields or use
+  `..Default::default()`; zero retains the previous rendering behavior.
+
 ### Added
 
 - Optional `lift_color` (0–255) and `dither` (0–2) compose settings: brighten
@@ -71,8 +79,6 @@
   refuses to open an existing path, then renamed into place, so a
   `<clip>.player.toml.tmp` link shipped in someone else's clip folder can no
   longer overwrite the file it points to.
-
-### Fixed
 
 - **Zooming the font while playing refits the picture.** The cell aspect
   (cell pixel height over width) was measured once at launch, so a zoom

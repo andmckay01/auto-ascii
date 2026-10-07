@@ -23,9 +23,12 @@ describe the writable switch and its effect on timer leeway.
 
 ## Cutting a release
 
-1. Bump `[workspace.package] version` in the root `Cargo.toml`. Every
-   published crate inherits it; `npm/auto-ascii/package.json` is stamped by
-   the workflow, so leave it alone.
+1. Bump `[workspace.package] version` in the root `Cargo.toml` and all
+   internal crate dependency version requirements in `[workspace.dependencies]`
+   and `crates/auto-ascii/Cargo.toml`. Run `cargo update --workspace` to refresh
+   `Cargo.lock` without updating external dependencies. Every published crate inherits
+   the workspace version; `npm/auto-ascii/package.json` is stamped by the
+   workflow, so leave it alone.
 2. Move the `CHANGELOG.md` entry from "unreleased" to the version.
 3. Commit on a branch and merge it through a PR. Once it has merged, tag
    the merge commit on `main` and push the tag:
