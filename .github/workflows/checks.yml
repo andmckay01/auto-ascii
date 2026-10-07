@@ -126,25 +126,55 @@ jobs:
           python3 --version
           ffmpeg -version | head -1
 
+      # Log wakeup delays in spawned processes and threads, under both policies,
+      # so a runner scheduling regression can be distinguished from test failures.
+      - name: macOS wakeup timing
+        if: runner.os == 'macOS'
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          import sys
+          probe = '''
+          import statistics, threading, time
+          def measure():
+              for delay in (0.01, 0.05):
+                  samples = []
+                  for _ in range(20):
+                      start = time.monotonic()
+                      time.sleep(delay)
+                      samples.append(time.monotonic() - start)
+                  samples.sort()
+                  print(f"{threading.current_thread().name} sleep={delay:.3f}s median={statistics.median(samples):.4f}s p95={samples[18]:.4f}s max={max(samples):.4f}s", flush=True)
+          measure()
+          worker = threading.Thread(target=measure)
+          worker.start()
+          worker.join()
+          '''
+          for label, prefix in (("default", []), ("application", ["/usr/sbin/taskpolicy", "-a"])):
+              print(label, flush=True)
+              subprocess.run(prefix + [sys.executable, "-c", probe], check=True)
+          PY
+
       # The stream tests play real-time media against stall thresholds and
       # flake when they compete for the runner's CPUs, so all tests run serially.
       # Release mode keeps extraction ahead of the real-time playback clock.
+      # macOS uses an application resource policy for inherited test subprocesses.
       # --no-fail-fast keeps going past a failing test target, so one run
       # lists every failure.
       - name: Test
         if: runner.os != 'Windows'
-        run: cargo test --workspace --release --locked --no-fail-fast -- --test-threads=1 --skip 'stream::'
+        run: bash scripts/ci-test.sh --workspace --release --locked --no-fail-fast -- --test-threads=1 --skip 'stream::'
 
       # Release mode omits four factory tests gated by debug_assertions.
       - name: Test factory debug preconditions
         if: ${{ !cancelled() && runner.os != 'Windows' }}
-        run: cargo test --locked -p auto-ascii-factory --lib -- --test-threads=1
+        run: bash scripts/ci-test.sh --locked -p auto-ascii-factory --lib -- --test-threads=1
 
       # Runs even when the step above fails, so the macOS leg still exercises
       # the stream tests.
       - name: Test stream (serial)
         if: ${{ !cancelled() && runner.os != 'Windows' }}
-        run: cargo test --release --locked -p auto-ascii --bin auto-ascii 'stream::' -- --test-threads=1
+        run: bash scripts/ci-test.sh --release --locked -p auto-ascii --bin auto-ascii 'stream::' -- --test-threads=1
 
       # The CLI, term and lint suites spawn sh and python3, so Windows covers
       # the pure crates only.
