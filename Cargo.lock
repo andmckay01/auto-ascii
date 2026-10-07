@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ab_glyph",
  "auto-ascii-core",
@@ -147,14 +147,14 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "auto-ascii-eval"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "auto-ascii-core",
  "auto-ascii-format",
@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii-factory"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "auto-ascii-core",
  "auto-ascii-eval",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii-format"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ciborium",
  "crc32fast",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii-lint"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "ra-ap-rustc_lexer",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "auto-ascii-term"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "auto-ascii-core",
  "auto-ascii-eval",
