@@ -291,8 +291,9 @@ pub struct TerminalArgs {
     #[arg(
         long,
         hide = true,
-        help = "Keep the terminal's own default background instead of setting it to black for \
-                the session (OSC 11, reset with OSC 111 on exit)"
+        help = "Keep the terminal's own background in the window margins instead of setting it \
+                to black for the session (OSC 11, reset with OSC 111 on exit). The picture paints \
+                its own black on truecolor and 256-color either way"
     )]
     pub no_backdrop: bool,
     #[arg(

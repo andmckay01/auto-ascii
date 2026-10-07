@@ -178,7 +178,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   `SHADES_256` (grays 8-148 and cube levels 0/95/135) that passes the cap against the
   quantized glyph color and is `in_hue_family` with it (gray, or within 30° of its hue; any
   capped entry under a near-neutral glyph, OKLab chroma below 0.03).
-  16-color and mono paint no shade. Unshaded cells are flagged `attrs::DEFAULT_BG`, so the painter emits SGR 49 (the
+  16-color and mono paint no shade. Unshaded cells are flagged `attrs::DEFAULT_BG`: on a terminal
+  at truecolor and 256-color the painter sends them explicit black (flow 7), elsewhere SGR 49 (the
   terminal's own background); pads, gaps and everything else the player draws while `ascii` is
   active follow that rule (flow 10). Glyphs use an 18-step ramp ordered by JetBrains Mono
   coverage, with `@` from held tone 225. Glyph color and shade follow current tone
@@ -187,8 +188,9 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   the glyph follows a smoothed tone: a steady change settles within 41 frames past
   `idx_hyst_q8 / 8`, or within 74 when it lies at least 4 units inside another ramp step;
   letters' floor applies (blank below `BLACK_FLOOR` 32, a lit cell held down to `FLOOR_HOLD`
-  16, on every tier), and floor crossings take at most four. The half, edge and orientation gates retain hysteresis. The player's black
-  backdrop (flow 7) puts the unshaded cells on black in any terminal theme.
+  16, on every tier), and floor crossings take at most four. The half, edge and orientation gates retain hysteresis.
+  The explicit black keeps unshaded cells on black in any terminal theme, whether or not the
+  terminal applies the black backdrop; 16-color's SGR 49 is black only under the backdrop.
 - **User:** `/` cycles styles while playing (`pixels` → `letters` → `ascii`), `--style
   pixels|letters|ascii` picks one at startup, and `s` saves it for this video (flow 9).
 - **Code:** `crates/auto-ascii-core/src/style/mod.rs` `GlyphStyle` (trait: `NAME`, `cell`),
@@ -197,7 +199,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   `crates/auto-ascii-core/src/style/letters.rs` `Letters`,
   `crates/auto-ascii-core/src/style/ascii.rs` `Ascii`. `GlyphStyle::PAD` / `Style::pad` is the
   letterbox and gap cell. `crates/auto-ascii-term/src/render.rs` `emit_cell` turns
-  `attrs::DEFAULT_BG` into SGR 49. The frame loop is
+  `attrs::DEFAULT_BG` into SGR 49, or on truecolor and 256-color into the painter's solid
+  background (`FramePainter::set_solid_bg`, black under `AnsiBackend`). The frame loop is
   `crates/auto-ascii-core/src/compose.rs` `compose_frame` / `compose_frame_masked` over
   `FramePlanes`. The pixels layer contract is `compose_cell`: base ramp, then the edge layer
   (orientation bins in `crates/auto-ascii-core/src/orient.rs`), deep-shadow clamp, highlight and
@@ -216,12 +219,15 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     only in UI overlay cells (HUD text), which use the same big text as pixels/letters. The
     boundary is `pipeline::UiRows`: every overlay painter returns the rows it drew, and
     `Player::ui_rows` / `ClipDeck::ui_rows` report the last frame's. Every cell outside them
-    is picture: on any tier or palette it obeys `backing_within_cap` on the colors actually
-    sent, reaches `SHADE_FLOOR`, and on 256-color is one of `SHADES_256` in the glyph's hue
-    family; 16-color and mono picture cells carry no background SGR, and letterbox pads and
-    gap frames (`Style::pad`), the enlarge card and every resize in between keep SGR 49.
-    `crates/auto-ascii/tests/styles.rs` replays the real escape stream through the deck, with
-    overlays off and on, from 1x1 to 1000x300, tracking each printed cell's row against
+    is picture: on any tier or palette it obeys `backing_within_cap` on the colors
+    `SimBackend` sends, reaches `SHADE_FLOOR`, and on 256-color is one of `SHADES_256` in the
+    glyph's hue family; 16-color and mono picture cells carry no background SGR, and letterbox
+    pads and gap frames (`Style::pad`), the enlarge card and every resize in between keep SGR 49
+    there. On truecolor and 256-color `AnsiBackend` sends every `attrs::DEFAULT_BG` cell,
+    unshaded picture cells included, as explicit black instead (flow 7): black, not a shade, so
+    its `48;5;16` is outside `SHADES_256`.
+    `crates/auto-ascii/tests/styles.rs` replays the `SimBackend` escape stream through the deck,
+    with overlays off and on, from 1x1 to 1000x300, tracking each printed cell's row against
     `ClipDeck::ui_rows`, and checks that ascii's UI rows equal pixels' and letters' cell for
     cell; `style_props.rs` checks `cell_within_cap` on random planes.
   - Cells without `attrs::DEFAULT_BG` paint byte for byte as before, so `pixels` and `letters`
@@ -270,7 +276,11 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   player's session also sets a black backdrop: `AnsiBackend::with_backdrop` writes `BACKDROP_SET`
   (OSC 11) after the alt-screen enter and `restore_now` writes `BACKDROP_RESET` (OSC 111, back to
   the configured background) before `RESTORE_SEQ` on the same paths. `--no-backdrop` /
-  `PlayerBuilder::no_backdrop` turns it off; the Mono tier never sets it.
+  `PlayerBuilder::no_backdrop` turns it off; the Mono tier never sets it. Whatever the flag,
+  `with_backdrop` (and `AnsiBackend::new`) also gives its painter a solid black background
+  (`FramePainter::set_solid_bg`), so `emit_cell` paints `attrs::DEFAULT_BG` cells as
+  `48;2;0;0;0` on truecolor and `48;5;16` (the cube's black, not the theme's ANSI 0) on 256-color
+  instead of SGR 49.
 - **Invariants:**
   - Quantize before diff, so cells that quantize equal cost zero bytes.
   - Repaint mode `full` (default) invalidates every frame. `diff` rewrites only damaged cells.
@@ -279,8 +289,13 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   - crossterm is used for raw mode, alt screen and events only, never per-cell output. The
     player links no video codecs and no rayon.
   - The backdrop is session-wide and never part of a frame: `SimBackend` and `--sim-dump`
-    streams are the same with or without it, and pixels and letters paint every background
-    themselves, so only SGR 49 cells (`ascii`'s unshaded ones) change on screen. It is reset exactly once
+    streams are the same with or without it, and keep SGR 49 (`SimBackend` sets no solid
+    background). On a terminal the grid paints its own black: pixels and letters paint every
+    background themselves, and on truecolor and 256-color the `attrs::DEFAULT_BG` cells (`ascii`'s
+    unshaded ones and pads) are explicit black, so the picture is the same whether or not the
+    terminal applies OSC 11 (cmux, tmux and editor panes may not) and the backdrop only colors the
+    window margins around the grid. 16-color keeps SGR 49, because SGR 40 is a theme color, so
+    there the backdrop is still what puts those cells on black. It is reset exactly once
     (`crates/auto-ascii-term/tests/pty_restore.rs`, SIGHUP included). SIGKILL, `abort` and
     segfaults run no code, so they leave it set (`printf '\e]111\e\\'` resets it).
   - Never on the Mono tier: Mono paints no foreground, so the terminal's default (black on a light
@@ -688,8 +703,9 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
     `AUDIO_RING_SECS` of PCM. Full queues block the pipes and so stop network reads. `--sim`
     keeps no presented bytes.
   - Loader progress is real and monotonic: `percent` only reads stage flags and buffer fills.
-    Under `ascii` the loader is printable ASCII on the default background, brightening through
-    the fg colour and a `:-=+*#%@` density ramp.
+    Under `ascii` the loader is printable ASCII on `attrs::DEFAULT_BG` cells (explicit black on
+    truecolor and 256-color, flow 7; the terminal's own background on 16-color and mono),
+    brightening through the fg colour and a `:-=+*#%@` density ramp.
   - Build output is unchanged: `LiveExtractor` reuses `FeatureExtractor` verbatim, and the
     ffmpeg helpers (`missing_tool`, `rawvideo_filter`) produce the same arguments as before.
 

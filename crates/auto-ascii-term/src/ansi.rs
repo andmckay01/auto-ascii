@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{Event as CtEvent, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::{cursor, terminal};
-use auto_ascii_core::{Cell, Grid};
+use auto_ascii_core::{Cell, Grid, Rgb};
 
 use crate::backend::Backend;
 use crate::caps::{Caps, ColorTier, FrameStats};
@@ -142,10 +142,13 @@ impl AnsiBackend {
             caps.cell_px = query_cell_px(fd);
         }
 
+        let mut painter = FramePainter::new(cols, rows);
+        painter.set_solid_bg(Some(Rgb::BLACK));
+
         Ok(AnsiBackend {
             caps,
             events: EventQueue::new(),
-            painter: FramePainter::new(cols, rows),
+            painter,
             straggler: StragglerFilter::new(probe::volley_stragglers_possible(), Instant::now()),
             active: true,
         })
@@ -185,10 +188,13 @@ impl AnsiBackend {
         let mut caps = caps;
         caps.cells = (cols, rows);
 
+        let mut painter = FramePainter::new(cols, rows);
+        painter.set_solid_bg(Some(Rgb::BLACK));
+
         Ok(AnsiBackend {
             caps,
             events: EventQueue::new(),
-            painter: FramePainter::new(cols, rows),
+            painter,
             straggler: StragglerFilter::new(probe::volley_stragglers_possible(), Instant::now()),
             active: true,
         })
@@ -443,8 +449,6 @@ mod tests {
 
     #[test]
     fn dropped_frame_invalidates_diff_baseline() {
-        use auto_ascii_core::Rgb;
-
         unsafe fn set_nonblock(fd: libc::c_int) {
             let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
             assert!(flags >= 0);
