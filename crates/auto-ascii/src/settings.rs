@@ -50,6 +50,8 @@ impl VideoSettings {
         for dial in Dial::ALL {
             dial.set_param(&mut compose, dial.raw_param_value(&self.compose));
         }
+        compose.lift_color = self.compose.lift_color;
+        compose.dither = self.compose.dither;
         VideoSettings { compose, style: self.style }
     }
 
@@ -63,6 +65,8 @@ impl VideoSettings {
         for dial in Dial::ALL {
             let _ = writeln!(out, "{} = {}", dial.param_key(), dial.raw_param_value(&self.compose));
         }
+        let _ = writeln!(out, "lift_color = {}", self.compose.lift_color);
+        let _ = writeln!(out, "dither = {}", self.compose.dither);
         out
     }
 
@@ -81,6 +85,17 @@ impl VideoSettings {
             if key == "style" {
                 let name = val.trim_matches(['"', '\'']);
                 out.style = Style::from_name(name).unwrap_or_default();
+            } else if key == "lift_color" || key == "dither" {
+                let v: u8 = val.parse()
+                    .map_err(|_| err(format!("{key} must be an integer 0..=255, got {val}")))?;
+                if key == "dither" {
+                    if v > 2 {
+                        return Err(err("dither must be in 0..=2".into()));
+                    }
+                    out.compose.dither = v;
+                } else {
+                    out.compose.lift_color = v;
+                }
             } else if let Some(dial) = Dial::ALL.into_iter().find(|d| d.param_key() == key) {
                 let v: u8 = val
                     .parse()
@@ -146,6 +161,17 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn shadow_options_round_trip_and_validate() {
+        let s = VideoSettings::parse("shadow_lift = 160\nlift_color = 255\ndither = 2\n").unwrap();
+        assert_eq!((s.compose.shadow_lift, s.compose.lift_color, s.compose.dither), (160, 255, 2));
+        assert_eq!(s.persisted(), s);
+        assert_eq!(VideoSettings::parse(&s.to_toml()), Ok(s));
+        for bad in ["lift_color = 256", "dither = 3", "dither = -1", "dither = noise"] {
+            assert!(VideoSettings::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

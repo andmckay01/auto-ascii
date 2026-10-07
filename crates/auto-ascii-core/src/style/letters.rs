@@ -267,7 +267,7 @@ mod tests {
     }
 
     fn inp(top: u8, bottom: u8) -> CellInputs {
-        CellInputs { luma_top: top, luma_bottom: bottom, e: 0, ex: 128, ey: 128, h: 0, chroma: None }
+        CellInputs { luma_top: top, luma_bottom: bottom, e: 0, ex: 128, ey: 128, h: 0, chroma: None, dither: 0 }
     }
 
     fn glyph(i: &CellInputs, set: &PaletteSet, st: &mut HysteresisState) -> char {
