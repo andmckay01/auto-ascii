@@ -13,6 +13,11 @@
   `write_ns`, `dropped`, tab-separated) and a final `# end …` summary line, to
   measure skipped frames and terminal back-pressure on a real tty. Unset, it
   costs nothing. See `docs/TERMINAL-CHECKLIST.md`.
+- **Release archives and Homebrew bottles carry build provenance.** Each gets
+  a signed GitHub attestation from the release workflow; check a download with
+  `gh attestation verify <file> --repo andmckay01/auto-ascii --signer-workflow
+  andmckay01/auto-ascii/.github/workflows/release.yml`. The npm packages
+  publish with npm provenance too.
 
 ### Changed
 
@@ -27,6 +32,10 @@
   half the Terminal.app CPU of truecolor at the same grid (200×55: 43 against
   143 KB/frame, 80% against 146% of a core), and a 240×70 grid that skipped 5.6%
   of frames at truecolor skips none at 256 with `--repaint diff`.
+- **`install.sh` checks the archive's digest itself.** It hashes the
+  downloaded archive and compares the result to the published digest, so a
+  malformed `.sha256` fails closed on every platform (macOS's `sha256sum -c`
+  accepted one).
 - **`ascii` stays on black where the terminal ignores the backdrop.**
   Multiplexers and embedded terminals (cmux, tmux, editor panes) can ignore
   OSC 11, and there the cells `ascii` leaves unshaded, and its letterbox pads,

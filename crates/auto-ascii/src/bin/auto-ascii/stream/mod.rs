@@ -1325,7 +1325,7 @@ mod tests {
         let throttle = local.dir().join("throttle.py");
         std::fs::write(
             &throttle,
-            "import sys,time\nn=int(sys.argv[1]);i=0\ninp=sys.stdin.buffer;out=sys.stdout.buffer\nwhile True:\n    b=inp.read(n)\n    if not b: break\n    out.write(b);out.flush();i+=1\n    if i==60: time.sleep(3)\n    elif i>60: time.sleep(0.05)\n",
+            "import sys,time\nn=int(sys.argv[1]);i=0;due=0\ninp=sys.stdin.buffer;out=sys.stdout.buffer\nwhile True:\n    b=inp.read(n)\n    if not b: break\n    out.write(b);out.flush();i+=1\n    if i==60:\n        time.sleep(3);due=time.monotonic()\n    elif i>60:\n        due+=0.05;time.sleep(max(0,due-time.monotonic()))\n",
         )
         .unwrap();
         let ffmpeg = local.script(

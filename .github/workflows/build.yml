@@ -1,0 +1,144 @@
+name: build
+
+# The six-target native build, shared by ci.yml (every PR, push to main and
+# weekly, so packaging breaks before a tag does) and release.yml (the
+# binaries that ship). docs/RELEASING.md lists the targets.
+on:
+  workflow_call:
+    inputs:
+      # Tag builds run cold, so a poisoned or stale cache can never reach a
+      # shipped binary.
+      cache:
+        type: boolean
+        default: true
+      retention-days:
+        type: number
+        default: 7
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
+jobs:
+  # One native build per target, smoke-tested on its own runner, packaged as
+  # archive-<target> (for the release) and bin-<target> (for npm).
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-15, archive: tar.gz }
+          - { target: x86_64-apple-darwin, os: macos-15-intel, archive: tar.gz }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, archive: tar.gz }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, archive: tar.gz }
+          - { target: x86_64-pc-windows-msvc, os: windows-2022, archive: zip }
+          - { target: aarch64-pc-windows-msvc, os: windows-11-arm, archive: zip }
+    env:
+      TARGET: ${{ matrix.target }}
+      ARCHIVE: ${{ matrix.archive }}
+      EXE: ${{ contains(matrix.target, '-windows-') && 'auto-ascii.exe' || 'auto-ascii' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml names the toolchain and its components; rustup
+      # itself is left as the runner image ships it.
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+          rustup target add "$TARGET"
+
+      # The Cargo workspace version, which the archives are named for and the
+      # smoke test expects; on a tag, release.yml's version job has already
+      # checked the tag against it. Every runner image ships jq.
+      - name: Read version
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="auto-ascii") | .version')
+          [ -n "$version" ] || { echo "::error::no auto-ascii package in cargo metadata"; exit 1; }
+          echo "version $version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      # PRs restore main's cache and never save their own: the repository's
+      # cache quota is shared by every job.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ inputs.cache }}
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # alsa-sys (cpal) links libasound via pkg-config.
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+
+      # ring (via ureq's rustls) compiles its C with clang on arm64 Windows.
+      - name: Check for clang
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        run: |
+          set -euo pipefail
+          command -v clang >/dev/null || { echo "::error::clang is not on PATH; ring needs it to build for $TARGET"; exit 1; }
+          clang --version
+
+      # A static CRT on MSVC, so the binary runs without the VC++ runtime.
+      - name: Build
+        env:
+          RUSTFLAGS: ${{ endsWith(matrix.target, '-pc-windows-msvc') && '-C target-feature=+crt-static' || '' }}
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p auto-ascii --target "$TARGET"
+
+      # package-archive.sh strips the binary in place, so npm gets it stripped too.
+      - name: Package
+        run: |
+          set -euo pipefail
+          bash scripts/package-archive.sh "$TARGET" "$VERSION" "$ARCHIVE"
+          mkdir -p "bin/$TARGET"
+          cp "target/$TARGET/release/$EXE" "bin/$TARGET/"
+
+      # Runs the stripped binary, the bits that ship.
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          out=$("bin/$TARGET/$EXE" --version)
+          echo "$out"
+          case "$out" in
+            *"$VERSION"*) ;;
+            *) echo "::error::$EXE --version printed '$out', expected it to contain $VERSION"; exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: archive-${{ matrix.target }}
+          path: |
+            dist/auto-ascii-${{ matrix.target }}.${{ matrix.archive }}
+            dist/auto-ascii-${{ matrix.target }}.${{ matrix.archive }}.sha256
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention-days }}
+
+      # Uploading the bin/ directory keeps the <target>/ level, so downloading
+      # every bin-* artifact into one directory rebuilds <dir>/<target>/.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bin-${{ matrix.target }}
+          path: bin/
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention-days }}

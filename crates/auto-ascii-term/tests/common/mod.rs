@@ -165,6 +165,11 @@ pub fn write_master(master: RawFd, bytes: &[u8]) {
     assert_eq!(n as usize, bytes.len(), "failed to type into the pty");
 }
 
+pub fn write_master_at(master: RawFd, deadline: Instant, bytes: &[u8]) {
+    std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+    write_master(master, bytes);
+}
+
 pub fn session_events(out: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(out)
         .lines()

@@ -15,8 +15,9 @@ cargo run -p auto-ascii -- <args>         # run it without installing
 cargo test --workspace                    # or: make test
 ```
 
-It builds with a recent stable Rust toolchain on macOS, Linux and Windows;
-Linux also needs `libasound2-dev` and `pkg-config` for sound.
+It builds on macOS, Linux and Windows with the Rust toolchain pinned in
+`rust-toolchain.toml`, which rustup installs on first use; Linux also needs
+`libasound2-dev` and `pkg-config` for sound.
 `cargo install --path crates/auto-ascii` installs your build. Playback needs
 only crossterm (plus POSIX termios on macOS and Linux); `auto-ascii import`
 and `add` need `ffmpeg` and `ffprobe`, and `add <link>` and `stream` `yt-dlp`
@@ -122,10 +123,29 @@ The `comment rule` section of `scripts/eval.sh`, `make comments`, and
 `make lint` all fail on violations or stale exemptions. Workspace tests
 cover language fixtures and use isolated repositories for CLI regressions
 and the tooling's own compliance. The eval gate scans the live worktree.
-CI (`.github/workflows/ci.yml`) runs clippy and the tests on pull requests
-and pushes to `main`, and `release.yml` runs on tags; neither runs
-`check-comments`, and there is no pre-commit hook, so enforcement is in the
-eval gate.
+CI (`.github/workflows/ci.yml`) runs on every pull request, every push to
+`main` and weekly, on the toolchain pinned in `rust-toolchain.toml`:
+clippy, the library build without default features, `check-comments`, the
+tests on Linux, macOS and Windows (Windows runs the core, format and eval
+crates only; Linux and macOS run optimized tests serially so real-time
+playback and PTY tests do not compete for runner CPUs, with a separate
+debug factory unit pass preserving its precondition tests; the macOS test
+jobs use macOS 26 on ARM and macOS 15 on Intel), cargo-deny, a
+crates.io publish dry run, actionlint, zizmor and shellcheck, the npm launcher smoke test, both installers, the
+six-target release build and a rehearsal of the release assembly. The
+weekly run adds the live download tests. `release.yml` runs the same checks
+on a tag before it publishes anything, except the installers, which its
+`smoke` job tests against the new release once it is published. There is no
+pre-commit hook, so locally the eval gate and `make lint` are where the
+comment rule runs.
+
+The disposable macOS test guests disable timer coalescing for the test
+steps and restore their original setting afterward. Hosted measurements
+showed requested 50 ms sleeps taking roughly 100–125 ms with coalescing,
+versus about 50.1 ms without it. This keeps the existing real-time playback
+and PTY assertions meaningful; application timer and power policies stay
+under the user's control. Timed test producers use absolute deadlines so
+individual sleep overruns do not accumulate into an unintended stall.
 
 ## Rules that keep the output deterministic
 
