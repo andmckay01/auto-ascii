@@ -40,7 +40,7 @@ jobs:
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       # Full history, so the tagged commit can be checked against main.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -133,11 +133,11 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       PRERELEASE: ${{ needs.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: archive-*
           path: dist
@@ -154,7 +154,7 @@ jobs:
           ls -l dist
           cat dist/SHA256SUMS
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: homebrew-bottle-sha256
           path: dist/*.bottle.tar.gz.sha256
@@ -217,7 +217,7 @@ jobs:
       #   --signer-workflow andmckay01/auto-ascii/.github/workflows/release.yml
       - name: Attest build provenance
         if: steps.publish.outputs.created == 'true'
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-checksums: dist/SHA256SUMS
 
@@ -235,7 +235,7 @@ jobs:
       id-token: write # exchanged for a short-lived crates.io publish token
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -279,22 +279,22 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       PRERELEASE: ${{ needs.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: bin-*
           path: artifacts
           merge-multiple: true
 
-      # setup-node v4 caches only when `cache:` is set, and it is not; zizmor
-      # assumes the package-manager cache that v5 turns on by default.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: # zizmor: ignore[cache-poisoning]
+      # Publishing never uses a package-manager cache, including auto-detection.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       # Trusted publishing needs npm 11.5.1 or later. Pinned exactly, to a
       # release at least a week old: the same cooldown dependabot.yml gives
@@ -355,19 +355,19 @@ jobs:
           set -euo pipefail
           echo "::warning::HOMEBREW_TAP_TOKEN is not set; skipping the Homebrew tap update for $VERSION"
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: env.HAS_TAP_TOKEN == 'true'
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: env.HAS_TAP_TOKEN == 'true'
         with:
           pattern: archive-*
           path: dist
           merge-multiple: true
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: env.HAS_TAP_TOKEN == 'true'
         with:
           name: homebrew-bottle-sha256
@@ -382,7 +382,7 @@ jobs:
 
       # The token clones the tap and is not kept in .git/config; the push
       # below passes it again for that one command.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: env.HAS_TAP_TOKEN == 'true'
         with:
           repository: andmckay01/homebrew-tap
