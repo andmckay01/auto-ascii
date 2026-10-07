@@ -74,11 +74,6 @@ jobs:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
-    # The macOS leg is informational until the timing-bound tests measure
-    # their real gaps: the slower macOS runners miss wall-clock windows that
-    # Linux, which gates the same tests, meets. The durable fix belongs in
-    # the tests.
-    continue-on-error: ${{ matrix.os == 'macos-15' }}
     strategy:
       fail-fast: false
       matrix:
@@ -132,18 +127,19 @@ jobs:
           ffmpeg -version | head -1
 
       # The stream tests play real-time media against stall thresholds and
-      # flake when they compete for the runner's CPUs, so they run serially.
+      # flake when they compete for the runner's CPUs, so all tests run serially.
+      # Release mode keeps extraction ahead of the real-time playback clock.
       # --no-fail-fast keeps going past a failing test target, so one run
       # lists every failure.
       - name: Test
         if: runner.os != 'Windows'
-        run: cargo test --workspace --locked --no-fail-fast -- --skip 'stream::'
+        run: cargo test --workspace --release --locked --no-fail-fast -- --test-threads=1 --skip 'stream::'
 
       # Runs even when the step above fails, so the macOS leg still exercises
       # the stream tests.
       - name: Test stream (serial)
         if: ${{ !cancelled() && runner.os != 'Windows' }}
-        run: cargo test --locked -p auto-ascii --bin auto-ascii 'stream::' -- --test-threads=1
+        run: cargo test --release --locked -p auto-ascii --bin auto-ascii 'stream::' -- --test-threads=1
 
       # The CLI, term and lint suites spawn sh and python3, so Windows covers
       # the pure crates only.

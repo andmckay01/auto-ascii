@@ -127,10 +127,9 @@ CI (`.github/workflows/ci.yml`) runs on every pull request, every push to
 `main` and weekly, on the toolchain pinned in `rust-toolchain.toml`:
 clippy, the library build without default features, `check-comments`, the
 tests on Linux, macOS and Windows (Windows runs the core, format and eval
-crates only; the macOS leg is informational for now, since timing-bound tests
-miss their windows on the slower macOS runners while Linux gates the same
-tests), cargo-deny, a crates.io publish dry run, actionlint, zizmor
-and shellcheck, the npm launcher smoke test, both installers, the
+crates only; Linux and macOS run optimized tests serially so real-time
+playback and PTY tests do not compete for runner CPUs), cargo-deny, a
+crates.io publish dry run, actionlint, zizmor and shellcheck, the npm launcher smoke test, both installers, the
 six-target release build and a rehearsal of the release assembly. The
 weekly run adds the live download tests. `release.yml` runs the same checks
 on a tag before it publishes anything, except the installers, which its
