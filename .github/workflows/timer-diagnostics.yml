@@ -1,0 +1,55 @@
+name: macOS timer diagnostics
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  timers:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - name: Compare wait APIs and thread QoS
+        run: |
+          python3 - <<'PY'
+          import ctypes, select, statistics, threading, time
+          lib = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+          class Timebase(ctypes.Structure):
+              _fields_ = [('numer', ctypes.c_uint32), ('denom', ctypes.c_uint32)]
+          lib.mach_timebase_info.argtypes = [ctypes.POINTER(Timebase)]
+          lib.mach_timebase_info.restype = ctypes.c_int
+          lib.mach_absolute_time.restype = ctypes.c_uint64
+          lib.mach_wait_until.argtypes = [ctypes.c_uint64]
+          lib.mach_wait_until.restype = ctypes.c_int
+          lib.pthread_set_qos_class_self_np.argtypes = [ctypes.c_uint, ctypes.c_int]
+          lib.pthread_set_qos_class_self_np.restype = ctypes.c_int
+          base = Timebase()
+          assert lib.mach_timebase_info(ctypes.byref(base)) == 0 and base.numer and base.denom
+          def mach_sleep(delay):
+              ns = round(delay * 1e9)
+              ticks = (ns * base.denom + base.numer - 1) // base.numer
+              deadline = lib.mach_absolute_time() + ticks
+              rc = lib.mach_wait_until(deadline)
+              assert rc == 0, rc
+          def probe(interactive):
+              if interactive:
+                  rc = lib.pthread_set_qos_class_self_np(0x21, 0)
+                  assert rc == 0, rc
+              label = threading.current_thread().name + (' interactive' if interactive else ' inherited')
+              for name, wait in [('sleep', time.sleep), ('select', lambda d: select.select([], [], [], d)), ('mach', mach_sleep)]:
+                  for delay in (0.01, 0.05):
+                      samples = []
+                      for _ in range(10):
+                          start = time.monotonic()
+                          wait(delay)
+                          samples.append(time.monotonic() - start)
+                      samples.sort()
+                      print(f'{label} {name} requested={delay:.3f}s median={statistics.median(samples):.4f}s max={max(samples):.4f}s', flush=True)
+          for interactive in (False, True):
+              probe(interactive)
+              worker = threading.Thread(target=probe, args=(interactive,))
+              worker.start()
+              worker.join()
+          PY
