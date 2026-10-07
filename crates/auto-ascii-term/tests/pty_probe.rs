@@ -2,11 +2,11 @@
 
 mod common;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::{
     field, find, probe_done_line, session_events, spawn_harness, wait_child_success,
-    wait_until_contains, write_master,
+    wait_until_contains, write_master, write_master_at,
 };
 
 #[test]
@@ -54,12 +54,13 @@ fn probe_grace_drain_consumes_replies_dribbling_past_deadline() {
     wait_until_contains(pty.master, &mut out, b"\x1b[c");
 
     write_master(pty.master, b"\x1bP>|kitty(0.32.2)\x1b\\");
+    let mut deadline = Instant::now();
     for b in b"\x1b[?2026;2$y" {
-        std::thread::sleep(Duration::from_millis(40));
-        write_master(pty.master, &[*b]);
+        deadline += Duration::from_millis(40);
+        write_master_at(pty.master, deadline, &[*b]);
     }
-    std::thread::sleep(Duration::from_millis(40));
-    write_master(pty.master, b"\x1bP1+r524742=38\x1b\\\x1b[6;20;10t\x1b[?62;c");
+    deadline += Duration::from_millis(40);
+    write_master_at(pty.master, deadline, b"\x1bP1+r524742=38\x1b\\\x1b[6;20;10t\x1b[?62;c");
 
     wait_until_contains(pty.master, &mut out, b"PROBE-DONE");
     wait_child_success(&mut child);
@@ -114,13 +115,11 @@ fn split_esc_p_straggler_burst_never_quits_or_leaks_keys() {
     wait_until_contains(pty.master, &mut out, b"PROBE-DONE");
     wait_until_contains(pty.master, &mut out, b"SESSION-READY");
 
+    let start = Instant::now();
     write_master(pty.master, b"\x1b");
-    std::thread::sleep(Duration::from_millis(50));
-    write_master(pty.master, b"P>|kitty(0.32.2)");
-    std::thread::sleep(Duration::from_millis(50));
-    write_master(pty.master, b"\x1b");
-    std::thread::sleep(Duration::from_millis(50));
-    write_master(pty.master, b"\\");
+    write_master_at(pty.master, start + Duration::from_millis(50), b"P>|kitty(0.32.2)");
+    write_master_at(pty.master, start + Duration::from_millis(100), b"\x1b");
+    write_master_at(pty.master, start + Duration::from_millis(150), b"\\");
 
     std::thread::sleep(Duration::from_millis(450));
     write_master(pty.master, b"x");
