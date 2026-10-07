@@ -370,7 +370,9 @@ pub struct Player<'a> {
     cb_dst: Vec<u8>,
     dial_overlay: Option<(&'static str, u8, u8)>,
     levels_lut: [u8; 256],
-    lut_key: Option<(Option<u32>, u8)>,
+    chroma_gain_q8: [u16; 256],
+    chroma_gain_on: bool,
+    lut_key: Option<(Option<u32>, u8, u8)>,
     loaded: Option<u32>,
     grid: Grid<Cell>,
     layer_mask: Option<Grid<u8>>,
@@ -512,6 +514,8 @@ impl<'a> Player<'a> {
             cb_dst: Vec::new(),
             dial_overlay: None,
             levels_lut,
+            chroma_gain_q8: [256; 256],
+            chroma_gain_on: false,
             lut_key: None,
             loaded: None,
             grid: Grid::new(0, 0),
@@ -704,23 +708,23 @@ impl<'a> Player<'a> {
             return;
         };
         let shot = reader.shot_for_frame(frame_idx).map(|s| s.first_frame);
-        let key = (shot, self.compose_params.shadow_lift);
+        let key = (shot, self.compose_params.shadow_lift, self.compose_params.lift_color);
         if self.lut_key != Some(key) {
-            build_levels_lut_lifted(
-                &mut self.levels_lut,
-                reader.norm_levels(frame_idx, plane_id::Y),
-                key.1,
-            );
+            let levels = reader.norm_levels(frame_idx, plane_id::Y);
+            build_levels_lut_lifted(&mut self.levels_lut, levels, key.1);
+            self.chroma_gain_on = build_chroma_gain_q8(&mut self.chroma_gain_q8, levels, key.1, key.2);
             self.lut_key = Some(key);
             self.state.reset();
         }
     }
 
     fn update_live_levels(&mut self) {
-        let key = (Some(self.live_shot), self.compose_params.shadow_lift);
+        let key = (Some(self.live_shot), self.compose_params.shadow_lift, self.compose_params.lift_color);
         let fresh = self.lut_key != Some(key);
         if fresh || self.live_lut_levels != self.live_levels {
             build_levels_lut_lifted(&mut self.levels_lut, self.live_levels, key.1);
+            self.chroma_gain_on =
+                build_chroma_gain_q8(&mut self.chroma_gain_q8, self.live_levels, key.1, key.2);
             self.live_lut_levels = self.live_levels;
             if fresh {
                 self.lut_key = Some(key);
@@ -852,6 +856,20 @@ impl<'a> Player<'a> {
                 cres.apply(&self.cr_src, &mut self.cr_dst);
                 cres.apply(&self.cg_src, &mut self.cg_dst);
                 cres.apply(&self.cb_src, &mut self.cb_dst);
+                if self.chroma_gain_on {
+                    let vc = self.vp.expect("checked above").cols as usize;
+                    for (i, ((r, g), b)) in
+                        self.cr_dst.iter_mut().zip(&mut self.cg_dst).zip(&mut self.cb_dst).enumerate()
+                    {
+                        let (row, col) = (i / vc, i % vc);
+                        let top = u16::from(self.luma2_dst[2 * row * vc + col]);
+                        let bot = u16::from(self.luma2_dst[(2 * row + 1) * vc + col]);
+                        let gain = u32::from(self.chroma_gain_q8[((top + bot + 1) >> 1) as usize]);
+                        for v in [r, g, b] {
+                            *v = ((u32::from(*v) * gain) >> 8).min(255) as u8;
+                        }
+                    }
+                }
             }
             self.stage.resample += t.elapsed().as_nanos() as u64;
 
@@ -1009,6 +1027,26 @@ fn apply_shadow_lift(lut: &mut [u8; 256], lift: u8) {
         let curved = (n * 255).isqrt();
         *out = (n + (curved - n) * lift / 255) as u8;
     }
+}
+
+fn build_chroma_gain_q8(
+    gain: &mut [u16; 256],
+    levels: Option<PlaneLevels>,
+    shadow_lift: u8,
+    lift_color: u8,
+) -> bool {
+    let (mut unlifted, mut lifted) = ([0u8; 256], [0u8; 256]);
+    build_levels_lut_lifted(&mut unlifted, levels, 0);
+    build_levels_lut_lifted(&mut lifted, levels, shadow_lift);
+    for (v, out) in gain.iter_mut().enumerate() {
+        *out = if shadow_lift == 0 || lift_color == 0 || unlifted[v] == 0 {
+            256
+        } else {
+            let full = (u32::from(lifted[v]) * 256 / u32::from(unlifted[v])).min(1024);
+            (256 + (full - 256) * u32::from(lift_color) / 255) as u16
+        };
+    }
+    gain.iter().any(|&g| g != 256)
 }
 
 pub fn unpack_rgb565(src: &[u8], r: &mut [u8], g: &mut [u8], b: &mut [u8]) {
@@ -1263,6 +1301,40 @@ mod tests {
         build_levels_lut_lifted(&mut full, None, 255);
         assert_eq!(full[64], 127, "full lift should take 64 to the sqrt curve");
         assert!(full[32] > 2 * 32, "full lift should more than double deep shadow");
+    }
+
+    #[test]
+    fn chroma_gain_follows_shadow_lift_only_when_asked() {
+        let mut gain = [0u16; 256];
+        for (lift, color) in [(0, 0), (0, 255), (160, 0)] {
+            assert!(!build_chroma_gain_q8(&mut gain, None, lift, color), "lift {lift} color {color}");
+            assert!(gain.iter().all(|&g| g == 256), "lift {lift} color {color}");
+        }
+        assert!(build_chroma_gain_q8(&mut gain, None, 160, 255));
+        assert!(gain[1..64].iter().any(|&g| g > 256), "dark tones gain colour");
+        assert!(gain.iter().all(|&g| g <= 1024), "capped at 4x");
+    }
+
+    #[test]
+    fn live_color_gain_refreshes_when_levels_change_within_a_shot() {
+        let spec = LiveSpec { w: 4, h: 4, aspect_num: 1, aspect_den: 1, fps: 30.0, frame_count: 3 };
+        let mut p = Player::live(&spec, 2.0, false, ColorDepth::True, GlyphTier::Ascii).unwrap();
+        p.set_compose_params(ComposeParams { shadow_lift: 160, lift_color: 255, ..ComposeParams::default() });
+        let frame = LiveFrame {
+            y: &[50; 16], e: &[0; 16], ex: &[128; 16], ey: &[128; 16], h: &[0; 16],
+            c: &[0; 8], levels: Some(PlaneLevels { p2: 0, p98: 255 }), shot_start: 0,
+        };
+        p.load_live(0, &frame).unwrap();
+        p.update_live_levels();
+        let first = p.chroma_gain_q8;
+        p.load_live(1, &LiveFrame { levels: Some(PlaneLevels { p2: 20, p98: 200 }), ..frame }).unwrap();
+        p.update_live_levels();
+        assert_ne!(p.chroma_gain_q8, first, "new normalization must refresh gain without a cut");
+        assert_eq!(p.chroma_gain_q8[20], 256, "normalized black must not be amplified");
+        p.set_compose_params(ComposeParams { shadow_lift: 160, ..ComposeParams::default() });
+        p.update_live_levels();
+        assert!(!p.chroma_gain_on);
+        assert!(p.chroma_gain_q8.iter().all(|&g| g == 256));
     }
 
     #[test]

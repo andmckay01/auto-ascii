@@ -3193,3 +3193,13 @@ unchanged. Foreground percentiles cannot see this (it changes ink, not
 colour); it was judged by the toggle gates (all pass, real asset 1.08×
 pixels), the settle tests and side-by-side crops for McKay under
 `compare/ascii-range/`. Goldens: shadow-band glyph rows re-blessed.
+
+## Optional shadow colour and dithering
+
+`ComposeParams` adds `lift_color: u8` (0–255) and `dither: u8` (0–2).
+`ComposeTable` exposes the same names and validates their ranges. Player
+sidecars parse and save both fields. `CellInputs::dither: u8` carries the
+coordinate threshold (0–15), selected during frame composition. ASCII uses
+the threshold's ramp table for both glyph choice and temporal convergence.
+Pipeline colour gain follows shot and live normalization changes and is
+applied after chroma resampling; stored RGB565 planes remain unchanged.

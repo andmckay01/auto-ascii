@@ -48,12 +48,12 @@ impl FontTable {
                 continue;
             }
             if line == "[[glyphs]]" {
-                flush(cur_ch.take(), cur_cov.take()).map_err(&err)?;
+                flush(cur_ch.take(), cur_cov.take()).map_err(err)?;
                 in_glyph = true;
                 continue;
             }
             if line.starts_with('[') {
-                flush(cur_ch.take(), cur_cov.take()).map_err(&err)?;
+                flush(cur_ch.take(), cur_cov.take()).map_err(err)?;
                 in_glyph = false;
                 continue;
             }
@@ -65,9 +65,9 @@ impl FontTable {
                 match key {
                     "ch" => {
                         if cur_ch.is_some() || cur_cov.is_some() {
-                            flush(cur_ch.take(), cur_cov.take()).map_err(&err)?;
+                            flush(cur_ch.take(), cur_cov.take()).map_err(err)?;
                         }
-                        cur_ch = Some(parse_char(val).map_err(&err)?);
+                        cur_ch = Some(parse_char(val).map_err(err)?);
                     }
                     "coverage" => {
                         cur_cov = Some(
@@ -79,8 +79,8 @@ impl FontTable {
                 }
             } else {
                 match key {
-                    "name" => name = Some(parse_string(val).map_err(&err)?),
-                    "missing" => missing = parse_char_array(val).map_err(&err)?,
+                    "name" => name = Some(parse_string(val).map_err(err)?),
+                    "missing" => missing = parse_char_array(val).map_err(err)?,
                     _ => {}
                 }
             }

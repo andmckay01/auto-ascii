@@ -4,6 +4,10 @@
 
 ### Added
 
+- Optional `lift_color` (0–255) and `dither` (0–2) compose settings: brighten
+  shadow chroma with a capped gain and choose stable Bayer or coordinate-hash
+  ASCII dithering. Both default to zero and round-trip through player sidecars.
+
 - **`AUTO_ASCII_FRAME_LOG=<path>`** makes the player append one row per
   presented frame (`frame_index`, `wall_ms`, `bytes`, `cells_damaged`,
   `write_ns`, `dropped`, tab-separated) and a final `# end …` summary line, to

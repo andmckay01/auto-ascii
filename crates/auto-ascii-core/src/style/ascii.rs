@@ -122,6 +122,8 @@ const LINEAR: [u16; 256] = [
 
 const STEP: [u8; 256] = step_table();
 
+const STEP_DITHER: [[u8; 256]; 16] = step_dither_table();
+
 const fn unit(n: usize) -> u32 {
     let span = (TONE_TOP - INK_FROM) as u32;
     let x = (n as u32).saturating_sub(INK_FROM as u32);
@@ -212,6 +214,32 @@ const fn step_table() -> [u8; 256] {
         }
         t[n] = i as u8;
         n += 1;
+    }
+    t
+}
+
+const fn step_dither_table() -> [[u8; 256]; 16] {
+    let mut t = [[0u8; 256]; 16];
+    let lo = ASCII_INK[1] as u32;
+    let mut d = 0;
+    while d < 16 {
+        let mut n = FLOOR_HOLD as usize;
+        while n < 256 {
+            let mut want = unit(n);
+            if want < lo {
+                want = lo;
+            }
+            let mut i = 1;
+            while i + 1 < ASCII_INK.len()
+                && 32 * ASCII_INK[i] as u32 + (ASCII_INK[i + 1] as u32 - ASCII_INK[i] as u32) * (2 * d as u32 + 1)
+                    <= 32 * want
+            {
+                i += 1;
+            }
+            t[d][n] = i as u8;
+            n += 1;
+        }
+        d += 1;
     }
     t
 }
@@ -321,7 +349,7 @@ fn jump_band(n: u8, from: u8, hyst_q8: u8, flags: &mut u8) -> u8 {
 }
 
 #[inline]
-fn held_tone(n: u8, prev: u8, hyst_q8: u8, s: &mut CellState) -> u8 {
+fn held_tone(n: u8, prev: u8, hyst_q8: u8, step: &[u8; 256], s: &mut CellState) -> u8 {
     let n = n.min(IDX_UNSET - 1);
     let from = if s.tone_candidate == IDX_UNSET { prev } else { s.tone_candidate };
     if prev == IDX_UNSET || n.abs_diff(prev) > jump_band(n, from, hyst_q8, &mut s.flags) {
@@ -336,12 +364,12 @@ fn held_tone(n: u8, prev: u8, hyst_q8: u8, s: &mut CellState) -> u8 {
     let inside = if down { smooth.saturating_add(CONVERGE_CLEAR) } else { smooth.saturating_sub(CONVERGE_CLEAR) };
     let (side, wait) = if floor_crossing {
         (if n < FLOOR_HOLD { SETTLE_DOWN } else { 0 }, (FLOOR_SETTLE_FRAMES - 1).min(hyst_q8 / 8))
-    } else if STEP[smooth as usize] == STEP[prev as usize] {
+    } else if step[smooth as usize] == step[prev as usize] {
         s.tone_age = 0;
         return prev;
     } else if smooth.abs_diff(prev) > hyst_q8 / 8 {
         (if down { SETTLE_DOWN } else { 0 }, (hyst_q8 / 4).min(SETTLE_MAX_FRAMES - 1))
-    } else if STEP[inside as usize] != STEP[prev as usize] {
+    } else if step[inside as usize] != step[prev as usize] {
         (SETTLE_SLOW | if down { SETTLE_DOWN } else { 0 }, (hyst_q8 / 2).min(CONVERGE_MAX_FRAMES - 1))
     } else {
         s.tone_age = 0;
@@ -385,9 +413,11 @@ impl GlyphStyle for Ascii {
         let lit = prev != IDX_UNSET && prev >= BLACK_FLOOR;
         let floor = if lit { FLOOR_HOLD } else { BLACK_FLOOR };
         let target = if color_tone < floor { 0 } else { color_tone };
-        let h = held_tone(target, prev, params.idx_hyst_q8, s);
+        let step: &[u8; 256] =
+            if params.dither == 0 { &STEP } else { &STEP_DITHER[(inp.dither & 15) as usize] };
+        let h = held_tone(target, prev, params.idx_hyst_q8, step, s);
         s.idx = h;
-        let i = STEP[h as usize] as usize;
+        let i = step[h as usize] as usize;
         let len = ASCII_RAMP.len() as u32;
 
         let was_edge = s.flags & cell_flags::WAS_EDGE != 0;
@@ -467,7 +497,7 @@ mod tests {
     }
 
     fn inp(top: u8, bottom: u8) -> CellInputs {
-        CellInputs { luma_top: top, luma_bottom: bottom, e: 0, ex: 128, ey: 128, h: 0, chroma: None }
+        CellInputs { luma_top: top, luma_bottom: bottom, e: 0, ex: 128, ey: 128, h: 0, chroma: None, dither: 0 }
     }
 
     fn uni() -> PaletteSet {
@@ -737,16 +767,16 @@ mod tests {
     fn default_glyph_hold_rejects_near_boundary_chatter() {
         let mut state = CellState::default();
         let width = ComposeParams::default().idx_hyst_q8;
-        let mut held = held_tone(120, IDX_UNSET, width, &mut state);
+        let mut held = held_tone(120, IDX_UNSET, width, &STEP, &mut state);
         let mut changes = 0;
         for n in [159, 120].into_iter().cycle().take(200) {
-            let next = held_tone(n, held, width, &mut state);
+            let next = held_tone(n, held, width, &STEP, &mut state);
             changes += usize::from(next != held);
             held = next;
         }
         assert!(changes <= 1 && (120..=159).contains(&held), "nearby alternating samples must not flash glyphs");
         let far = held + (width as u16 * 5 / 8) as u8 + 1;
-        assert_eq!(held_tone(far, held, width, &mut state), far, "large changes remain immediate");
+        assert_eq!(held_tone(far, held, width, &STEP, &mut state), far, "large changes remain immediate");
     }
 
     #[test]
@@ -795,6 +825,20 @@ mod tests {
     }
 
     #[test]
+    fn dither_tables_bracket_the_midpoint_rule() {
+        for (n, &mid) in STEP.iter().enumerate() {
+            assert!(STEP_DITHER[8][n] <= mid && mid <= STEP_DITHER[7][n], "tone {n}");
+            for d in 0..15 {
+                assert!(STEP_DITHER[d + 1][n] <= STEP_DITHER[d][n], "tone {n}: dither {d} vs {}", d + 1);
+            }
+        }
+        for (d, t) in STEP_DITHER.iter().enumerate() {
+            assert!(t.windows(2).all(|w| w[0] <= w[1]), "dither {d} is not monotonic in tone");
+        }
+        assert_ne!(STEP_DITHER[0], STEP_DITHER[15]);
+    }
+
+    #[test]
     fn black_floor_holds_a_lit_cell() {
         for color in [ColorDepth::True, ColorDepth::C256, ColorDepth::C16, ColorDepth::Mono] {
             let set = select_palettes(GlyphTier::Ascii, color, 100);
@@ -836,7 +880,7 @@ mod tests {
                     let mut held = from;
                     let mut state = CellState::default();
                     for f in 0..100 {
-                        let next = held_tone(to, held, width, &mut state);
+                        let next = held_tone(to, held, width, &STEP, &mut state);
                         assert!(next >= held.min(to) && next <= held.max(to));
                         assert!(f < 74 || next == held, "{from}->{to}, width {width}: moved at frame {f}");
                         held = next;
@@ -853,11 +897,11 @@ mod tests {
     fn a_steady_tone_inside_the_margin_reaches_its_own_glyph() {
         let width = ComposeParams::default().idx_hyst_q8;
         let mut state = CellState::default();
-        let mut held = held_tone(142, IDX_UNSET, width, &mut state);
+        let mut held = held_tone(142, IDX_UNSET, width, &STEP, &mut state);
         assert_ne!(STEP[142], STEP[158]);
         let mut settled = None;
         for f in 0..80 {
-            held = held_tone(158, held, width, &mut state);
+            held = held_tone(158, held, width, &STEP, &mut state);
             if settled.is_none() && STEP[held as usize] == STEP[158] {
                 settled = Some(f);
             }
@@ -870,26 +914,26 @@ mod tests {
     fn active_cells_take_moderate_changes_at_once() {
         let width = ComposeParams::default().idx_hyst_q8;
         let mut quiet = CellState::default();
-        let held = held_tone(200, IDX_UNSET, width, &mut quiet);
-        assert_eq!(held_tone(150, held, width, &mut quiet), 200, "a quiet cell holds a 50-unit change");
+        let held = held_tone(200, IDX_UNSET, width, &STEP, &mut quiet);
+        assert_eq!(held_tone(150, held, width, &STEP, &mut quiet), 200, "a quiet cell holds a 50-unit change");
         let mut active = CellState::default();
-        let mut held = held_tone(200, IDX_UNSET, width, &mut active);
+        let mut held = held_tone(200, IDX_UNSET, width, &STEP, &mut active);
         for n in [40, 200].into_iter().cycle().take(8) {
-            held = held_tone(n, held, width, &mut active);
+            held = held_tone(n, held, width, &STEP, &mut active);
         }
         assert_eq!(held, 200);
-        assert_eq!(held_tone(150, held, width, &mut active), 150, "a busy cell's band narrows to h/4");
-        assert_eq!(held_tone(135, 150, width, &mut active), 150, "small changes still wait");
+        assert_eq!(held_tone(150, held, width, &STEP, &mut active), 150, "a busy cell's band narrows to h/4");
+        assert_eq!(held_tone(135, 150, width, &STEP, &mut active), 150, "small changes still wait");
     }
 
     #[test]
     fn noisy_steady_tone_settles_once() {
         let width = ComposeParams::default().idx_hyst_q8;
         let mut state = CellState::default();
-        let mut held = held_tone(120, IDX_UNSET, width, &mut state);
+        let mut held = held_tone(120, IDX_UNSET, width, &STEP, &mut state);
         let mut changes = Vec::new();
         for (f, jitter) in [0u8, 7, 2, 9, 4, 11, 1, 6, 10, 3, 8, 5].into_iter().cycle().take(120).enumerate() {
-            let next = held_tone(150 + jitter, held, width, &mut state);
+            let next = held_tone(150 + jitter, held, width, &STEP, &mut state);
             if next != held {
                 changes.push(f);
             }

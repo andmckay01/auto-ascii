@@ -240,7 +240,7 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   tone and settling age (ignored by the other styles).
 - **Invariants — every temporal discontinuity resets all per-cell state:**
   - a shot change or shadow-lift change (`crates/auto-ascii/src/pipeline.rs`
-    `Player::update_levels`, keyed on `(shot, shadow_lift)`);
+    `Player::update_levels`, keyed on `(shot, shadow_lift, lift_color)`);
   - a digit jump or arrow scrub (`ClipDeck::drain_events`);
   - a resize (`HysteresisState::resize` in `reflow_grid`);
   - any change to the compose params, including a dial turn that moves
@@ -908,3 +908,21 @@ values = [
 - **Kitty-graphics `PixelPresenter`:** pixel output beside the glyph-cell path.
 - **zstd dictionaries:** a size lever (Data & wire).
 - **Embedded audio plane and per-clip sound:** compositions play silent (flow 16).
+
+### Optional shadow colour and ASCII dithering
+
+`ComposeParams` and `params.toml` `[compose]` include `lift_color` (0–255)
+and `dither` (0–2), both off by default. In a clip's `<name>.player.toml`,
+set `shadow_lift = 160` and `lift_color = 255` to brighten the RGB chroma
+alongside lifted luma; colour gain is interpolated by `lift_color` and capped
+at 4×. Black remains black, and disabling either setting restores the source
+chroma. The pipeline rebuilds gain when the shot, normalization levels, or
+settings change, for both stored assets and live frames.
+
+`dither = 1` uses a fixed 4×4 Bayer pattern; `dither = 2` uses a deterministic
+coordinate hash. Both distribute ASCII ramp transitions across cells and use
+the selected cell's thresholds for temporal hysteresis. Patterns stay fixed
+in viewport coordinates across frames, seeks and repeated resizes. Dithering
+changes only ASCII glyph selection; colour lift applies to styles using chroma.
+The `s` key preserves these settings alongside the three existing dials.
+No environment overrides are needed, and assets and default goldens stay unchanged.
