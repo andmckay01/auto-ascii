@@ -125,6 +125,7 @@ auto-ascii = { version = "0.3", default-features = false, features = ["terminal"
 
 ## Docs
 
+- [docs/INDEX.md](docs/INDEX.md): documentation map and project notes.
 - [docs/FEATURE-MAP.md](docs/FEATURE-MAP.md): every feature and exactly how
   the pipeline works, with code pointers: glyph styles (§5), keys (§8), dials
   and saved settings (§9), the CLI and the library folder (§12), embedding
