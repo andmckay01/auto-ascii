@@ -135,6 +135,11 @@ jobs:
         if: runner.os != 'Windows'
         run: cargo test --workspace --release --locked --no-fail-fast -- --test-threads=1 --skip 'stream::'
 
+      # Release mode omits four factory tests gated by debug_assertions.
+      - name: Test factory debug preconditions
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        run: cargo test --locked -p auto-ascii-factory --lib -- --test-threads=1
+
       # Runs even when the step above fails, so the macOS leg still exercises
       # the stream tests.
       - name: Test stream (serial)
