@@ -24,6 +24,28 @@
   143 KB/frame, 80% against 146% of a core), and a 240×70 grid that skipped 5.6%
   of frames at truecolor skips none at 256 with `--repaint diff`.
 
+### Fixed
+
+- **Text from remote sites and shipped clip folders can no longer drive the
+  terminal.** yt-dlp errors, download progress, resolved URLs and stream notes;
+  the clip names, paths and sidecar fields that `list`, `info`, `cut`,
+  `compose` and `dev inspect` print; and the settings and sound problems
+  reported when playback ends now show every control character except newline
+  and tab as `?`. So do the string fields of `--json` output from
+  `stream --sim`, `list`, `info`, `cut`, `compose add`, `compose show`,
+  `compose export` and `dev inspect`, `--json` error objects, and the link and
+  source in `add --json` output.
+  That stops a malicious page or clip folder from retitling the terminal or
+  writing the clipboard through OSC 52, in 7-bit or 8-bit form. Every one-line
+  message also shows newlines as `?`, so it cannot forge extra output lines;
+  only the final error message keeps its line breaks. Progress that yt-dlp or
+  ffmpeg redraws with carriage returns now echoes only its last state.
+- **Saving player settings with `s` no longer follows a symlink planted beside
+  the clip.** The settings are written to a new, uniquely named temp file that
+  refuses to open an existing path, then renamed into place, so a
+  `<clip>.player.toml.tmp` link shipped in someone else's clip folder can no
+  longer overwrite the file it points to.
+
 ## 0.3.0 — 2026-09-29
 
 One command. The `auto-ascii` binary now does everything the old player and

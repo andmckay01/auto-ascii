@@ -23,7 +23,7 @@ pub fn run(cli: &Cli, cmd: &DevCmd) -> Result<Stopped, BoxErr> {
         DevCmd::Inspect { asset, dump_planes, frame } => {
             let report = inspect::collect(asset, dump_planes.as_deref(), frame)?;
             if cli.json {
-                outln!("{}", serde_json::to_string(&report)?);
+                outln!("{}", serde_json::to_string(&report.terminal_safe())?);
             } else {
                 inspect::print(&report);
             }

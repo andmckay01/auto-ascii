@@ -1,5 +1,7 @@
 use std::io::Write;
 
+pub use auto_ascii::text::{terminal_safe, terminal_safe_line};
+
 pub fn emit(text: &str) {
     let mut out = std::io::stdout().lock();
     if let Err(e) = out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
@@ -29,6 +31,7 @@ macro_rules! out {
 }
 
 pub fn fail(message: &str, json: bool) {
+    let message = terminal_safe(message);
     if json {
         let obj = serde_json::json!({ "error": message });
         emit_err(&format!("{obj}\n"));

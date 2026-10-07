@@ -20,6 +20,9 @@ pub mod timecode;
 #[doc(hidden)]
 pub mod tools;
 
+#[doc(hidden)]
+pub mod text;
+
 #[cfg(feature = "terminal")]
 mod player;
 

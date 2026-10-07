@@ -13,6 +13,7 @@ use auto_ascii::tools::Tool;
 
 use crate::deps::{self, Resolved};
 use crate::home::stem_of;
+use crate::output::terminal_safe_line;
 use crate::stream::procs::{Procs, missing};
 use crate::stream::ytdlp::{BASE, Event, Input, YtDlp, clean_error};
 use crate::{BoxErr, Cli};
@@ -123,7 +124,7 @@ impl<'a> YtDlpDownloader<'a> {
 
     fn say(&self, message: &str) {
         if !self.cli.json {
-            crate::output::emit_err(&format!("auto-ascii: {message}\n"));
+            crate::output::emit_err(&format!("auto-ascii: {}\n", terminal_safe_line(message)));
         }
     }
 }
@@ -249,12 +250,17 @@ fn copy_lines(from: impl Read, mut log: &File, echo: bool) -> String {
     for line in BufReader::new(from).lines().map_while(Result::ok) {
         let _ = writeln!(log, "{line}");
         if echo {
-            crate::output::emit_err(&format!("{line}\n"));
+            crate::output::emit_err(&format!("{}\n", terminal_safe_line(after_carriage_returns(&line))));
         }
         seen.push_str(&line);
         seen.push('\n');
     }
     seen
+}
+
+fn after_carriage_returns(line: &str) -> &str {
+    let line = line.trim_end_matches(['\r', '\n']);
+    line.rsplit_once('\r').map_or(line, |(_, last)| last)
 }
 
 #[cfg(test)]
@@ -409,5 +415,16 @@ mod tests {
         assert_eq!(at("-o"), "/lib/x.partial/source.%(ext)s");
         assert_eq!(args[args.len() - 2..], ["--", "-u"]);
         assert_eq!(HEIGHTS, [1080, 1080, 720], "1080p, a retry, then 720p");
+    }
+
+    #[test]
+    fn an_echoed_line_keeps_only_what_its_carriage_returns_leave_on_screen() {
+        let ffmpeg = "frame=    1 fps=0.0 q=-1.0\rframe=   60 fps=30 q=-1.0\rframe=  120 fps=30 q=-1.0";
+        assert_eq!(after_carriage_returns(ffmpeg), "frame=  120 fps=30 q=-1.0");
+        assert_eq!(after_carriage_returns("[download]   1.0% of 2.00MiB\r[download]  50.0% of 2.00MiB\r"), "[download]  50.0% of 2.00MiB");
+        assert_eq!(after_carriage_returns("[download] Destination: source.mp4\r\n"), "[download] Destination: source.mp4");
+        assert_eq!(after_carriage_returns("ERROR: from a Windows tool\r"), "ERROR: from a Windows tool");
+        assert_eq!(after_carriage_returns("no carriage return"), "no carriage return");
+        assert_eq!(after_carriage_returns("\r"), "");
     }
 }
