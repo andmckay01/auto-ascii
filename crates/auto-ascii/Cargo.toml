@@ -36,7 +36,7 @@ cli = [
 [dependencies]
 auto-ascii-core = { workspace = true }
 auto-ascii-format = { workspace = true }
-auto-ascii-term = { path = "../auto-ascii-term", version = "0.3.0", default-features = false }
+auto-ascii-term = { path = "../auto-ascii-term", version = "0.4.0", default-features = false }
 memmap2 = { workspace = true }
 toml = { workspace = true, optional = true }
 cpal = { version = "0.18", optional = true }
