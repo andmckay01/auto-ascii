@@ -127,6 +127,17 @@ jobs:
           python3 --version
           ffmpeg -version | head -1
 
+      # Hosted macOS timer coalescing can stretch 50 ms sleeps past 100 ms.
+      # Disable it in this disposable guest so real-time assertions test pacing,
+      # and restore the original setting after the tests, including on failure.
+      - name: Disable timer coalescing for real-time tests
+        if: runner.os == 'macOS'
+        run: |
+          original=$(sysctl -n kern.timer.coalescing_enabled)
+          echo "AUTO_ASCII_CI_TIMER_COALESCING=$original" >> "$GITHUB_ENV"
+          sudo sysctl -w kern.timer.coalescing_enabled=0
+          test "$(sysctl -n kern.timer.coalescing_enabled)" = 0
+
       # Log wakeup delays in a spawned process and thread,
       # so a runner scheduling regression can be distinguished from test failures.
       - name: macOS wakeup timing
@@ -174,6 +185,10 @@ jobs:
       - name: Test stream (serial)
         if: ${{ !cancelled() && runner.os != 'Windows' }}
         run: cargo test --release --locked -p auto-ascii --bin auto-ascii 'stream::' -- --test-threads=1
+
+      - name: Restore macOS timer policy
+        if: ${{ always() && runner.os == 'macOS' && env.AUTO_ASCII_CI_TIMER_COALESCING != '' }}
+        run: sudo sysctl -w "kern.timer.coalescing_enabled=$AUTO_ASCII_CI_TIMER_COALESCING"
 
       # The CLI, term and lint suites spawn sh and python3, so Windows covers
       # the pure crates only.

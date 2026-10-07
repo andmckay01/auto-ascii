@@ -10,6 +10,17 @@ failed job, attestation or publish, is safe. "Re-run all jobs" after the
 release is published rebuilds the binaries, and the rebuild's checksums
 differ, so it fails on purpose: a published release is never replaced.
 
+The shared macOS test jobs disable `kern.timer.coalescing_enabled` inside
+the disposable CI guests, verify it is disabled, then restore the original
+value after the tests even when they fail. The default hosted policy made
+50 ms waits commonly take 100–125 ms, which broke real-time playback and
+split terminal-reply fixtures. Disabling coalescing restored roughly
+50.1 ms waits on both ARM and Intel; every existing assertion stays gated.
+This is a CI policy, not a change to application scheduling. Apple's
+[XNU registration](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sysctl.c#L3053)
+and [timer implementation](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/timer_call.c#L1800)
+describe the writable switch and its effect on timer leeway.
+
 ## Cutting a release
 
 1. Bump `[workspace.package] version` in the root `Cargo.toml`. Every

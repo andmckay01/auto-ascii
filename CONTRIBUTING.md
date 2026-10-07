@@ -139,6 +139,14 @@ on a tag before it publishes anything, except the installers, which its
 pre-commit hook, so locally the eval gate and `make lint` are where the
 comment rule runs.
 
+The disposable macOS test guests disable timer coalescing for the test
+steps and restore their original setting afterward. Hosted measurements
+showed requested 50 ms sleeps taking roughly 100–125 ms with coalescing,
+versus about 50.1 ms without it. This keeps the existing real-time playback
+and PTY assertions meaningful; application timer and power policies stay
+under the user's control. Timed test producers use absolute deadlines so
+individual sleep overruns do not accumulate into an unintended stall.
+
 ## Rules that keep the output deterministic
 
 - **Assets never store glyphs.** Glyph choice happens at render time; that is
