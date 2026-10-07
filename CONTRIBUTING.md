@@ -129,8 +129,8 @@ clippy, the library build without default features, `check-comments`, the
 tests on Linux, macOS and Windows (Windows runs the core, format and eval
 crates only; Linux and macOS run optimized tests serially so real-time
 playback and PTY tests do not compete for runner CPUs, with a separate
-debug factory unit pass preserving its precondition tests; macOS launches
-tests with `taskpolicy -a` for application resource scheduling), cargo-deny, a
+debug factory unit pass preserving its precondition tests; the macOS test
+job uses macOS 26, while release builds retain macOS 15), cargo-deny, a
 crates.io publish dry run, actionlint, zizmor and shellcheck, the npm launcher smoke test, both installers, the
 six-target release build and a rehearsal of the release assembly. The
 weekly run adds the live download tests. `release.yml` runs the same checks
