@@ -26,7 +26,7 @@ auto-ascii-format = { path = "crates/auto-ascii-format", version = "0.4.0" }
 auto-ascii-eval = { path = "crates/auto-ascii-eval", version = "0.4.0" }
 auto-ascii-factory = { path = "crates/auto-ascii-factory", version = "0.4.0" }
 auto-ascii = { path = "crates/auto-ascii", version = "0.4.0", default-features = false }
-zstd = "0.13"
+zstd = "0.14"
 rayon = "1"
 crc32fast = "1.4"
 ciborium = "0.2"
