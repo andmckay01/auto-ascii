@@ -47,7 +47,7 @@ imageproc = { version = "0.25", default-features = false }
 gif = "0.14"
 ab_glyph = "0.2"
 ra-ap-rustc_lexer = "0.174"
-tree-sitter = "0.25"
+tree-sitter = "0.27"
 tree-sitter-bash = "0.25"
 tree-sitter-toml-ng = "0.7"
 
