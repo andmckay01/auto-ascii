@@ -50,7 +50,7 @@ libc = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
-zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
 
 [[bin]]
 name = "auto-ascii"
