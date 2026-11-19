@@ -310,8 +310,41 @@ fn hysteresis_turned_down_and_up_tracks_in_both_directions() {
     };
 
     let origin = pair(&mut p, &mut backend);
-    assert_eq!(glyph_at(&origin, &p, P_COL), held_p, "width 128 holds a 0.25-step crossing");
-    assert_eq!(glyph_at(&origin, &p, Q_COL), moved_q, "width 128 lets a 0.75-step crossing move");
+    assert_eq!(
+        glyph_at(&origin, &p, P_COL),
+        held_p,
+        "width 128 holds a 0.25-step crossing on its first frame"
+    );
+    assert_eq!(
+        glyph_at(&origin, &p, Q_COL),
+        held_q,
+        "width 128 holds a 0.75-step crossing on its first frame"
+    );
+
+    let cols = p.viewport().unwrap().cols;
+    let mut prev = origin.clone();
+    let mut releases = [0u32; 4];
+    for slot in &mut releases {
+        let frame = render(&mut p, &mut backend, 1);
+        let mut n = 0u32;
+        for col in 0..cols {
+            let was = glyph_at(&prev, &p, col);
+            let now = glyph_at(&frame, &p, col);
+            let plain = glyph_at(&plain1, &p, col);
+            if was != plain && now == plain {
+                n += 1;
+            }
+        }
+        prev = frame;
+        *slot = n;
+    }
+    let waves = releases.iter().filter(|&&n| n > 0).count();
+    let total: u32 = releases.iter().sum();
+    let peak = releases.iter().copied().max().unwrap_or(0);
+    assert!(waves >= 2, "a one-step stripe releases over more than one frame: {releases:?}");
+    assert!(total >= 4 && peak * 2 <= total, "no frame takes the whole stripe: {releases:?}");
+    assert_eq!(glyph_at(&prev, &p, Q_COL), moved_q, "Q_COL confirms inside four more frames");
+    assert_eq!(glyph_at(&prev, &p, P_COL), moved_p, "P_COL confirms inside four more frames");
 
     dial.turn(&mut compose, -8);
     assert_eq!(compose.idx_hyst_q8, 0);
@@ -364,11 +397,22 @@ fn a_turn_is_a_cold_start_and_a_stopped_dial_is_not() {
         assert_eq!(dial.get(&compose), dial.max());
         p.set_compose_params(compose);
         render(&mut p, &mut backend, 0);
-        let warm = render(&mut p, &mut backend, 1);
+        render(&mut p, &mut backend, 1);
+        let mut twin_backend = SimBackend::new(COLS, ROWS);
+        let mut twin = player(&asset);
+        twin.reflow(&mut twin_backend, COLS, ROWS);
+        twin.set_compose_params(compose);
+        render(&mut twin, &mut twin_backend, 0);
+        render(&mut twin, &mut twin_backend, 1);
+        let continued = render(&mut twin, &mut twin_backend, 1);
         dial.turn(&mut compose, 1);
         assert_eq!(dial.get(&compose), dial.max(), "{label}: the top is a stop");
         p.set_compose_params(compose);
-        assert_eq!(render(&mut p, &mut backend, 1), warm, "{label}: a stopped press leaves state alone");
+        assert_eq!(
+            render(&mut p, &mut backend, 1),
+            continued,
+            "{label}: a stopped press leaves state alone"
+        );
     }
 }
 

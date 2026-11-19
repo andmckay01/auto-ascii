@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Fixed
+
+- Pixels no longer holds a moving region on the old shade and then jumps the
+  whole region in one frame. One ramp step past a quarter of the hysteresis
+  dial waits for a fixed per-cell frame slot (at most four frames at the
+  default). Two or more steps still snap. Deep shadow uses the same rule, so
+  a middle-dot region entering shadow dissolves instead of inking at once.
+  Dial 0 stays plain quantisation. Letters is unchanged.
+- ASCII no longer waits out a 32-frame or 64-frame settle and then jumps a
+  region of characters together. A move wider than an eighth of the dial, on
+  another ramp step, adopts the current sample on the same per-cell frame
+  slot as pixels. The age floor is one frame over the pixels floor,
+  `clamp(2·dial/128, 1, 4) + 1` (three to five frames at the default). That
+  extra frame keeps the Millennium Falcon flicker gate at 1.2× pixels. A
+  smaller crossing that is four units inside the next step still uses the
+  long settle, and only on that slot. Floor crossings use the short slot.
+  Jumps wider than the activity band still snap. Dial 0 stays plain
+  quantisation.
+- `HysteresisState::begin_frame` is public. Call it once per frame before
+  `compose_cell` or `compose_cell_layer`. Those calls read the residue that
+  tick issued, so a cell-by-cell grid releases every phase class.
+  `compose_frame` ticks once itself; do not tick again, and do not tick
+  once per cell. A loop that never ticks stays on residue 0.
+
 ## 0.4.0 — 2026-10-07
 
 ### Breaking

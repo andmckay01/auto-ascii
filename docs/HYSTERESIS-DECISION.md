@@ -25,7 +25,13 @@ calibration used a 5/16 band (40 tone units at 128) and settled only after
 32 frames of a bit-identical tone. Review showed both halves failing on
 real video, so ASCII's glyph hold was recalibrated (next section).
 
-**ASCII glyph hold, recalibrated.** Two problems at b890cea: glyph switching
+**ASCII glyph hold, recalibrated.** The 32-frame and 64-frame settles and the
+four-frame floor rule in this section are the pre-2026-11-18 hold. The fast
+path and floor crossings are superseded by the ASCII confirm below. The
+activity jump band, the smoothed tone, the 4-unit boundary exception, and the
+long settle for a crossing inside an eighth of the dial remain.
+
+Two problems at b890cea: glyph switching
 exceeded 1.2x pixels on other assets (Death Star 1.280x, Millennium Falcon
 1.248x, techno 6 1.207x; other windows up to Darth Vader 1.495x), and
 settling needed an exactly repeated tone, which video noise almost never
@@ -197,3 +203,155 @@ Final `scripts/eval.sh`: ALL GREEN, foreground, 103 seconds: workspace
 60s, clippy 2s, resize fuzz x2000 10s, perf 31s. No scratch jobs ran beside
 the perf gate. Optional external video corpus was empty; embedded real
 asset regressions ran. Main and origin/main both resolve to 52f6740.
+
+**Pixels ramp confirm, 2026-11-18.** The shared dial stayed a memoryless
+Schmitt trigger on the pixels ramp. At the default 128 (half a step of the
+6-glyph ramp, about 21 luma) a slowly moving face sat on the old shade,
+then every cell in the region crossed on the same frame. Foreground colour
+was already tracking the current frame, so the shade popped as a slab.
+Hysteresis 0 removes the slab and flickers about 50% more, worst on holds
+and dark scenes, so the dial stays.
+
+Pixels now keeps a quarter of the dial as a forever band (at 128, about 5
+luma). A one-step crossing past that band waits for the frame slot of a
+fixed 16×16 interleaved-gradient phase. The age floor is
+clamp(2·dial/128, 1, 4). At the default 128 that floor is 2, so the wait
+is 2 to 4 frames. The clamp's upper bound of 4 is not reached: dial 255
+floors at 3, and with the phase slot the wait there is 3 to 5 frames.
+The phase is not scrolled. The frame counter steps through 0, 1, 2. A
+wrapping byte would repeat residue 0 every 256 frames (`256 % 3 == 1`).
+Two or more steps snap on the frame they appear. Deep shadow targets the
+darkest step through the same rule, which is what was still stamping
+middle-dot regions to space in one frame after the ramp confirm alone.
+Dial 0 is plain quantisation. Saved values and the 0..255 step-16 dial are
+unchanged. `CellState` stays 5 bytes; the candidate and age bytes hold the
+pending step. `HysteresisState` carries one frame counter.
+
+Measured on the Dune arena clip (wrestle, 841 frames) and the face
+close-ups (faces, 541 frames), 192×40, unicode ramp, against hysteresis 0.
+"Late blob" is the largest 4-connected set of cells whose glyph changed
+while the hysteresis-0 glyph did not. Cuts are masked.
+
+| | glyph chg/frame | late blob max | late blob p99 | rev/frame | stale p90 | bright err vs h0 |
+|---|---:|---:|---:|---:|---:|---:|
+| wrestle before | 482.3 | 193 | 87.2 | 5.425 | 9 | 7.199 |
+| wrestle final | 509.7 | 9 | 4.0 | 4.814 | 4 | 4.592 |
+| faces before | 175.4 | 109 | 41.2 | 3.432 | 23 | 4.285 |
+| faces final | 221.2 | 4 | 4.0 | 3.362 | 6 | 1.961 |
+
+Stale-run p90 matches the short-confirm prototype (4 and 6). Late blobs
+fell from 193 and 109 to 9 and 4, under the phase-class size of the noise
+tile. Reversals stayed under the previous pixels figures. Brightness error
+against hysteresis 0 dropped 36% and 54%. Glyph changes on wrestle are
+1.06× the old pixels path. Faces are 1.26× (221 against 175): the cells
+that used to sit stale now step, and a 1.15× cap would mean keeping some
+of that lag. A constant tone plus or minus 4 luma changes no glyphs.
+
+Letters is unchanged. It would need its own confirm in place of its tone
+deadband. ASCII's candidate and age bytes now share pixels' phase slot on
+the fast path; that calibration is the next section. The 1.2× pixels flicker
+gates were re-measured against this pixels confirm. Death Star, Architect,
+techno 6 and Darth Vader stay inside 1.2×. Falcon does not; the ratios are
+with the ASCII confirm below.
+
+**ASCII confirm, 2026-11-18.** The recalibrated hold still released a whole
+region together. A face moved, the smoothed tone sat inside the activity
+band, and after the 32-frame or 64-frame settle a slab of characters adopted
+the new step on one frame. Edge strokes and orientation bins were not that
+timer. They are Schmitt gates, and the late slabs on the face clip were ramp
+glyphs, not `=-_|/\X`.
+
+The fast path and floor crossings now use the same phase slot as pixels. A
+smoothed tone more than an eighth of the dial from the held tone, on another
+ramp step, adopts the current sample when its age reaches
+`clamp(2·dial/128, 1, 4) + 1` and `frame % 3` equals that cell's
+interleaved-gradient phase mod 3. At the default 128 the pixels floor is 2
+and this confirm adds one frame, so the wait is 3 to 5 frames. Dial 255
+reaches the clamp (base 4, wait 4 to 6). Floor crossings use the same short
+confirm and adopt the current sample, which is 0 below the floor. A smaller
+crossing that is at least 4 units inside the next step still waits until its
+count reaches `min(dial/2, 63)` (64 frames at the default), releases only on
+that same slot, and adopts the smoothed tone. The extra fast-path frame is
+what puts Millennium Falcon back under 1.2× pixels. The pixels floor alone
+was 1.23× there; adopting the smoothed tone instead of the current sample
+made that window worse. The phase slot is what removes the slab. Lengthening
+the timer does not reassemble it.
+
+Within 4 units of a boundary the neighbouring glyph stays. The activity
+jump band is unchanged: a wider jump snaps, and dial 0 is plain
+quantisation. `CellState` stays 5 bytes. Edge and orientation glyphs are
+not given a second timer.
+
+Three holds were rendered on this worktree at dial 128, 192×40, palette
+auto, against ASCII at hysteresis 0. Brightness is Menlo ink coverage.
+"Late blob" is the largest 4-connected set of cells whose character changed
+while the hysteresis-0 character did not. Quiet changes are character
+changes on cells whose hysteresis-0 character is stable over 8 frames. Cuts
+are masked. Decay2 is the shrinking band from the lane-d prototype,
+re-rendered here and byte-identical to that lane's dumps. Motion is this
+confirm with the dial scaled by a signed 3×3 mean of tone drift (gain 128
+in 1/256 luma, noise floor 64, radius 1, smooth 8). It is not shipped:
+reversals rose past the cap, and the planes were removed.
+
+| clip | hold | chg/frame | late blob max | late blob p99 | rev/frame | stale p90 | bright err | quiet chg/frame | quiet rev/frame |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| wrestle | before | 183.4 | 40 | 12.6 | 3.594 | 26 | 1.976 | 16.200 | 0.090 |
+| wrestle | confirm | 336.7 | 13 | 6.0 | 3.458 | 9 | 1.087 | 20.898 | 0.100 |
+| wrestle | decay2 | 410.4 | 12 | 7.0 | 3.793 | 13 | 1.141 | 71.188 | 0.200 |
+| wrestle | motion | 646.2 | 23 | 11.0 | 5.622 | 5 | 0.513 | 13.171 | 0.036 |
+| faces | before | 169.1 | 720 | 223 | 3.671 | 34 | 1.902 | 34.461 | 0.130 |
+| faces | confirm | 266.4 | 23 | 9.0 | 3.379 | 15 | 0.792 | 18.583 | 0.078 |
+| faces | decay2 | 330.0 | 54 | 14.2 | 4.351 | 16 | 0.868 | 69.257 | 0.663 |
+| faces | motion | 424.2 | 30 | 14.0 | 5.397 | 9 | 0.391 | 10.194 | 0.038 |
+| wrestle | shipped | 322.7 | 12 | 7.6 | 3.499 | 10 | 1.168 | 24.373 | 0.093 |
+| faces | shipped | 261.5 | 36 | 16.0 | 3.657 | 15 | 0.862 | 21.984 | 0.138 |
+
+The confirm row is the pixels age floor (2 to 4 frames at the default).
+Review added one frame after that floor missed the Falcon flicker gate.
+Shipped is that longer floor, re-measured on the same clips. Decay2 and
+motion were not re-rendered. Of the three holds, confirm is the only
+candidate whose reversals per frame stay at or under the previous ASCII
+path on both clips. On that row, late-blob max falls from 40 to 13 on
+wrestle and from 720 to 23 on the face close-ups. Stale-run p90 falls from
+26 to 9 and from 34 to 15. Brightness error falls from 1.976 to 1.087 and
+from 1.902 to 0.792. Faces quiet changes fall from 34.5 to 18.6 per frame.
+Wrestle quiet changes rise from 16.2 to 20.9 (+29%). Those extras are one
+or two updates on a cell, not a new slab: 1860 cells gained a single quiet
+change, 20 gained five or more, none gained eight, and quiet reversals on
+the whole clip go from 38 to 42. Decay2 misses the reversal cap on faces
+(3.671 to 4.351, +18.5%) and multiplies quiet changes. Motion misses it on
+both clips (wrestle 3.594 to 5.622, faces 3.671 to 5.397) and leaves larger
+late blobs than confirm. Letters stay on their own tone hold.
+
+Shipped keeps the reversal cap (wrestle 3.594 to 3.499, faces 3.671 to
+3.657). Late-blob max is 12 and 36. The face blob of 36 is one frame of
+`;` and `+` spread across all three phase classes, not one timer class.
+Stale-run p90 is 10 and 15. Brightness error is 1.168 and 0.862. Faces
+quiet changes fall from 34.5 to 22.0. Wrestle quiet changes rise from 16.2
+to 24.4 (+50%). That is still one-way catch-up: 1990 cells gained a single
+quiet change, 23 gained five or more, none gained eight, and quiet
+reversals on the clip go from 38 to 39. In the face windows that used to
+slab, frames 100–130 and 245–270, the largest late blob is 4 and 3.
+
+The flicker gates on the shipped floor stay at 1.2× (`ascii * 5 <= pixels * 6`)
+on every window, including Falcon. Architect frames 60–150 at 200×56:
+4128 / 3843 = 1.074×. Death Star frames 0–89: 80×24 6021 / 5655 = 1.065×,
+200×56 42847 / 39945 = 1.073×. Techno 6 at 80×24: 21932 / 25673 = 0.854×.
+Darth Vader: 80×24 3813 / 3855 = 0.989×, 200×56 22854 / 22358 = 1.022×.
+Millennium Falcon: 80×24 9445 / 8130 = 1.162×, 200×56 58405 / 50517 =
+1.156×. At the pixels age floor those Falcon windows were 10059 / 8130 =
+1.237× and 62202 / 50517 = 1.231×, which is why that floor had moved only
+the Falcon assert to 1.25×. The extra frame puts both back under 1.2×,
+with 311 and 2215 switches of headroom. Adopting the smoothed tone on the
+non-floor fast path instead raised Falcon 80×24 to 10299 / 8130 and failed
+1.25×. The phase slot, not the age floor, is what spreads the release.
+
+The phase is Jorge Jimenez's interleaved gradient noise from the SIGGRAPH
+2014 Advanced Warfare talk, in the form Alan Wolfe published
+(blog.demofox.org, 2022-01-01). A Bayer matrix modulo 3 clusters into
+components of about 60 cells, which is the slab shape this change removes.
+The noise is stationary: scrolling it would move the release slot under a
+static cell. A shared threshold band that never expires is the sticking
+cost Ninke's hysteresis dither patent already described. Large residuals
+snap and small ones wait, the same split a codec uses between a skip and
+a coded block.
