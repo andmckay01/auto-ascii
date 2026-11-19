@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Security
+
+- Update `zip` to 9 (resolves 9.7.3), which fixes the open `zip` advisories
+  (GHSA-m665-v7pm-7grj, GHSA-hjqx-j4rw-g7xv, GHSA-9hj8-73fh-9963,
+  GHSA-q7v9-x93c-xqv3, GHSA-8hxf-qr8p-62x4), and `rustls` to 0.23.46, which
+  fixes RUSTSEC-2026-0346, -0347 and -0348. The first-use tool downloader
+  now skips zip entries whose names do not decode.
+
 ## 0.4.0 — 2026-10-07
 
 ### Breaking

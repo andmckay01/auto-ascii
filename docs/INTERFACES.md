@@ -58,7 +58,7 @@ crates/
                         at M7. The first-use tool downloader (FEATURE-MAP
                         flow 18) added indicatif (workspace), ureq 3
                         (rustls + ring + webpki-roots, no native-tls, no
-                        gzip) and zip 8 (deflate read via flate2/zlib-rs
+                        gzip) and zip 9 (deflate read via flate2/zlib-rs
                         only) — CLI-only; the published facade gained just
                         the network-free hidden `tools` lookup.
                         It lives in the facade package because the factory
