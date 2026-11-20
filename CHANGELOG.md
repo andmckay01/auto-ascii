@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Security
+
+- Update `zip` to 9 (resolves 9.7.3), which fixes the open `zip` advisories
+  (GHSA-m665-v7pm-7grj, GHSA-hjqx-j4rw-g7xv, GHSA-9hj8-73fh-9963,
+  GHSA-q7v9-x93c-xqv3, GHSA-8hxf-qr8p-62x4), and `rustls` to 0.23.46, which
+  fixes RUSTSEC-2026-0346, -0347 and -0348. Lockfile bumps to `rustls-webpki`
+  0.103.17, `webpki-roots` 1.0.12, `zstd` 0.14.4, `zstd-safe` 8.3.0 and
+  `zstd-sys` 2.1.3 fix RUSTSEC-2026-0381, -0382, -0391, -0398, -0403 and
+  -0410 (`cargo deny` passes). The first-use tool downloader
+  now skips zip entries whose names do not decode.
+
 ### Fixed
 
 - Pixels no longer holds a moving region on the old shade and then jumps the
