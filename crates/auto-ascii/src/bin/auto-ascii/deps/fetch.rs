@@ -253,7 +253,7 @@ pub fn extract(zip_path: &Path, dir: &Path, tool: Tool) -> Result<Temp, String> 
     let want = tool.file_name();
     let index = (0..archive.len())
         .find(|&i| {
-            archive.name_for_index(i).is_some_and(|name| {
+            archive.name_for_index(i).and_then(Result::ok).is_some_and(|name| {
                 !name.ends_with('/') && name.rsplit(['/', '\\']).next() == Some(want.as_str())
             })
         })
