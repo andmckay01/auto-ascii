@@ -22,10 +22,11 @@
   a middle-dot region entering shadow dissolves instead of inking at once.
   Dial 0 turns the new hold off. Letters is unchanged.
 - ASCII no longer waits out a 32-frame or 64-frame settle and then jumps a
-  region of characters together. A move wider than an eighth of the dial, on
-  another ramp step, adopts the current sample on the same per-cell frame
+  region of characters together. A smoothed-tone move wider than an eighth of
+  the dial, on another ramp step, that holds for the confirm adopts the current sample on the same per-cell frame
   slot as pixels. The age floor is one frame over the pixels floor,
-  `clamp(2·dial/128, 1, 4) + 1` (three to five frames at the default). That
+  `clamp(2·dial/128, 1, 4) + 1` (three to five frames at the default, counted from when the move
+  qualifies). That
   extra frame keeps the Millennium Falcon flicker gate at 1.2× pixels. A
   smaller crossing that is four units inside the next step still uses the
   long settle, and only on that slot. Floor crossings use the short slot.
