@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 — 2026-11-19
+
 ### Security
 
 - Update `zip` to 9 (resolves 9.7.3), which fixes the open `zip` advisories
@@ -23,20 +25,29 @@
   Dial 0 turns the new hold off. Letters is unchanged.
 - ASCII no longer waits out a 32-frame or 64-frame settle and then jumps a
   region of characters together. A smoothed-tone move wider than an eighth of
-  the dial, on another ramp step, that holds for the confirm adopts the current sample on the same per-cell frame
-  slot as pixels. The age floor is one frame over the pixels floor,
-  `clamp(2·dial/128, 1, 4) + 1` (three to five frames at the default, counted from when the move
-  qualifies). That
+  the dial, on another ramp step, that holds for the confirm adopts the
+  current sample on the same per-cell frame slot as pixels. The age floor is
+  one frame over the pixels floor, `clamp(2·dial/128, 1, 4) + 1` (three to
+  five frames at the default, counted from when the move qualifies). That
   extra frame keeps the Millennium Falcon flicker gate at 1.2× pixels. A
-  smaller crossing that is four units inside the next step still uses the
-  long settle, and only on that slot. Floor crossings use the short slot.
-  Jumps wider than the activity band still snap; a move inside the band can
-  cross two or more ramp steps and still wait. Dial 0 turns the new hold off.
+  smaller crossing that is four units inside the next step still uses the long
+  settle, and only on that slot. Floor crossings use the short slot. Jumps
+  wider than the activity band still snap; a move inside the band can cross
+  two or more ramp steps and still wait. Dial 0 turns the new hold off.
 - `HysteresisState::begin_frame` is public. Call it once per frame before
   `compose_cell` or `compose_cell_layer`. Those calls read the residue that
   tick issued, so a cell-by-cell grid releases every phase class.
   `compose_frame` ticks once itself; do not tick again, and do not tick
   once per cell. A loop that never ticks stays on residue 0.
+
+### Changed
+
+- Dependency updates since 0.4.0: `zstd` 0.13 to 0.14 (locked at 0.14.4),
+  `toml` 0.8 to 1.1, `gif` 0.13 to 0.14 and the dev-only `criterion` 0.5 to
+  0.8, plus the Dependabot minor and patch lockfile updates.
+- The release and CI workflows move to `actions/checkout` 7, `upload-artifact`
+  7, `download-artifact` 8, `attest-build-provenance` 4 and `setup-node` 7,
+  and the npm publish job turns the package-manager cache off explicitly.
 
 ## 0.4.0 — 2026-10-07
 
