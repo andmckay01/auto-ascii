@@ -220,12 +220,18 @@ is 2 to 4 frames. The clamp's upper bound of 4 is not reached: dial 255
 floors at 3, and with the phase slot the wait there is 3 to 5 frames.
 The phase is not scrolled. The frame counter steps through 0, 1, 2. A
 wrapping byte would repeat residue 0 every 256 frames (`256 % 3 == 1`).
-Two or more steps snap on the frame they appear. Deep shadow targets the
+A gap of two or more steps snaps to plain quantisation on the frame it
+appears. The quarter-dial band is a deliberate permanent deadband: a target
+inside it never leaves the held shade, so the bounded wait applies only to a
+one-step crossing that stays eligible while the frame clock ticks once per
+frame. Deep shadow targets the
 darkest step through the same rule, which is what was still stamping
 middle-dot regions to space in one frame after the ramp confirm alone.
-Dial 0 is plain quantisation. Saved values and the 0..255 step-16 dial are
-unchanged. `CellState` stays 5 bytes; the candidate and age bytes hold the
-pending step. `HysteresisState` carries one frame counter.
+At dial 0 the pixels hold is off and the quantiser is plain
+`floor(n·len/256)` with no history. Saved values and the 0..255 step-16 dial
+are unchanged. `CellState` stays 5 bytes; the candidate and age bytes hold the
+pending step. `HysteresisState` carries one frame clock, stored as two `u8` fields
+(`issued` and `next`).
 
 Measured on the Dune arena clip (wrestle, 841 frames) and the face
 close-ups (faces, 541 frames), 192×40, unicode ramp, against hysteresis 0.
@@ -278,8 +284,12 @@ made that window worse. The phase slot is what removes the slab. Lengthening
 the timer does not reassemble it.
 
 Within 4 units of a boundary the neighbouring glyph stays. The activity
-jump band is unchanged: a wider jump snaps, and dial 0 is plain
-quantisation. `CellState` stays 5 bytes. Edge and orientation glyphs are
+jump band is unchanged: a jump wider than the activity band snaps. That is
+an activity-band rule, not the pixels two-step rule, so a move inside the
+band can cross two or more ramp steps and still wait out the confirm. At
+dial 0 the new hold is off (`held_tone` returns the target, capped at 254),
+but the floor selection still reads history, so ASCII output at dial 0 is
+not wholly stateless. `CellState` stays 5 bytes. Edge and orientation glyphs are
 not given a second timer.
 
 Three holds were rendered on this worktree at dial 128, 192×40, palette

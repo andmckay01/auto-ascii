@@ -9,7 +9,7 @@
   dial waits for a fixed per-cell frame slot (at most four frames at the
   default). Two or more steps still snap. Deep shadow uses the same rule, so
   a middle-dot region entering shadow dissolves instead of inking at once.
-  Dial 0 stays plain quantisation. Letters is unchanged.
+  Dial 0 turns the new hold off. Letters is unchanged.
 - ASCII no longer waits out a 32-frame or 64-frame settle and then jumps a
   region of characters together. A move wider than an eighth of the dial, on
   another ramp step, adopts the current sample on the same per-cell frame
@@ -18,8 +18,8 @@
   extra frame keeps the Millennium Falcon flicker gate at 1.2× pixels. A
   smaller crossing that is four units inside the next step still uses the
   long settle, and only on that slot. Floor crossings use the short slot.
-  Jumps wider than the activity band still snap. Dial 0 stays plain
-  quantisation.
+  Jumps wider than the activity band still snap; a move inside the band can
+  cross two or more ramp steps and still wait. Dial 0 turns the new hold off.
 - `HysteresisState::begin_frame` is public. Call it once per frame before
   `compose_cell` or `compose_cell_layer`. Those calls read the residue that
   tick issued, so a cell-by-cell grid releases every phase class.
