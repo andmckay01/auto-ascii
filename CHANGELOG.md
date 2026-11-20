@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- Bump `tree-sitter` 0.25 to 0.27, `ra-ap-rustc_lexer` 0.174 to 0.176, and
+  `imageproc` 0.25 to 0.27 (the dev/lint/eval crates only).
+- Bump the GitHub Actions pins: `Swatinem/rust-cache` to 2.9.3,
+  `actions/upload-artifact` to 7.0.2, `actions/download-artifact` to 8.0.2,
+  `actions/setup-node` to 7.1.0, `rust-lang/crates-io-auth-action` to 1.0.6,
+  and `zizmorcore/zizmor-action` to 0.8.0.
+
 ## 0.5.0 — 2026-11-19
 
 ### Security
