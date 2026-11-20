@@ -356,6 +356,14 @@ with 311 and 2215 switches of headroom. Adopting the smoothed tone on the
 non-floor fast path instead raised Falcon 80×24 to 10299 / 8130 and failed
 1.25×. The phase slot, not the age floor, is what spreads the release.
 
+**Verdict: shipped in 0.5.0 (2026-11-19).** The pixels and ASCII confirm
+with per-cell release phase, at the default dial of 128, is what shipped. The
+settings are the ones above: quarter-dial pixels band, ASCII eighth-dial fast
+path, age floor `clamp(2·dial/128, 1, 4)` (plus one frame for ASCII), phase
+`frame % 3` against the 16×16 interleaved-gradient class, and the unchanged
+activity jump band. The numbers in the two tables are the evidence; the
+before and after videos and the scratch lane work were deleted after release.
+
 The phase is Jorge Jimenez's interleaved gradient noise from the SIGGRAPH
 2014 Advanced Warfare talk, in the form Alan Wolfe published
 (blog.demofox.org, 2022-01-01). A Bayer matrix modulo 3 clusters into
