@@ -251,7 +251,16 @@ pub struct CellState {
 }  // + Default
 pub struct HysteresisState;  // new(cols,rows)/cols/rows/cell/cell_mut +
                              // reset() = scene cut (no realloc) +
-                             // resize(cols,rows) = realloc + reset (FEATURE-MAP §6)
+                             // resize(cols,rows) = realloc + reset (FEATURE-MAP §6) +
+                             // begin_frame() -> u8 steps the pixels phase
+                             // clock once (residues 0, 1, 2) and returns the
+                             // residue this frame's cells release on.
+                             // compose_frame calls it once and must not be
+                             // paired with another tick. Cell-by-cell compose
+                             // must call it once per frame, before the cells,
+                             // and must not call it per cell. Reset and resize
+                             // restart the clock at 0. Before the first tick
+                             // the residue is 0.
 pub fn hysteresis_idx(n: u8, len: u8, prev: u8, hyst_q8: u32) -> u8;
     // ±hyst_q8/256-step boundary (SIGNATURE CHANGED at M3 Tune: width was
     // the IDX_HYST_Q8 constant; hyst_q8 < 256, u8-sourced by contract)
@@ -298,10 +307,16 @@ pub struct ComposeParams { pub edge_t_on/edge_t_off: u8,        // 32/16 (M3
   // + Default (the M3 baseline; all params.toml candidates)
 pub fn compose_cell(&CellInputs, lut: &[u8;256], &PaletteSet, &ComposeParams,
                     &mut HysteresisState, col: u16, row: u16) -> Cell;
-// Order: per-shot LUT on both taps → idx hysteresis (deep shadow clamps idx
-// to 0) → dual-threshold edge gate (magnitude memory kept even when
+// Order: per-shot LUT on both taps → pixels ramp confirm (deep shadow targets
+// step 0; a cold start or a jump of two or more steps lands there immediately,
+// one step waits for the phase slot. That clock is HysteresisState::begin_frame,
+// once per frame, not per cell. compose_frame ticks itself. A cell-by-cell
+// loop calls begin_frame once, then compose_cell / compose_cell_layer for
+// every cell; those reads use the residue that tick issued. A loop that
+// never ticks stays on residue 0 and confirms only that class) →
+// dual-threshold edge gate (magnitude memory kept even when
 // coherence suppresses drawing) → edge glyph (braille masks replace the LUT
-// on braille sets; junction when bins conflict) → deep-shadow darkest step →
+// on braille sets; junction when bins conflict) → deep-shadow ramp glyph →
 // highlight (boosted fg +25% toward white; hidx spread over the gate range)
 // → |Δ|≥delta: quadrant (coherent diagonal) / half-block ▀▄ (chroma scaled
 // per tap around the cell mean) / ascii " _ subposition → base ramp.
@@ -3131,12 +3146,15 @@ Hysteresis range and ASCII glyph hold: `IDX_HYST_DEFAULT_Q8` = 128 is the
 default and recommended max, below the hard ceiling `IDX_HYST_MAX_Q8` = 255
 (`hysteresis.rs`). `held_tone` jumps beyond `5/8 × idx_hyst_q8` (down to
 `idx_hyst_q8 / 4` as a per-cell activity level in ascii's flag bits 4–7
-rises above 9; `jump_band`), settles a
-smoothed tone more than `idx_hyst_q8 / 8` away after `min(1 + h/4, 32)`
-frames, and converges nearer smoothed tones that sit at least 4 units inside
-another ramp step after `min(h/2, 63) + 1` frames (`CellState::tone_age`:
-bit 7 down, bit 6 slow path, bits 0–5 count). The full rule and its
-measurements are in [HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).
+rises above 9; `jump_band`). Inside that band, a smoothed tone more than
+`idx_hyst_q8 / 8` from the held step adopts the current sample on the cell's
+frame slot once its age reaches `clamp(2·dial/128, 1, 4) + 1` (`CellState::tone_age`:
+bit 7 down, bit 6 slow path, bits 0–5 count). The added frame is what keeps
+Millennium Falcon inside 1.2× pixels. A nearer tone that sits at
+least 4 units inside another ramp step still waits until its count reaches
+`min(h/2, 63)` (64 frames at the default) and then the same slot, so the
+release can be two frames later. The full rule and its measurements are in
+[HYSTERESIS-DECISION.md](HYSTERESIS-DECISION.md).
 
 ASCII dynamic range (2026-09-27; supersedes the foreground rule of the ASCII
 warmth update above, d5e2066's "no whitening"): McKay asked that ascii glyph
@@ -3171,11 +3189,13 @@ Floor: letters' `BLACK_FLOOR` 32 and `FLOOR_HOLD` 16, tier-independent
 (letters gates its hold on `bg_tint`; ascii must not, glyph and colour are
 the same on every tier). A cell with no lit history needs tone ≥ 32; a lit
 one (held tone `s.idx ≥ 32`, letters' own predicate) showing `.` keeps it
-down to 16, a denser one settles toward its tone (slow path, up to 64 frames),
-and one whose held tone settles below 32 blanks within the four-frame floor
-settle rather than holding `.` indefinitely; `held_tone`'s crossing predicate
-is on `FLOOR_HOLD`, so blanking still settles within four frames and a
-blank cell does not re-arm below 32. The ramp origin is the separate
+down to 16, a denser one inside an eighth of the dial settles toward its tone
+(slow path: the count reaches `min(h/2, 63)`, then the cell's frame slot,
+so up to 66 frames at the default),
+and one whose held tone crosses below 32 blanks on the short frame-slot
+confirm rather than holding `.` indefinitely; `held_tone`'s crossing predicate
+is on `FLOOR_HOLD`, so blanking uses that short confirm (three to five frames
+at the default) and a blank cell does not re-arm below 32. The ramp origin is the separate
 `INK_FROM` 24 (`unit()`, saturating; `step_table()` fills from 16, where
 tones 16..31 map to `.`), so STEP is unchanged for tones ≥ 32 and `@`
 still starts at 225. Held cells at 16..31 draw their held glyph (`.` for

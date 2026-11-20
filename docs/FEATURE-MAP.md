@@ -192,12 +192,18 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   terminal's own background); pads, gaps and everything else the player draws while `ascii` is
   active follow that rule (flow 10). Glyphs use an 18-step ramp ordered by JetBrains Mono
   coverage, with `@` from held tone 225. Glyph color and shade follow current tone
-  independently, preventing stale brightness bands. Within the `5/8 × idx_hyst_q8` band
-  (narrowing to `idx_hyst_q8 / 4` in busy cells)
-  the glyph follows a smoothed tone: a steady change settles within 41 frames past
-  `idx_hyst_q8 / 8`, or within 74 when it lies at least 4 units inside another ramp step;
-  letters' floor applies (blank below `BLACK_FLOOR` 32, a lit cell held down to `FLOOR_HOLD`
-  16, on every tier), and floor crossings take at most four. The half, edge and orientation gates retain hysteresis.
+  independently, preventing stale brightness bands. A tone jump wider than the
+  `5/8 × idx_hyst_q8` activity band (narrowing to `idx_hyst_q8 / 4` in busy cells)
+  is taken at once. Inside that band, a smoothed tone more than `idx_hyst_q8 / 8`
+  from the held step, on another ramp step, adopts the current sample on this
+  cell's frame slot: one frame over the pixels floor, `clamp(2·dial/128, 1, 4) + 1`,
+  three to five at the default.
+  A smaller crossing at least 4 units inside the next step still waits until its
+  count reaches `min(dial/2, 63)` (64 frames at the default) and only on that slot. Within 4 units of a
+  boundary the neighbouring glyph stays. Letters' floor applies (blank below
+  `BLACK_FLOOR` 32, a lit cell held down to `FLOOR_HOLD` 16, on every tier);
+  a floor crossing uses the short slot confirm. Edge strokes and orientation bins
+  are threshold gates, not timers. The half gate still follows the held tone.
   The explicit black keeps unshaded cells on black in any terminal theme, whether or not the
   terminal applies the black backdrop; 16-color's SGR 49 is black only under the backdrop.
 - **User:** `/` cycles styles while playing (`pixels` → `letters` → `ascii`), `--style
@@ -212,7 +218,8 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
   background (`FramePainter::set_solid_bg`, black under `AnsiBackend`). The frame loop is
   `crates/auto-ascii-core/src/compose.rs` `compose_frame` / `compose_frame_masked` over
   `FramePlanes`. The pixels layer contract is `compose_cell`: base ramp, then the edge layer
-  (orientation bins in `crates/auto-ascii-core/src/orient.rs`), deep-shadow clamp, highlight and
+  (orientation bins in `crates/auto-ascii-core/src/orient.rs`), deep shadow (the ramp step,
+  immediate only on a cold start or a jump of two or more steps), highlight and
   sub-cell structure. Palettes: `crates/auto-ascii-core/src/palette.rs` `select_palettes` /
   `PaletteSet` (eight palettes keyed charset tier × layer role; density picks ramp length, color
   depth caps it via `RAMP_CAP_TRUE` / `RAMP_CAP_256`).
@@ -251,8 +258,13 @@ behaviour is unchanged. Line numbers drift, so cite and search by symbol name.
 - **Code:** `crates/auto-ascii-core/src/hysteresis.rs` `HysteresisState` / `CellState` (5 B per
   cell): ramp-index hysteresis (`idx_hyst_q8`, a fraction of a ramp step), a dual-threshold edge
   gate (`edge_t_on` / `edge_t_off`, `WAS_EDGE`), an orientation bin with an 8° guard, and the
-  quadrant flag (`WAS_QUADRANT`, `quad_e_on` / `quad_e_off`), plus the ASCII candidate
-  tone and settling age (ignored by the other styles).
+  quadrant flag (`WAS_QUADRANT`, `quad_e_on` / `quad_e_off`), plus a candidate
+  byte and an age. Pixels uses them as the pending one-step ramp confirm
+  (a fixed per-cell phase picks the release frame). ASCII uses them as its
+  candidate tone and settling age: the fast path and floor crossings release
+  on that same phase slot, and a smaller step crossing still stores the long
+  settle. Letters ignores them. A style change
+  resets the cell, so the two uses never overlap.
 - **Invariants — every temporal discontinuity resets all per-cell state:**
   - a shot change or shadow-lift change (`crates/auto-ascii/src/pipeline.rs`
     `Player::update_levels`, keyed on `(shot, shadow_lift, lift_color)`);

@@ -19,6 +19,21 @@ pub trait GlyphStyle {
         params: &ComposeParams,
         state: &mut CellState,
     ) -> (Cell, u8);
+
+    #[allow(clippy::too_many_arguments)]
+    fn cell_at(
+        inp: &CellInputs,
+        lut: &[u8; 256],
+        set: &PaletteSet,
+        params: &ComposeParams,
+        col: u16,
+        row: u16,
+        frame: u8,
+        state: &mut CellState,
+    ) -> (Cell, u8) {
+        let _ = (col, row, frame);
+        Self::cell(inp, lut, set, params, state)
+    }
 }
 
 macro_rules! registry {

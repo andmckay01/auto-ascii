@@ -1,4 +1,8 @@
 //! Printable ASCII glyph style over a capped background shade.
+//! A jump wider than the activity band snaps. A smoothed tone more than an
+//! eighth of the dial adopts the current sample one frame over the pixels
+//! floor, on this cell's frame slot. A smaller crossing keeps the long settle
+//! on that slot. Dial 0 is the current sample. Edges and orientation are not timers.
 
 use crate::cell::{Cell, Rgb, attrs};
 use crate::style::GlyphStyle;
@@ -6,7 +10,7 @@ use crate::style::letters::{
     EDGE, HALF_MASK, HALF_NONE, HALF_SHIFT, HALF_TOP, JUNCTION, coverage, half_variant, tint,
 };
 use crate::compose::{CellInputs, ComposeParams, boost, h_flags, layer};
-use crate::hysteresis::{CellState, IDX_UNSET, cell_flags, edge_gate};
+use crate::hysteresis::{CellState, IDX_UNSET, cell_flags, edge_gate, ramp_phase};
 use crate::orient::{bin_with_guard, coherence_at_least, debias};
 use crate::quant::{ansi256_to_rgb, rgb_to_256};
 use crate::palette::{ASCII_HIGHLIGHT, ColorDepth, GlyphClass, PaletteSet, subpos};
@@ -29,10 +33,8 @@ const BLACK_FLOOR: u8 = 32;
 const FLOOR_HOLD: u8 = BLACK_FLOOR / 2;
 const INK_FROM: u8 = 24;
 
-const SETTLE_MAX_FRAMES: u8 = 32;
 const CONVERGE_MAX_FRAMES: u8 = 64;
 const CONVERGE_CLEAR: u8 = 4;
-const FLOOR_SETTLE_FRAMES: u8 = 4;
 const SETTLE_DOWN: u8 = 0x80;
 const SETTLE_SLOW: u8 = 0x40;
 const SETTLE_COUNT: u8 = 0x3F;
@@ -349,10 +351,18 @@ fn jump_band(n: u8, from: u8, hyst_q8: u8, flags: &mut u8) -> u8 {
 }
 
 #[inline]
-fn held_tone(n: u8, prev: u8, hyst_q8: u8, step: &[u8; 256], s: &mut CellState) -> u8 {
+fn held_tone(
+    n: u8,
+    prev: u8,
+    hyst_q8: u8,
+    step: &[u8; 256],
+    phase: u8,
+    frame: u8,
+    s: &mut CellState,
+) -> u8 {
     let n = n.min(IDX_UNSET - 1);
     let from = if s.tone_candidate == IDX_UNSET { prev } else { s.tone_candidate };
-    if prev == IDX_UNSET || n.abs_diff(prev) > jump_band(n, from, hyst_q8, &mut s.flags) {
+    if prev == IDX_UNSET || hyst_q8 == 0 || n.abs_diff(prev) > jump_band(n, from, hyst_q8, &mut s.flags) {
         s.tone_candidate = n;
         s.tone_age = 0;
         return n;
@@ -362,25 +372,32 @@ fn held_tone(n: u8, prev: u8, hyst_q8: u8, step: &[u8; 256], s: &mut CellState) 
     let floor_crossing = (n < FLOOR_HOLD) != (prev < FLOOR_HOLD);
     let down = smooth < prev;
     let inside = if down { smooth.saturating_add(CONVERGE_CLEAR) } else { smooth.saturating_sub(CONVERGE_CLEAR) };
-    let (side, wait) = if floor_crossing {
-        (if n < FLOOR_HOLD { SETTLE_DOWN } else { 0 }, (FLOOR_SETTLE_FRAMES - 1).min(hyst_q8 / 8))
+    let (side, fast) = if floor_crossing {
+        (if n < FLOOR_HOLD { SETTLE_DOWN } else { 0 }, true)
     } else if step[smooth as usize] == step[prev as usize] {
         s.tone_age = 0;
         return prev;
     } else if smooth.abs_diff(prev) > hyst_q8 / 8 {
-        (if down { SETTLE_DOWN } else { 0 }, (hyst_q8 / 4).min(SETTLE_MAX_FRAMES - 1))
+        (if down { SETTLE_DOWN } else { 0 }, true)
     } else if step[inside as usize] != step[prev as usize] {
-        (SETTLE_SLOW | if down { SETTLE_DOWN } else { 0 }, (hyst_q8 / 2).min(CONVERGE_MAX_FRAMES - 1))
+        (SETTLE_SLOW | if down { SETTLE_DOWN } else { 0 }, false)
     } else {
         s.tone_age = 0;
         return prev;
     };
     let count = if s.tone_age != 0 && s.tone_age & !SETTLE_COUNT == side { s.tone_age & SETTLE_COUNT } else { 0 };
-    if count < wait {
-        s.tone_age = side | (count + 1);
+    let base = (((hyst_q8 as u32 * 2) / 128).clamp(1, 4) as u8).saturating_add(1);
+    let slot = frame % 3 == (phase & 15) % 3;
+    let ready = if fast {
+        count.saturating_add(1) >= base && slot
+    } else {
+        count >= (hyst_q8 / 2).min(CONVERGE_MAX_FRAMES - 1) && slot
+    };
+    if !ready {
+        s.tone_age = side | count.saturating_add(1).min(SETTLE_COUNT);
         return prev;
     }
-    let h = if floor_crossing { n } else { smooth };
+    let h = if fast { n } else { smooth };
     s.tone_candidate = h;
     s.tone_age = 0;
     h
@@ -401,6 +418,21 @@ impl GlyphStyle for Ascii {
         params: &ComposeParams,
         s: &mut CellState,
     ) -> (Cell, u8) {
+        Self::cell_at(inp, lut, set, params, 0, 0, 0, s)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn cell_at(
+        inp: &CellInputs,
+        lut: &[u8; 256],
+        set: &PaletteSet,
+        params: &ComposeParams,
+        col: u16,
+        row: u16,
+        frame: u8,
+        s: &mut CellState,
+    ) -> (Cell, u8) {
         let lt = lut[inp.luma_top as usize];
         let lb = lut[inp.luma_bottom as usize];
         let n = ((lt as u16 + lb as u16 + 1) >> 1) as u8;
@@ -415,7 +447,7 @@ impl GlyphStyle for Ascii {
         let target = if color_tone < floor { 0 } else { color_tone };
         let step: &[u8; 256] =
             if params.dither == 0 { &STEP } else { &STEP_DITHER[(inp.dither & 15) as usize] };
-        let h = held_tone(target, prev, params.idx_hyst_q8, step, s);
+        let h = held_tone(target, prev, params.idx_hyst_q8, step, ramp_phase(col, row), frame, s);
         s.idx = h;
         let i = step[h as usize] as usize;
         let len = ASCII_RAMP.len() as u32;
@@ -767,16 +799,16 @@ mod tests {
     fn default_glyph_hold_rejects_near_boundary_chatter() {
         let mut state = CellState::default();
         let width = ComposeParams::default().idx_hyst_q8;
-        let mut held = held_tone(120, IDX_UNSET, width, &STEP, &mut state);
+        let mut held = held_tone(120, IDX_UNSET, width, &STEP, 0, 0, &mut state);
         let mut changes = 0;
         for n in [159, 120].into_iter().cycle().take(200) {
-            let next = held_tone(n, held, width, &STEP, &mut state);
+            let next = held_tone(n, held, width, &STEP, 0, 0, &mut state);
             changes += usize::from(next != held);
             held = next;
         }
         assert!(changes <= 1 && (120..=159).contains(&held), "nearby alternating samples must not flash glyphs");
         let far = held + (width as u16 * 5 / 8) as u8 + 1;
-        assert_eq!(held_tone(far, held, width, &STEP, &mut state), far, "large changes remain immediate");
+        assert_eq!(held_tone(far, held, width, &STEP, 0, 0, &mut state), far, "large changes remain immediate");
     }
 
     #[test]
@@ -880,7 +912,7 @@ mod tests {
                     let mut held = from;
                     let mut state = CellState::default();
                     for f in 0..100 {
-                        let next = held_tone(to, held, width, &STEP, &mut state);
+                        let next = held_tone(to, held, width, &STEP, 0, 0, &mut state);
                         assert!(next >= held.min(to) && next <= held.max(to));
                         assert!(f < 74 || next == held, "{from}->{to}, width {width}: moved at frame {f}");
                         held = next;
@@ -897,11 +929,11 @@ mod tests {
     fn a_steady_tone_inside_the_margin_reaches_its_own_glyph() {
         let width = ComposeParams::default().idx_hyst_q8;
         let mut state = CellState::default();
-        let mut held = held_tone(142, IDX_UNSET, width, &STEP, &mut state);
+        let mut held = held_tone(142, IDX_UNSET, width, &STEP, 0, 0, &mut state);
         assert_ne!(STEP[142], STEP[158]);
         let mut settled = None;
         for f in 0..80 {
-            held = held_tone(158, held, width, &STEP, &mut state);
+            held = held_tone(158, held, width, &STEP, 0, 0, &mut state);
             if settled.is_none() && STEP[held as usize] == STEP[158] {
                 settled = Some(f);
             }
@@ -914,26 +946,26 @@ mod tests {
     fn active_cells_take_moderate_changes_at_once() {
         let width = ComposeParams::default().idx_hyst_q8;
         let mut quiet = CellState::default();
-        let held = held_tone(200, IDX_UNSET, width, &STEP, &mut quiet);
-        assert_eq!(held_tone(150, held, width, &STEP, &mut quiet), 200, "a quiet cell holds a 50-unit change");
+        let held = held_tone(200, IDX_UNSET, width, &STEP, 0, 0, &mut quiet);
+        assert_eq!(held_tone(150, held, width, &STEP, 0, 0, &mut quiet), 200, "a quiet cell holds a 50-unit change");
         let mut active = CellState::default();
-        let mut held = held_tone(200, IDX_UNSET, width, &STEP, &mut active);
+        let mut held = held_tone(200, IDX_UNSET, width, &STEP, 0, 0, &mut active);
         for n in [40, 200].into_iter().cycle().take(8) {
-            held = held_tone(n, held, width, &STEP, &mut active);
+            held = held_tone(n, held, width, &STEP, 0, 0, &mut active);
         }
         assert_eq!(held, 200);
-        assert_eq!(held_tone(150, held, width, &STEP, &mut active), 150, "a busy cell's band narrows to h/4");
-        assert_eq!(held_tone(135, 150, width, &STEP, &mut active), 150, "small changes still wait");
+        assert_eq!(held_tone(150, held, width, &STEP, 0, 0, &mut active), 150, "a busy cell's band narrows to h/4");
+        assert_eq!(held_tone(135, 150, width, &STEP, 0, 0, &mut active), 150, "small changes still wait");
     }
 
     #[test]
     fn noisy_steady_tone_settles_once() {
         let width = ComposeParams::default().idx_hyst_q8;
         let mut state = CellState::default();
-        let mut held = held_tone(120, IDX_UNSET, width, &STEP, &mut state);
+        let mut held = held_tone(120, IDX_UNSET, width, &STEP, 0, 0, &mut state);
         let mut changes = Vec::new();
         for (f, jitter) in [0u8, 7, 2, 9, 4, 11, 1, 6, 10, 3, 8, 5].into_iter().cycle().take(120).enumerate() {
-            let next = held_tone(150 + jitter, held, width, &STEP, &mut state);
+            let next = held_tone(150 + jitter, held, width, &STEP, 0, 0, &mut state);
             if next != held {
                 changes.push(f);
             }
@@ -951,13 +983,19 @@ mod tests {
             let params = ComposeParams::default();
             let mut st = HysteresisState::new(1, 1);
             step(&inp(120, 120), &set, &params, &mut st);
-            for n in [150, 140, 155, 139, 151] {
+            let warm = step(&inp(150, 150), &set, &params, &mut st);
+            let cold = step(&inp(150, 150), &set, &params, &mut HysteresisState::new(1, 1));
+            assert_ne!(warm.glyph(), cold.glyph(), "one frame past the eighth does not release");
+            assert_eq!((warm.fg, warm.bg, warm.attrs), (cold.fg, cold.bg, cold.attrs));
+            let mut caught = false;
+            for n in [150, 150, 150, 150, 150, 150] {
                 let warm = step(&inp(n, n), &set, &params, &mut st);
                 let cold = step(&inp(n, n), &set, &params, &mut HysteresisState::new(1, 1));
-                assert_ne!(warm.glyph(), cold.glyph());
                 assert_eq!((warm.fg, warm.bg, warm.attrs), (cold.fg, cold.bg, cold.attrs));
                 assert!(cell_within_cap(&warm, color));
+                caught |= warm.glyph() == cold.glyph();
             }
+            assert!(caught, "{color:?}: a held step reaches the current glyph within six frames");
         }
     }
 
@@ -1008,5 +1046,137 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn component(changed: &[bool], n: usize) -> usize {
+        let mut seen = vec![false; n * n];
+        let mut best = 0;
+        for i in 0..n * n {
+            if !changed[i] || seen[i] {
+                continue;
+            }
+            let mut q = vec![i];
+            seen[i] = true;
+            let mut k = 0;
+            while let Some(u) = q.pop() {
+                k += 1;
+                let (r, c) = (u / n, u % n);
+                for (rr, cc) in [(r.wrapping_sub(1), c), (r + 1, c), (r, c.wrapping_sub(1)), (r, c + 1)] {
+                    if rr < n && cc < n {
+                        let v = rr * n + cc;
+                        if changed[v] && !seen[v] {
+                            seen[v] = true;
+                            q.push(v);
+                        }
+                    }
+                }
+            }
+            best = best.max(k);
+        }
+        best
+    }
+
+    #[test]
+    fn a_flat_step_releases_on_the_phase_slot() {
+        const N: usize = 16;
+        let set = uni();
+        let params = ComposeParams::default();
+        let table = ident();
+        let mut cells = vec![CellState::default(); N * N];
+        let mut prev = vec!['\0'; N * N];
+        for i in 0..N * N {
+            let col = (i % N) as u16;
+            let row = (i / N) as u16;
+            prev[i] = Ascii::cell_at(&inp(120, 120), &table, &set, &params, col, row, 0, &mut cells[i]).0.glyph();
+        }
+        let mut seen = [0u16; 12];
+        let mut worst = 0usize;
+        for frame in 1..10u8 {
+            let mut changed = vec![false; N * N];
+            for i in 0..N * N {
+                let col = (i % N) as u16;
+                let row = (i / N) as u16;
+                let g = Ascii::cell_at(&inp(150, 150), &table, &set, &params, col, row, frame, &mut cells[i])
+                    .0
+                    .glyph();
+                if g != prev[i] {
+                    assert_eq!(
+                        (ramp_phase(col, row) & 15) % 3,
+                        frame % 3,
+                        "frame {frame} released another class at {col},{row}",
+                    );
+                }
+                changed[i] = g != prev[i];
+                prev[i] = g;
+            }
+            seen[frame as usize] = changed.iter().filter(|c| **c).count() as u16;
+            worst = worst.max(component(&changed, N));
+        }
+        let total: u16 = seen.iter().sum();
+        assert_eq!(total as usize, N * N, "every cell steps once: {seen:?}");
+        assert!(seen.iter().filter(|&&n| n > 0).count() >= 3, "three slots, not one frame: {seen:?}");
+        assert!(worst <= 4, "largest same-frame block was {worst}");
+    }
+
+    #[test]
+    fn a_slow_step_releases_on_the_phase_slot() {
+        const N: usize = 16;
+        let set = uni();
+        let params = ComposeParams::default();
+        let table = ident();
+        let mut cells = vec![CellState::default(); N * N];
+        let mut prev = vec!['\0'; N * N];
+        for i in 0..N * N {
+            let col = (i % N) as u16;
+            let row = (i / N) as u16;
+            prev[i] = Ascii::cell_at(&inp(142, 142), &table, &set, &params, col, row, 0, &mut cells[i]).0.glyph();
+        }
+        let cold = Ascii::cell_at(&inp(158, 158), &table, &set, &params, 0, 0, 0, &mut CellState::default()).0.glyph();
+        assert_ne!(prev[0], cold, "142 and 158 are different ramp glyphs");
+        let mut seen = [0u16; 96];
+        let mut worst = 0usize;
+        let mut total = 0u16;
+        for frame in 1..90u8 {
+            let mut changed = vec![false; N * N];
+            for i in 0..N * N {
+                let col = (i % N) as u16;
+                let row = (i / N) as u16;
+                let g = Ascii::cell_at(&inp(158, 158), &table, &set, &params, col, row, frame, &mut cells[i])
+                    .0
+                    .glyph();
+                if g != prev[i] {
+                    assert_eq!(
+                        (ramp_phase(col, row) & 15) % 3,
+                        frame % 3,
+                        "frame {frame} released another class at {col},{row}",
+                    );
+                    total += 1;
+                }
+                changed[i] = g != prev[i];
+                prev[i] = g;
+            }
+            seen[frame as usize] = changed.iter().filter(|c| **c).count() as u16;
+            worst = worst.max(component(&changed, N));
+        }
+        assert_eq!(total as usize, N * N, "every cell steps once: {seen:?}");
+        assert!(seen.iter().filter(|&&n| n > 0).count() >= 3, "three slots, not one frame: {seen:?}");
+        assert!(worst <= 4, "largest same-frame block was {worst}");
+        assert!(prev.iter().all(|&g| g == cold));
+    }
+
+    #[test]
+    fn an_orientation_outside_the_guard_changes_on_that_frame() {
+        let i = |k: f64| {
+            let a = (2.0 * k).to_radians();
+            CellInputs {
+                e: 200,
+                ex: (128.0 - 100.0 * a.cos()).round() as u8,
+                ey: (128.0 - 100.0 * a.sin()).round() as u8,
+                ..inp(100, 100)
+            }
+        };
+        let mut st = HysteresisState::new(1, 1);
+        assert_eq!(glyph(&i(11.25), &mut st), '-');
+        assert_eq!(glyph(&i(32.5), &mut st), '\\', "past the guard, the stroke updates on this frame");
     }
 }

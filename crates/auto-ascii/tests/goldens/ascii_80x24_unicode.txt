@@ -7,15 +7,15 @@ ascii style, UnicodeBlocks tier, True, 80x24, frame 5
 |            ..................:::::::::::;;;;;;;;;;;;+++++++++++rrrrrrrrrrrrrccc|
 |          ...............;.:::::;:::-/-______-\;;;;+++++++++++rrrrrrrrrrrrrccccc|
 |        .............:.:;.:::+:;:////S8D88#8D8-\\\++++++++++rrrrrrrrrrrrrccccccc|
-|      .............:....:::::;:://B88D88a8D88S8D88\\+++++++rrrrrrrrrrrrccccccccc|
-|    ..............;.:.:+::::+://BBBBB88S8D88S8D88B8D\++++rrrrrrrrrrrrcccccccccxx|
-|  ...............;..::+::::+::|@@@BBBB88#8888#8888#88|+rrrrrrrrrrrrcccccccccxxxn|
+|      .............:....:::::;:://B88D88B8D88S8D88\\+++++++rrrrrrrrrrrrccccccccc|
+|    ................:.:+::::+://BBBBB88B8D88S8D88B8D\++++rrrrrrrrrrrrcccccccccxx|
+|  ...............;..::+::::+::|@@@BBBB88@8888#8888#88|+rrrrrrrrrrrrcccccccccxxxn|
 |..................:+::::+::::|@@@@@BBBB88@8D88B8D88B8||rrrrrrrrrrcccccccccxxxnnn|
 |................:::r::::r::;;|@@@@@@BBB88@8888B8888B88|rrrrrrrrcccccccccxxxnnnoo|
-|..............:::::r::::r;;;;|@@@@@BBBB88@8888B8888B88|rrrrrrcccccccccxxxnnnoooo|
+|..............::::::::::r;;;;|@@@@@BBBB88@8888B8888B88|rrrrrrcccccccccxxxnnnoooo|
 |............:::::::+:::;+;;;;|@@@@@BBBB88@8#8888B8888|rrrrrcccccccccxxxnnnnooooo|
-|..........:::::::;:::;;;;x;+;;\@@BBBBB88S8D8888D8888r/rrrcccccccccxxxnnnnooooooo|
-|........::::::::::;;;;;+;;;;+;;\BBBBB88e8B8888B8888//rrcccccccccxxxnnnnooooooooo|
+|..........:::::::;:::;;;;x;+;;\@@BBBBB88@8D8888D8888r/rrrcccccccccxxxnnnnooooooo|
+|........::::::::::;;;;;+;;;;+;;\BBBBB88B8B8888B8888//rrcccccccccxxxnnnnooooooooo|
 |......:::::::::::;;;;;+;;;;+;+++\\88DSBD8D8888888r/rrcccccccccxxxnnnnooooooooooo|
 |....:::::::::::;;;;;;;+;;;;r++++++\\\\D8D8888--//rrrccccccccxxxnnnnooooooooooooo|
 |..:::::::::::;;;;;;;;;;;;++rrrrrr++++r---rrr-rrrrrccccccccxxxnnnnooooooo        |

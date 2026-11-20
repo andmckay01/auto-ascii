@@ -1,4 +1,6 @@
 //! Luma and glyph-style frame composition with per-cell layer metadata.
+//! `compose_frame` calls `HysteresisState::begin_frame` once per frame.
+//! `compose_cell` reads that residue, so a cell-by-cell caller ticks once per frame too.
 
 use crate::cell::{Cell, Rgb};
 use crate::style::GlyphStyle;
@@ -137,7 +139,7 @@ pub fn compose_cell_layer(
     col: u16,
     row: u16,
 ) -> (Cell, u8) {
-    Pixels::cell(inp, lut, set, params, state.cell_mut(col, row))
+    Pixels::cell_at(inp, lut, set, params, col, row, state.frame(), state.cell_mut(col, row))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -225,6 +227,8 @@ pub(crate) fn frame_impl<C: GlyphStyle>(
         assert!(r.len() >= vc * vr && g.len() >= vc * vr && b.len() >= vc * vr);
     }
 
+    let frame = state.begin_frame();
+    debug_assert_eq!(frame, state.frame());
     out.fill(C::PAD);
     if let Some(m) = mask.as_deref_mut() {
         m.fill(layer::BASE);
@@ -248,8 +252,16 @@ pub(crate) fn frame_impl<C: GlyphStyle>(
                 chroma: planes.chroma.map(|(pr, pg, pb)| Rgb::new(pr[i], pg[i], pb[i])),
                 dither: dither_index(params.dither, c, r),
             };
-            let (cell, won) =
-                C::cell(&inp, lut, set, params, state.cell_mut(c as u16, r as u16));
+            let (cell, won) = C::cell_at(
+                &inp,
+                lut,
+                set,
+                params,
+                c as u16,
+                r as u16,
+                frame,
+                state.cell_mut(c as u16, r as u16),
+            );
             out.set(vp.pad_left + c as u16, vp.pad_top + r as u16, cell);
             if let Some(m) = mask.as_deref_mut() {
                 m.set(vp.pad_left + c as u16, vp.pad_top + r as u16, won);
